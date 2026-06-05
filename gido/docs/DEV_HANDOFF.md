@@ -1,7 +1,6 @@
 # 玑渡 GIDO 开发交接说明
 
-> 供下一位开发者/使用者快速接手。  
-> **完整 AI 对话（尽量完整版）**：[`notes/2026-06-05-gido-session-full.md`](notes/2026-06-05-gido-session-full.md)（283 条问题索引 + 全量对话正文）
+> 供下一位开发者/使用者快速接手。
 
 最后更新：2026-06-05
 
@@ -129,7 +128,6 @@ cd gido/backend && pytest -q
 ### A. 仓库文档（推荐，已在做）
 
 - 本文 **`DEV_HANDOFF.md`**（精简交接）
-- **[`notes/2026-06-05-gido-session-full.md`](notes/2026-06-05-gido-session-full.md)** — 尽量完整版：执行摘要 + 283 条问题索引 + 全量对话（约 950KB）
 - `CHANGELOG.md`、`MIGRATION_FROM_DATAWORKS.md`、`OPEN_SOURCE.md`
 
 ### B. Cursor 聊天

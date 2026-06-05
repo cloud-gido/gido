@@ -156,6 +156,6 @@ cat <<EOF
     重建启动:  ./start.sh --recreate
 
   若库连不上: 确认 PostgreSQL 在宿主机 5432 可达，或在上级 .env 设置 GIDO_DATABASE_URL
-  Dolphin（可选）: docker compose -f ../dockerFile/docker-compose.dolphin.yml up -d
+  Dolphin（可选）: 仓库根目录 ./start-platform.sh
 ========================================
 EOF

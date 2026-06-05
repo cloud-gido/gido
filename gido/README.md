@@ -15,7 +15,6 @@
 | 文档 | 说明 |
 |------|------|
 | [docs/DEV_HANDOFF.md](docs/DEV_HANDOFF.md) | **开发交接 / 会话沉淀**（给下一位开发者） |
-| [docs/notes/2026-06-05-gido-session-full.md](docs/notes/2026-06-05-gido-session-full.md) | **完整 AI 对话导出**（283 条问题索引 + 全量正文） |
 | [docs/OPEN_SOURCE.md](docs/OPEN_SOURCE.md) | **开源发布、合规与防侵权** |
 | [../.github/workflows/ci.yml](../.github/workflows/ci.yml) | GitHub Actions CI（构建 + 合规） |
 | [docs/MIGRATION_FROM_DATAWORKS.md](docs/MIGRATION_FROM_DATAWORKS.md) | 历史命名迁移说明 |

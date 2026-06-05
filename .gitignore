@@ -59,10 +59,6 @@ htmlcov/
 dockerFile/**/.env
 !dockerFile/**/.env.example
 
-# DataEase / Superset local runtime (downloaded at start)
-dockerFile/dataease/runtime/
-dockerFile/**/logs/
-
 # Large JDBC/Flink jars (start-platform.sh auto-downloads)
 dockerFile/jdbc/*.jar
 dockerFile/flink-lib/*.jar
