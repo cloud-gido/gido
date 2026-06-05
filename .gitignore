@@ -1,0 +1,68 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+*.egg
+dist/
+build/
+pip-wheel-metadata/
+
+# Node / frontend
+node_modules/
+gido/frontend/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# IDE & editor
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs & runtime data
+*.log
+logs/
+data/
+tmp/
+temp/
+*.db
+
+# Test & coverage
+.coverage
+htmlcov/
+.tox/
+
+# Java / Maven (Flink demo jobs)
+**/target/
+*.class
+
+# Docker local overrides (keep examples)
+dockerFile/**/.env
+!dockerFile/**/.env.example
+
+# DataEase / Superset local runtime (downloaded at start)
+dockerFile/dataease/runtime/
+dockerFile/**/logs/
+
+# Large JDBC/Flink jars (start-platform.sh auto-downloads)
+dockerFile/jdbc/*.jar
+dockerFile/flink-lib/*.jar

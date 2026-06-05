@@ -1,0 +1,56 @@
+# DataEase 社区版 v2.10 — 复用已有 MySQL（默认不启 mysql-de、不拉 MySQL 镜像）
+#
+# 前置：
+#   1) 本机已有 MySQL 8.x（如 mysql:8.4），端口通常 3306
+#   2) cp dataease/.env.example dataease/.env  填写 DE_MYSQL_PASSWORD 等
+#   3) bash dataease/prepare-external-mysql.sh   # 建库 dataease
+#   4) bash dataease/render-conf.sh              # 生成 application.yml
+#
+# 启动（首次先 bash dataease/pull-image.sh；勿用 never 除非镜像已在本地）：
+#   cd dockerFile
+#   bash dataease/setup-runtime.sh
+#   bash dataease/pull-image.sh
+#   docker compose -f docker-compose.dataease.yml up -d
+#
+# UI：http://localhost:8100   admin / DataEase@123456
+#
+# MySQL 在 Docker 同网（非 host 端口）时：docker network connect <网络> <mysql容器>
+# 并在 .env 里 DE_MYSQL_HOST=<mysql容器名>
+#
+# 没有现成 MySQL 时再自带一套：
+#   docker compose -f docker-compose.dataease.yml -f docker-compose.dataease.bundled.yml up -d
+
+name: dataease-docker
+
+services:
+  dataease:
+    image: ${DATAEASE_IMAGE:-registry.cn-qingdao.aliyuncs.com/dataease/dataease:v2.10.11}
+    pull_policy: ${DATAEASE_PULL_POLICY:-missing}
+    container_name: dataease
+    restart: unless-stopped
+    stop_signal: SIGTERM
+    stop_grace_period: 15s
+    ports:
+      - "${DE_PORT:-8100}:8100"
+    env_file:
+      - path: ./dataease/.env
+        required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./dataease/conf/application.yml:/opt/apps/config/application.yml:ro
+      - ./dataease/runtime/logs:/opt/dataease2.0/logs
+      - ./dataease/runtime/data/static-resource:/opt/dataease2.0/data/static-resource
+      - ./dataease/runtime/cache:/opt/dataease2.0/cache
+      - ./dataease/runtime/data/geo:/opt/dataease2.0/data/geo
+      - ./dataease/runtime/data/appearance:/opt/dataease2.0/data/appearance
+      - ./dataease/runtime/data/exportData:/opt/dataease2.0/data/exportData
+      - ./dataease/runtime/data/plugin:/opt/dataease2.0/data/plugin
+      - ./dataease/runtime/data/font:/opt/dataease2.0/data/font
+      - ./dataease/runtime/data/i18n:/opt/dataease2.0/data/i18n
+    networks: [dataease-ext]
+
+networks:
+  dataease-ext:
+    name: ${DATAEASE_DOCKER_NETWORK:-dataease-docker-net}
+    external: ${DATAEASE_DOCKER_NETWORK_EXTERNAL:-false}

@@ -1,0 +1,366 @@
+# 综合平台编排：PostgreSQL + ZooKeeper + Kafka + Flink + DolphinScheduler + 玑渡 GIDO
+#
+# 在仓库根目录执行：
+#   ./start-platform.sh
+#   docker compose -f docker-compose-platform.yml up -d --build
+#
+# 或在本目录执行：
+#   docker compose -f docker-compose.platform.yml up -d --build
+#
+# 端口速查（宿主机）：
+#   PostgreSQL      5432
+#   Kafka 局域网/宿主机 9092  → ${KAFKA_LAN_HOST}:9092（DataGovRN、kafka-tool）
+#   Kafka 平台内 Flink       kafka:29092
+#   Flink JM/UI     8081
+#   Flink Gateway   8083
+#   Dolphin UI      12345
+#   GIDO 前端      3002
+#   GIDO API       8001
+#
+# 前置（首次）：
+#   dockerFile/jdbc/mysql-connector-j-8.0.33.jar
+#   dockerFile/flink-lib/flink-sql-connector-kafka-4.0.1-2.0.jar
+#   运行 ./start-platform.sh 可自动下载缺失 jar
+#
+# 建议 Docker Desktop 内存 ≥ 8GB（Dolphin Master + Flink TM + Kafka）
+
+name: bigdata-platform
+
+include:
+  - path: ../gido/docker-compose.yml
+    project_directory: ../gido
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL（Dolphin 库 dolphinscheduler + GIDO 元库 gido）
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    container_name: platform-postgres
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_DB: dolphinscheduler
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-DolphinPgDev!72}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U root -d dolphinscheduler"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      platform:
+        aliases:
+          - postgres
+          - platform-postgres
+  # ---------------------------------------------------------------------------
+  zookeeper:
+    image: ${ZOOKEEPER_IMAGE:-zookeeper:3.9}
+    container_name: platform-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: "2181"
+      ZOOKEEPER_TICK_TIME: "2000"
+    healthcheck:
+      test: ["CMD-SHELL", "zkServer.sh status || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 45s
+    networks:
+      - platform
+
+  # ---------------------------------------------------------------------------
+  # Kafka（KRaft 双 listener）
+  #   PLAINTEXT      kafka:29092           — platform 网内（Flink SQL bootstrap）
+  #   PLAINTEXT_HOST ${KAFKA_LAN_HOST}:9092 — 宿主机 / 局域网 / 其它 Docker 容器
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: ${KAFKA_IMAGE:-confluentinc/cp-kafka:7.5.0}
+    hostname: kafka
+    container_name: platform-kafka
+    restart: unless-stopped
+    ports:
+      - "${KAFKA_HOST_PORT:-9092}:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:9093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://${KAFKA_LAN_HOST:-host.docker.internal}:9092
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # cp-kafka 镜像默认且 appuser(1000) 可写；勿用 /tmp/kraft-combined-logs（易 Permission denied）
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_HEAP_OPTS: ${KAFKA_HEAP_OPTS:--Xmx512m -Xms256m}
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 24
+      start_period: 90s
+    networks:
+      - platform
+
+  # ---------------------------------------------------------------------------
+  # DolphinScheduler
+  # ---------------------------------------------------------------------------
+  ds-schema:
+    image: apache/dolphinscheduler-tools:3.2.2
+    container_name: platform-ds-schema
+    working_dir: /opt/dolphinscheduler
+    mem_limit: 1024m
+    command: ["/opt/dolphinscheduler/tools/bin/ds-schema-init.sh"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Shanghai
+      DATABASE: postgresql
+      SPRING_JACKSON_TIME_ZONE: UTC
+      SPRING_DATASOURCE_URL: jdbc:postgresql://platform-postgres:5432/dolphinscheduler
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-DolphinPgDev!72}
+      PG_HOST: platform-postgres
+      DS_SCHEMA_MAX_ATTEMPTS: ${DS_SCHEMA_MAX_ATTEMPTS:-5}
+    volumes:
+      - ./dolphin/ds-schema-init.sh:/opt/dolphinscheduler/tools/bin/ds-schema-init.sh:ro
+    networks:
+      - platform
+
+  dolphinscheduler-api:
+    image: apache/dolphinscheduler-api:3.2.2
+    container_name: platform-ds-api
+    ports:
+      - "${DS_API_PORT:-12345}:12345"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      zookeeper:
+        condition: service_healthy
+      ds-schema:
+        condition: service_completed_successfully
+    environment:
+      TZ: Asia/Shanghai
+      DATABASE: postgresql
+      SPRING_JACKSON_TIME_ZONE: UTC
+      SPRING_DATASOURCE_URL: jdbc:postgresql://platform-postgres:5432/dolphinscheduler
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-DolphinPgDev!72}
+      REGISTRY_ZOOKEEPER_CONNECT_STRING: zookeeper:2181
+      WORKER_GROUPS: default
+      SPRING_CLOUD_KUBERNETES_ENABLED: "false"
+      SPRING_CLOUD_KUBERNETES_CONFIG_ENABLED: "false"
+      SPRING_APPLICATION_JSON: '{"spring":{"cloud":{"kubernetes":{"enabled":false,"config":{"enabled":false}}}}}'
+      JAVA_TOOL_OPTIONS: "-Dspring.cloud.kubernetes.enabled=false -Dspring.cloud.kubernetes.config.enabled=false"
+    volumes:
+      - ./jdbc/mysql-connector-j-8.0.33.jar:/opt/dolphinscheduler/libs/mysql-connector-j-8.0.33.jar:ro
+    networks:
+      - platform
+
+  dolphinscheduler-master:
+    image: apache/dolphinscheduler-master:3.2.2
+    container_name: platform-ds-master
+    restart: unless-stopped
+    mem_limit: 1536m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      zookeeper:
+        condition: service_healthy
+      ds-schema:
+        condition: service_completed_successfully
+    environment:
+      TZ: Asia/Shanghai
+      DATABASE: postgresql
+      SPRING_JACKSON_TIME_ZONE: UTC
+      SPRING_DATASOURCE_URL: jdbc:postgresql://platform-postgres:5432/dolphinscheduler
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-DolphinPgDev!72}
+      REGISTRY_ZOOKEEPER_CONNECT_STRING: zookeeper:2181
+      WORKER_GROUPS: default
+      SPRING_CLOUD_KUBERNETES_ENABLED: "false"
+      SPRING_CLOUD_KUBERNETES_CONFIG_ENABLED: "false"
+      SPRING_APPLICATION_JSON: '{"spring":{"cloud":{"kubernetes":{"enabled":false,"config":{"enabled":false}}}},"master":{"server-load-protection":{"max-system-memory-usage-percentage-thresholds":0.98,"max-system-cpu-usage-percentage-thresholds":0.99}}}'
+      JAVA_TOOL_OPTIONS: >-
+        -Xms384m -Xmx1024m -XX:+UseG1GC -XX:+ExitOnOutOfMemoryError
+        -Dspring.cloud.kubernetes.enabled=false
+        -Dspring.cloud.kubernetes.config.enabled=false
+    networks:
+      - platform
+
+  dolphinscheduler-worker:
+    image: apache/dolphinscheduler-worker:3.2.2
+    container_name: platform-ds-worker
+    hostname: ds-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      zookeeper:
+        condition: service_healthy
+      ds-schema:
+        condition: service_completed_successfully
+    environment:
+      TZ: Asia/Shanghai
+      DATABASE: postgresql
+      SPRING_JACKSON_TIME_ZONE: UTC
+      SPRING_DATASOURCE_URL: jdbc:postgresql://platform-postgres:5432/dolphinscheduler
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-DolphinPgDev!72}
+      REGISTRY_ZOOKEEPER_CONNECT_STRING: zookeeper:2181
+      WORKER_GROUPS: default
+      SPRING_CLOUD_KUBERNETES_ENABLED: "false"
+      SPRING_CLOUD_KUBERNETES_CONFIG_ENABLED: "false"
+      SPRING_APPLICATION_JSON: '{"spring":{"cloud":{"kubernetes":{"enabled":false,"config":{"enabled":false}}}},"worker":{"server-load-protection":{"max-system-memory-usage-percentage-thresholds":0.98}}}'
+      JAVA_TOOL_OPTIONS: "-Dworker.worker-address=ds-worker:1234 -Dspring.cloud.kubernetes.enabled=false -Dspring.cloud.kubernetes.config.enabled=false"
+    volumes:
+      - ./jdbc/mysql-connector-j-8.0.33.jar:/opt/dolphinscheduler/libs/mysql-connector-j-8.0.33.jar:ro
+    networks:
+      - platform
+
+  dolphinscheduler-alert:
+    image: apache/dolphinscheduler-alert-server:3.2.2
+    container_name: platform-ds-alert
+    depends_on:
+      postgres:
+        condition: service_healthy
+      zookeeper:
+        condition: service_healthy
+      ds-schema:
+        condition: service_completed_successfully
+    environment:
+      TZ: Asia/Shanghai
+      DATABASE: postgresql
+      SPRING_JACKSON_TIME_ZONE: UTC
+      SPRING_DATASOURCE_URL: jdbc:postgresql://platform-postgres:5432/dolphinscheduler
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-DolphinPgDev!72}
+      REGISTRY_ZOOKEEPER_CONNECT_STRING: zookeeper:2181
+      SPRING_CLOUD_KUBERNETES_ENABLED: "false"
+      SPRING_CLOUD_KUBERNETES_CONFIG_ENABLED: "false"
+      SPRING_APPLICATION_JSON: '{"spring":{"cloud":{"kubernetes":{"enabled":false,"config":{"enabled":false}}}}}'
+      JAVA_TOOL_OPTIONS: "-Dspring.cloud.kubernetes.enabled=false -Dspring.cloud.kubernetes.config.enabled=false"
+    networks:
+      - platform
+
+  # ---------------------------------------------------------------------------
+  # Flink Session（JobManager + TaskManager + SQL Gateway）
+  # ---------------------------------------------------------------------------
+  jobmanager:
+    image: ${FLINK_IMAGE:-apache/flink:2.0.1-java11}
+    container_name: platform-flink-jm
+    hostname: jobmanager
+    command: jobmanager
+    ports:
+      - "${FLINK_JM_PORT:-8081}:8081"
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: jobmanager
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/8081'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    volumes:
+      - ./flink-lib/flink-sql-connector-kafka-4.0.1-2.0.jar:/opt/flink/lib/flink-sql-connector-kafka-4.0.1-2.0.jar:ro
+    networks:
+      - platform
+
+  taskmanager:
+    image: ${FLINK_IMAGE:-apache/flink:2.0.1-java11}
+    container_name: platform-flink-tm
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+    command: taskmanager
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: jobmanager
+      TASK_MANAGER_NUMBER_OF_TASK_SLOTS: "${FLINK_TASK_SLOTS:-4}"
+    volumes:
+      - ./flink-lib/flink-sql-connector-kafka-4.0.1-2.0.jar:/opt/flink/lib/flink-sql-connector-kafka-4.0.1-2.0.jar:ro
+    networks:
+      - platform
+
+  sql-gateway:
+    image: ${FLINK_IMAGE:-apache/flink:2.0.1-java11}
+    container_name: platform-flink-gateway
+    hostname: sql-gateway
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+    ports:
+      - "${FLINK_GATEWAY_PORT:-8083}:8083"
+    command:
+      - bash
+      - -exc
+      - |
+        exec /opt/flink/bin/sql-gateway.sh start-foreground \
+          -Djobmanager.rpc.address=jobmanager \
+          -Djobmanager.rpc.port=6123 \
+          -Dsql-gateway.endpoint.rest.address=0.0.0.0 \
+          -Dsql-gateway.endpoint.rest.port=8083 \
+          -Dsql-gateway.endpoint.rest.bind-address=0.0.0.0
+    volumes:
+      - ./flink-lib/flink-sql-connector-kafka-4.0.1-2.0.jar:/opt/flink/lib/flink-sql-connector-kafka-4.0.1-2.0.jar:ro
+    networks:
+      - platform
+
+  # ---------------------------------------------------------------------------
+  # 玑渡 GIDO：服务定义见 ../gido/docker-compose.yml（include）；此处仅全栈覆盖项
+  # ---------------------------------------------------------------------------
+  backend:
+    environment:
+      DATABASE_URL: ${GIDO_DATABASE_URL:-postgresql+psycopg2://root:DolphinPgDev%2172@platform-postgres:5432/gido}
+      DS_URL: ${GIDO_DS_URL:-http://dolphinscheduler-api:12345/dolphinscheduler}
+      FLINK_URL: ${GIDO_FLINK_URL:-http://jobmanager:8081}
+      FLINK_SQL_GATEWAY_URL: ${GIDO_FLINK_SQL_GATEWAY_URL:-http://sql-gateway:8083}
+      FLINK_GATEWAY_JOBMANAGER_REST_URL: ${GIDO_FLINK_GATEWAY_JOBMANAGER_REST_URL:-http://jobmanager:8081}
+      FLINK_UI_URL: ${GIDO_FLINK_UI_URL:-http://localhost:8081}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ds-schema:
+        condition: service_completed_successfully
+      dolphinscheduler-api:
+        condition: service_started
+      jobmanager:
+        condition: service_healthy
+      sql-gateway:
+        condition: service_started
+    networks:
+      platform:
+        aliases:
+          - backend
+          - gido-backend
+
+  frontend:
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - platform
+
+networks:
+  # 由 Compose 创建并注册 DNS（勿用手动 docker network create，否则服务名 postgres 可能无法解析）
+  platform:
+    name: ${PLATFORM_NETWORK_NAME:-bigdata-platform-network}
+    driver: bridge
+
+volumes:
+  postgres-data:
+  kafka-data:

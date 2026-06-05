@@ -1,0 +1,273 @@
+# Flink Session 集群（JobManager / TaskManager / SQL Gateway）
+# 版本与 GIDO「系统管理 → 集成」及 FLINK_K8S_APPLICATION_IMAGE 默认对齐：apache/flink:2.0.1-java11
+#
+# 重要：只改 Git 里的 yaml 不会让集群自动升级，必须在能连到目标集群的机器上执行 apply + rollout。
+# 浏览器仍显示旧版本时常见原因：
+#   1) 未对当前集群执行 apply + rollout（见下方 redeploy 脚本）。
+#   2) JM Service 为 LoadBalancer，Docker Desktop 上宿主 8081 常为 com.docker 监听。
+#   3) 若仍见 1.x：可能连到别的进程；先 bash scripts/stop-all-local-flink.sh，再 bash gido/scripts/free-host-port-8081.sh 复查 8081。
+#
+# 默认端口（与 Flink 镜像对齐，勿随意改）：
+#   JobManager REST / Web UI：容器 8081；Service flink-jobmanager 为 LoadBalancer → 宿主常见 http://localhost:8081。
+#   JobManager Service 另暴露：6123 rpc、6124 blob、6125 query（Session 内 TM 与 JM 通信用）。
+#   SQL Gateway：容器与 ClusterIP Service 均为 8083；从宿主访问用 flink-sql-gateway-ingress.yaml（Ingress→8083）
+#   或可选 flink-sql-gateway-nodeport.yaml（固定 NodePort 32483→8083）。
+# K8s Application：deploy script 由 SQL Gateway 调 apiserver 创建作业集群；本清单已为 flink-sql-gateway 绑定命名空间内 Role（apply 后请 rollout Gateway）。
+# 若只执行了 kubectl delete deploy flink-jobmanager … -n flink：Service/Ingress 常仍保留；kubectl apply -f k8s/flink.yaml 会按本文件重建 Deployment。
+#
+# 唯一 K8s 清单目录：仓库根下 k8s/（含 flink.yaml、Ingress、NodePort 可选件）。
+# 同集群部署 GIDO 本体：见 k8s/gido.yaml；一键脚本 bash k8s/apply-gido-stack.sh
+# 重新部署：
+#   kubectl apply -f k8s/flink.yaml && bash k8s/redeploy-flink.sh
+#
+# Flink JobManager 容器内 REST 端口为 8081；宿主访问见上。SQL Gateway（ClusterIP）对外走 Ingress nginx + k8s/flink-sql-gateway-ingress.yaml。
+# Docker 内 GIDO（不在集群里）配合 Ingress，可长期跑 scripts/run-ingress-nginx-for-gido.sh，再按实际映射配置：
+#   GIDO_FLINK_SQL_GATEWAY_HTTP_HOST=flink-sql-gateway.localhost
+#   GIDO_FLINK_SQL_GATEWAY_URL=http://127.0.0.1:<Ingress 映射到 Gateway 的宿主端口>
+# 「宿主机 PyCharm 跑 backend」不要用 host.docker.internal 访问本机映射端口（常见 Errno 101）。
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: flink
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-jobmanager
+  namespace: flink
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flink
+      component: jobmanager
+  template:
+    metadata:
+      labels:
+        app: flink
+        component: jobmanager
+    spec:
+      containers:
+      - name: jobmanager
+        image: apache/flink:2.0.1-java11
+        imagePullPolicy: Always
+        args:
+        - jobmanager
+        ports:
+        - containerPort: 8081
+        - containerPort: 6123
+        - containerPort: 6124
+        - containerPort: 6125
+        env:
+        - name: JOB_MANAGER_RPC_ADDRESS
+          value: flink-jobmanager
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-taskmanager
+  namespace: flink
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: flink
+      component: taskmanager
+  template:
+    metadata:
+      labels:
+        app: flink
+        component: taskmanager
+    spec:
+      containers:
+      - name: taskmanager
+        image: apache/flink:2.0.1-java11
+        imagePullPolicy: Always
+        args:
+        - taskmanager
+        env:
+        - name: JOB_MANAGER_RPC_ADDRESS
+          value: flink-jobmanager
+        - name: TASK_MANAGER_NUMBER_OF_TASK_SLOTS
+          value: "2"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flink-jobmanager
+  namespace: flink
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 8081
+    name: ui
+    targetPort: 8081
+  - port: 6123
+    name: rpc
+    targetPort: 6123
+  # TaskManager ↔ JobManager Blob（jar/日志上传等）；不暴露会一直 Connection refused（见 JM 日志 BlobServer :6124）
+  - port: 6124
+    name: blob
+    targetPort: 6124
+  - port: 6125
+    name: query
+    targetPort: 6125
+  selector:
+    app: flink
+    component: jobmanager
+
+---
+# SQL Gateway 在「kubernetes-application」脚本部署模式下会调 Kubernetes API 创建作业集群资源；
+# 须绑定带命名空间内写权限的 ServiceAccount（仅用 default SA 时常见 deploy script 500 / Forbidden）。
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flink-sql-gateway
+  namespace: flink
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flink-sql-gateway-application
+  namespace: flink
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "configmaps", "secrets", "endpoints", "events", "serviceaccounts", "persistentvolumeclaims"]
+    verbs: ["create", "delete", "get", "list", "watch", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale", "replicasets", "statefulsets", "controllerrevisions"]
+    verbs: ["create", "delete", "get", "list", "watch", "update", "patch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create", "delete", "get", "list", "watch", "update", "patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["create", "delete", "get", "list", "watch", "update", "patch"]
+  # kubernetes-application：Flink 常在 namespace 内为作业 Pod 再建 Role/RoleBinding；缺此项 apiserver 返回 Forbidden，Gateway 仅报 deploy script 500。
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["create", "delete", "get", "list", "watch", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flink-sql-gateway-application
+  namespace: flink
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flink-sql-gateway-application
+subjects:
+  - kind: ServiceAccount
+    name: flink-sql-gateway
+    namespace: flink
+---
+# Flink SQL Gateway：提供 /v1/sessions 等 REST，与 JobManager 8081 分离
+# 对接非标准集群域/命名空间：用 GIDO「系统管理 → 集成 → Apache Flink → 导出 SQL Gateway Deployment YAML」生成与平台配置一致的 Deployment。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-sql-gateway
+  namespace: flink
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flink
+      component: sql-gateway
+  template:
+    metadata:
+      labels:
+        app: flink
+        component: sql-gateway
+    spec:
+      serviceAccountName: flink-sql-gateway
+      # Fabric8 在部分环境仍用 kubernetes.default.svc（短名）→ Java UnknownHost；环境变量 FABRIC8_* 可能不被 Flink 内嵌客户端采用。
+      # 启动前写入 kubeconfig，apiserver 优先用 kubelet 注入的 KUBERNETES_SERVICE_HOST:PORT（直连 IP），避免依赖短 DNS 名。
+      enableServiceLinks: true
+      volumes:
+        - name: sql-gateway-kubeconfig
+          emptyDir: {}
+      initContainers:
+        - name: write-incluster-kubeconfig
+          image: apache/flink:2.0.1-java11
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-exc"]
+          args:
+            - |
+              set -e
+              if [[ -n "${KUBERNETES_SERVICE_HOST:-}" && -n "${KUBERNETES_SERVICE_PORT:-}" ]]; then
+                SERVER="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
+              else
+                SERVER="https://kubernetes.default.svc.cluster.local:443"
+              fi
+              mkdir -p /kube
+              {
+                echo "apiVersion: v1"
+                echo "kind: Config"
+                echo "clusters:"
+                echo "- name: incluster"
+                echo "  cluster:"
+                echo "    certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+                echo "    server: ${SERVER}"
+                echo "users:"
+                echo "- name: sa"
+                echo "  user:"
+                echo "    tokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token"
+                echo "contexts:"
+                echo "- name: ctx"
+                echo "  context:"
+                echo "    cluster: incluster"
+                echo "    user: sa"
+                echo "    namespace: flink"
+                echo "current-context: ctx"
+              } > /kube/config
+          volumeMounts:
+            - name: sql-gateway-kubeconfig
+              mountPath: /kube
+      containers:
+        - name: sql-gateway
+          image: apache/flink:2.0.1-java11
+          imagePullPolicy: Always
+          env:
+            - name: KUBECONFIG
+              value: /opt/flink/.kube/config
+          command: ["/bin/bash", "-exc"]
+          args:
+            - |
+              set -e
+              mkdir -p /opt/flink/.kube
+              cp -f /kube/config /opt/flink/.kube/config
+              # Flink 创建 K8s 客户端时读 Configuration 的 kubernetes.config.file，默认 ~/.kube/config，不读 KUBECONFIG。
+              exec /opt/flink/bin/sql-gateway.sh start-foreground \
+                -Dkubernetes.config.file=/opt/flink/.kube/config \
+                -Dkubernetes.namespace=flink \
+                -Djobmanager.rpc.address=flink-jobmanager.flink.svc.cluster.local \
+                -Djobmanager.rpc.port=6123 \
+                -Dsql-gateway.endpoint.rest.address=flink-sql-gateway.flink.svc.cluster.local \
+                -Dsql-gateway.endpoint.rest.bind-address=0.0.0.0 \
+                -Dsql-gateway.endpoint.rest.port=8083
+          volumeMounts:
+            - name: sql-gateway-kubeconfig
+              mountPath: /kube
+              readOnly: true
+          ports:
+            - name: rest
+              containerPort: 8083
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flink-sql-gateway
+  namespace: flink
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8083
+      name: rest
+      targetPort: 8083
+  selector:
+    app: flink
+    component: sql-gateway

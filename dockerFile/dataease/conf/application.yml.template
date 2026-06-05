@@ -1,0 +1,32 @@
+server:
+  tomcat:
+    connection-timeout: 70000
+  servlet:
+    context-path:
+spring:
+  servlet:
+    multipart:
+      max-file-size: 500MB
+      max-request-size: 500MB
+  datasource:
+    url: jdbc:mysql://${DE_MYSQL_HOST}:${DE_MYSQL_PORT}/${DE_MYSQL_DB}?autoReconnect=false&useUnicode=true&characterEncoding=UTF-8&characterSetResults=UTF-8&zeroDateTimeBehavior=convertToNull&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${DE_MYSQL_USER}
+    password: ${DE_MYSQL_PASSWORD}
+dataease:
+  apisix-api:
+    domain: http://127.0.0.1:9180
+    key: dataease-local-dev-key
+  export:
+    views:
+      limit: 100000
+    dataset:
+      limit: 100000
+  origin-list: http://localhost:${DE_PORT}
+  login_timeout: 960
+  selenium-server: http://127.0.0.1:4444/wd/hub
+  dataease-servers: dataease
+task:
+  executor:
+    address: http://127.0.0.1:9001
+  log:
+    path: /opt/dataease2.0/logs/sync-task/task-handler-log

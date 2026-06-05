@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="GIDO Batch">
+  <defs>
+    <linearGradient id="b-orbit" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#ffb347"/>
+      <stop offset="100%" stop-color="#ff6b00"/>
+    </linearGradient>
+  </defs>
+  <path fill="none" stroke="url(#b-orbit)" stroke-width="3" stroke-linecap="round"
+        d="M10 42 C 14 16, 34 8, 52 22 C 58 34, 54 52, 28 54"/>
+  <rect x="18" y="24" width="28" height="22" rx="4" fill="none" stroke="#ff8c42" stroke-width="2.2" opacity="0.85"/>
+  <rect x="22" y="29" width="20" height="3.5" rx="1" fill="#ffb347" opacity="0.7"/>
+  <rect x="22" y="35" width="20" height="3.5" rx="1" fill="#ff8c42"/>
+  <path fill="#ffd166" transform="translate(46,14) scale(0.7)"
+        d="M0 -4 L1.2 -1.2 L4 -1.2 L1.6 0.6 L2.4 3.4 L0 1.8 L-2.4 3.4 L-1.6 0.6 L-4 -1.2 L-1.2 -1.2 Z"/>
+</svg>

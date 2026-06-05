@@ -1,0 +1,842 @@
+/* 全局工作台壳层配色：html[data-dw-theme]，均为浅色可读底（不使用纯黑全站暗主题） */
+:root {
+  --dw-bg: #eef1f7;
+  --dw-sider: #0f172a;
+  --dw-sider-muted: rgba(255, 255, 255, 0.5);
+  --dw-card: #ffffff;
+  --dw-header: #ffffff;
+  --dw-border: #e8ecf2;
+  --dw-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 24px rgba(15, 23, 42, 0.06);
+  --dw-accent-batch: #ff8c42;
+  --dw-accent-stream: #2dd4bf;
+  --dw-accent-service: #38bdf8;
+  --dw-brand-orange: #ff8c42;
+  --dw-brand-cyan: #38bdf8;
+  --dw-brand-navy: #0b1220;
+}
+
+:root[data-dw-theme='lightClassic'] {
+  --dw-bg: #eef1f7;
+  --dw-card: #ffffff;
+  --dw-header: #ffffff;
+  --dw-border: #e8ecf2;
+  --dw-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 24px rgba(15, 23, 42, 0.06);
+}
+
+:root[data-dw-theme='warmPaper'] {
+  --dw-bg: #f5f2ec;
+  --dw-card: #fcfbf8;
+  --dw-header: #fdfcfa;
+  --dw-border: #e6e1d8;
+  --dw-shadow: 0 1px 2px rgba(60, 50, 40, 0.05), 0 6px 24px rgba(60, 50, 40, 0.07);
+}
+
+:root[data-dw-theme='coolMist'] {
+  --dw-bg: #e8eef8;
+  --dw-card: #ffffff;
+  --dw-header: #fafcff;
+  --dw-border: #dde4f0;
+  --dw-shadow: 0 1px 2px rgba(30, 58, 100, 0.05), 0 6px 26px rgba(30, 58, 120, 0.07);
+}
+
+:root[data-dw-theme='eveningMist'] {
+  --dw-bg: #e4e9f4;
+  --dw-card: #f7f8fd;
+  --dw-header: #eff1f9;
+  --dw-border: #d5dbe8;
+  --dw-shadow: 0 1px 2px rgba(30, 41, 80, 0.06), 0 8px 28px rgba(30, 41, 80, 0.08);
+}
+
+:root[data-dw-theme='mintWater'] {
+  --dw-bg: #eaf4f5;
+  --dw-card: #fbfeff;
+  --dw-header: #f6fcfc;
+  --dw-border: #cde8e9;
+  --dw-shadow: 0 1px 2px rgba(8, 100, 110, 0.05), 0 8px 28px rgba(8, 100, 110, 0.07);
+  --dw-accent-stream: #14b8a6;
+}
+
+body {
+  margin: 0;
+  background: var(--dw-bg);
+}
+
+.dw-login-bg {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background:
+    radial-gradient(ellipse 80% 55% at 12% 0%, rgba(255, 179, 71, 0.14), transparent 58%),
+    radial-gradient(ellipse 75% 50% at 88% 8%, rgba(56, 189, 248, 0.16), transparent 55%),
+    linear-gradient(180deg, #f8fafc 0%, var(--dw-bg) 48%, #e8eef8 100%);
+}
+
+.dw-login-bg--gido {
+  position: relative;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 24px;
+}
+
+.dw-login-bg--gido::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(1px 1px at 18% 22%, rgba(56, 189, 248, 0.35), transparent),
+    radial-gradient(1px 1px at 72% 18%, rgba(255, 179, 71, 0.35), transparent),
+    radial-gradient(1.5px 1.5px at 84% 62%, rgba(37, 99, 235, 0.25), transparent);
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+.dw-login-card--gido {
+  position: relative;
+  z-index: 1;
+  width: min(440px, 100%);
+  background: var(--dw-card) !important;
+  border: 1px solid var(--dw-border) !important;
+  border-radius: 20px !important;
+  box-shadow: var(--dw-shadow) !important;
+  backdrop-filter: none;
+}
+
+.dw-login-card--gido .ant-card-body {
+  padding: 36px 32px 32px !important;
+}
+
+.dw-brand-hero,
+.dw-login-brand {
+  text-align: center;
+}
+
+.dw-brand-hero--login,
+.dw-login-brand {
+  margin-bottom: 28px;
+}
+
+.dw-brand-hero--about {
+  margin-bottom: 8px;
+}
+
+.dw-brand-hero__mark-wrap,
+.dw-login-brand__mark-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+  margin-bottom: 14px;
+  border-radius: 20px;
+  background: linear-gradient(145deg, #fff7ed 0%, #eff6ff 100%);
+  border: 1px solid rgba(56, 189, 248, 0.12);
+  box-shadow: 0 8px 24px rgba(37, 99, 235, 0.06);
+}
+
+.dw-brand-hero__mark,
+.dw-login-brand__mark {
+  display: block;
+}
+
+.dw-brand-hero__wordmark,
+.dw-login-brand__wordmark {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.dw-brand-hero__suite-zh,
+.dw-login-brand__suite-zh {
+  font-size: 26px;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: 0.08em;
+}
+
+.dw-brand-hero__suite-en,
+.dw-login-brand__suite-en {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  background: linear-gradient(90deg, #2563eb 0%, #38bdf8 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.dw-brand-hero__tagline-en,
+.dw-login-brand__tagline-en {
+  margin: 0 0 10px;
+  font-size: 10px;
+  letter-spacing: 0.32em;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.dw-brand-hero__title,
+.dw-login-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #334155;
+  letter-spacing: 0.06em;
+}
+
+.dw-brand-hero__subtitle,
+.dw-login-subtitle {
+  margin: 10px 0 0;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.dw-login-card--gido .ant-form-item-label > label {
+  color: #475569 !important;
+  font-weight: 500;
+}
+
+.dw-login-card--gido .ant-input,
+.dw-login-card--gido .ant-input-affix-wrapper {
+  background: #ffffff !important;
+  border-color: var(--dw-border) !important;
+  color: #0f172a !important;
+}
+
+.dw-login-card--gido .ant-input-affix-wrapper:hover,
+.dw-login-card--gido .ant-input-affix-wrapper-focused {
+  border-color: #93c5fd !important;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.12) !important;
+}
+
+.dw-login-card--gido .ant-input-prefix {
+  color: #94a3b8 !important;
+}
+
+.dw-login-tagline-en {
+  margin: 14px 0 6px;
+  font-size: 11px;
+  letter-spacing: 0.28em;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.dw-login-submit.ant-btn-primary {
+  background: linear-gradient(90deg, #ffb86a 0%, #60a5fa 55%, #38bdf8 100%) !important;
+  border: none !important;
+  height: 44px;
+  font-weight: 600;
+  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.18);
+}
+
+.dw-login-submit.ant-btn-primary:hover {
+  filter: brightness(1.03);
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.22);
+}
+
+.dw-workbench-card-brand .dw-name,
+.dw-workbench-card-brand .dw-product-subtitle,
+.dw-workbench-card-brand .dw-product-tagline {
+  color: inherit !important;
+}
+
+.dw-login-workbench-card {
+  flex: 1 1 140px;
+  min-width: 140px;
+  border: 1px solid var(--dw-border);
+  border-radius: 14px;
+  padding: 18px 12px;
+  text-align: center;
+  cursor: pointer;
+  background: var(--dw-card);
+  transition: border-color 0.2s, transform 0.15s, box-shadow 0.2s;
+}
+
+.dw-login-workbench-card--batch:hover {
+  border-color: rgba(255, 140, 66, 0.45) !important;
+  box-shadow: 0 8px 20px rgba(255, 140, 66, 0.1);
+}
+
+.dw-login-workbench-card--stream:hover {
+  border-color: rgba(45, 212, 191, 0.45) !important;
+  box-shadow: 0 8px 20px rgba(45, 212, 191, 0.1);
+}
+
+.dw-login-workbench-card--service:hover {
+  border-color: rgba(56, 189, 248, 0.45) !important;
+  box-shadow: 0 8px 20px rgba(56, 189, 248, 0.1);
+}
+
+.dw-login-workbench-card:hover {
+  transform: translateY(-2px);
+}
+
+.dw-login-workbench-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 8px;
+}
+
+.dw-login-workbench-modal .ant-modal-content {
+  border-radius: 16px;
+}
+
+:root[data-dw-theme='warmPaper'] .dw-login-bg {
+  background:
+    radial-gradient(ellipse 120% 80% at 50% -20%, rgba(180, 120, 60, 0.08), transparent),
+    linear-gradient(180deg, #fdfcfa 0%, #f5f1ea 100%);
+}
+
+:root[data-dw-theme='coolMist'] .dw-login-bg {
+  background:
+    radial-gradient(ellipse 120% 80% at 50% -20%, rgba(37, 99, 235, 0.1), transparent),
+    linear-gradient(180deg, #fafcff 0%, #e6edf8 100%);
+}
+
+:root[data-dw-theme='eveningMist'] .dw-login-bg {
+  background:
+    radial-gradient(ellipse 115% 75% at 50% -18%, rgba(59, 91, 180, 0.12), transparent),
+    linear-gradient(180deg, #f4f6fc 0%, #e2e8f5 100%);
+}
+
+:root[data-dw-theme='mintWater'] .dw-login-bg {
+  background:
+    radial-gradient(ellipse 115% 75% at 50% -18%, rgba(8, 145, 178, 0.12), transparent),
+    linear-gradient(180deg, #f9fcfc 0%, #e5f4f5 100%);
+}
+
+.dw-login-card {
+  border: 1px solid var(--dw-border) !important;
+  border-radius: 16px !important;
+  box-shadow: var(--dw-shadow) !important;
+}
+
+.dw-login-footer {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.6;
+}
+
+.dw-login-footer a,
+.dw-login-footer .ant-typography a {
+  color: #64748b;
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.dw-login-footer a:hover,
+.dw-login-footer .ant-typography a:hover {
+  color: #2563eb;
+}
+
+.dw-login-footer__sep {
+  margin: 0 8px;
+  color: #cbd5e1;
+}
+
+.dw-about-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 20px 64px;
+  background:
+    radial-gradient(ellipse 120% 80% at 50% -20%, rgba(56, 189, 248, 0.12), transparent),
+    linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+}
+
+.dw-about-card {
+  width: min(720px, 100%);
+  border-radius: 20px !important;
+  border: 1px solid var(--dw-border) !important;
+  box-shadow: var(--dw-shadow) !important;
+}
+
+.dw-about-card .ant-card-body {
+  padding: 32px !important;
+}
+
+.dw-about-hero {
+  text-align: center;
+}
+
+.dw-about-maintainers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.dw-about-maintainers__row {
+  margin: 0;
+  line-height: 1.55;
+  word-break: break-all;
+}
+
+.dw-about-maintainers__name {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.dw-about-maintainers__sep {
+  margin: 0 6px;
+  color: #cbd5e1;
+}
+
+.dw-about-maintainers__email {
+  color: #2563eb;
+}
+
+/* 离线 / 实时共用同一套侧栏底板 */
+.dw-sider-unified.ant-layout-sider {
+  background: var(--dw-sider) !important;
+}
+
+.dw-sider-brand {
+  padding: 20px 16px 14px;
+  text-align: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.dw-sider-brand .dw-name {
+  color: #fff;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.35;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* 与「进入工作台」卡片副标题一致（离线批处理 / 实时流计算） */
+.dw-sider-brand .dw-product-subtitle,
+.dw-sider-brand .dw-suite {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--dw-sider-muted);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+
+.dw-product-tagline {
+  margin-top: 10px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+/* 登录「进入工作台」弹窗：与侧栏同一套主/副标题，浅色底 */
+.dw-workbench-card-brand .dw-name {
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.dw-workbench-card-brand .dw-product-subtitle {
+  color: #64748b;
+  text-align: center;
+}
+
+.dw-sider-brand .dw-accent-bar {
+  width: 36px;
+  height: 3px;
+  border-radius: 2px;
+  margin: 12px auto 0;
+}
+
+.dw-accent-batch .dw-accent-bar {
+  background: linear-gradient(90deg, var(--dw-accent-batch), rgba(255, 179, 71, 0.35));
+}
+
+.dw-accent-stream .dw-accent-bar {
+  background: linear-gradient(90deg, var(--dw-accent-stream), rgba(45, 212, 191, 0.35));
+}
+
+.dw-accent-service .dw-accent-bar {
+  background: linear-gradient(90deg, var(--dw-accent-service), rgba(37, 99, 235, 0.35));
+}
+
+.dw-accent-batch .dw-brand-icon {
+  color: var(--dw-accent-batch);
+}
+
+.dw-accent-stream .dw-brand-icon {
+  color: var(--dw-accent-stream);
+}
+
+.dw-accent-service .dw-brand-icon {
+  color: var(--dw-accent-service);
+}
+
+.dw-header-bar {
+  background: var(--dw-header) !important;
+  padding: 0 24px !important;
+  height: 56px !important;
+  line-height: normal !important;
+  border-bottom: 1px solid var(--dw-border) !important;
+  box-shadow: none !important;
+  display: flex !important;
+  align-items: center !important;
+}
+
+.dw-header-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 16px;
+  min-height: 56px;
+}
+
+.dw-header-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.dw-header-toolbar-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--dw-border);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+.dw-header-workspace-select.ant-select-borderless .ant-select-selector {
+  padding-inline: 4px !important;
+  font-weight: 500;
+}
+
+/* 顶栏子产品启动器（紧凑触发 + 卡片面板，对标云厂商控制台产品切换） */
+.dw-product-launcher-popover .ant-popover-inner {
+  padding: 0 !important;
+  border-radius: 14px !important;
+  overflow: hidden;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.14), 0 0 0 1px rgba(15, 23, 42, 0.06) !important;
+}
+
+.dw-product-launcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 10px 0 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+  flex-shrink: 0;
+  max-width: 220px;
+}
+
+.dw-product-launcher:hover,
+.dw-product-launcher.is-open {
+  border-color: rgba(15, 23, 42, 0.08);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+}
+
+.dw-product-launcher--static {
+  cursor: default;
+}
+
+.dw-product-launcher--static:hover {
+  border-color: transparent;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.dw-product-launcher__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.dw-product-launcher__mark--batch {
+  background: rgba(255, 140, 66, 0.16);
+}
+
+.dw-product-launcher__mark--stream {
+  background: rgba(45, 212, 191, 0.16);
+}
+
+.dw-product-launcher__mark--service {
+  background: rgba(56, 189, 248, 0.16);
+}
+
+.dw-product-launcher__text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  line-height: 1.15;
+}
+
+.dw-product-launcher__name {
+  font-size: 13px;
+  font-weight: 650;
+  color: #0f172a;
+  white-space: nowrap;
+}
+
+.dw-product-launcher__sub {
+  font-size: 11px;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.dw-product-launcher__chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 2px;
+  color: #94a3b8;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.dw-product-launcher-panel {
+  width: 320px;
+  background: #ffffff;
+}
+
+.dw-product-launcher-panel__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px 12px;
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+  border-bottom: 1px solid #eef2f7;
+}
+
+.dw-product-launcher-panel__suite-mark {
+  flex-shrink: 0;
+  opacity: 0.9;
+}
+
+.dw-product-launcher-panel__suite {
+  font-size: 13px;
+  font-weight: 650;
+  color: #0f172a;
+}
+
+.dw-product-launcher-panel__hint {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 1px;
+}
+
+.dw-product-launcher-panel__grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+}
+
+.dw-product-launcher-card {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #eef2f7;
+  border-radius: 12px;
+  background: #ffffff;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease;
+}
+
+.dw-product-launcher-card:hover {
+  border-color: rgba(15, 23, 42, 0.1);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+  transform: translateY(-1px);
+}
+
+.dw-product-launcher-card.is-active {
+  border-color: rgba(15, 23, 42, 0.12);
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+
+.dw-product-launcher-card--batch.is-active {
+  box-shadow: inset 3px 0 0 var(--dw-accent-batch);
+}
+
+.dw-product-launcher-card--stream.is-active {
+  box-shadow: inset 3px 0 0 var(--dw-accent-stream);
+}
+
+.dw-product-launcher-card--service.is-active {
+  box-shadow: inset 3px 0 0 var(--dw-accent-service);
+}
+
+.dw-product-launcher-card__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 11px;
+}
+
+.dw-product-launcher-card__icon--batch {
+  background: linear-gradient(145deg, rgba(255, 140, 66, 0.22), rgba(255, 107, 0, 0.08));
+}
+
+.dw-product-launcher-card__icon--stream {
+  background: linear-gradient(145deg, rgba(45, 212, 191, 0.2), rgba(20, 184, 166, 0.08));
+}
+
+.dw-product-launcher-card__icon--service {
+  background: linear-gradient(145deg, rgba(56, 189, 248, 0.2), rgba(37, 99, 235, 0.08));
+}
+
+.dw-product-launcher-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dw-product-launcher-card__title {
+  font-size: 13px;
+  font-weight: 650;
+  color: #0f172a;
+}
+
+.dw-product-launcher-card__subtitle {
+  font-size: 12px;
+  color: #475569;
+}
+
+.dw-product-launcher-card__tagline {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 1px;
+}
+
+.dw-product-launcher-card__check {
+  color: #16a34a;
+  font-size: 14px;
+}
+
+.dw-product-launcher-card__enter {
+  font-size: 11px;
+  color: #64748b;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f1f5f9;
+}
+
+.dw-product-launcher-card:hover .dw-product-launcher-card__enter {
+  color: #0f172a;
+  background: #e2e8f0;
+}
+
+/* legacy tab styles — kept for reference, no longer used by ProductSwitcher */
+.dw-product-nav {
+  display: none;
+}
+
+.dw-content-wrap {
+  margin: 16px 24px 24px;
+  padding: 20px 24px;
+  min-height: calc(100vh - 56px - 48px);
+  background: var(--dw-card);
+  border-radius: 12px;
+  border: 1px solid var(--dw-border);
+  box-shadow: var(--dw-shadow);
+}
+
+.dw-menu-dark.ant-menu-dark,
+.dw-sider-unified .ant-menu.ant-menu-dark.ant-menu-root {
+  background: transparent !important;
+}
+
+.dw-menu-dark .ant-menu-item {
+  margin-inline: 8px !important;
+  width: calc(100% - 16px) !important;
+  border-radius: 8px !important;
+}
+
+.dw-menu-dark .ant-menu-item-selected {
+  background: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* 可拖拽列宽列表（工作流等） */
+.dw-resizable-table .ant-table-thead > tr > th {
+  overflow: visible;
+  white-space: nowrap;
+}
+
+.dw-resizable-table .ant-table-thead > tr > th .dw-col-header-root {
+  margin: -8px -8px -8px -12px;
+  padding: 8px 0 8px 12px;
+}
+
+/* 保留旧 chip 类名供其它页面引用（顶栏已不再使用） */
+.dw-header-product-chip {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  line-height: 1.2;
+  margin-left: 4px;
+}
+
+.dw-app-shell--batch .dw-header-product-chip {
+  color: #1e40af;
+  background: rgba(37, 99, 235, 0.08);
+  border: 1px solid rgba(37, 99, 235, 0.2);
+}
+
+.dw-app-shell--stream .dw-header-product-chip {
+  color: #0f766e;
+  background: rgba(13, 148, 136, 0.1);
+  border: 1px solid rgba(13, 148, 136, 0.22);
+}
+
+.dw-app-shell--service .dw-header-product-chip {
+  color: #6d28d9;
+  background: rgba(124, 58, 237, 0.08);
+  border: 1px solid rgba(124, 58, 237, 0.2);
+}
+
+.dw-menu-dark .ant-menu-item-group-title {
+  color: rgba(255, 255, 255, 0.38) !important;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  padding-top: 12px;
+}
+
+.dw-user-avatar {
+  background: #334155 !important;
+}
+
+.dw-link-quiet {
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 13px;
+}
+
+.dw-link-quiet:hover {
+  color: var(--ant-color-primary);
+}

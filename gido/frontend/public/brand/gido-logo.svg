@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 120" role="img" aria-label="?? GIDO">
+  <defs>
+    <linearGradient id="lg-o" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#ffb347"/>
+      <stop offset="100%" stop-color="#ff8c00"/>
+    </linearGradient>
+    <linearGradient id="lg-b" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <linearGradient id="lg-text" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#7dd3fc"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(118,8)">
+    <path fill="none" stroke="url(#lg-o)" stroke-width="2.6" stroke-linecap="round"
+          d="M6 50 C 10 18, 30 8, 50 24"/>
+    <path fill="none" stroke="url(#lg-b)" stroke-width="2.6" stroke-linecap="round"
+          d="M50 24 C 58 38, 54 58, 26 60 C 12 61, 4 52, 6 50"/>
+    <g stroke="#38bdf8" stroke-width="0.8" opacity="0.4">
+      <path d="M18 34 L26 26 L34 30"/>
+    </g>
+    <path fill="#bae6fd" transform="translate(44,8)"
+          d="M0 -4.5 L1.4 -1.4 L4.5 -1.4 L1.8 0.7 L2.7 3.1 L0 1.5 L-2.7 3.1 L-1.8 0.7 L-4.5 -1.4 L-1.4 -1.4 Z"/>
+  </g>
+  <text x="160" y="78" text-anchor="middle" fill="url(#lg-text)"
+        font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="36" font-weight="700" letter-spacing="3">GIDO</text>
+  <line x1="72" y1="96" x2="118" y2="96" stroke="#334155" stroke-width="0.8"/>
+  <text x="160" y="100" text-anchor="middle" fill="#64748b"
+        font-family="Segoe UI, sans-serif" font-size="9.5" letter-spacing="2.5">DATA · FLOW · VALUE</text>
+  <line x1="202" y1="96" x2="248" y2="96" stroke="#334155" stroke-width="0.8"/>
+</svg>

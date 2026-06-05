@@ -1,0 +1,49 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: always
+    - if: '$CI_COMMIT_BRANCH || $CI_COMMIT_TAG'
+      when: always
+    - when: never
+
+include:
+  # 开发模板：仅在 dev/release 分支 push 时加载（非MR）
+  - project: 'gamelinelab/devops/ci'
+    ref: main
+    file: 'templates/java-maven-jib-build-number.yml'
+    rules:
+      - if: '$CI_PIPELINE_SOURCE != "merge_request_event" && $CI_COMMIT_BRANCH =~ /^(dev|release)$/'
+  # 生产模板：仅 main 分支 push 时加载（非MR）
+  - project: 'gamelinelab/devops/ci'
+    ref: main
+    file: 'templates/java-maven-jib-build-number-prod.yml'
+    rules:
+      - if: '$CI_PIPELINE_SOURCE != "merge_request_event" && $CI_COMMIT_BRANCH == "main"'
+  # 本地模板：其他分支 push 时走完整构建（非MR）
+  - project: 'gamelinelab/devops/ci'
+    ref: dev
+    file: 'templates/java-maven-jib-local.yml'
+    rules:
+      - if: '$CI_PIPELINE_SOURCE != "merge_request_event" && $CI_COMMIT_BRANCH == "local"'
+
+variables:
+  PUBLISH_TO_REGISTRY: "true"
+  MAVEN_OPTS: "-Dmaven.repo.local=/cache/m2/repository"
+
+# MR 时只跑轻量检查
+mr:check:
+  stage: test
+  tags:
+    - local
+    - docker
+  image:
+    name: 10.0.0.10:8666/tools/maven:3.9-eclipse-temurin-17
+    pull_policy: if-not-present
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: always
+  script:
+    - 'echo "✅ MR Check passed!"'
+    - 'echo "Source Branch: $CI_COMMIT_REF_NAME"'
+    - 'echo "Target Branch: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME"'
+    - 'echo "Commit: $CI_COMMIT_SHA"'

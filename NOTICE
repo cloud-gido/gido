@@ -1,0 +1,31 @@
+玑渡 GIDO (GIDO)
+Copyright 2026 玑渡 GIDO Contributors
+
+This product includes software developed as part of the GIDO open source project
+(Apache License 2.0). See the LICENSE file in the repository root.
+
+Third-Party Notices
+-------------------
+
+This project depends on open source components. Major dependencies include
+(but are not limited to):
+
+Backend (Python):
+  - FastAPI, Uvicorn, SQLAlchemy, Pydantic, httpx, APScheduler, PyMySQL, psycopg2
+
+Frontend (JavaScript/TypeScript):
+  - React, Ant Design, Vite, Axios, Zustand, Monaco Editor, @antv/g6, @antv/x6
+
+Infrastructure integrations (optional, deployed separately):
+  - Apache DolphinScheduler, Apache Flink, Apache Kafka, PostgreSQL, Redis
+
+Each dependency is subject to its own license. Full license texts are available
+in the respective package repositories or in node_modules / site-packages when
+installed locally.
+
+Trademarks
+----------
+
+"玑渡", "GIDO", and the GIDO logo are trademarks of the project maintainers.
+Use of these marks is governed by TRADEMARK.md; they are not licensed under
+Apache-2.0 except as described therein.

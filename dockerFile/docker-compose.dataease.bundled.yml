@@ -1,0 +1,35 @@
+# 叠加：自带 MySQL（仅在没有现成 MySQL 时使用）
+#   docker compose -f docker-compose.dataease.yml -f docker-compose.dataease.bundled.yml up -d
+
+name: dataease-docker
+
+services:
+  mysql-de:
+    image: ${DATAEASE_MYSQL_IMAGE:-mysql:8.4}
+    pull_policy: never
+    container_name: dataease-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DE_MYSQL_PASSWORD:-Password123@mysql}
+    volumes:
+      - ./dataease/conf/my.cnf:/etc/mysql/conf.d/my.cnf:ro
+      - ./dataease/bin/mysql:/docker-entrypoint-initdb.d:ro
+      - ./dataease/runtime/data/mysql:/var/lib/mysql
+    networks: [dataease-ext]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --protocol=tcp"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  dataease:
+    depends_on:
+      mysql-de:
+        condition: service_healthy
+    networks: [dataease-ext]
+
+networks:
+  dataease-ext:
+    name: dataease-docker-internal
+    external: false

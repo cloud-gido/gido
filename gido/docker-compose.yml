@@ -1,0 +1,68 @@
+# 玑渡 GIDO — 唯一 Compose 定义（backend + frontend）
+#
+# 单独启动（自备 PostgreSQL / 海豚已在宿主机）：
+#   cd gido && ./start.sh
+#
+# 全栈启动（PG + Kafka + Flink + Dolphin + GIDO）：
+#   仓库根目录 ./start-platform.sh
+#   （dockerFile/docker-compose.platform.yml 通过 include 引用本文件，勿重复定义 GIDO 服务）
+#
+# 注意：container_name 固定为 gido-backend / gido-frontend，请勿同时跑两套 compose。
+# 端口默认绑定 0.0.0.0（GIDO_BIND_HOST），局域网可通过 http://192.168.x.x:3002 访问。
+
+services:
+  backend:
+    env_file:
+      - ../.env
+    build:
+      context: ./backend
+      args:
+        PY_IMAGE: ${PY_IMAGE:-docker.m.daocloud.io/library/python:3.9-slim}
+    container_name: gido-backend
+    ports:
+      - "${GIDO_BIND_HOST:-0.0.0.0}:${GIDO_API_PORT:-8001}:8001"
+    environment:
+      DATABASE_URL: ${GIDO_DATABASE_URL:-postgresql+psycopg2://root:DolphinPgDev%2172@host.docker.internal:5432/gido}
+      GIDO_BOOTSTRAP_ADMIN_PASSWORD: ${GIDO_BOOTSTRAP_ADMIN_PASSWORD:-admin123}
+      DS_ENABLED: ${GIDO_DS_ENABLED:-true}
+      DS_URL: ${GIDO_DS_URL:-http://host.docker.internal:12345/dolphinscheduler}
+      DS_UI_URL: ${GIDO_DS_UI_URL:-http://localhost:12345/dolphinscheduler/ui}
+      DS_TOKEN: ${GIDO_DS_TOKEN:-}
+      DS_USERNAME: ${GIDO_DS_USERNAME:-}
+      DS_PASSWORD: ${GIDO_DS_PASSWORD:-}
+      DS_PROJECT_NAME: ${GIDO_DS_PROJECT_NAME:-GIDO}
+      INTERNAL_TOKEN: ${GIDO_INTERNAL_TOKEN:-}
+      FLINK_URL: ${GIDO_FLINK_URL:-}
+      FLINK_SQL_GATEWAY_URL: ${GIDO_FLINK_SQL_GATEWAY_URL:-}
+      FLINK_GATEWAY_JOBMANAGER_REST_URL: ${GIDO_FLINK_GATEWAY_JOBMANAGER_REST_URL:-}
+      FLINK_UI_URL: ${GIDO_FLINK_UI_URL:-}
+      FLINK_K8S_APPLICATION_IMAGE: ${GIDO_FLINK_K8S_APPLICATION_IMAGE:-apache/flink:2.0.1-java11}
+      FLINK_K8S_APPLICATION_JM_REST_TEMPLATE: ${GIDO_FLINK_K8S_APPLICATION_JM_REST_TEMPLATE:-}
+      FLINK_K8S_NAMESPACE: ${GIDO_FLINK_K8S_NAMESPACE:-flink}
+      FLINK_K8S_CONTEXT: ${GIDO_FLINK_K8S_CONTEXT:-}
+      FLINK_K8S_REST_EXPOSED_TYPE: ${GIDO_FLINK_K8S_REST_EXPOSED_TYPE:-NodePort}
+      FLINK_K8S_JM_NODEPORT_HOST: ${GIDO_FLINK_K8S_JM_NODEPORT_HOST:-host.docker.internal}
+    restart: unless-stopped
+    command: sh -c "python init_db.py && uvicorn app.main:app --host 0.0.0.0 --port 8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3).read()"]
+      interval: 5s
+      timeout: 5s
+      retries: 36
+      start_period: 240s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-docker.m.daocloud.io/library/node:18-alpine}
+        NGINX_IMAGE: ${NGINX_IMAGE:-docker.m.daocloud.io/library/nginx:alpine}
+    container_name: gido-frontend
+    ports:
+      - "${GIDO_BIND_HOST:-0.0.0.0}:${GIDO_UI_PORT:-3002}:80"
+    depends_on:
+      backend:
+        condition: service_started
+    restart: unless-stopped

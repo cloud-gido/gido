@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="GIDO Serve">
+  <defs>
+    <linearGradient id="v-orbit" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#1d4ed8"/>
+    </linearGradient>
+  </defs>
+  <path fill="none" stroke="url(#v-orbit)" stroke-width="3" stroke-linecap="round"
+        d="M10 42 C 14 16, 34 8, 52 22 C 58 34, 54 52, 28 54"/>
+  <circle cx="32" cy="34" r="10" fill="none" stroke="#38bdf8" stroke-width="2"/>
+  <circle cx="32" cy="34" r="3.5" fill="#38bdf8"/>
+  <path fill="none" stroke="#7dd3fc" stroke-width="1.8" stroke-linecap="round"
+        d="M32 24 L32 18 M32 50 L32 44 M22 34 L16 34 M48 34 L42 34"/>
+  <path fill="#bae6fd" transform="translate(46,14) scale(0.65)"
+        d="M0 -4 L1.2 -1.2 L4 -1.2 L1.6 0.6 L2.4 3.4 L0 1.8 L-2.4 3.4 L-1.6 0.6 L-4 -1.2 L-1.2 -1.2 Z"/>
+</svg>

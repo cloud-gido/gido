@@ -1,0 +1,677 @@
+# =============================================================================
+# Apache DolphinScheduler 3.2.2 — 本地最小分布式（非 standalone）
+# =============================================================================
+# 架构：PostgreSQL×1、ZooKeeper×1、API×1、Master×1、Worker×1、Alert×1。
+# 所有 Deployment 使用 **Recreate** 策略，避免滚动更新时出现「双 Pod」导致 port-forward 连到未监听端口。
+#
+# 镜像（与 Docker Desktop 本地缓存一致，tag 3.2.2）：
+#   apache/dolphinscheduler-api / master / worker / alert-server
+# 依赖：postgres:15-alpine、zookeeper:3.9
+#
+# 部署：kubectl apply -f k8s/dolphinscheduler.yaml
+# UI：kubectl -n dolphinscheduler port-forward svc/dolphinscheduler-api 12345:12345
+#      → http://127.0.0.1:12345/dolphinscheduler/ui  （admin / dolphinscheduler123）
+#
+# GIDO 同集群 DS_URL 示例：
+#   http://dolphinscheduler-api.dolphinscheduler.svc.cluster.local:12345/dolphinscheduler
+#
+# 若 Pod 长期 Pending：Docker Desktop → Settings → Resources 调高 Memory。
+# 若首次缺表：API Pod 内 init 会自动执行 apache/dolphinscheduler-tools 的 upgrade-schema.sh，无需手工 Job。
+# Master/Worker 日志若出现 SystemMemoryUsedPercentage 超过 0.7 导致 BUSY、UI「节点不存在」：
+#   本清单为 Master/Worker 注入 SPRING_APPLICATION_JSON 放宽 server-load-protection 内存阈值（Docker Desktop 常见）。
+# 任务实例 host 为空：Worker 在 K8s 内自动推断地址易失败，已用 Pod IP + listen-port 注入 worker.worker-address（JAVA_TOOL_OPTIONS）。
+# Master/API/Worker/Alert 若反复报 V1ConfigMap Reflector / ApiException：已合并关闭 spring.cloud.kubernetes（含 config 子开关）+ SPRING_CLOUD_* + JAVA_TOOL_OPTIONS -D…；apply 后务必 rollout 重启使进程重新加载。
+# =============================================================================
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dolphinscheduler
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dolphinscheduler-secrets
+  namespace: dolphinscheduler
+type: Opaque
+stringData:
+  postgres-password: "DolphinPgDev!72"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dolphinscheduler-env
+  namespace: dolphinscheduler
+data:
+  TZ: "Asia/Shanghai"
+  DATABASE: "postgresql"
+  SPRING_JACKSON_TIME_ZONE: "UTC"
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/dolphinscheduler"
+  SPRING_DATASOURCE_USERNAME: "root"
+  REGISTRY_ZOOKEEPER_CONNECT_STRING: "zookeeper:2181"
+  # Worker 默认组；可按需增删
+  WORKER_GROUPS: "default"
+---
+# ---------- PostgreSQL（元数据库）----------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: dolphinscheduler
+  labels:
+    app: dolphinscheduler
+    component: postgres
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dolphinscheduler
+      component: postgres
+  template:
+    metadata:
+      labels:
+        app: dolphinscheduler
+        component: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: "root"
+            - name: POSTGRES_DB
+              value: "dolphinscheduler"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dolphinscheduler-secrets
+                  key: postgres-password
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U root -d dolphinscheduler
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "128Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: dolphinscheduler
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: 5432
+  selector:
+    app: dolphinscheduler
+    component: postgres
+---
+# ---------- ZooKeeper（注册中心）----------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zookeeper
+  namespace: dolphinscheduler
+  labels:
+    app: dolphinscheduler
+    component: zookeeper
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dolphinscheduler
+      component: zookeeper
+  template:
+    metadata:
+      labels:
+        app: dolphinscheduler
+        component: zookeeper
+    spec:
+      containers:
+        - name: zookeeper
+          image: zookeeper:3.9
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 2181
+              name: client
+            - containerPort: 2888
+              name: follower
+            - containerPort: 3888
+              name: election
+          env:
+            - name: ZOOKEEPER_CLIENT_PORT
+              value: "2181"
+            - name: ZOOKEEPER_TICK_TIME
+              value: "2000"
+          readinessProbe:
+            tcpSocket:
+              port: 2181
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: datalog
+              mountPath: /datalog
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: datalog
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zookeeper
+  namespace: dolphinscheduler
+spec:
+  type: ClusterIP
+  ports:
+    - port: 2181
+      targetPort: 2181
+      name: client
+  selector:
+    app: dolphinscheduler
+    component: zookeeper
+---
+# ---------- API ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dolphinscheduler-api
+  namespace: dolphinscheduler
+  labels:
+    app: dolphinscheduler
+    component: api
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dolphinscheduler
+      component: api
+  template:
+    metadata:
+      labels:
+        app: dolphinscheduler
+        component: api
+    spec:
+      initContainers:
+        - name: wait-deps
+          image: busybox:stable
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until nc -z postgres 5432; do echo waiting postgres; sleep 2; done
+              until nc -z zookeeper 2181; do echo waiting zk; sleep 2; done
+        - name: db-migrate
+          image: apache/dolphinscheduler-tools:3.2.2
+          imagePullPolicy: IfNotPresent
+          workingDir: /opt/dolphinscheduler
+          command: ["bash", "tools/bin/upgrade-schema.sh"]
+          envFrom:
+            - configMapRef:
+                name: dolphinscheduler-env
+          env:
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dolphinscheduler-secrets
+                  key: postgres-password
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+      containers:
+        - name: api
+          image: apache/dolphinscheduler-api:3.2.2
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 12345
+              name: http
+            - containerPort: 25333
+              name: rpc
+          envFrom:
+            - configMapRef:
+                name: dolphinscheduler-env
+          env:
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dolphinscheduler-secrets
+                  key: postgres-password
+            - name: SPRING_CLOUD_KUBERNETES_ENABLED
+              value: "false"
+            - name: SPRING_CLOUD_KUBERNETES_CONFIG_ENABLED
+              value: "false"
+            - name: SPRING_APPLICATION_JSON
+              value: '{"spring":{"cloud":{"kubernetes":{"enabled":false,"config":{"enabled":false}}}}}'
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Dspring.cloud.kubernetes.enabled=false -Dspring.cloud.kubernetes.config.enabled=false"
+          volumeMounts:
+            - name: logs
+              mountPath: /opt/dolphinscheduler/logs
+            - name: soft
+              mountPath: /opt/soft
+            - name: resource
+              mountPath: /dolphinscheduler
+          readinessProbe:
+            httpGet:
+              path: /dolphinscheduler/actuator/health
+              port: 12345
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /dolphinscheduler/actuator/health
+              port: 12345
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "256Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: soft
+          emptyDir: {}
+        - name: resource
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dolphinscheduler-api
+  namespace: dolphinscheduler
+spec:
+  type: ClusterIP
+  ports:
+    - port: 12345
+      targetPort: 12345
+      name: http
+  selector:
+    app: dolphinscheduler
+    component: api
+---
+# ---------- Master ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dolphinscheduler-master
+  namespace: dolphinscheduler
+  labels:
+    app: dolphinscheduler
+    component: master
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dolphinscheduler
+      component: master
+  template:
+    metadata:
+      labels:
+        app: dolphinscheduler
+        component: master
+    spec:
+      initContainers:
+        - name: wait-deps
+          image: busybox:stable
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until nc -z postgres 5432; do echo waiting postgres; sleep 2; done
+              until nc -z zookeeper 2181; do echo waiting zk; sleep 2; done
+        - name: wait-schema
+          image: postgres:15-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dolphinscheduler-secrets
+                  key: postgres-password
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until psql -h postgres -U root -d dolphinscheduler -tAc \
+                "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='t_ds_user'" \
+                2>/dev/null | grep -qx 1; do
+                echo waiting dolphinscheduler schema...
+                sleep 3
+              done
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+      containers:
+        - name: master
+          image: apache/dolphinscheduler-master:3.2.2
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5678
+            - containerPort: 5679
+          envFrom:
+            - configMapRef:
+                name: dolphinscheduler-env
+          env:
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dolphinscheduler-secrets
+                  key: postgres-password
+            # 容器内看到的「系统内存」常为 cgroup/整机占用；Docker Desktop 上易 >70% 触发默认保护，Master 一直 BUSY 不入网
+            # 同时关闭 Spring Cloud Kubernetes（仅 SPRING_CLOUD_* 在部分版本不够早，合并进 JSON + JVM -D）
+            - name: SPRING_APPLICATION_JSON
+              value: '{"spring":{"cloud":{"kubernetes":{"enabled":false,"config":{"enabled":false}}}},"master":{"server-load-protection":{"max-system-memory-usage-percentage-thresholds":0.98,"max-system-cpu-usage-percentage-thresholds":0.99}}}'
+            - name: SPRING_CLOUD_KUBERNETES_ENABLED
+              value: "false"
+            - name: SPRING_CLOUD_KUBERNETES_CONFIG_ENABLED
+              value: "false"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Dspring.cloud.kubernetes.enabled=false -Dspring.cloud.kubernetes.config.enabled=false"
+          volumeMounts:
+            - name: logs
+              mountPath: /opt/dolphinscheduler/logs
+            - name: soft
+              mountPath: /opt/soft
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 5679
+            initialDelaySeconds: 45
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "256Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: soft
+          emptyDir: {}
+---
+# ---------- Worker ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dolphinscheduler-worker
+  namespace: dolphinscheduler
+  labels:
+    app: dolphinscheduler
+    component: worker
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dolphinscheduler
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: dolphinscheduler
+        component: worker
+    spec:
+      initContainers:
+        - name: wait-deps
+          image: busybox:stable
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until nc -z postgres 5432; do echo waiting postgres; sleep 2; done
+              until nc -z zookeeper 2181; do echo waiting zk; sleep 2; done
+        - name: wait-schema
+          image: postgres:15-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dolphinscheduler-secrets
+                  key: postgres-password
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until psql -h postgres -U root -d dolphinscheduler -tAc \
+                "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='t_ds_user'" \
+                2>/dev/null | grep -qx 1; do
+                echo waiting dolphinscheduler schema...
+                sleep 3
+              done
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+      containers:
+        - name: worker
+          image: apache/dolphinscheduler-worker:3.2.2
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 1234
+            - containerPort: 1235
+          envFrom:
+            - configMapRef:
+                name: dolphinscheduler-env
+          env:
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dolphinscheduler-secrets
+                  key: postgres-password
+            - name: SPRING_APPLICATION_JSON
+              value: '{"spring":{"cloud":{"kubernetes":{"enabled":false,"config":{"enabled":false}}}},"worker":{"server-load-protection":{"max-system-memory-usage-percentage-thresholds":0.98}}}'
+            # 3.2 WorkerConfig.worker-address；未设时 NetUtils.getAddr 在容器内常不可靠 → 实例 host 为空
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Dworker.worker-address=$(MY_POD_IP):1234 -Dspring.cloud.kubernetes.enabled=false -Dspring.cloud.kubernetes.config.enabled=false"
+            - name: SPRING_CLOUD_KUBERNETES_ENABLED
+              value: "false"
+            - name: SPRING_CLOUD_KUBERNETES_CONFIG_ENABLED
+              value: "false"
+          volumeMounts:
+            - name: worker-data
+              mountPath: /tmp/dolphinscheduler
+            - name: logs
+              mountPath: /opt/dolphinscheduler/logs
+            - name: soft
+              mountPath: /opt/soft
+            - name: resource
+              mountPath: /dolphinscheduler
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 1235
+            initialDelaySeconds: 45
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "256Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+      volumes:
+        - name: worker-data
+          emptyDir: {}
+        - name: logs
+          emptyDir: {}
+        - name: soft
+          emptyDir: {}
+        - name: resource
+          emptyDir: {}
+---
+# ---------- Alert Server ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dolphinscheduler-alert
+  namespace: dolphinscheduler
+  labels:
+    app: dolphinscheduler
+    component: alert
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dolphinscheduler
+      component: alert
+  template:
+    metadata:
+      labels:
+        app: dolphinscheduler
+        component: alert
+    spec:
+      initContainers:
+        - name: wait-deps
+          image: busybox:stable
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until nc -z postgres 5432; do echo waiting postgres; sleep 2; done
+              until nc -z zookeeper 2181; do echo waiting zk; sleep 2; done
+        - name: wait-schema
+          image: postgres:15-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dolphinscheduler-secrets
+                  key: postgres-password
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until psql -h postgres -U root -d dolphinscheduler -tAc \
+                "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='t_ds_user'" \
+                2>/dev/null | grep -qx 1; do
+                echo waiting dolphinscheduler schema...
+                sleep 3
+              done
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+      containers:
+        - name: alert
+          image: apache/dolphinscheduler-alert-server:3.2.2
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 50052
+            - containerPort: 50053
+          envFrom:
+            - configMapRef:
+                name: dolphinscheduler-env
+          env:
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dolphinscheduler-secrets
+                  key: postgres-password
+            - name: SPRING_CLOUD_KUBERNETES_ENABLED
+              value: "false"
+            - name: SPRING_CLOUD_KUBERNETES_CONFIG_ENABLED
+              value: "false"
+            - name: SPRING_APPLICATION_JSON
+              value: '{"spring":{"cloud":{"kubernetes":{"enabled":false,"config":{"enabled":false}}}}}'
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Dspring.cloud.kubernetes.enabled=false -Dspring.cloud.kubernetes.config.enabled=false"
+          volumeMounts:
+            - name: logs
+              mountPath: /opt/dolphinscheduler/logs
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 50053
+            initialDelaySeconds: 45
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+      volumes:
+        - name: logs
+          emptyDir: {}

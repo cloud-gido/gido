@@ -1,0 +1,325 @@
+/* 查询结果：GIDO Batch 风格 — 表头 sticky、底横滚 / 右纵滚固定且与内容同步 */
+.dw-query-result {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  background: #fff;
+}
+
+.dw-query-result__toolbar {
+  flex-shrink: 0;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fafafa;
+}
+
+/* 主区：内容 + 右纵滚条；底横滚条占满主区宽度 */
+.dw-query-result__viewport {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 12px;
+  grid-template-rows: minmax(0, 1fr) 12px;
+  grid-template-areas:
+    'main vscroll'
+    'hscroll corner';
+  padding: 8px 8px 0;
+  gap: 0;
+  background: #fff;
+}
+
+.dw-query-result__main {
+  grid-area: main;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid #f0f0f0;
+  border-radius: 4px 0 0 0;
+  /* 隐藏原生滚动条，由底/右固定条驱动 */
+  scrollbar-width: none;
+}
+
+.dw-query-result__main::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* 单表模式：表头与表体同一滚动视口，横向天然对齐 */
+.dw-query-result__main .ant-table-wrapper {
+  min-width: max-content;
+}
+
+.dw-query-result__main .ant-table-container {
+  overflow: visible !important;
+}
+
+.dw-query-result__main .ant-table-content {
+  overflow: visible !important;
+}
+
+.dw-query-result__main .ant-table-thead > tr > th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #fafafa !important;
+  box-shadow: 0 1px 0 #f0f0f0;
+}
+
+.dw-query-result__main .ant-table-cell {
+  white-space: nowrap;
+}
+
+.dw-col-header-root {
+  min-width: 0;
+}
+
+.dw-col-drag-handle {
+  cursor: grab;
+  color: #8c8c8c;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 2px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.dw-col-drag-handle:active {
+  cursor: grabbing;
+}
+
+.dw-col-header-title-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 18px;
+  padding-right: 26px;
+}
+
+.dw-col-header-title {
+  display: block;
+  font-weight: 600;
+  font-size: 12px;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dw-col-type-badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.15;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0;
+  border: 1px solid transparent;
+  pointer-events: none;
+}
+
+.dw-col-type-badge--number {
+  color: #0958d9;
+  background: #e6f4ff;
+  border-color: #91caff;
+}
+
+.dw-col-type-badge--string {
+  color: #237804;
+  background: #f6ffed;
+  border-color: #b7eb8f;
+}
+
+.dw-col-type-badge--datetime {
+  color: #531dab;
+  background: #f9f0ff;
+  border-color: #d3adf7;
+}
+
+.dw-col-type-badge--boolean {
+  color: #ad4e00;
+  background: #fff7e6;
+  border-color: #ffd591;
+}
+
+.dw-col-type-badge--json {
+  color: #006d75;
+  background: #e6fffb;
+  border-color: #87e8de;
+}
+
+.dw-col-type-badge--other {
+  color: #595959;
+  background: #f5f5f5;
+  border-color: #d9d9d9;
+}
+
+.dw-col-resize-handle {
+  width: 5px;
+  flex-shrink: 0;
+  align-self: stretch;
+  cursor: col-resize;
+  box-sizing: border-box;
+  border-left: 1px solid rgba(0, 0, 0, 0.12);
+  background: transparent;
+  touch-action: none;
+}
+
+.dw-col-resize-handle:hover {
+  border-left-color: #1677ff;
+  background: rgba(22, 119, 255, 0.06);
+}
+
+.dw-query-result__main .ant-table-thead > tr > th,
+.dw-query-result__main .ant-table-tbody > tr > td {
+  border-right: 1px solid rgba(0, 0, 0, 0.12) !important;
+}
+
+.dw-col-filter-dropdown {
+  padding: 8px;
+  width: 220px;
+}
+
+.dw-col-filter-values {
+  max-height: 200px;
+  overflow: auto;
+  margin-bottom: 4px;
+  padding: 4px 0;
+  border: 1px solid #f0f0f0;
+  border-radius: 4px;
+}
+
+.dw-col-filter-value-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  max-width: 168px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.dw-col-filter-empty {
+  padding: 8px;
+  color: #8c8c8c;
+  font-size: 12px;
+  text-align: center;
+}
+
+.dw-col-filter-actions-inline {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.dw-col-filter-link {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  color: #1677ff;
+  cursor: pointer;
+}
+
+.dw-col-filter-link:hover {
+  text-decoration: underline;
+}
+
+.dw-query-result__hscroll {
+  grid-area: hscroll;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid #f0f0f0;
+  border-top: none;
+  background: #f5f5f5;
+  min-width: 0;
+}
+
+.dw-query-result__hscroll-inner {
+  height: 1px;
+  pointer-events: none;
+}
+
+.dw-query-result__vscroll {
+  grid-area: vscroll;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border: 1px solid #f0f0f0;
+  border-left: none;
+  background: #f5f5f5;
+  min-height: 0;
+}
+
+.dw-query-result__vscroll-inner {
+  width: 1px;
+  pointer-events: none;
+}
+
+.dw-query-result__corner {
+  grid-area: corner;
+  background: #f0f0f0;
+  border: 1px solid #e8e8e8;
+  border-left: none;
+  border-top: none;
+}
+
+.dw-query-result__hscroll::-webkit-scrollbar,
+.dw-query-result__vscroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.dw-query-result__hscroll::-webkit-scrollbar-thumb,
+.dw-query-result__vscroll::-webkit-scrollbar-thumb {
+  background: #bfbfbf;
+  border-radius: 5px;
+}
+
+.dw-query-result__hscroll::-webkit-scrollbar-thumb:hover,
+.dw-query-result__vscroll::-webkit-scrollbar-thumb:hover {
+  background: #999;
+}
+
+.dw-cell-value {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+  min-height: 20px;
+  line-height: 20px;
+}
+
+.dw-cell-value--copied {
+  outline: 1px solid #1677ff;
+  background: #e6f4ff;
+}
+
+.dw-query-result__ctx {
+  position: fixed;
+  z-index: 1100;
+  min-width: 140px;
+  padding: 4px 0;
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 6px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+}
+
+.dw-query-result__ctx button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.dw-query-result__ctx button:hover {
+  background: #f5f5f5;
+}

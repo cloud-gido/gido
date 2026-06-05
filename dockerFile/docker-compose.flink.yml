@@ -1,0 +1,75 @@
+# Flink Session 集群（Docker Compose，无 K8s）
+# 镜像与 k8s/flink.yaml 对齐：apache/flink:2.0.1-java11
+#
+# 启动：docker compose -f docker-compose.flink.yml up -d --pull never
+# 停止：docker compose -f docker-compose.flink.yml down
+#
+# 宿主访问（映射端口）：
+#   JobManager REST / Web UI：http://127.0.0.1:8081
+#   SQL Gateway REST（/v1）： http://127.0.0.1:8083
+#
+# GIDO 后端若在 Docker 内连本机 Flink，常用：
+#   FLINK_URL=http://host.docker.internal:8081
+#   FLINK_SQL_GATEWAY_URL=http://host.docker.internal:8083
+#   FLINK_UI_URL=http://localhost:8081
+# Gateway 容器内访问 JM 仍用服务名 jobmanager（勿改成 host.docker.internal）。
+#
+# Kafka SQL：官方 apache/flink 镜像 /opt/flink/lib 不含 flink-sql-connector-kafka，须挂载（见下方 volumes）。
+# 若无 jar：mkdir -p flink-lib && curl -fsSL -o flink-lib/flink-sql-connector-kafka-4.0.1-2.0.jar \
+#   https://repo.maven.apache.org/maven2/org/apache/flink/flink-sql-connector-kafka/4.0.1-2.0/flink-sql-connector-kafka-4.0.1-2.0.jar
+
+name: flink-docker
+
+services:
+  jobmanager:
+    image: apache/flink:2.0.1-java11
+    pull_policy: never
+    hostname: jobmanager
+    command: jobmanager
+    ports:
+      - "8081:8081"
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: jobmanager
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/8081'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    volumes:
+      - ./flink-lib/flink-sql-connector-kafka-4.0.1-2.0.jar:/opt/flink/lib/flink-sql-connector-kafka-4.0.1-2.0.jar:ro
+
+  taskmanager:
+    image: apache/flink:2.0.1-java11
+    pull_policy: never
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+    command: taskmanager
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: jobmanager
+      TASK_MANAGER_NUMBER_OF_TASK_SLOTS: "4"
+    volumes:
+      - ./flink-lib/flink-sql-connector-kafka-4.0.1-2.0.jar:/opt/flink/lib/flink-sql-connector-kafka-4.0.1-2.0.jar:ro
+
+  sql-gateway:
+    image: apache/flink:2.0.1-java11
+    pull_policy: never
+    hostname: sql-gateway
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    command:
+      - bash
+      - -exc
+      - |
+        exec /opt/flink/bin/sql-gateway.sh start-foreground \
+          -Djobmanager.rpc.address=jobmanager \
+          -Djobmanager.rpc.port=6123 \
+          -Dsql-gateway.endpoint.rest.address=0.0.0.0 \
+          -Dsql-gateway.endpoint.rest.port=8083 \
+          -Dsql-gateway.endpoint.rest.bind-address=0.0.0.0
+    volumes:
+      - ./flink-lib/flink-sql-connector-kafka-4.0.1-2.0.jar:/opt/flink/lib/flink-sql-connector-kafka-4.0.1-2.0.jar:ro

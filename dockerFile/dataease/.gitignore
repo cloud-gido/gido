@@ -1,0 +1,4 @@
+# 运行时数据（MySQL 数据目录、导出文件等）
+runtime/data/
+runtime/cache/
+runtime/logs/

@@ -1,0 +1,29 @@
+# 需要先安装 Ingress Controller（例如 ingress-nginx）：
+#   kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/cloud/deploy.yaml
+# Docker Desktop 可在 Kubernetes 设置里勾选启用 Ingress。
+#
+# GIDO Docker 后端环境变量名须为 FLINK_SQL_GATEWAY_URL（docker-compose 里常用 GIDO_FLINK_SQL_GATEWAY_URL 传入），例如：
+#   http://flink-sql-gateway.localhost
+# 或通过 /etc/hosts 绑定 flink-sql-gateway.localhost → 127.0.0.1
+#
+# 与主清单同目录：先 kubectl apply -f k8s/flink.yaml，再按需 apply 本文件。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: flink-sql-gateway
+  namespace: flink
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: flink-sql-gateway.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: flink-sql-gateway
+                port:
+                  number: 8083

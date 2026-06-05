@@ -1,0 +1,2 @@
+# 可选：pip install -r requirements-dev.txt 后于 backend 目录执行 pytest
+pytest>=7.4.0
