@@ -62,8 +62,8 @@ export const OPEN_SOURCE = {
   licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   version: '1.0.0',
   /** 关于页内容版本（改维护者等信息时递增，便于确认前端已更新） */
-  aboutRevision: '20260605e',
-  repositoryUrl: 'https://github.com/felixzhu/bigdata',
+  aboutRevision: '20260605f',
+  repositoryUrl: 'https://github.com/bigdata_troy/gido',
   docPaths: {
     license: 'LICENSE',
     notice: 'NOTICE',

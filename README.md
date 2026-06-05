@@ -3,7 +3,7 @@
 > **璇玑指引 · 数据有渡** — DATA · FLOW · VALUE
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![CI](https://github.com/felixzhu/bigdata/actions/workflows/ci.yml/badge.svg)](https://github.com/felixzhu/bigdata/actions/workflows/ci.yml)
+[![CI](https://github.com/bigdata_troy/gido/actions/workflows/ci.yml/badge.svg)](https://github.com/bigdata_troy/gido/actions/workflows/ci.yml)
 [![Flink](https://img.shields.io/badge/Flink-2.0.1-blue.svg)](https://flink.apache.org/)
 [![Kafka](https://img.shields.io/badge/Kafka-7.5.0-green.svg)](https://kafka.apache.org/)
 
@@ -27,8 +27,8 @@
 ### 一键启动
 
 ```bash
-git clone https://github.com/felixzhu/bigdata.git
-cd bigdata
+git clone https://github.com/bigdata_troy/gido.git
+cd gido
 
 cp .env.example .env   # 可选；生产环境请填写 GIDO_DS_TOKEN 等
 
@@ -64,16 +64,15 @@ bash scripts/reset-gido-docker.sh   # 端口/容器冲突时清理 GIDO
 ## 项目结构
 
 ```
-bigdata/
-├── gido/                              # GIDO 主应用（backend + frontend）
+gido/                              # 仓库根（git clone 后的目录）
+├── gido/                          # GIDO 主应用（backend + frontend）
+│   └── docs/DEPLOYMENT_SOP.md
 ├── dockerFile/
-│   └── docker-compose.platform.yml    # PG / Kafka / Flink / Dolphin 编排
-├── docker-compose-platform.yml        # 全栈入口（include gido + platform）
-├── start-platform.sh                  # 一键启动脚本
-├── scripts/                           # 运维辅助脚本
-├── k8s/                               # 可选：K8s 部署 Flink / GIDO 清单
-├── .env.example                       # 环境变量模板
-└── gido/docs/DEPLOYMENT_SOP.md        # GIDO 单独部署 SOP
+│   └── docker-compose.platform.yml
+├── docker-compose-platform.yml
+├── start-platform.sh
+├── scripts/
+└── k8s/
 ```
 
 **仅启动 GIDO**（需自备 PostgreSQL，勿与全栈同时跑）：
@@ -145,4 +144,4 @@ npm run dev
 - Troy · [troyzhujingbin@163.com](mailto:troyzhujingbin@163.com)
 - Chenghap · [chenghap0712@gmail.com](mailto:chenghap0712@gmail.com)
 
-问题反馈请使用 [GitHub Issues](https://github.com/felixzhu/bigdata/issues)。
+问题反馈请使用 [GitHub Issues](https://github.com/bigdata_troy/gido/issues)。国内镜像：[Gitee](https://gitee.com/bigdata_troy/gido)。

@@ -37,8 +37,8 @@
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/felixzhu/bigdata.git
-cd bigdata
+git clone https://github.com/bigdata_troy/gido.git
+cd gido
 ```
 
 ### 2. 一键启动所有服务
