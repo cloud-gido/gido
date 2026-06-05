@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License" /></a>
-  <a href="https://github.com/bigdata_troy/gido/actions/workflows/ci.yml"><img src="https://github.com/bigdata_troy/gido/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/felix199103/gido/actions/workflows/ci.yml"><img src="https://github.com/felix199103/gido/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://flink.apache.org/"><img src="https://img.shields.io/badge/Flink-2.0.1-blue.svg" alt="Flink" /></a>
   <a href="https://kafka.apache.org/"><img src="https://img.shields.io/badge/Kafka-7.5.0-green.svg" alt="Kafka" /></a>
   <a href="https://gitee.com/bigdata_troy/gido"><img src="https://img.shields.io/badge/Gitee-镜像-C71D23.svg" alt="Gitee" /></a>
@@ -82,7 +82,7 @@ Flink SQL / JAR 作业开发、运维监控、发布审批；支持多套 Flink 
 ### 一键启动
 
 ```bash
-git clone https://github.com/bigdata_troy/gido.git
+git clone https://github.com/felix199103/gido.git
 cd gido
 
 cp .env.example .env   # 可选；生产请填写 GIDO_DS_TOKEN 等
@@ -186,4 +186,4 @@ gido/                    # 仓库根
 - Troy · [troyzhujingbin@163.com](mailto:troyzhujingbin@163.com)
 - Chenghap · [chenghap0712@gmail.com](mailto:chenghap0712@gmail.com)
 
-[GitHub Issues](https://github.com/bigdata_troy/gido/issues) · [Gitee 镜像](https://gitee.com/bigdata_troy/gido)
+[GitHub Issues](https://github.com/felix199103/gido/issues) · [Gitee 镜像](https://gitee.com/bigdata_troy/gido)

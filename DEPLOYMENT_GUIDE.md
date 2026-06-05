@@ -37,7 +37,7 @@
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/bigdata_troy/gido.git
+git clone https://github.com/felix199103/gido.git
 cd gido
 ```
 

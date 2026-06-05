@@ -113,7 +113,7 @@
 ## 本地体验（5 分钟）
 
 ```bash
-git clone https://github.com/bigdata_troy/gido.git
+git clone https://github.com/felix199103/gido.git
 cd gido
 cp .env.example .env
 ./start-platform.sh
@@ -149,7 +149,7 @@ cp .env.example .env
 
 - [README](../README.md) — 仓库主文档
 - [部署 SOP](../gido/docs/DEPLOYMENT_SOP.md) — 从 Git 到生产
-- [GitHub](https://github.com/bigdata_troy/gido) · [Gitee 镜像](https://gitee.com/bigdata_troy/gido)
+- [GitHub](https://github.com/felix199103/gido) · [Gitee 镜像](https://gitee.com/bigdata_troy/gido)
 
 ---
 
