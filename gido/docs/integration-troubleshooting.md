@@ -68,20 +68,19 @@
 - **现象**：`dolphinscheduler-master` **Exited (137)**，UI「监控中心 → Master」为空；工作流无法调度（只有 API/Worker 在跑不够）。
 - **处理**（按顺序）：
   1. **Docker Desktop → Settings → Resources**：内存调到 **≥ 8GB**（本机还跑 GIDO/Flink/Doris 时建议 **12GB+**）。
-  2. 使用仓库已收紧的 compose（`dockerFile/docker-compose.dolphin.yml` 里 Master `-Xmx1024m`、`mem_limit: 1536m`）：
+  2. 使用全栈编排 **`dockerFile/docker-compose.platform.yml`**（Master `-Xmx1024m`、`mem_limit: 1536m`）：
      ```bash
-     cd dockerFile
-     docker compose -f docker-compose.dolphin.yml up -d dolphinscheduler-master
-     docker compose -f docker-compose.dolphin.yml ps
-     docker logs dolphinscheduler-docker-dolphinscheduler-master-1 --tail 50
+     ./start-platform.sh
+     docker compose -f docker-compose-platform.yml ps
+     docker logs platform-ds-master --tail 50
      ```
-  3. 确认是否 OOM：`docker inspect dolphinscheduler-docker-dolphinscheduler-master-1 --format '{{.State.OOMKilled}}'`
+  3. 确认是否 OOM：`docker inspect platform-ds-master --format '{{.State.OOMKilled}}'`
   4. 仍 137：暂时停掉 Flink/Superset 等占内存服务后再起 Master，或把 `JAVA_TOOL_OPTIONS` 改为 `-Xmx768m` 后重建容器。
 
 ### 3.3 ZooKeeper 健康检查失败
 
 - **原因**：`zookeeper:3.9` 镜像未必带 `nc`；用 `echo ruok | nc` 的健康检查易失败。
-- **处理**：改用 `zkServer.sh status` 或 `bash` + `/dev/tcp` 等镜像内可用方式（见仓库 `dockerFile/docker-compose.dolphin.yml`）。
+- **处理**：改用 `zkServer.sh status` 或 `bash` + `/dev/tcp` 等镜像内可用方式（见 `dockerFile/docker-compose.platform.yml`）。
 
 ### 3.4 GIDO「测试连接」报 **401 Unauthorized**（不是网络不通）
 
@@ -118,7 +117,7 @@
 ### 3.5 Worker 执行 SQL 任务报 `ClassNotFoundException: com.mysql.cj.jdbc.Driver`
 
 - **原因**：ASF 镜像许可证策略，**MySQL JDBC 不在镜像 classpath**。
-- **处理**：将 `mysql-connector-j-*.jar` 挂到 **`dolphinscheduler-api`** 与 **`dolphinscheduler-worker`** 的 `/opt/dolphinscheduler/libs/`（见 `dockerFile/docker-compose.dolphin.yml` 与 `dockerFile/jdbc/`）。
+- **处理**：将 `mysql-connector-j-*.jar` 挂到 **`dolphinscheduler-api`** 与 **`dolphinscheduler-worker`** 的 `/opt/dolphinscheduler/libs/`（见 `dockerFile/docker-compose.platform.yml` 与 `dockerFile/jdbc/`）。
 
 ---
 
@@ -128,7 +127,7 @@
 
 - **现象**：`docker exec ... ls /opt/flink/lib | grep kafka` 为空；GIDO / SQL Client 里 `connector = 'kafka'` 的 INSERT 易失败或仅 Gateway 报 500。
 - **原因**：**`apache/flink:2.0.1-java11` 不包含 `flink-sql-connector-kafka`**。
-- **处理**：下载与 Flink 2.0 线匹配的 **`flink-sql-connector-kafka-4.0.1-2.0.jar`**（Maven Central），挂到 **jobmanager / taskmanager / sql-gateway** 的 `/opt/flink/lib/`（见 `dockerFile/docker-compose.flink.yml` 与 `dockerFile/flink-lib/`）。修改后需 **`docker compose up --force-recreate`**。
+- **处理**：下载与 Flink 2.0 线匹配的 **`flink-sql-connector-kafka-4.0.1-2.0.jar`**（Maven Central），挂到 **jobmanager / taskmanager / sql-gateway** 的 `/opt/flink/lib/`（见 `dockerFile/docker-compose.platform.yml` 与 `dockerFile/flink-lib/`）。修改后需 **`./start-platform.sh --recreate`** 或 **`docker compose -f docker-compose-platform.yml up --force-recreate`**。
 
 ### 4.2 `bootstrap.servers` 与「本机能连」
 
@@ -296,10 +295,8 @@ docker exec datagovrn nc -zv 192.168.1.68 9092
 | 主题 | 路径 |
 |------|------|
 | **按现象排障 SOP（含 2026-05-20 案例）** | **`docs/TROUBLESHOOTING_SOP.md`** |
-| Dolphin Docker Compose | `dockerFile/docker-compose.dolphin.yml` |
+| Dolphin / Flink / Kafka 全栈 Compose | **`docker-compose-platform.yml`**、`dockerFile/docker-compose.platform.yml` |
 | Dolphin JDBC 驱动目录 | `dockerFile/jdbc/`（`mysql-connector-j-8.0.33.jar`，`.gitignore` 忽略 jar） |
-| Flink Docker Compose | `dockerFile/docker-compose.flink.yml` |
-| **综合平台 Docker Compose（含 Kafka）** | **`docker-compose-platform.yml`**、`dockerFile/docker-compose.platform.yml` |
 | **平台一键脚本** | **`start-platform.sh`**（根目录） |
 | Flink Kafka 连接器 jar | `dockerFile/flink-lib/flink-sql-connector-kafka-4.0.1-2.0.jar` |
 | Flink K8s 参考清单 | `k8s/flink.yaml` |
@@ -311,8 +308,8 @@ docker exec datagovrn nc -zv 192.168.1.68 9092
 
 ## 8. 建议的最小验证路径
 
-1. **Dolphin**：`docker compose -f dockerFile/docker-compose.dolphin.yml up -d --pull never`，UI `http://localhost:12345/dolphinscheduler/ui`，GIDO 测连接。  
-2. **Flink**：确认 `flink-lib` 下 Kafka 连接器 jar 存在 → `docker compose -f dockerFile/docker-compose.flink.yml up -d --force-recreate --pull never` → JM lib 内 `grep kafka`。  
+1. **Dolphin + Flink + Kafka（推荐）**：`./start-platform.sh`，Dolphin UI `http://localhost:12345/dolphinscheduler/ui`，GIDO 测连接。  
+2. **Flink Kafka 连接器**：确认 `flink-lib` 下 jar 存在 → `./start-platform.sh` → `docker exec platform-flink-jm ls /opt/flink/lib | grep kafka`。  
 3. **平台 Kafka**：`./start-platform.sh` 或 `docker compose -f docker-compose-platform.yml up -d kafka` → `docker inspect platform-kafka | grep ADVERTISED` → DataGovRN 填 `${KAFKA_LAN_HOST}:9092`。  
 4. **Flink SQL**：`datagen+print` 一条链；再 `kafka+print`（`bootstrap.servers=kafka:29092`，`earliest-offset`）；最后再接业务 sink。
 

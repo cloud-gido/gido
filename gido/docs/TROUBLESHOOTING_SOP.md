@@ -62,7 +62,7 @@
 
 **② 与 GIDO 对齐**
 
-- **系统管理 → 平台集成 → Dolphin**：粘贴 **完整新 Token** 保存；或保存 **空 Token** 以清空库记录后，在 `bigdata_all/.env` 配置 `GIDO_DS_TOKEN=`。
+- **系统管理 → 平台集成 → Dolphin**：粘贴 **完整新 Token** 保存；或保存 **空 Token** 以清空库记录后，在仓库根 `.env` 配置 `GIDO_DS_TOKEN=`。
 - **工作空间 → 空间设置**：若单独配置了 DS Token，会覆盖全局，需一并检查。
 
 **③ 重启后端**
@@ -109,12 +109,11 @@ docker exec gido-backend sh -c \
 ### 2.3 处理（按顺序）
 
 1. **Docker Desktop → Resources**：内存 **≥ 8GB**（同机跑 GIDO + Flink + Doris 建议 **12GB+**）。
-2. 使用仓库 `dockerFile/docker-compose.dolphin.yml`（Master **`mem_limit: 1536m`**、**`JAVA_TOOL_OPTIONS=-Xmx1024m`**、`restart: unless-stopped`）：
+2. 使用全栈编排 **`dockerFile/docker-compose.platform.yml`**（Master **`mem_limit: 1536m`**、**`JAVA_TOOL_OPTIONS=-Xmx1024m`**、`restart: unless-stopped`）：
    ```bash
-   cd dockerFile
-   docker compose -f docker-compose.dolphin.yml up -d dolphinscheduler-master
-   docker compose -f docker-compose.dolphin.yml ps
-   docker logs dolphinscheduler-docker-dolphinscheduler-master-1 --tail 50
+   ./start-platform.sh
+   docker compose -f docker-compose-platform.yml ps
+   docker logs platform-ds-master --tail 50
    ```
 3. 确认 OOM：`docker inspect <master容器名> --format '{{.State.OOMKilled}}'`
 4. 仍 137：暂时停 Flink/其他占内存服务，或将 `-Xmx` 降到 **768m** 后 **force-recreate**。
@@ -178,7 +177,7 @@ docker exec gido-backend sh -c \
 docker logs gido-backend --tail 120
 ```
 
-按日志修正 `bigdata_all/.env` 中 **`GIDO_DATABASE_URL`** 或 **`INFRA_GIDO_DB_*`** 四项，再 `docker compose up -d backend`。
+按日志修正仓库根 `.env` 中 **`GIDO_DATABASE_URL`** 或 **`INFRA_GIDO_DB_*`** 四项，再 `docker compose -f docker-compose-platform.yml up -d backend`。
 
 ---
 

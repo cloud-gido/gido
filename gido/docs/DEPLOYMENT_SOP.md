@@ -12,7 +12,7 @@
 
 | 方式 | 说明 |
 |------|------|
-| **推荐** | 克隆整个 **`bigdata_all`** 仓库，需要 GIDO 时进入 **`gido/`**。 |
+| **推荐** | 克隆整个 **`bigdata`** 仓库，需要 GIDO 时进入 **`gido/`**。 |
 | **仅拷贝子目录** | 只拿 `gido/` 也可，但须**自备 PostgreSQL**（或自建 RDS/Aurora），并自行处理 **`docker-compose.yml` 中的外部 Docker 网络**（见 §4）。 |
 
 ---
@@ -20,7 +20,7 @@
 ## 2. 前置条件
 
 - **Git**
-- **Docker 20.10+**、**Docker Compose 2+**（若使用本目录下的 `docker-compose.yml`；**元数据库需自备 PostgreSQL**，在上一级 `.env` 配置 **`GIDO_DATABASE_URL`**，或按运维规范配置 **`INFRA_GIDO_DB_*`** 拆分变量；与本仓库 **Dolphin** 同机 PG 时，compose 默认示例为宿主机 **`host.docker.internal:5432`**、库名 **`gido`**、账号与 **`dockerFile/docker-compose.dolphin.yml`** 中 PG 一致，可按实际改）
+- **Docker 20.10+**、**Docker Compose 2+**（若使用本目录下的 `docker-compose.yml`；**元数据库需自备 PostgreSQL**，在上一级 `.env` 配置 **`GIDO_DATABASE_URL`**，或按运维规范配置 **`INFRA_GIDO_DB_*`** 拆分变量；与全栈 **`./start-platform.sh`** 同机 PG 时，库名 **`gido`**，账号与 **`dockerFile/docker-compose.platform.yml`** 中 postgres 服务一致，可按实际改）
 - **PostgreSQL 12+**（推荐 14/15；业务元数据库，默认库名 **`gido`**）
 - **可选回退**：仍可将 **`DATABASE_URL`** 设为 **`mysql+pymysql://...`** 使用 MySQL 存元数据（需 `pymysql`；自动建库见 `backend/app/core/database.py`）
 - **可选**：DolphinScheduler（工作流）、Flink JM + SQL Gateway（实时 SQL）；不配则相关功能不可用或需在界面/环境变量中再接入
@@ -46,7 +46,7 @@
 
 本目录 **`docker-compose.yml`** 中：
 
-- `env_file: ../.env` 表示 **`.env` 必须放在 `gido` 的上一级目录**（例如 monorepo 根 `bigdata_all/.env`），在 **`gido/`** 下执行 `docker compose` 时才会被加载。
+- `env_file: ../.env` 表示 **`.env` 必须放在 `gido` 的上一级目录**（例如仓库根 `bigdata/.env`），在 **`gido/`** 下执行 `docker compose` 时才会被加载。
 
 **建议在 `.env` 或宿主机环境中配置的关键项：**
 
@@ -61,7 +61,7 @@
 | `GIDO_DS_ENABLED`、`GIDO_DS_URL`、`GIDO_DS_TOKEN`、`GIDO_DS_UI_URL` 等 | DolphinScheduler；与真实 DS 对齐 |
 | `GIDO_FLINK_*` | Flink JM / Gateway / UI 等；可与「系统管理 → 集成」互补 |
 
-**外部 Docker 网络（可选）**：旧版文档要求 `bigdata_all_data-platform-network`；当前 **`gido/docker-compose.yml` 默认不再挂载外部网络**。全栈请用根目录 **`./start-platform.sh`**（`include` 本目录 compose）。若仍单独跑 Dolphin 分栈 compose 并需容器互通，可自行 `docker network create ...` 后扩展 compose。
+**外部 Docker 网络（可选）**：全栈网络名为 **`bigdata-platform-network`**（由 `dockerFile/docker-compose.platform.yml` 创建）。当前 **`gido/docker-compose.yml` 默认不挂载外部网络**。全栈请用根目录 **`./start-platform.sh`**（`include` 本目录 compose）。
 
 ---
 
@@ -144,7 +144,7 @@ npm run dev
 **首选**：[**TROUBLESHOOTING_SOP.md**](./TROUBLESHOOTING_SOP.md)（按现象：Dolphin 401、Master 137、SQL 发布 SHELL、后端 Restarting 等；含 **2026-05-20** 案例速查）。
 
 1. **容器内连不上外置 PostgreSQL**：`DATABASE_URL` 里主机须写 **`host.docker.internal`**（不要用 `127.0.0.1` 指宿主机，容器内那是容器自己）；已配 `extra_hosts: host-gateway`。若 PG 跑在别的机器，写可达的内网 IP/DNS。
-2. **两台 PostgreSQL / 5432 冲突**：只保留 **`dockerFile/docker-compose.dolphin.yml`** 内的 `postgres`（已映射宿主机 **5432**）。若仍有旧容器 **`dolphinscheduler-postgresql`** 占位，先执行 **`bash dockerFile/remove-legacy-postgres-on-5432.sh`**，再 `docker compose -f dockerFile/docker-compose.dolphin.yml up -d`。
+2. **两台 PostgreSQL / 5432 冲突**：全栈只保留 **`dockerFile/docker-compose.platform.yml`** 内的 `postgres`（映射宿主机 **5432**）。若仍有旧容器 **`dolphinscheduler-postgresql`** 占位，先执行 **`bash dockerFile/remove-legacy-postgres-on-5432.sh`**，再 **`./start-platform.sh`**。
 3. **Compose 报错：network not found**：创建 §4 中的外部网络，或修改 compose。  
 4. **找不到 `.env`**：确认文件在 **`gido` 上一级**，或修改 `docker-compose.yml` 的 `env_file`。  
 5. **暂不部署 Dolphin**：可设 **`GIDO_DS_ENABLED=false`**，先起 GIDO，再接 DS。  

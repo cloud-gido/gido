@@ -14,7 +14,7 @@
 ### 根因归纳
 
 1. **宿主机 `5432` 上不止一台 PostgreSQL**  
-   例如同时存在 **`dolphinscheduler-postgresql`**（映射 `0.0.0.0:5432`）与 **`dolphinscheduler-docker-postgres-1`**（仅容器内 `5432`，对应仓库 `dockerFile/docker-compose.dolphin.yml` 的 `postgres` 服务）。  
+   例如同时存在 **`dolphinscheduler-postgresql`**（映射 `0.0.0.0:5432`）与全栈 **`platform-postgres`**（`dockerFile/docker-compose.platform.yml` 的 `postgres` 服务）。  
    容器内使用 **`host.docker.internal:5432`** 时，实际连到的是 **占宿主机 5432 的那台**，其账号未必是仓库文档里的 `root` / `DolphinPgDev!72`。
 
 2. **PostgreSQL 数据目录已初始化后，改 `POSTGRES_PASSWORD` 不会生效**  
@@ -28,7 +28,7 @@
 
 ### 仓库侧约定与改动
 
-- **`dockerFile/docker-compose.dolphin.yml`**：为唯一 Dolphin PG 服务 **`postgres` 增加 `ports: "5432:5432"`**，使宿主机与 `host.docker.internal:5432` 与文档账密一致；并附 **`dockerFile/remove-legacy-postgres-on-5432.sh`**，用于移除占用 5432 的旧容器 **`dolphinscheduler-postgresql`**（执行前请确认无重要数据）。
+- **`dockerFile/docker-compose.platform.yml`**：全栈 PG 服务 **`postgres`** 映射宿主机 **5432**；并附 **`dockerFile/remove-legacy-postgres-on-5432.sh`**，用于移除占用 5432 的旧容器 **`dolphinscheduler-postgresql`**（执行前请确认无重要数据）。
 - **`gido/docker-compose.yml`**：注释说明单 PG 与端口冲突处理。
 - **`backend/app/core/database.py`**：PostgreSQL 自动建库、失败时更明确的报错提示。
 - **`backend/app/core/config.py`**：支持 **`INFRA_GIDO_DB_*`** 拆分元数据库配置，与运维 Secret 注入对齐。
@@ -154,7 +154,7 @@
 | 主题 | 主要文件 |
 |------|-----------|
 | PG 建库与连接提示 | `backend/app/core/database.py` |
-| Dolphin PG 单实例与清理脚本 | `dockerFile/docker-compose.dolphin.yml`、`dockerFile/remove-legacy-postgres-on-5432.sh` |
+| Dolphin PG 单实例与清理脚本 | `dockerFile/docker-compose.platform.yml`、`dockerFile/remove-legacy-postgres-on-5432.sh` |
 | 502 响应处理 | `frontend/src/api/request.ts` |
 | `init_db` 注册流表 ORM | `backend/init_db.py` |
 | Doris JDBC 用户名占位 | `backend/app/services/datasource_mysql_user.py`、`backend/app/services/dolphin.py`、`backend/app/api/studio.py`、`backend/app/api/datasource.py` |

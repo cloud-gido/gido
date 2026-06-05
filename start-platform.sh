@@ -2,7 +2,7 @@
 # =============================================================================
 # 大数据平台一键编排：PostgreSQL + Kafka + Flink + DolphinScheduler + GIDO
 #
-# 用法（在仓库根目录 bigdata_all/）：
+# 用法（在仓库根目录 bigdata/）：
 #   ./start-platform.sh              # 启动（等同 start）
 #   ./start-platform.sh start        # 启动全栈
 #   ./start-platform.sh stop           # 停止容器（保留卷）

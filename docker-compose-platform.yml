@@ -1,6 +1,6 @@
 # 大数据平台一键编排入口（完整定义在 dockerFile/docker-compose.platform.yml）
 #
-# 用法（在仓库根目录 bigdata_all/）：
+# 用法（在仓库根目录 bigdata/）：
 #   ./start-platform.sh
 #   docker compose -f docker-compose-platform.yml up -d
 #

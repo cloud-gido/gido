@@ -8,7 +8,7 @@
 
 ## 1. 项目是什么
 
-- **仓库**：`bigdata_all`，GIDO 代码在 **`gido/`**
+- **仓库**：`bigdata`，GIDO 代码在 **`gido/`**
 - **品牌**：玑渡 GIDO（Batch / Stream / Serve），已去掉 `dataworks` 命名
 - **开源**：Apache-2.0，根目录 `LICENSE`、`TRADEMARK.md`、`SECURITY.md` 等
 

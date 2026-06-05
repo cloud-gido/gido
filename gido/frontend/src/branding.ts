@@ -24,9 +24,8 @@ export const BRAND_ASSETS = {
   serviceMark: '/brand/gido-service-mark.svg',
 } as const
 
-/** 官方视觉稿来源（ChatGPT 品牌设计） */
+/** 官方视觉语言（与 docs/BRAND.md 一致） */
 export const BRAND_DESIGN = {
-  sourceUrl: 'https://chatgpt.com/s/m_6a21668d7270819184ecaf987e3743fa',
   motif: '动态星座轨道 · 橙金→电蓝渐变 · 天玑主星',
   palette: {
     orange: '#ff8c00',
@@ -63,8 +62,8 @@ export const OPEN_SOURCE = {
   licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   version: '1.0.0',
   /** 关于页内容版本（改维护者等信息时递增，便于确认前端已更新） */
-  aboutRevision: '20260605d',
-  repositoryUrl: 'https://github.com/your-org/bigdata_all',
+  aboutRevision: '20260605e',
+  repositoryUrl: 'https://github.com/felixzhu/bigdata',
   docPaths: {
     license: 'LICENSE',
     notice: 'NOTICE',

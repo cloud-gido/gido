@@ -12,7 +12,7 @@
 
 ## 目录与部署
 
-- 代码目录：`bigdata_all/gido/`（原 `dataworks/`）
+- 代码目录：`bigdata/gido/`（原 `dataworks/`）
 - 元数据库：PostgreSQL **`gido`**（原 `dataworks` 库需重建或迁移）
 - 容器：`gido-backend` / `gido-frontend`
 - 环境变量前缀：`GIDO_*`（如 `GIDO_DATABASE_URL`）

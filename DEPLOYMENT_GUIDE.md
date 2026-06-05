@@ -1,6 +1,7 @@
 # 现代大数据平台 - 完整部署与使用指南
 
-> **说明**：仓库已聚焦 **玑渡 GIDO**；原 `bigdata-governance` 数据治理子项目已移除，编排见根目录 `docker-compose-platform.yml` 与 `gido/`。
+> **说明**：仓库已聚焦 **玑渡 GIDO** 与 Docker Compose 全栈（`./start-platform.sh`）。  
+> **默认一键启动**见根目录 [README.md](README.md)。下文部分章节为扩展部署参考；Doris、Prometheus 等需另行部署，**不在本仓库默认 compose 内**。
 
 ## 📋 目录
 
@@ -36,8 +37,8 @@
 ### 1. 克隆项目
 
 ```bash
-git clone <your-repo-url>
-cd bigdata_all
+git clone https://github.com/felixzhu/bigdata.git
+cd bigdata
 ```
 
 ### 2. 一键启动所有服务
@@ -116,45 +117,41 @@ chmod +x start-platform.sh
 
 ## 组件部署
 
-### 方式一：分步启动（推荐用于开发调试）
-
-#### 1. 启动基础设施
+### 方式一：一键全栈（推荐）
 
 ```bash
-# 启动 Kafka, Flink, 监控系统等
-docker-compose -f docker-compose-infrastructure.yml up -d
-
-# 查看服务状态
-docker-compose -f docker-compose-infrastructure.yml ps
+cp .env.example .env    # 按需填写 GIDO_DS_TOKEN 等
+chmod +x start-platform.sh
+./start-platform.sh
 ```
 
-#### 2. 启动 Doris 数据仓库
+包含：PostgreSQL、ZooKeeper、Kafka、Flink（JM/TM/Gateway）、DolphinScheduler、GIDO 前后端。
+
+### 方式二：仅 GIDO（自备 PostgreSQL）
 
 ```bash
-cd doris-datawarehouse
-docker-compose up -d
-
-# 等待Doris启动完成（约2-3分钟）
-docker logs -f doris-fe-leader
+cd gido
+cp ../.env.example ../.env
+./start.sh
 ```
 
-#### 3. 初始化 Doris 数仓
+勿与方式一同时运行（容器名 `gido-backend` / `gido-frontend` 相同）。
+
+### 方式三：Kubernetes（可选）
+
+见 `k8s/` 目录与 `k8s/apply-gido-stack.sh`；Flink Session 参考 `k8s/flink.yaml`。
+
+### 扩展组件（本仓库未内置）
+
+Doris、Prometheus、Grafana、ELK 等需按官方文档单独部署，再于 GIDO「系统管理 → 集成」或 `.env` 中配置连接地址。
+
+<!-- 以下为历史参考章节，部分路径已迁移至 docker-compose.platform.yml -->
+
+#### ~~分步启动（已合并至 start-platform.sh）~~
 
 ```bash
-# 连接到Doris
-mysql -h 127.0.0.1 -P 9030 -u root
-
-# 执行初始化脚本
-mysql -h 127.0.0.1 -P 9030 -u root < init-doris-warehouse.sql
-mysql -h 127.0.0.1 -P 9030 -u root < init-game-warehouse.sql
-```
-
-#### 4. 启动 GIDO（与海豚同网，推荐用根目录编排）
-
-```bash
-cd /path/to/bigdata_all
-cp .env.example .env   # 按需填写 GIDO_DATABASE_URL、GIDO_DS_TOKEN 等
-docker compose -f docker-compose-platform.yml up -d
+# 旧版 docker-compose-infrastructure.yml / doris-datawarehouse 已移除
+# 请使用 ./start-platform.sh
 ```
 
 前端默认 <http://localhost:3002>，API <http://localhost:8001>。仅起 GIDO 且海豚已在宿主时，可用 `gido/docker-compose.yml`。
@@ -194,9 +191,9 @@ DORIS_PASSWORD=
 KAFKA_BOOTSTRAP_SERVERS=kafka:29092
 ```
 
-### Doris 配置
+### Doris 配置（可选，需自行部署 Doris 集群）
 
-编辑 `doris-datawarehouse/configs/fe.conf` 和 `be.conf` 调整性能参数。
+若已单独部署 Apache Doris，在 GIDO 数据源或集成页配置 FE 地址；FE/BE 性能参数在其部署目录的 `fe.conf` / `be.conf` 中调整。
 
 ---
 
@@ -296,15 +293,15 @@ duration_seconds: >10
 
 ### Q1: Doris启动失败
 
-**问题**: FE或BE容器启动后自动退出
+**问题**: FE或BE容器启动后自动退出（**仅当已单独部署 Doris 时**）
 
 **解决**:
 ```bash
-# 查看日志
+# 查看 Doris FE 日志（容器名以实际为准）
 docker logs doris-fe-leader
 
-# 检查配置文件
-cat doris-datawarehouse/configs/fe.conf
+# 检查 FE 配置文件（路径以你的 Doris 部署为准）
+# cat /path/to/doris/fe/conf/fe.conf
 
 # 确保端口未被占用
 lsof -i :8030
@@ -324,7 +321,7 @@ docker logs kafka-broker
 docker exec -it kafka-broker kafka-topics --list --bootstrap-server localhost:9092
 
 # 检查网络
-docker network inspect bigdata_all_bigdata-network
+docker network inspect bigdata-platform-network
 ```
 
 ### Q3: 任务调度不执行
@@ -410,31 +407,15 @@ docker system prune -a
 
 ## 升级指南
 
-### 升级Doris
+### 升级 Doris（可选）
 
-```bash
-# 1. 备份数据
-docker exec doris-fe-leader mysql -u root -e "BACKUP DATABASE db_name TO 'backup_path'"
-
-# 2. 停止服务
-docker-compose down
-
-# 3. 更新镜像版本
-cd doris-datawarehouse
-# 编辑docker-compose.yml，修改image版本
-
-# 4. 重新启动
-docker-compose up -d
-
-# 5. 验证
-docker logs -f doris-fe-leader
-```
+若使用独立 Doris 部署，请按 [Apache Doris 官方升级文档](https://doris.apache.org/) 操作；本仓库不包含 Doris compose。
 
 ### 升级 GIDO
 
 ```bash
 git pull origin main
-docker compose -f docker-compose-platform.yml build gido-backend gido-frontend
+docker compose -f docker-compose-platform.yml build backend frontend
 docker compose -f docker-compose-platform.yml up -d
 ```
 
@@ -471,15 +452,16 @@ docker compose -f docker-compose-platform.yml up -d
 ### B. 目录结构
 
 ```
-bigdata_all/
-├── gido/                 # GIDO（前后端）
+bigdata/
+├── gido/                      # GIDO（前后端）
 │   ├── backend/
 │   └── frontend/
-├── doris-datawarehouse/       # Doris 数仓（可选）
-├── k8s/                       # K8s 清单（Flink / GIDO 等）
-├── data/                      # 数据持久化
+├── dockerFile/                # 全栈 compose 与初始化脚本
+├── k8s/                       # 可选 K8s 清单
+├── scripts/                   # 运维脚本
 ├── docker-compose-platform.yml
-└── *.md
+├── start-platform.sh
+└── README.md
 ```
 
 ### C. 常用命令速查

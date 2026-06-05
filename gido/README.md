@@ -1,6 +1,6 @@
 # 玑渡 GIDO
 
-**玑渡 GIDO** 开源大数据开发与治理子系统（FastAPI + React/Vite），位于 **`bigdata_all`** 仓库的 `gido/` 目录。
+**玑渡 GIDO** 开源大数据开发与治理子系统（FastAPI + React/Vite），位于本仓库 **`gido/`** 目录。
 
 | 子产品 | 路由 | 说明 |
 |--------|------|------|

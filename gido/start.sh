@@ -4,7 +4,8 @@
 #
 # 自动处理：
 #   - 检查 Docker 是否安装且 daemon 已运行
-#   - 创建 compose 依赖的外部网络（默认 bigdata_all_data-platform-network）
+#   - 检查 Docker 是否安装且 daemon 已运行
+#   - 可选：检查全栈网络 bigdata-platform-network 是否存在
 #   - build + up -d，并等待后端 /health（可选跳过）
 #
 # 用法：
@@ -15,7 +16,7 @@
 #   ./start.sh --help
 #
 # 环境变量（可选）：
-#   DS_PLATFORM_NETWORK        外部网络名，默认 bigdata_all_data-platform-network
+#   DS_PLATFORM_NETWORK        外部网络名，默认 bigdata-platform-network（与全栈 compose 一致）
 #   GIDO_SKIP_HEALTH_WAIT=1  不等待后端健康检查
 #   GIDO_ENV_FILE           上级 .env 路径，默认 ../.env
 #
@@ -33,7 +34,7 @@ ROOT_ENV_FILE="../.env"
 if [[ -n "${GIDO_ENV_FILE:-}" ]]; then
   ROOT_ENV_FILE="${GIDO_ENV_FILE}"
 fi
-NET="${DS_PLATFORM_NETWORK:-bigdata_all_data-platform-network}"
+NET="${DS_PLATFORM_NETWORK:-bigdata-platform-network}"
 UI_PORT="${GIDO_UI_PORT:-3002}"
 API_PORT="${GIDO_API_PORT:-8001}"
 

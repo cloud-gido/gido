@@ -36,6 +36,7 @@ pnpm-debug.log*
 
 # OS
 .DS_Store
+**/.DS_Store
 Thumbs.db
 
 # Logs & runtime data

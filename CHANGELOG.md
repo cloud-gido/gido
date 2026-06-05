@@ -37,5 +37,5 @@
 - 提供 `.env.example` 模板；真实 `.env` 与 token 不得提交仓库
 - 生产环境须修改默认 `admin` 密码与 `SECRET_KEY`
 
-[Unreleased]: https://github.com/your-org/bigdata_all/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/your-org/bigdata_all/releases/tag/v1.0.0
+[Unreleased]: https://github.com/felixzhu/bigdata/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/felixzhu/bigdata/releases/tag/v1.0.0
