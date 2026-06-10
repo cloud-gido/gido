@@ -190,6 +190,14 @@ jobs:
         with:
           fetch-depth: 2
 
+      # 从 pom.xml 中提取 Flink 版本号
+      - name: Extract Flink version from pom.xml
+        id: extract_flink_version
+        run: |
+          FLINK_VERSION=$(python3 -c "import xml.etree.ElementTree as ET; print(ET.parse('k8s/flink-sql-runner/pom.xml').find('.//flink.version').text)")
+          echo "FLINK_VERSION=${FLINK_VERSION}" >> $GITHUB_OUTPUT
+          echo "提取到 Flink 版本: ${FLINK_VERSION}"
+
 #      - name: Check if Flink runtime files changed
 #        id: check_flink_change
 #        run: |
@@ -227,7 +235,7 @@ jobs:
             ghcr.io/cloud-gido/gido/gido-flink-runtime
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
-            type=raw,value=${{ env.FLINK_VERSION }}
+            type=raw,value=${{ steps.extract_flink_version.outputs.FLINK_VERSION }}
 
       - name: Build and push flink-runtime image
 #        if: steps.check_flink_change.outputs.flink_changed == 'true'
@@ -239,5 +247,5 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             TARGETPLATFORM=linux/amd64
-            FLINK_BASE_IMAGE=apache/flink:2.0.1-java11
+            FLINK_BASE_IMAGE=apache/flink:${{ steps.extract_flink_version.outputs.FLINK_VERSION }}-java11
             MAVEN_IMAGE=maven:3.9-eclipse-temurin-11
