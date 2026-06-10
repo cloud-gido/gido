@@ -189,14 +189,12 @@ export default function StreamStudioPage() {
   /** Flink SQL Gateway Open Session 合并用 JSON（对标阿里云实时计算「参数调优」的轻量版） */
   const [streamingPropsJson, setStreamingPropsJson] = useState('{}')
   const [flinkRuntime, setFlinkRuntime] = useState<any | null>(null)
-  const legacyFlinkSubmit = Boolean(flinkRuntime?.legacy_flink_submit_enabled)
-  /** SQL 提交：默认 Operator；遗留环境可切换 Session/Application */
-  const [sqlSubmitMode, setSqlSubmitMode] = useState<SqlSubmitMode>('flink_operator')
+  /** 终态产品：仅 Flink Operator；提交模式不再在 UI 暴露 */
+  const [sqlSubmitMode] = useState<SqlSubmitMode>('flink_operator')
   const [operatorResForm, setOperatorResForm] = useState<OperatorResForm>({ ...EMPTY_OPERATOR_RES })
   const [resourceTier, setResourceTier] = useState<string>('')
   const [jarStreamingPropsJson, setJarStreamingPropsJson] = useState('{}')
-  /** JAR 提交：session=Session JM；flink_operator=FlinkDeployment 生产（Kind 默认） */
-  const [jarSubmitMode, setJarSubmitMode] = useState<'session' | 'flink_operator'>('flink_operator')
+  const [jarSubmitMode] = useState<'session' | 'flink_operator'>('flink_operator')
   const [historyModal, setHistoryModal] = useState(false)
   const [historyList, setHistoryList] = useState<any[]>([])
   /** 作业绑定的 Flink Session 配置（null = 使用平台集成默认） */
@@ -240,8 +238,8 @@ export default function StreamStudioPage() {
     streamingApi.flinkRuntime().then(setFlinkRuntime).catch(() => setFlinkRuntime(null))
   }, [])
 
-  const effectiveSqlMode: SqlSubmitMode = legacyFlinkSubmit ? sqlSubmitMode : 'flink_operator'
-  const effectiveJarMode = legacyFlinkSubmit ? jarSubmitMode : 'flink_operator' as const
+  const effectiveSqlMode: SqlSubmitMode = 'flink_operator'
+  const effectiveJarMode = 'flink_operator' as const
 
   /** Flink 控制台停止后 JM 已无作业时，单靠列表会卡在 running — 周期性拉 JM 回填平台状态（不打断编辑） */
   useEffect(() => {
@@ -273,12 +271,6 @@ export default function StreamStudioPage() {
     if (selected?.job_type === 'SQL') {
       setScriptDraft(selected.script_content ?? '')
       setSqlParallelism(selected.parallelism ?? 1)
-      const sm = (selected.flink_sql_submit_mode || 'flink_operator').toLowerCase()
-      setSqlSubmitMode(
-        sm === 'kubernetes_application' ? 'kubernetes_application'
-          : sm === 'flink_operator' ? 'flink_operator'
-            : legacyFlinkSubmit ? 'session' : 'flink_operator',
-      )
       const sp = selected.streaming_properties
       if (sp != null && String(sp).trim() !== '') {
         try {
@@ -292,11 +284,10 @@ export default function StreamStudioPage() {
       setOperatorResForm(parseOperatorResForm(sp))
       setResourceTier(parseResourceTier(sp))
     }
-  }, [selected?.id, selected?.script_content, selected?.job_type, selected?.parallelism, selected?.streaming_properties, selected?.flink_sql_submit_mode, legacyFlinkSubmit])
+  }, [selected?.id, selected?.script_content, selected?.job_type, selected?.parallelism, selected?.streaming_properties])
 
   useEffect(() => {
     if (selected?.job_type === 'JAR') {
-      setJarSubmitMode(selected.flink_jar_submit_mode === 'flink_operator' ? 'flink_operator' : 'session')
       const sp = selected.streaming_properties
       if (sp != null && String(sp).trim() !== '') {
         try {
@@ -516,15 +507,7 @@ export default function StreamStudioPage() {
       title: '提交', dataIndex: 'flink_sql_submit_mode', key: 'sm', width: 92,
       render: (_m: string, row: any) => {
         if (row.job_type === 'JAR' || row.job_type === 'SQL') {
-          const legacy = legacyFlinkSubmit && (
-            (row.job_type === 'JAR' && row.flink_jar_submit_mode !== 'flink_operator')
-            || (row.job_type === 'SQL' && (row.flink_sql_submit_mode || 'flink_operator') !== 'flink_operator')
-          )
-          return (
-            <Tag color={legacy ? 'geekblue' : 'purple'}>
-              {legacy ? (row.job_type === 'SQL' ? sqlModeLabel(row.flink_sql_submit_mode).replace('Flink Operator', 'Operator').replace('K8s Application', 'App').replace('Session', 'Session') : 'Session') : 'Operator'}
-            </Tag>
-          )
+          return <Tag color="purple">Operator</Tag>
         }
         return <Text type="secondary">—</Text>
       },
@@ -665,27 +648,6 @@ export default function StreamStudioPage() {
                   )}
                 />
               ) : null}
-              <div style={{ marginBottom: 12, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-                <span style={{ color: '#666' }}>Flink 集群连接</span>
-                <Select
-                  style={{ minWidth: 280 }}
-                  placeholder="默认（平台）"
-                  allowClear
-                  disabled={selected.is_locked
-                    || (selected.job_type === 'JAR' && effectiveJarMode === 'flink_operator')
-                    || (selected.job_type === 'SQL' && effectiveSqlMode === 'flink_operator')}
-                  value={flinkProfileId ?? undefined}
-                  onChange={v => setFlinkProfileId(v === undefined || v === null ? null : Number(v))}
-                  options={flinkProfiles.map((p: any) => ({ value: p.id, label: `${p.name} (#${p.id})` }))}
-                />
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  {(selected.job_type === 'JAR' && effectiveJarMode === 'flink_operator') || (selected.job_type === 'SQL' && effectiveSqlMode === 'flink_operator') ? (
-                    <>Flink Operator 不走 Session JM，此项仅 Session / K8s Application 生效。</>
-                  ) : (
-                    <>在 <Link to={R.stream.flinkSessions}>Flink 集群连接</Link> 中维护命名连接（继承平台默认，仅覆写不同项）；此处选择后保存。</>
-                  )}
-                </Text>
-              </div>
               <Descriptions size="small" column={2}>
                 <Descriptions.Item label="最近提交">
                   {selected.last_submitted_at
@@ -699,24 +661,9 @@ export default function StreamStudioPage() {
                 </Descriptions.Item>
                 <Descriptions.Item label="提交模式">
                   {selected.job_type === 'SQL' || selected.job_type === 'JAR'
-                    ? (legacyFlinkSubmit && (
-                        (selected.job_type === 'SQL' && (selected.flink_sql_submit_mode || 'flink_operator') !== 'flink_operator')
-                        || (selected.job_type === 'JAR' && selected.flink_jar_submit_mode !== 'flink_operator')
-                      ))
-                      ? (selected.job_type === 'SQL'
-                        ? sqlModeLabel(selected.flink_sql_submit_mode)
-                        : 'Session（遗留）')
-                      : 'Flink Operator（统一运行时）'
+                    ? 'Flink Operator（统一运行时）'
                     : '—'}
                 </Descriptions.Item>
-                {!((selected.job_type === 'JAR' && selected.flink_jar_submit_mode === 'flink_operator')
-                  || (selected.job_type === 'SQL' && selected.flink_sql_submit_mode === 'flink_operator')) && (
-                <Descriptions.Item label="Flink 集群连接" span={2}>
-                  {selected.flink_session_profile_name
-                    ? `${selected.flink_session_profile_name} (#${selected.flink_session_profile_id})`
-                    : '默认（平台）'}
-                </Descriptions.Item>
-                )}
                 <Descriptions.Item label="clusterID">{selected.flink_application_cluster_id || '—'}</Descriptions.Item>
                 <Descriptions.Item label="Flink Job ID">{selected.flink_job_id || '—'}</Descriptions.Item>
                 <Descriptions.Item label="Operator CR">{selected.flink_operator_deployment_name || '—'}</Descriptions.Item>
@@ -793,22 +740,7 @@ export default function StreamStudioPage() {
                       <span style={{ marginRight: 8 }}>并行度</span>
                       <InputNumber min={1} value={sqlParallelism} onChange={v => setSqlParallelism(Number(v) || 1)} disabled={selected.is_locked} />
                     </Space>
-                    {legacyFlinkSubmit && (
-                      <Space>
-                        <span>提交到（遗留）</span>
-                        <Select
-                          style={{ minWidth: 260 }}
-                          value={sqlSubmitMode}
-                          disabled={selected.is_locked}
-                          onChange={v => setSqlSubmitMode(v as SqlSubmitMode)}
-                          options={[
-                            { value: 'session', label: 'Session（已有 Flink 集群 / JM）' },
-                            { value: 'flink_operator', label: 'Flink Operator 生产（FlinkDeployment + SQL Runner）' },
-                            { value: 'kubernetes_application', label: 'K8s Application（Gateway 原生，兼容旧路径）' },
-                          ]}
-                        />
-                      </Space>
-                    )}
+                    <Tag color="purple">Flink Operator</Tag>
                     <Button
                       size="small"
                       disabled={selected.is_locked}
@@ -828,22 +760,6 @@ export default function StreamStudioPage() {
                         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
                           <li>统一镜像含 <code>sql-runner.jar</code>、Paimon、MySQL/Postgres CDC。</li>
                           <li>SQL 脚本经 ConfigMap 挂载；资源在下方「Operator 资源配置」按作业覆盖。</li>
-                        </ul>
-                      )}
-                    />
-                  )}
-                  {legacyFlinkSubmit && effectiveSqlMode === 'kubernetes_application' && (
-                    <Alert
-                      type="warning"
-                      showIcon
-                      style={{ marginBottom: 8 }}
-                      message="生产级 Application 提交检查清单"
-                      description={(
-                        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                          <li>运行平台已设置 <code>FLINK_K8S_APPLICATION_IMAGE</code>（否则提交将返回 400）。</li>
-                          <li>SQL Gateway 支持 <code>/v4/sessions</code>（通常为 Flink 2.x）。</li>
-                          <li>建议设置 <code>FLINK_K8S_APPLICATION_JM_REST_TEMPLATE</code>（含 {'{cluster_id}'}）以便回填 Job ID、运维页停止与状态轮询。</li>
-                          <li>在「参数调优」中可用顶级 <code>k8s_application</code> 覆盖 executionConfig（资源类、镜像引用等）。</li>
                         </ul>
                       )}
                     />
@@ -954,30 +870,7 @@ export default function StreamStudioPage() {
                     message="统一运行时 · Flink Operator + gido-flink-runtime"
                     description="JAR 作业通过 FlinkDeployment Application 提交；制品由 GIDO backend 提供 HTTP 拉取。"
                   />
-                  {legacyFlinkSubmit && (
-                    <Space wrap>
-                      <span>提交到（遗留）</span>
-                      <Select
-                        style={{ minWidth: 280 }}
-                        value={jarSubmitMode}
-                        disabled={selected.is_locked}
-                        onChange={v => setJarSubmitMode(v as 'session' | 'flink_operator')}
-                        options={[
-                          { value: 'session', label: 'Session（开发 / 已有 JM）' },
-                          { value: 'flink_operator', label: 'Flink Operator 生产（FlinkDeployment）' },
-                        ]}
-                      />
-                    </Space>
-                  )}
-                  {legacyFlinkSubmit && effectiveJarMode === 'session' && (
-                    <Alert
-                      type="warning"
-                      showIcon
-                      style={{ marginBottom: 8 }}
-                      message="Session 模式说明"
-                      description="Session 与 Operator 已统一 Flink 2.0.1；JAR 须用相同版本编译，否则易出现 ParameterTool 类加载错误。"
-                    />
-                  )}
+                  <Tag color="purple">Flink Operator</Tag>
                   {effectiveJarMode === 'flink_operator' && (
                     <>
                     <Alert
