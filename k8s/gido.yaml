@@ -1,22 +1,26 @@
 # =============================================================================
-# GIDO 全栈（同集群 + 已部署的 k8s/flink.yaml）
+# GIDO 最小 K8s 栈：PostgreSQL + backend + frontend（Operator JAR 生产路径）
 # =============================================================================
 #
-# 镜像占位符 __BACKEND_IMAGE__ / __FRONTEND_IMAGE__ 由 k8s/apply-gido-stack.sh 替换后 apply。
+# 不包含：DolphinScheduler、Flink Session/Gateway、Redis、Kafka。
+# 实时 JAR 走 Flink Kubernetes Operator（须已装 Operator + namespace flink）。
 #
-# 一键（见脚本）：
-#   bash k8s/apply-gido-stack.sh
+# 镜像占位符由 k8s/apply-gido-stack.sh 替换：
+#   __BACKEND_IMAGE__ / __FRONTEND_IMAGE__ / __FLINK_OPERATOR_IMAGE__
 #
-# 手工：
-#   1) kubectl apply -f k8s/flink.yaml
-#   2) sed "s|__BACKEND_IMAGE__|你的后端镜像|g;s|__FRONTEND_IMAGE__|你的前端镜像|g" k8s/gido.yaml | kubectl apply -f -
-#   3) kubectl apply -f k8s/gido-ingress.yaml   # 可选，需集群有 Ingress Controller
-#   4) kubectl -n gido port-forward svc/frontend 8080:80
+# 技术栈：Flink Kubernetes Operator 1.15 + Flink 2.0.1（Session / Operator 统一）
+# 完整说明见 k8s/README.md；Operator 升级见 k8s/upgrade-flink-operator-1.15.sh
 #
-# 默认带：命名空间 gido、Redis、开发用 MySQL（emptyDir，Pod 重建丢数据）、后端、前端。
-# 需要持久化时自行改为 PVC 并备份。
+# 一键（Kind）：
+#   KUBECONFIG=~/.kube/kind-gido.yaml KIND_CLUSTER_NAME=gido bash k8s/apply-gido-stack.sh
 #
-# 登录：admin / admin123（见 ConfigMap GIDO_BOOTSTRAP_ADMIN_PASSWORD，上线请改）
+# 前置：kubectl apply -f k8s/flink-operator-rbac.yaml
+#
+# 访问：kubectl -n gido port-forward svc/frontend 8080:80 → http://127.0.0.1:8080
+# 登录：admin / admin123（生产请改 Secret）
+#
+# JAR 制品使用 PVC（gido-jar-artifacts），backend 重启不丢 JAR。
+# PostgreSQL 仍使用 emptyDir，Pod 重建丢库；生产请为 postgres 也改 PVC。
 #
 # =============================================================================
 ---
@@ -31,26 +35,52 @@ metadata:
   name: gido-backend-config
   namespace: gido
 data:
-  FLINK_URL: "http://flink-jobmanager.flink.svc.cluster.local:8081"
-  FLINK_SQL_GATEWAY_URL: "http://flink-sql-gateway.flink.svc.cluster.local:8083"
-  FLINK_GATEWAY_JOBMANAGER_REST_URL: "http://flink-jobmanager.flink.svc.cluster.local:8081"
-  FLINK_UI_URL: "http://flink-jobmanager.flink.svc.cluster.local:8081"
-  FLINK_K8S_APPLICATION_IMAGE: "apache/flink:2.0.1-java11"
+  # 统一提交：仅 Flink Operator（Session/Application 须 GIDO_LEGACY_FLINK_SUBMIT=true）
+  GIDO_FLINK_SUBMIT_MODE: "operator"
+  GIDO_LEGACY_FLINK_SUBMIT: "false"
+  PAIMON_WAREHOUSE_DEFAULT: "s3://gido-paimon-warehouse"
+  # Session Flink / SQL Gateway（本清单不部署；遗留模式才需要）
+  FLINK_URL: ""
+  FLINK_SQL_GATEWAY_URL: ""
+  FLINK_GATEWAY_JOBMANAGER_REST_URL: ""
+  FLINK_UI_URL: ""
+  FLINK_K8S_APPLICATION_IMAGE: "__FLINK_OPERATOR_IMAGE__"
   FLINK_K8S_NAMESPACE: "flink"
   FLINK_K8S_CLUSTER_DOMAIN: "cluster.local"
   FLINK_K8S_APPLICATION_JM_REST_TEMPLATE: "http://{cluster_id}-rest.flink.svc.cluster.local:8081"
-  FLINK_K8S_REST_EXPOSED_TYPE: "ClusterIP"
-  FLINK_K8S_JM_NODEPORT_HOST: "127.0.0.1"
-  REDIS_URL: "redis://redis:6379/0"
+  FLINK_K8S_REST_EXPOSED_TYPE: "LoadBalancer"
+  # 浏览器经 GIDO 反向代理打开 Flink UI，无需再 port-forward JM（只保留 frontend 8080 即可）
+  FLINK_OPERATOR_UI_PROXY_ENABLED: "true"
+  FLINK_OPERATOR_NAMESPACE: "flink"
+  FLINK_OPERATOR_JM_REST_TEMPLATE: "http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081"
+  FLINK_OPERATOR_UI_URL_TEMPLATE: ""
+  # 生产浏览器 UI 示例（配合 Ingress）：
+  # FLINK_OPERATOR_UI_URL_TEMPLATE: "https://{deployment_name}-flink.your-company.com"
+  FLINK_OPERATOR_DEV_LOCAL: "false"
+  FLINK_OPERATOR_AUTO_UI_TUNNEL: "false"
+  FLINK_OPERATOR_JAR_HTTP_BASE: "http://backend.gido.svc.cluster.local:8001"
+  FLINK_OPERATOR_IMAGE: "__FLINK_OPERATOR_IMAGE__"
+  FLINK_OPERATOR_FLINK_VERSION: "v2_0"
+  FLINK_OPERATOR_SERVICE_ACCOUNT: "flink"
+  FLINK_OPERATOR_UPGRADE_MODE: "stateless"
+  FLINK_OPERATOR_JM_MEMORY: "2048m"
+  FLINK_OPERATOR_TM_MEMORY: "2048m"
+  FLINK_OPERATOR_JM_CPU: "1"
+  FLINK_OPERATOR_TM_CPU: "1"
+  FLINK_OPERATOR_TASK_SLOTS: "2"
+  # SQL Operator：镜像须含 sql-runner.jar（见 Flink Operator flink-sql-runner-example）
+  FLINK_OPERATOR_SQL_RUNNER_JAR_URI: "local:///opt/flink/usrlib/sql-runner.jar"
+  FLINK_OPERATOR_SQL_RUNNER_ENTRY_CLASS: "com.gido.flink.SqlRunner"
+  JAR_ARTIFACT_DIR: "/data/jar-artifacts"
   DS_ENABLED: "false"
-  DS_URL: "http://dolphinscheduler-api:12345/dolphinscheduler"
+  DS_URL: ""
   DS_UI_URL: ""
   DS_PROJECT_NAME: "GIDO"
   INTERNAL_TOKEN: ""
   GIDO_BOOTSTRAP_ADMIN_PASSWORD: "admin123"
   GIDO_FLINK_K8S_API_PATCH: "disable"
 ---
-# 与内置 MySQL 密码一致；生产务必 kubectl delete secret -n gido gido-secrets 后自建强密码
+# 与内置 PostgreSQL 密码一致；生产务必 kubectl delete secret -n gido gido-secrets 后自建强密码
 apiVersion: v1
 kind: Secret
 metadata:
@@ -58,133 +88,115 @@ metadata:
   namespace: gido
 type: Opaque
 stringData:
-  mysql-root-password: "DwK8sMysqlDev!72"
-  DATABASE_URL: "mysql+pymysql://root:DwK8sMysqlDev!72@mysql:3306/gido?charset=utf8mb4"
+  postgres-password: "DolphinPgDev!72"
+  DATABASE_URL: "postgresql+psycopg2://root:DolphinPgDev%2172@postgres:5432/gido"
   SECRET_KEY: "gido-k8s-dev-secret-rotate-me-in-production-48chars"
+  FLINK_OPERATOR_ARTIFACT_TOKEN: "gido-k8s-artifact-token-rotate-in-prod"
   DS_TOKEN: ""
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: gido
+data:
+  02-create-gido-db.sql: |
+    CREATE DATABASE gido;
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: mysql
+  name: postgres
   namespace: gido
   labels:
     app: gido
-    component: mysql
+    component: postgres
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: gido
-      component: mysql
+      component: postgres
   strategy:
     type: Recreate
   template:
     metadata:
       labels:
         app: gido
-        component: mysql
+        component: postgres
     spec:
       containers:
-        - name: mysql
-          image: mysql:8.0
+        - name: postgres
+          image: docker.m.daocloud.io/library/postgres:16-alpine
           ports:
-            - containerPort: 3306
+            - containerPort: 5432
           env:
-            - name: MYSQL_ROOT_PASSWORD
+            - name: POSTGRES_USER
+              value: "root"
+            - name: POSTGRES_DB
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: gido-secrets
-                  key: mysql-root-password
-            - name: MYSQL_DATABASE
-              value: gido
-          args:
-            - --character-set-server=utf8mb4
-            - --collation-server=utf8mb4_unicode_ci
-            - --default-authentication-plugin=mysql_native_password
+                  key: postgres-password
           volumeMounts:
             - name: data
-              mountPath: /var/lib/mysql
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
           readinessProbe:
             exec:
               command:
                 - /bin/sh
                 - -c
-                - mysqladmin ping -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD"
-            initialDelaySeconds: 20
+                - pg_isready -U root -d gido
+            initialDelaySeconds: 10
             periodSeconds: 5
             timeoutSeconds: 5
           resources:
             requests:
               cpu: "100m"
-              memory: "512Mi"
+              memory: "256Mi"
             limits:
               cpu: "1"
               memory: "1Gi"
       volumes:
         - name: data
           emptyDir: {}
+        - name: init
+          configMap:
+            name: postgres-init
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: mysql
+  name: postgres
   namespace: gido
 spec:
   type: ClusterIP
   ports:
-    - port: 3306
-      targetPort: 3306
+    - port: 5432
+      targetPort: 5432
   selector:
     app: gido
-    component: mysql
+    component: postgres
 ---
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: v1
+kind: PersistentVolumeClaim
 metadata:
-  name: redis
+  name: gido-jar-artifacts
   namespace: gido
   labels:
     app: gido
-    component: redis
+    component: backend
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: gido
-      component: redis
-  template:
-    metadata:
-      labels:
-        app: gido
-        component: redis
-    spec:
-      containers:
-        - name: redis
-          image: redis:7-alpine
-          ports:
-            - containerPort: 6379
-          resources:
-            requests:
-              cpu: "50m"
-              memory: "64Mi"
-            limits:
-              cpu: "500m"
-              memory: "256Mi"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: redis
-  namespace: gido
-spec:
-  type: ClusterIP
-  ports:
-    - port: 6379
-      targetPort: 6379
-  selector:
-    app: gido
-    component: redis
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -196,6 +208,8 @@ metadata:
     component: backend
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: gido
@@ -206,21 +220,15 @@ spec:
         app: gido
         component: backend
     spec:
+      serviceAccountName: gido-backend
       initContainers:
-        - name: wait-mysql
-          image: busybox:1.36
+        - name: wait-postgres
+          image: docker.m.daocloud.io/library/busybox:1.36
           command:
             - /bin/sh
             - -c
             - |
-              until nc -z mysql 3306; do echo waiting mysql; sleep 2; done
-        - name: wait-redis
-          image: busybox:1.36
-          command:
-            - /bin/sh
-            - -c
-            - |
-              until nc -z redis 6379; do echo waiting redis; sleep 2; done
+              until nc -z postgres 5432; do echo waiting postgres; sleep 2; done
       containers:
         - name: backend
           image: __BACKEND_IMAGE__
@@ -254,6 +262,46 @@ spec:
             limits:
               cpu: "2"
               memory: "2Gi"
+          volumeMounts:
+            - name: jar-artifacts
+              mountPath: /data/jar-artifacts
+      volumes:
+        - name: jar-artifacts
+          persistentVolumeClaim:
+            claimName: gido-jar-artifacts
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gido-backend
+  namespace: gido
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gido-flink-operator
+  namespace: flink
+rules:
+  - apiGroups: ["flink.apache.org"]
+    resources: ["flinkdeployments", "flinksessionjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "pods", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gido-backend-flink-operator
+  namespace: flink
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gido-flink-operator
+subjects:
+  - kind: ServiceAccount
+    name: gido-backend
+    namespace: gido
 ---
 apiVersion: v1
 kind: Service
@@ -280,6 +328,8 @@ metadata:
     component: frontend
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: gido
@@ -292,7 +342,7 @@ spec:
     spec:
       initContainers:
         - name: wait-backend
-          image: busybox:1.36
+          image: docker.m.daocloud.io/library/busybox:1.36
           command:
             - /bin/sh
             - -c

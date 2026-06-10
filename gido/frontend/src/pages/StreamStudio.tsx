@@ -5,7 +5,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   Table, Button, Space, Tag, message, Modal, Form, Input, InputNumber, Select, Upload, Card, Descriptions,
-  Divider, Typography, Alert, notification, Collapse,
+  Divider, Typography, Alert, notification, Collapse, Popconfirm,
 } from 'antd'
 import {
   PlusOutlined, PlayCircleOutlined, StopOutlined, SaveOutlined, ReloadOutlined, UploadOutlined, DeleteOutlined,
@@ -28,6 +28,7 @@ import {
   type EditorAppearance,
 } from '../utils/editorAppearance'
 import { formatInTimeZone } from '../utils/datetime'
+import { openFlinkConsoleUrl } from '../utils/flinkConsole'
 
 const { Paragraph, Text } = Typography
 
@@ -35,6 +36,139 @@ const JOB_TYPES = [
   { label: 'Flink SQL', value: 'SQL' },
   { label: 'JAR 作业', value: 'JAR' },
 ]
+
+type SqlSubmitMode = 'session' | 'kubernetes_application' | 'flink_operator'
+
+type OperatorResForm = {
+  jm_memory: string
+  jm_cpu: string
+  tm_memory: string
+  tm_cpu: string
+  task_slots: string
+  tm_replicas: string
+}
+
+const EMPTY_OPERATOR_RES: OperatorResForm = {
+  jm_memory: '',
+  jm_cpu: '',
+  tm_memory: '',
+  tm_cpu: '',
+  task_slots: '',
+  tm_replicas: '',
+}
+
+function parseResourceTier(sp: unknown): string {
+  if (sp == null || String(sp).trim() === '') return ''
+  try {
+    const t = JSON.parse(String(sp))?.resource_tier
+    return t != null ? String(t) : ''
+  } catch {
+    return ''
+  }
+}
+
+function parseOperatorResForm(sp: unknown): OperatorResForm {
+  if (sp == null || String(sp).trim() === '') return { ...EMPTY_OPERATOR_RES }
+  try {
+    const obj = JSON.parse(String(sp))
+    const or = obj?.operator_resources || {}
+    return {
+      jm_memory: or.jobManager?.memory != null ? String(or.jobManager.memory) : '',
+      jm_cpu: or.jobManager?.cpu != null ? String(or.jobManager.cpu) : '',
+      tm_memory: or.taskManager?.memory != null ? String(or.taskManager.memory) : '',
+      tm_cpu: or.taskManager?.cpu != null ? String(or.taskManager.cpu) : '',
+      task_slots: or.taskSlots != null ? String(or.taskSlots) : (or.numberOfTaskSlots != null ? String(or.numberOfTaskSlots) : ''),
+      tm_replicas: or.taskManager?.replicas != null ? String(or.taskManager.replicas) : '',
+    }
+  } catch {
+    return { ...EMPTY_OPERATOR_RES }
+  }
+}
+
+function buildStreamingPropertiesJson(
+  rawJson: string,
+  operatorForm: OperatorResForm,
+  includeOperatorRes: boolean,
+  resourceTier?: string,
+): string {
+  let base: Record<string, unknown> = {}
+  const trimmed = rawJson.trim()
+  if (trimmed && trimmed !== '{}') {
+    base = JSON.parse(trimmed)
+    if (typeof base !== 'object' || base === null || Array.isArray(base)) {
+      throw new Error('invalid')
+    }
+  }
+  if (includeOperatorRes) {
+    const tier = (resourceTier || '').trim()
+    if (tier) base.resource_tier = tier
+    else delete base.resource_tier
+    const or: Record<string, unknown> = {}
+    const jm: Record<string, unknown> = {}
+    const tm: Record<string, unknown> = {}
+    if (operatorForm.jm_memory.trim()) jm.memory = operatorForm.jm_memory.trim()
+    if (operatorForm.jm_cpu.trim()) jm.cpu = Number(operatorForm.jm_cpu)
+    if (operatorForm.tm_memory.trim()) tm.memory = operatorForm.tm_memory.trim()
+    if (operatorForm.tm_cpu.trim()) tm.cpu = Number(operatorForm.tm_cpu)
+    if (operatorForm.tm_replicas.trim()) tm.replicas = Number(operatorForm.tm_replicas)
+    if (Object.keys(jm).length) or.jobManager = jm
+    if (Object.keys(tm).length) or.taskManager = tm
+    if (operatorForm.task_slots.trim()) or.taskSlots = Number(operatorForm.task_slots)
+    if (Object.keys(or).length) base.operator_resources = or
+    else delete base.operator_resources
+  }
+  if (!Object.keys(base).length) return ''
+  return JSON.stringify(base)
+}
+
+function sqlModeLabel(mode: string | undefined) {
+  const m = (mode || 'flink_operator').toLowerCase()
+  if (m === 'kubernetes_application') return 'K8s Application'
+  if (m === 'flink_operator') return 'Flink Operator'
+  return 'Session'
+}
+
+function cdcPaimonSqlTemplate(warehouse: string) {
+  const wh = warehouse || 's3://gido-paimon-warehouse'
+  return `-- MySQL CDC → Paimon（GIDO 统一运行时 · Flink Operator）
+CREATE TABLE mysql_orders (
+  order_id BIGINT,
+  user_id BIGINT,
+  amount DECIMAL(10, 2),
+  updated_at TIMESTAMP(3),
+  PRIMARY KEY (order_id) NOT ENFORCED
+) WITH (
+  'connector' = 'mysql-cdc',
+  'hostname' = 'mysql.example.svc',
+  'port' = '3306',
+  'username' = 'cdc_user',
+  'password' = '***',
+  'database-name' = 'shop',
+  'table-name' = 'orders'
+);
+
+CREATE CATALOG paimon WITH (
+  'type' = 'paimon',
+  'warehouse' = '${wh}'
+);
+
+USE CATALOG paimon;
+
+CREATE TABLE IF NOT EXISTS ods.orders (
+  order_id BIGINT,
+  user_id BIGINT,
+  amount DECIMAL(10, 2),
+  updated_at TIMESTAMP(3),
+  PRIMARY KEY (order_id) NOT ENFORCED
+) WITH (
+  'bucket' = '4',
+  'changelog-producer' = 'input'
+);
+
+INSERT INTO ods.orders
+SELECT order_id, user_id, amount, updated_at FROM default_catalog.default_database.mysql_orders;
+`
+}
 
 export default function StreamStudioPage() {
   const { currentWorkspace, user } = useAppStore()
@@ -54,8 +188,15 @@ export default function StreamStudioPage() {
   const [sqlParallelism, setSqlParallelism] = useState(1)
   /** Flink SQL Gateway Open Session 合并用 JSON（对标阿里云实时计算「参数调优」的轻量版） */
   const [streamingPropsJson, setStreamingPropsJson] = useState('{}')
-  /** SQL 提交：session=已有集群；kubernetes_application=Gateway v4 起 K8s Application（须配置 FLINK_K8S_*） */
-  const [sqlSubmitMode, setSqlSubmitMode] = useState<'session' | 'kubernetes_application'>('session')
+  const [flinkRuntime, setFlinkRuntime] = useState<any | null>(null)
+  const legacyFlinkSubmit = Boolean(flinkRuntime?.legacy_flink_submit_enabled)
+  /** SQL 提交：默认 Operator；遗留环境可切换 Session/Application */
+  const [sqlSubmitMode, setSqlSubmitMode] = useState<SqlSubmitMode>('flink_operator')
+  const [operatorResForm, setOperatorResForm] = useState<OperatorResForm>({ ...EMPTY_OPERATOR_RES })
+  const [resourceTier, setResourceTier] = useState<string>('')
+  const [jarStreamingPropsJson, setJarStreamingPropsJson] = useState('{}')
+  /** JAR 提交：session=Session JM；flink_operator=FlinkDeployment 生产（Kind 默认） */
+  const [jarSubmitMode, setJarSubmitMode] = useState<'session' | 'flink_operator'>('flink_operator')
   const [historyModal, setHistoryModal] = useState(false)
   const [historyList, setHistoryList] = useState<any[]>([])
   /** 作业绑定的 Flink Session 配置（null = 使用平台集成默认） */
@@ -95,6 +236,13 @@ export default function StreamStudioPage() {
 
   useEffect(() => { load(true) }, [load])
 
+  useEffect(() => {
+    streamingApi.flinkRuntime().then(setFlinkRuntime).catch(() => setFlinkRuntime(null))
+  }, [])
+
+  const effectiveSqlMode: SqlSubmitMode = legacyFlinkSubmit ? sqlSubmitMode : 'flink_operator'
+  const effectiveJarMode = legacyFlinkSubmit ? jarSubmitMode : 'flink_operator' as const
+
   /** Flink 控制台停止后 JM 已无作业时，单靠列表会卡在 running — 周期性拉 JM 回填平台状态（不打断编辑） */
   useEffect(() => {
     let alive = true
@@ -102,7 +250,11 @@ export default function StreamStudioPage() {
       if (!wsId || !alive) return
       try {
         const list = (await streamingApi.listJobs(wsId)) as unknown as any[]
-        const tracked = list.filter((j: any) => j.flink_job_id || j.flink_application_cluster_id)
+        const tracked = list.filter(
+          (j: any) =>
+            j.status !== 'cancelled'
+            && (j.flink_job_id || j.flink_application_cluster_id),
+        )
         if (tracked.length === 0) return
         await Promise.all(tracked.map((j: any) => streamingApi.getStatus(j.id).catch(() => null)))
         if (!alive) return
@@ -121,7 +273,12 @@ export default function StreamStudioPage() {
     if (selected?.job_type === 'SQL') {
       setScriptDraft(selected.script_content ?? '')
       setSqlParallelism(selected.parallelism ?? 1)
-      setSqlSubmitMode(selected.flink_sql_submit_mode === 'kubernetes_application' ? 'kubernetes_application' : 'session')
+      const sm = (selected.flink_sql_submit_mode || 'flink_operator').toLowerCase()
+      setSqlSubmitMode(
+        sm === 'kubernetes_application' ? 'kubernetes_application'
+          : sm === 'flink_operator' ? 'flink_operator'
+            : legacyFlinkSubmit ? 'session' : 'flink_operator',
+      )
       const sp = selected.streaming_properties
       if (sp != null && String(sp).trim() !== '') {
         try {
@@ -132,8 +289,28 @@ export default function StreamStudioPage() {
       } else {
         setStreamingPropsJson('{}')
       }
+      setOperatorResForm(parseOperatorResForm(sp))
+      setResourceTier(parseResourceTier(sp))
     }
-  }, [selected?.id, selected?.script_content, selected?.job_type, selected?.parallelism, selected?.streaming_properties, selected?.flink_sql_submit_mode])
+  }, [selected?.id, selected?.script_content, selected?.job_type, selected?.parallelism, selected?.streaming_properties, selected?.flink_sql_submit_mode, legacyFlinkSubmit])
+
+  useEffect(() => {
+    if (selected?.job_type === 'JAR') {
+      setJarSubmitMode(selected.flink_jar_submit_mode === 'flink_operator' ? 'flink_operator' : 'session')
+      const sp = selected.streaming_properties
+      if (sp != null && String(sp).trim() !== '') {
+        try {
+          setJarStreamingPropsJson(JSON.stringify(JSON.parse(String(sp)), null, 2))
+        } catch {
+          setJarStreamingPropsJson(String(sp))
+        }
+      } else {
+        setJarStreamingPropsJson('{}')
+      }
+      setOperatorResForm(parseOperatorResForm(sp))
+      setResourceTier(parseResourceTier(sp))
+    }
+  }, [selected?.id, selected?.job_type, selected?.flink_jar_submit_mode, selected?.streaming_properties])
 
   useEffect(() => {
     if (!selected?.id) return
@@ -174,17 +351,22 @@ export default function StreamStudioPage() {
       return
     }
     let streaming_properties: string | undefined
+    const includeOperatorRes =
+      (selected.job_type === 'SQL' && effectiveSqlMode === 'flink_operator')
+      || (selected.job_type === 'JAR' && effectiveJarMode === 'flink_operator')
     if (selected.job_type === 'SQL') {
-      const raw = streamingPropsJson.trim()
-      if (!raw || raw === '{}') {
-        streaming_properties = '' // 清空库内调优参数
-      } else {
-        try {
-          streaming_properties = JSON.stringify(JSON.parse(raw))
-        } catch {
-          message.error('参数调优 JSON 格式无效，请检查')
-          return
-        }
+      try {
+        streaming_properties = buildStreamingPropertiesJson(streamingPropsJson, operatorResForm, includeOperatorRes, resourceTier)
+      } catch {
+        message.error('参数调优 JSON 格式无效，请检查')
+        return
+      }
+    } else if (selected.job_type === 'JAR' && effectiveJarMode === 'flink_operator') {
+      try {
+        streaming_properties = buildStreamingPropertiesJson(jarStreamingPropsJson, operatorResForm, true, resourceTier)
+      } catch {
+        message.error('高级配置 JSON 格式无效，请检查')
+        return
       }
     }
     await streamingApi.updateJob(selected.id, {
@@ -193,7 +375,8 @@ export default function StreamStudioPage() {
       program_args: selected.job_type === 'JAR' ? (jarForm.program_args || undefined) : undefined,
       parallelism: selected.job_type === 'JAR' ? jarForm.parallelism : sqlParallelism,
       flink_session_profile_id: flinkProfileId,
-      ...(selected.job_type === 'SQL' ? { streaming_properties, flink_sql_submit_mode: sqlSubmitMode } : {}),
+      ...(selected.job_type === 'SQL' ? { streaming_properties, flink_sql_submit_mode: effectiveSqlMode } : {}),
+      ...(selected.job_type === 'JAR' ? { flink_jar_submit_mode: effectiveJarMode, streaming_properties } : {}),
     })
     message.success('已保存')
     await load()
@@ -223,6 +406,7 @@ export default function StreamStudioPage() {
     }
     setSubmitting(true)
     try {
+      await handleSave()
       const res: any = await streamingApi.submitJob(selected.id, selected.job_type === 'SQL' ? scriptDraft : undefined)
       await load()
       if (res?.submit_warning) {
@@ -231,7 +415,8 @@ export default function StreamStudioPage() {
       const desc = res?.flink_console_url
         ? (
             <span>
-              <a href={res.flink_console_url} target="_blank" rel="noreferrer">在 Flink Web UI 中查看作业</a>
+              <a href={res.flink_console_url} target="_blank" rel="noreferrer">打开 Flink Web UI</a>
+              <div style={{ marginTop: 6, fontSize: 12, wordBreak: 'break-all' }}>{res.flink_console_url}</div>
               {' · '}失败排查见 <Link to={R.stream.monitor}>作业运维</Link>
             </span>
           )
@@ -280,9 +465,13 @@ export default function StreamStudioPage() {
 
   const handleCancelJob = async () => {
     if (!selected) return
-    await streamingApi.cancelJob(selected.id)
-    message.success('已请求停止')
-    await load()
+    try {
+      const res: any = await streamingApi.cancelJob(selected.id)
+      message.success(res?.message || '已停止')
+      await load()
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '停止失败')
+    }
   }
 
   const openHistory = async () => {
@@ -325,12 +514,20 @@ export default function StreamStudioPage() {
     { title: '名称', dataIndex: 'name', key: 'name', ellipsis: true },
     {
       title: '提交', dataIndex: 'flink_sql_submit_mode', key: 'sm', width: 92,
-      render: (m: string, row: any) =>
-        row.job_type !== 'SQL' ? <Text type="secondary">—</Text> : (
-          <Tag color={m === 'kubernetes_application' ? 'purple' : 'geekblue'}>
-            {m === 'kubernetes_application' ? 'App' : 'Session'}
-          </Tag>
-        ),
+      render: (_m: string, row: any) => {
+        if (row.job_type === 'JAR' || row.job_type === 'SQL') {
+          const legacy = legacyFlinkSubmit && (
+            (row.job_type === 'JAR' && row.flink_jar_submit_mode !== 'flink_operator')
+            || (row.job_type === 'SQL' && (row.flink_sql_submit_mode || 'flink_operator') !== 'flink_operator')
+          )
+          return (
+            <Tag color={legacy ? 'geekblue' : 'purple'}>
+              {legacy ? (row.job_type === 'SQL' ? sqlModeLabel(row.flink_sql_submit_mode).replace('Flink Operator', 'Operator').replace('K8s Application', 'App').replace('Session', 'Session') : 'Session') : 'Operator'}
+            </Tag>
+          )
+        }
+        return <Text type="secondary">—</Text>
+      },
     },
     {
       title: '类型', dataIndex: 'job_type', key: 'job_type', width: 80,
@@ -421,7 +618,9 @@ export default function StreamStudioPage() {
                   >
                     {isJobPendingApproval ? '审批中' : canPublishDirect ? '提交运行' : '提交审批'}
                   </Button>
-                  <Button danger icon={<StopOutlined />} onClick={handleCancelJob}>停止</Button>
+                  <Popconfirm title="停止该作业？Operator 模式将暂停 FlinkDeployment" onConfirm={handleCancelJob}>
+                    <Button danger icon={<StopOutlined />}>停止</Button>
+                  </Popconfirm>
                   <Button icon={<ReloadOutlined />} onClick={async () => {
                     try {
                       const s: any = await streamingApi.getStatus(selected.id)
@@ -472,13 +671,19 @@ export default function StreamStudioPage() {
                   style={{ minWidth: 280 }}
                   placeholder="默认（平台）"
                   allowClear
-                  disabled={selected.is_locked}
+                  disabled={selected.is_locked
+                    || (selected.job_type === 'JAR' && effectiveJarMode === 'flink_operator')
+                    || (selected.job_type === 'SQL' && effectiveSqlMode === 'flink_operator')}
                   value={flinkProfileId ?? undefined}
                   onChange={v => setFlinkProfileId(v === undefined || v === null ? null : Number(v))}
                   options={flinkProfiles.map((p: any) => ({ value: p.id, label: `${p.name} (#${p.id})` }))}
                 />
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  在 <Link to={R.stream.flinkSessions}>Flink 集群连接</Link> 中维护命名连接（继承平台默认，仅覆写不同项）；此处选择后保存。
+                  {(selected.job_type === 'JAR' && effectiveJarMode === 'flink_operator') || (selected.job_type === 'SQL' && effectiveSqlMode === 'flink_operator') ? (
+                    <>Flink Operator 不走 Session JM，此项仅 Session / K8s Application 生效。</>
+                  ) : (
+                    <>在 <Link to={R.stream.flinkSessions}>Flink 集群连接</Link> 中维护命名连接（继承平台默认，仅覆写不同项）；此处选择后保存。</>
+                  )}
                 </Text>
               </div>
               <Descriptions size="small" column={2}>
@@ -493,23 +698,70 @@ export default function StreamStudioPage() {
                     : '—'}
                 </Descriptions.Item>
                 <Descriptions.Item label="提交模式">
-                  {selected.job_type === 'SQL'
-                    ? (selected.flink_sql_submit_mode === 'kubernetes_application' ? 'K8s Application' : 'Session（已有集群）')
+                  {selected.job_type === 'SQL' || selected.job_type === 'JAR'
+                    ? (legacyFlinkSubmit && (
+                        (selected.job_type === 'SQL' && (selected.flink_sql_submit_mode || 'flink_operator') !== 'flink_operator')
+                        || (selected.job_type === 'JAR' && selected.flink_jar_submit_mode !== 'flink_operator')
+                      ))
+                      ? (selected.job_type === 'SQL'
+                        ? sqlModeLabel(selected.flink_sql_submit_mode)
+                        : 'Session（遗留）')
+                      : 'Flink Operator（统一运行时）'
                     : '—'}
                 </Descriptions.Item>
+                {!((selected.job_type === 'JAR' && selected.flink_jar_submit_mode === 'flink_operator')
+                  || (selected.job_type === 'SQL' && selected.flink_sql_submit_mode === 'flink_operator')) && (
                 <Descriptions.Item label="Flink 集群连接" span={2}>
                   {selected.flink_session_profile_name
                     ? `${selected.flink_session_profile_name} (#${selected.flink_session_profile_id})`
                     : '默认（平台）'}
                 </Descriptions.Item>
+                )}
                 <Descriptions.Item label="clusterID">{selected.flink_application_cluster_id || '—'}</Descriptions.Item>
                 <Descriptions.Item label="Flink Job ID">{selected.flink_job_id || '—'}</Descriptions.Item>
+                <Descriptions.Item label="Operator CR">{selected.flink_operator_deployment_name || '—'}</Descriptions.Item>
                 <Descriptions.Item label="JAR 标识">{selected.jar_path || '—'}</Descriptions.Item>
                 <Descriptions.Item label="Flink Web UI" span={2}>
                   {selected.flink_console_url ? (
-                    <a href={selected.flink_console_url} target="_blank" rel="noreferrer">打开作业详情</a>
+                    <>
+                      <Button
+                        type="link"
+                        size="small"
+                        style={{ padding: 0, height: 'auto' }}
+                        onClick={() => openFlinkConsoleUrl(selected.flink_console_url, selected.id)}
+                      >
+                        {selected.flink_jar_submit_mode === 'flink_operator' || selected.flink_console_mode === 'operator'
+                          ? '打开 K8s 作业 Flink UI'
+                          : '打开 Flink Web UI（作业详情）'}
+                      </Button>
+                      {selected.flink_k8s_jm_service && (
+                        <div style={{ marginTop: 4, fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>
+                          K8s Service：<code>{selected.flink_k8s_jm_service}</code>
+                        </div>
+                      )}
+                      <div style={{ marginTop: 4, fontSize: 12, color: 'var(--ant-color-text-secondary)', wordBreak: 'break-all' }}>
+                        {selected.flink_console_url}
+                      </div>
+                      {selected.flink_ui_port_forward_hint && (
+                        <Alert
+                          type="info"
+                          showIcon
+                          style={{ marginTop: 8 }}
+                          message="Kind 本机须先 port-forward"
+                          description={(
+                            <>
+                              在终端执行后保持窗口不关，再点上方链接：
+                              <pre style={{ margin: '8px 0 0', whiteSpace: 'pre-wrap' }}>{selected.flink_ui_port_forward_hint}</pre>
+                            </>
+                          )}
+                        />
+                      )}
+                    </>
+                  ) : (selected.job_type === 'JAR' && selected.flink_jar_submit_mode === 'flink_operator')
+                    || (selected.job_type === 'SQL' && selected.flink_sql_submit_mode === 'flink_operator') ? (
+                    <Text type="secondary">提交成功后点链接即可（经 GIDO 代理，无需 port-forward JM）</Text>
                   ) : (
-                    <Text type="secondary">提交成功后将生成链接（需配置 FLINK_UI_URL）</Text>
+                    <Text type="secondary">提交成功后将生成链接</Text>
                   )}
                 </Descriptions.Item>
               </Descriptions>
@@ -517,27 +769,70 @@ export default function StreamStudioPage() {
 
               {selected.job_type === 'SQL' ? (
                 <>
+                  <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 8 }}
+                    message="统一运行时 · Flink Operator + gido-flink-runtime（Paimon / CDC）"
+                    description={(
+                      <div style={{ fontSize: 13 }}>
+                        <div>Flink {flinkRuntime?.flink_version || '2.0.1'} · 命名空间 {flinkRuntime?.operator_namespace || 'flink'}</div>
+                        {flinkRuntime?.paimon_warehouse_default && (
+                          <div>默认 Paimon warehouse：<code>{flinkRuntime.paimon_warehouse_default}</code></div>
+                        )}
+                        {flinkRuntime?.connectors?.length ? (
+                          <div style={{ marginTop: 4 }}>
+                            预置连接器：{flinkRuntime.connectors.map((c: any) => `${c.name} ${c.version}`).join(' · ')}
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
+                  />
                   <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
                     <Space>
                       <span style={{ marginRight: 8 }}>并行度</span>
                       <InputNumber min={1} value={sqlParallelism} onChange={v => setSqlParallelism(Number(v) || 1)} disabled={selected.is_locked} />
                     </Space>
-                    <Space>
-                      <span>提交到</span>
-                      <Select
-                        style={{ minWidth: 260 }}
-                        value={sqlSubmitMode}
-                        disabled={selected.is_locked}
-                        onChange={v => setSqlSubmitMode(v as 'session' | 'kubernetes_application')}
-                        options={[
-                          { value: 'session', label: 'Session（已有 Flink 集群 / JM）' },
-                          { value: 'kubernetes_application', label: 'K8s Application（每作业独立集群）' },
-                        ]}
-                      />
-                    </Space>
+                    {legacyFlinkSubmit && (
+                      <Space>
+                        <span>提交到（遗留）</span>
+                        <Select
+                          style={{ minWidth: 260 }}
+                          value={sqlSubmitMode}
+                          disabled={selected.is_locked}
+                          onChange={v => setSqlSubmitMode(v as SqlSubmitMode)}
+                          options={[
+                            { value: 'session', label: 'Session（已有 Flink 集群 / JM）' },
+                            { value: 'flink_operator', label: 'Flink Operator 生产（FlinkDeployment + SQL Runner）' },
+                            { value: 'kubernetes_application', label: 'K8s Application（Gateway 原生，兼容旧路径）' },
+                          ]}
+                        />
+                      </Space>
+                    )}
+                    <Button
+                      size="small"
+                      disabled={selected.is_locked}
+                      onClick={() => setScriptDraft(cdcPaimonSqlTemplate(flinkRuntime?.paimon_warehouse_default || ''))}
+                    >
+                      插入 CDC→Paimon 模板
+                    </Button>
                     <EditorAppearanceToolbar value={editorAppearance} onChange={setEditorAppearance} />
                   </div>
-                  {sqlSubmitMode === 'kubernetes_application' && (
+                  {effectiveSqlMode === 'flink_operator' && (
+                    <Alert
+                      type="info"
+                      showIcon
+                      style={{ marginBottom: 8 }}
+                      message="FlinkDeployment Application + SQL Runner"
+                      description={(
+                        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                          <li>统一镜像含 <code>sql-runner.jar</code>、Paimon、MySQL/Postgres CDC。</li>
+                          <li>SQL 脚本经 ConfigMap 挂载；资源在下方「Operator 资源配置」按作业覆盖。</li>
+                        </ul>
+                      )}
+                    />
+                  )}
+                  {legacyFlinkSubmit && effectiveSqlMode === 'kubernetes_application' && (
                     <Alert
                       type="warning"
                       showIcon
@@ -557,16 +852,73 @@ export default function StreamStudioPage() {
                     ghost
                     style={{ marginBottom: 8 }}
                     items={[
+                      ...(effectiveSqlMode === 'flink_operator' ? [{
+                        key: 'operator-res',
+                        label: 'Operator 资源配置（JM / TM / Slots，留空用平台默认）',
+                        children: (
+                          <div>
+                            <Form.Item label="规格模板" style={{ marginBottom: 12, maxWidth: 360 }}>
+                              <Select
+                                allowClear
+                                placeholder="平台默认（不套用模板）"
+                                value={resourceTier || undefined}
+                                disabled={selected.is_locked}
+                                onChange={v => setResourceTier(v || '')}
+                                options={[
+                                  { value: 'small', label: '小 — 轻量 SQL / 探查' },
+                                  { value: 'medium', label: '中 — 默认生产' },
+                                  { value: 'large', label: '大 — 高并行 / 重 SQL' },
+                                ]}
+                              />
+                            </Form.Item>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12 }}>
+                            <Form.Item label="JM 内存" style={{ marginBottom: 0 }}>
+                              <Input placeholder="2048m" value={operatorResForm.jm_memory} disabled={selected.is_locked}
+                                onChange={e => setOperatorResForm(f => ({ ...f, jm_memory: e.target.value }))} />
+                            </Form.Item>
+                            <Form.Item label="JM CPU" style={{ marginBottom: 0 }}>
+                              <InputNumber min={0.1} step={0.5} style={{ width: '100%' }} placeholder="1"
+                                value={operatorResForm.jm_cpu ? Number(operatorResForm.jm_cpu) : undefined}
+                                disabled={selected.is_locked}
+                                onChange={v => setOperatorResForm(f => ({ ...f, jm_cpu: v != null ? String(v) : '' }))} />
+                            </Form.Item>
+                            <Form.Item label="TM 内存" style={{ marginBottom: 0 }}>
+                              <Input placeholder="4096m" value={operatorResForm.tm_memory} disabled={selected.is_locked}
+                                onChange={e => setOperatorResForm(f => ({ ...f, tm_memory: e.target.value }))} />
+                            </Form.Item>
+                            <Form.Item label="TM CPU" style={{ marginBottom: 0 }}>
+                              <InputNumber min={0.1} step={0.5} style={{ width: '100%' }} placeholder="1"
+                                value={operatorResForm.tm_cpu ? Number(operatorResForm.tm_cpu) : undefined}
+                                disabled={selected.is_locked}
+                                onChange={v => setOperatorResForm(f => ({ ...f, tm_cpu: v != null ? String(v) : '' }))} />
+                            </Form.Item>
+                            <Form.Item label="Task Slots" style={{ marginBottom: 0 }}>
+                              <InputNumber min={1} style={{ width: '100%' }} placeholder="2"
+                                value={operatorResForm.task_slots ? Number(operatorResForm.task_slots) : undefined}
+                                disabled={selected.is_locked}
+                                onChange={v => setOperatorResForm(f => ({ ...f, task_slots: v != null ? String(v) : '' }))} />
+                            </Form.Item>
+                            <Form.Item label="TM 副本数" style={{ marginBottom: 0 }}>
+                              <InputNumber min={1} style={{ width: '100%' }} placeholder="自动"
+                                value={operatorResForm.tm_replicas ? Number(operatorResForm.tm_replicas) : undefined}
+                                disabled={selected.is_locked}
+                                onChange={v => setOperatorResForm(f => ({ ...f, tm_replicas: v != null ? String(v) : '' }))} />
+                            </Form.Item>
+                            </div>
+                          </div>
+                        ),
+                      }] : []),
                       {
                         key: 'tuning',
-                        label: '参数调优（Flink SQL Gateway 会话级，类似实时计算高级配置）',
+                        label: effectiveSqlMode === 'flink_operator'
+                          ? '高级 Flink 配置（合并进 FlinkDeployment flinkConfiguration）'
+                          : '参数调优（Flink SQL Gateway 会话级，类似实时计算高级配置）',
                         children: (
                           <div>
                             <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
-                              填写 JSON 对象：普通键值合并进 Gateway Open Session 的 properties（与并行度等一起生效）。
-                              若选择「K8s Application」提交，可在顶级增加 <code>k8s_application</code> 对象，其键值会合并进 Flink deploy-script 的 executionConfig（如覆盖
-                              <code>kubernetes.container.image.ref</code>、<code>jobmanager.memory.process.size</code> 等）。
-                              环境变量还需配置 <code>FLINK_K8S_APPLICATION_IMAGE</code>，建议配置 <code>FLINK_K8S_APPLICATION_JM_REST_TEMPLATE</code>（含 {'{cluster_id}'}）以自动回填 jobId。
+                              {effectiveSqlMode === 'flink_operator'
+                                ? '填写 JSON：顶级键（除 operator_resources）合并进 FlinkDeployment flinkConfiguration。operator_resources 请用上方面板。'
+                                : '填写 JSON 对象：普通键值合并进 Gateway Open Session 的 properties。K8s Application 可在顶级增加 k8s_application 覆盖 executionConfig。'}
                             </Paragraph>
                             <Input.TextArea
                               rows={8}
@@ -596,6 +948,59 @@ export default function StreamStudioPage() {
                 </>
               ) : (
                 <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="统一运行时 · Flink Operator + gido-flink-runtime"
+                    description="JAR 作业通过 FlinkDeployment Application 提交；制品由 GIDO backend 提供 HTTP 拉取。"
+                  />
+                  {legacyFlinkSubmit && (
+                    <Space wrap>
+                      <span>提交到（遗留）</span>
+                      <Select
+                        style={{ minWidth: 280 }}
+                        value={jarSubmitMode}
+                        disabled={selected.is_locked}
+                        onChange={v => setJarSubmitMode(v as 'session' | 'flink_operator')}
+                        options={[
+                          { value: 'session', label: 'Session（开发 / 已有 JM）' },
+                          { value: 'flink_operator', label: 'Flink Operator 生产（FlinkDeployment）' },
+                        ]}
+                      />
+                    </Space>
+                  )}
+                  {legacyFlinkSubmit && effectiveJarMode === 'session' && (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      style={{ marginBottom: 8 }}
+                      message="Session 模式说明"
+                      description="Session 与 Operator 已统一 Flink 2.0.1；JAR 须用相同版本编译，否则易出现 ParameterTool 类加载错误。"
+                    />
+                  )}
+                  {effectiveJarMode === 'flink_operator' && (
+                    <>
+                    <Alert
+                      type="info"
+                      showIcon
+                      style={{ marginBottom: 8 }}
+                      message="Flink Operator 生产"
+                      description="生产环境请配置 GIDO_FLINK_OPERATOR_UI_URL_TEMPLATE（Ingress 域名）或 LoadBalancer；本机 Kind 开发设 GIDO_FLINK_OPERATOR_DEV_LOCAL=true 并按提示 port-forward。"
+                    />
+                    <Alert
+                      type="info"
+                      showIcon
+                      message="Operator 生产提交"
+                      description={(
+                        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                          <li>上传 JAR 会写入 GIDO 制品库；Flink Pod 通过 HTTP 拉取（后续可切 S3）。</li>
+                          <li>须填写 <strong>Main Class</strong>；Backend 容器需挂载 kubeconfig。</li>
+                          <li>默认 namespace：<code>flink</code>（Kind 集群 <code>kind-gido</code>），Flink 2.0.1 + Operator 1.15。</li>
+                        </ul>
+                      )}
+                    />
+                    </>
+                  )}
                   <Upload
                     disabled={selected.is_locked}
                     maxCount={1}
@@ -615,8 +1020,86 @@ export default function StreamStudioPage() {
                     }}
                     showUploadList={false}
                   >
-                    <Button icon={<UploadOutlined />}>上传 JAR 到 Flink</Button>
+                    <Button icon={<UploadOutlined />}>上传 JAR{effectiveJarMode === 'flink_operator' ? '（制品库）' : ' 到 Flink'}</Button>
                   </Upload>
+                  {effectiveJarMode === 'flink_operator' && (
+                    <Collapse
+                      ghost
+                      style={{ marginBottom: 8 }}
+                      items={[
+                        {
+                          key: 'operator-res',
+                          label: 'Operator 资源配置（JM / TM / Slots，留空用平台默认）',
+                          children: (
+                            <div>
+                              <Form.Item label="规格模板" style={{ marginBottom: 12, maxWidth: 360 }}>
+                                <Select
+                                  allowClear
+                                  placeholder="平台默认"
+                                  value={resourceTier || undefined}
+                                  disabled={selected.is_locked}
+                                  onChange={v => setResourceTier(v || '')}
+                                  options={[
+                                    { value: 'small', label: '小 — 轻量作业' },
+                                    { value: 'medium', label: '中 — 默认生产' },
+                                    { value: 'large', label: '大 — 高资源' },
+                                  ]}
+                                />
+                              </Form.Item>
+                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12 }}>
+                              <Form.Item label="JM 内存" style={{ marginBottom: 0 }}>
+                                <Input placeholder="2048m" value={operatorResForm.jm_memory} disabled={selected.is_locked}
+                                  onChange={e => setOperatorResForm(f => ({ ...f, jm_memory: e.target.value }))} />
+                              </Form.Item>
+                              <Form.Item label="JM CPU" style={{ marginBottom: 0 }}>
+                                <InputNumber min={0.1} step={0.5} style={{ width: '100%' }} placeholder="1"
+                                  value={operatorResForm.jm_cpu ? Number(operatorResForm.jm_cpu) : undefined}
+                                  disabled={selected.is_locked}
+                                  onChange={v => setOperatorResForm(f => ({ ...f, jm_cpu: v != null ? String(v) : '' }))} />
+                              </Form.Item>
+                              <Form.Item label="TM 内存" style={{ marginBottom: 0 }}>
+                                <Input placeholder="4096m" value={operatorResForm.tm_memory} disabled={selected.is_locked}
+                                  onChange={e => setOperatorResForm(f => ({ ...f, tm_memory: e.target.value }))} />
+                              </Form.Item>
+                              <Form.Item label="TM CPU" style={{ marginBottom: 0 }}>
+                                <InputNumber min={0.1} step={0.5} style={{ width: '100%' }} placeholder="1"
+                                  value={operatorResForm.tm_cpu ? Number(operatorResForm.tm_cpu) : undefined}
+                                  disabled={selected.is_locked}
+                                  onChange={v => setOperatorResForm(f => ({ ...f, tm_cpu: v != null ? String(v) : '' }))} />
+                              </Form.Item>
+                              <Form.Item label="Task Slots" style={{ marginBottom: 0 }}>
+                                <InputNumber min={1} style={{ width: '100%' }} placeholder="2"
+                                  value={operatorResForm.task_slots ? Number(operatorResForm.task_slots) : undefined}
+                                  disabled={selected.is_locked}
+                                  onChange={v => setOperatorResForm(f => ({ ...f, task_slots: v != null ? String(v) : '' }))} />
+                              </Form.Item>
+                              <Form.Item label="TM 副本数" style={{ marginBottom: 0 }}>
+                                <InputNumber min={1} style={{ width: '100%' }} placeholder="自动"
+                                  value={operatorResForm.tm_replicas ? Number(operatorResForm.tm_replicas) : undefined}
+                                  disabled={selected.is_locked}
+                                  onChange={v => setOperatorResForm(f => ({ ...f, tm_replicas: v != null ? String(v) : '' }))} />
+                              </Form.Item>
+                              </div>
+                            </div>
+                          ),
+                        },
+                        {
+                          key: 'advanced',
+                          label: '高级 Flink 配置（合并进 flinkConfiguration）',
+                          children: (
+                            <Input.TextArea
+                              rows={6}
+                              value={jarStreamingPropsJson}
+                              onChange={e => setJarStreamingPropsJson(e.target.value)}
+                              disabled={selected.is_locked}
+                              style={{ fontFamily: 'monospace', fontSize: 12 }}
+                              placeholder={'{\n  "execution.checkpointing.interval": "60s"\n}'}
+                            />
+                          ),
+                        },
+                      ]}
+                    />
+                  )}
                   <Form layout="vertical" style={{ maxWidth: 560 }}>
                     <Form.Item label="入口类 (Main Class)">
                       <Input
@@ -686,9 +1169,11 @@ export default function StreamStudioPage() {
               <span style={{ color: '#666', fontSize: 12 }}>
                 {String(h.saved_at)} · {h.saved_by_username || '—'} · <Tag>{h.job_type}</Tag>
                 {h.parallelism != null && <Tag>并行度 {h.parallelism}</Tag>}
-                {h.job_type === 'SQL' && (h.flink_sql_submit_mode === 'kubernetes_application'
-                  ? <Tag color="purple">Application</Tag>
-                  : <Tag color="geekblue">Session</Tag>)}
+                {h.job_type === 'SQL' && (
+                  <Tag color={(h.flink_sql_submit_mode || 'flink_operator') === 'flink_operator' ? 'purple' : 'geekblue'}>
+                    {(h.flink_sql_submit_mode || 'flink_operator') === 'flink_operator' ? 'Operator' : h.flink_sql_submit_mode === 'kubernetes_application' ? 'Application' : 'Session'}
+                  </Tag>
+                )}
               </span>
               <Button size="small" onClick={() => handleRollbackHistory(h.id)} disabled={Boolean(selected?.is_locked)}>
                 回滚到此版本

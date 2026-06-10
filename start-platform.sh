@@ -2,7 +2,7 @@
 # =============================================================================
 # 大数据平台一键编排：PostgreSQL + Kafka + Flink + DolphinScheduler + GIDO
 #
-# 用法（在仓库根目录 bigdata/）：
+# 用法（在仓库根目录）：
 #   ./start-platform.sh              # 启动（等同 start）
 #   ./start-platform.sh start        # 启动全栈
 #   ./start-platform.sh stop           # 停止容器（保留卷）
@@ -210,7 +210,7 @@ stop_legacy_compose_stacks() {
     fi
   done
   local c
-  for c in gido-backend gido-frontend dataworks-backend dataworks-frontend; do
+  for c in gido-backend gido-frontend; do
     if docker container inspect "$c" >/dev/null 2>&1; then
       log "移除残留容器: $c"
       docker rm -f "$c" >/dev/null 2>&1 || true

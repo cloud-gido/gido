@@ -45,5 +45,5 @@ else
   echo "未安装 docker"
 fi
 echo ""
-echo "提示：仅 Docker Compose Flink 冲突时，先 bash scripts/stop-all-local-flink.sh 再启动 compose。"
+echo "提示：8081 冲突时可用 gido/scripts/free-host-port-8081.sh 排查；K8s JM 占用时可 kubectl delete -f k8s/flink.yaml 或改 Service 类型。"
 echo "     本仓库 K8s 清单统一在仓库根目录 k8s/（如 flink.yaml、doris-fixed.yaml）。"

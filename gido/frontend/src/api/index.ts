@@ -239,6 +239,7 @@ export const streamingApi = {
     request.get('/streaming/flink-session-profiles', { params: { workspace_id: workspaceId } }),
   flinkPlatformDefaults: (workspaceId: number) =>
     request.get('/streaming/flink-platform-defaults', { params: { workspace_id: workspaceId } }),
+  flinkRuntime: () => request.get('/streaming/flink-runtime'),
   createFlinkSessionProfile: (data: any) => request.post('/streaming/flink-session-profiles', data),
   updateFlinkSessionProfile: (id: number, data: any) => request.put(`/streaming/flink-session-profiles/${id}`, data),
   deleteFlinkSessionProfile: (id: number) => request.delete(`/streaming/flink-session-profiles/${id}`),

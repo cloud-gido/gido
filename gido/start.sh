@@ -96,6 +96,9 @@ fi
 
 # --- Compose ---
 COMPOSE=(docker compose -f "$COMPOSE_FILE")
+if [[ -f "$ROOT_ENV_FILE" ]]; then
+  COMPOSE+=(--env-file "$ROOT_ENV_FILE")
+fi
 UP_ARGS=(-d)
 [[ "$DO_RECREATE" -eq 1 ]] && UP_ARGS+=(--force-recreate)
 

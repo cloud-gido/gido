@@ -1,3 +1,6 @@
+# DEPRECATED — 遗留 Session / SQL Gateway 栈；GIDO Stream 生产路径请使用 Flink Kubernetes Operator + gido-flink-runtime。
+# 仅当 GIDO_LEGACY_FLINK_SUBMIT=true 且需 Session/Application 提交时保留本清单。
+#
 # Flink Session 集群（JobManager / TaskManager / SQL Gateway）
 # 版本与 GIDO「系统管理 → 集成」及 FLINK_K8S_APPLICATION_IMAGE 默认对齐：apache/flink:2.0.1-java11
 #
@@ -5,7 +8,7 @@
 # 浏览器仍显示旧版本时常见原因：
 #   1) 未对当前集群执行 apply + rollout（见下方 redeploy 脚本）。
 #   2) JM Service 为 LoadBalancer，Docker Desktop 上宿主 8081 常为 com.docker 监听。
-#   3) 若仍见 1.x：可能连到别的进程；先 bash scripts/stop-all-local-flink.sh，再 bash gido/scripts/free-host-port-8081.sh 复查 8081。
+#   3) 若仍见旧版本：bash gido/scripts/free-host-port-8081.sh 复查 8081 占用。
 #
 # 默认端口（与 Flink 镜像对齐，勿随意改）：
 #   JobManager REST / Web UI：容器 8081；Service flink-jobmanager 为 LoadBalancer → 宿主常见 http://localhost:8081。
@@ -21,10 +24,7 @@
 #   kubectl apply -f k8s/flink.yaml && bash k8s/redeploy-flink.sh
 #
 # Flink JobManager 容器内 REST 端口为 8081；宿主访问见上。SQL Gateway（ClusterIP）对外走 Ingress nginx + k8s/flink-sql-gateway-ingress.yaml。
-# Docker 内 GIDO（不在集群里）配合 Ingress，可长期跑 scripts/run-ingress-nginx-for-gido.sh，再按实际映射配置：
-#   GIDO_FLINK_SQL_GATEWAY_HTTP_HOST=flink-sql-gateway.localhost
-#   GIDO_FLINK_SQL_GATEWAY_URL=http://127.0.0.1:<Ingress 映射到 Gateway 的宿主端口>
-# 「宿主机 PyCharm 跑 backend」不要用 host.docker.internal 访问本机映射端口（常见 Errno 101）。
+# Docker 内 GIDO 配合 Ingress 时配置 GIDO_FLINK_SQL_GATEWAY_HTTP_HOST / GIDO_FLINK_SQL_GATEWAY_URL（见 .env.example）。
 ---
 apiVersion: v1
 kind: Namespace

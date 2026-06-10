@@ -1,0 +1,42 @@
+# 集群内临时镜像仓库（局域网 K3s/OrbStack 无 kind load 时用）
+# Mac 构建后：kubectl port-forward -n gido svc/registry 5001:5000 → docker push localhost:5001/...
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+  namespace: gido
+  labels:
+    app: registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: registry
+  template:
+    metadata:
+      labels:
+        app: registry
+    spec:
+      containers:
+        - name: registry
+          image: docker.m.daocloud.io/library/registry:2
+          ports:
+            - containerPort: 5000
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry
+  namespace: gido
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5000
+      targetPort: 5000
+      name: http
+  selector:
+    app: registry

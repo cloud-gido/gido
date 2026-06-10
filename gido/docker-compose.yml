@@ -1,14 +1,13 @@
 # 玑渡 GIDO — 唯一 Compose 定义（backend + frontend）
 #
-# 单独启动（自备 PostgreSQL / 海豚已在宿主机）：
-#   cd gido && ./start.sh
+# 生产 Flink Operator 路径：将 gido-backend 部署在 K8s（见 k8s/gido.yaml + k8s/apply-gido-stack.sh），
+# 上传 JAR → 一键提交 FlinkDeployment；JM REST / JAR 拉取走集群内 Service DNS。
 #
-# 全栈启动（PG + Kafka + Flink + Dolphin + GIDO）：
-#   仓库根目录 ./start-platform.sh
-#   （dockerFile/docker-compose.platform.yml 通过 include 引用本文件，勿重复定义 GIDO 服务）
+# 本机 Docker + Kind 开发（可选覆盖，非默认）：
+#   cp gido/config/flink-operator.kind-local.env.example → 仓库根 .env（合并变量）
+#   cp gido/docker-compose.kind-local.override.yml.example gido/docker-compose.override.yml
 #
-# 注意：container_name 固定为 gido-backend / gido-frontend，请勿同时跑两套 compose。
-# 端口默认绑定 0.0.0.0（GIDO_BIND_HOST），局域网可通过 http://192.168.x.x:3002 访问。
+# 全栈（PG + Kafka + Flink Session + Dolphin + GIDO）：仓库根 ./start-platform.sh
 
 services:
   backend:
@@ -40,9 +39,29 @@ services:
       FLINK_K8S_APPLICATION_JM_REST_TEMPLATE: ${GIDO_FLINK_K8S_APPLICATION_JM_REST_TEMPLATE:-}
       FLINK_K8S_NAMESPACE: ${GIDO_FLINK_K8S_NAMESPACE:-flink}
       FLINK_K8S_CONTEXT: ${GIDO_FLINK_K8S_CONTEXT:-}
-      FLINK_K8S_REST_EXPOSED_TYPE: ${GIDO_FLINK_K8S_REST_EXPOSED_TYPE:-NodePort}
-      FLINK_K8S_JM_NODEPORT_HOST: ${GIDO_FLINK_K8S_JM_NODEPORT_HOST:-host.docker.internal}
-    restart: unless-stopped
+      FLINK_K8S_REST_EXPOSED_TYPE: ${GIDO_FLINK_K8S_REST_EXPOSED_TYPE:-LoadBalancer}
+      FLINK_K8S_JM_NODEPORT_HOST: ${GIDO_FLINK_K8S_JM_NODEPORT_HOST:-}
+      FLINK_K8S_JM_NODEPORT_BROWSER_HOST: ${GIDO_FLINK_K8S_JM_NODEPORT_BROWSER_HOST:-}
+      FLINK_K8S_KUBECONFIG_PATH: ${GIDO_FLINK_K8S_KUBECONFIG_PATH:-}
+      FLINK_OPERATOR_NAMESPACE: ${GIDO_FLINK_OPERATOR_NAMESPACE:-flink}
+      FLINK_OPERATOR_JAR_HTTP_BASE: ${GIDO_FLINK_OPERATOR_JAR_HTTP_BASE:-}
+      FLINK_OPERATOR_IMAGE: ${GIDO_FLINK_OPERATOR_IMAGE:-apache/flink:2.0.1-java11}
+      FLINK_OPERATOR_FLINK_VERSION: ${GIDO_FLINK_OPERATOR_FLINK_VERSION:-v2_0}
+      FLINK_OPERATOR_SERVICE_ACCOUNT: ${GIDO_FLINK_OPERATOR_SERVICE_ACCOUNT:-flink}
+      FLINK_OPERATOR_UPGRADE_MODE: ${GIDO_FLINK_OPERATOR_UPGRADE_MODE:-stateless}
+      FLINK_OPERATOR_CHECKPOINT_DIR: ${GIDO_FLINK_OPERATOR_CHECKPOINT_DIR:-}
+      FLINK_OPERATOR_ARTIFACT_TOKEN: ${GIDO_FLINK_OPERATOR_ARTIFACT_TOKEN:-}
+      FLINK_OPERATOR_JM_REST_TEMPLATE: ${GIDO_FLINK_OPERATOR_JM_REST_TEMPLATE:-http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081}
+      FLINK_OPERATOR_UI_URL_TEMPLATE: ${GIDO_FLINK_OPERATOR_UI_URL_TEMPLATE:-}
+      FLINK_OPERATOR_BROWSER_JM_BASE: ${GIDO_FLINK_OPERATOR_BROWSER_JM_BASE:-}
+      FLINK_OPERATOR_DEV_LOCAL: ${GIDO_FLINK_OPERATOR_DEV_LOCAL:-false}
+      FLINK_OPERATOR_AUTO_UI_TUNNEL: ${GIDO_FLINK_OPERATOR_AUTO_UI_TUNNEL:-}
+      FLINK_OPERATOR_UI_LOCAL_PORT_BASE: ${GIDO_FLINK_OPERATOR_UI_LOCAL_PORT_BASE:-22000}
+      FLINK_OPERATOR_UI_TUNNEL_BIND_PORT_BASE: ${GIDO_FLINK_OPERATOR_UI_TUNNEL_BIND_PORT_BASE:-32000}
+      FLINK_OPERATOR_UI_TUNNEL_BROWSER_HOST: ${GIDO_FLINK_OPERATOR_UI_TUNNEL_BROWSER_HOST:-127.0.0.1}
+      JAR_ARTIFACT_DIR: /data/jar-artifacts
+    volumes:
+      - gido-jar-artifacts:/data/jar-artifacts
     command: sh -c "python init_db.py && uvicorn app.main:app --host 0.0.0.0 --port 8001"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3).read()"]
@@ -52,6 +71,7 @@ services:
       start_period: 240s
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    restart: unless-stopped
 
   frontend:
     build:
@@ -66,3 +86,6 @@ services:
       backend:
         condition: service_started
     restart: unless-stopped
+
+volumes:
+  gido-jar-artifacts:

@@ -1,0 +1,35 @@
+# Kind 集群配置：containerd 走 DaoCloud 等国内镜像加速（新建集群时用）
+#
+# 创建：
+#   kind create cluster --name gido --config k8s/kind-gido-config.yaml
+#
+# 已有集群无法热改 containerd 镜像；请用 k8s/kind-load-mirror-images.sh 预拉取并 kind load。
+#
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: gido
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 80
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 443
+        protocol: TCP
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."docker.io"]
+      endpoint = ["https://docker.m.daocloud.io"]
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."registry.k8s.io"]
+      endpoint = ["https://docker.m.daocloud.io"]
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."gcr.io"]
+      endpoint = ["https://docker.m.daocloud.io"]
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."quay.io"]
+      endpoint = ["https://docker.m.daocloud.io"]

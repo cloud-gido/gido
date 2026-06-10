@@ -80,6 +80,7 @@ async def lifespan(app: FastAPI):
         migrate_dw_streaming_jobs_streaming_properties,
         migrate_dw_streaming_job_history_streaming_properties,
         migrate_dw_streaming_jobs_flink_submit_mode,
+        migrate_dw_streaming_jobs_flink_jar_operator,
         migrate_dw_streaming_jobs_submit_audit_and_history_submit_mode,
         migrate_dw_flink_session_profiles,
         migrate_dw_streaming_jobs_flink_session_profile,
@@ -109,6 +110,7 @@ async def lifespan(app: FastAPI):
     migrate_dw_streaming_jobs_streaming_properties(engine)
     migrate_dw_streaming_job_history_streaming_properties(engine)
     migrate_dw_streaming_jobs_flink_submit_mode(engine)
+    migrate_dw_streaming_jobs_flink_jar_operator(engine)
     migrate_dw_streaming_jobs_submit_audit_and_history_submit_mode(engine)
     migrate_dw_flink_session_profiles(engine)
     migrate_dw_streaming_jobs_flink_session_profile(engine)
@@ -152,6 +154,12 @@ async def lifespan(app: FastAPI):
     from app.services.integration_cdc import stop_cdc_manager
 
     stop_cdc_manager()
+    try:
+        from app.services.flink_operator_ui_tunnel import release_all_ui_tunnels
+
+        release_all_ui_tunnels()
+    except Exception:
+        pass
     scheduler.stop()
 
 

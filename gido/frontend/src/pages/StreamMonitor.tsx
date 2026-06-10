@@ -13,6 +13,7 @@ import { can, P } from '../perm'
 import { R } from '../routes'
 import { Link } from 'react-router-dom'
 import { formatInTimeZone } from '../utils/datetime'
+import { openFlinkConsoleUrl } from '../utils/flinkConsole'
 
 const { Paragraph, Text } = Typography
 
@@ -34,11 +35,14 @@ function flinkStatusDisplay(fs: string | undefined) {
   return <Tag color={color[fs] || 'blue'}>{fs}</Tag>
 }
 
-/** Session：有 jobId 才轮询 JM。K8s Application：cluster 已创建即可轮询（回填 jobId 前也能拿到 APPLICATION_PENDING_JOB_ID） */
+/** Session：有 jobId 才轮询 JM。K8s Application：cluster 已创建即可轮询。cancelled 不再轮询以免冲回 running。 */
 function jobNeedsFlinkStatusPoll(j: any) {
+  if ((j.status || '').toString().toLowerCase() === 'cancelled') return false
   if (j.flink_job_id) return true
   const mode = (j.flink_sql_submit_mode || 'session').toString().toLowerCase()
-  return mode === 'kubernetes_application' && Boolean(j.flink_application_cluster_id)
+  if (mode === 'kubernetes_application') return Boolean(j.flink_application_cluster_id)
+  if (mode === 'flink_operator') return Boolean(j.flink_operator_deployment_name)
+  return false
 }
 
 export default function StreamMonitorPage() {
@@ -176,17 +180,21 @@ export default function StreamMonitorPage() {
     { title: '作业名', dataIndex: 'name', key: 'name', width: 180, ellipsis: true },
     { title: '类型', dataIndex: 'job_type', key: 'job_type', width: 64, render: (t: string) => <Tag>{t}</Tag> },
     {
-      title: 'SQL 部署',
+      title: '部署',
       key: 'deploy',
-      width: 100,
+      width: 88,
       render: (_: unknown, row: any) => {
-        if (row.job_type !== 'SQL') return <Text type="secondary">—</Text>
-        const m = (row.flink_sql_submit_mode || 'session').toString().toLowerCase()
-        return (
-          <Tag color={m === 'kubernetes_application' ? 'purple' : 'geekblue'}>
-            {m === 'kubernetes_application' ? 'Application' : 'Session'}
-          </Tag>
-        )
+        if (row.job_type !== 'SQL' && row.job_type !== 'JAR') return <Text type="secondary">—</Text>
+        const legacy = (row.job_type === 'JAR' && row.flink_jar_submit_mode !== 'flink_operator')
+          || (row.job_type === 'SQL' && (row.flink_sql_submit_mode || 'flink_operator') !== 'flink_operator')
+        if (legacy) {
+          const m = row.job_type === 'SQL'
+            ? (row.flink_sql_submit_mode || '').toString().toLowerCase()
+            : 'session'
+          const label = m === 'kubernetes_application' ? 'App' : 'Session'
+          return <Tag color="geekblue">{label}</Tag>
+        }
+        return <Tag color="purple">Operator</Tag>
       },
     },
     {
@@ -225,17 +233,39 @@ export default function StreamMonitorPage() {
       ),
     },
     {
-      title: 'Flink 控制台',
+      title: 'K8s Flink UI',
       key: 'fc',
-      width: 108,
-      render: (_: any, row: any) =>
-        row.flink_console_url ? (
-          <a href={row.flink_console_url} target="_blank" rel="noreferrer">
-            <LinkOutlined /> 打开
-          </a>
-        ) : (
-          <Text type="secondary">—</Text>
-        ),
+      width: 128,
+      render: (_: any, row: any) => {
+        const isOp = row.flink_console_mode === 'operator' || (
+          row.job_type === 'JAR' && row.flink_jar_submit_mode === 'flink_operator'
+        )
+        if (!row.flink_console_url) {
+          return isOp ? (
+            <Tooltip title={row.flink_k8s_jm_service || '等待解析 JM REST / NodePort'}>
+              <Text type="secondary">待就绪</Text>
+            </Tooltip>
+          ) : (
+            <Text type="secondary">—</Text>
+          )
+        }
+        const tip = isOp
+          ? `FlinkDeployment · Service ${row.flink_operator_deployment_name || ''}-rest`
+          : undefined
+        return (
+          <Tooltip title={tip}>
+            <Button
+              type="link"
+              size="small"
+              icon={<LinkOutlined />}
+              style={{ padding: 0, height: 'auto' }}
+              onClick={() => openFlinkConsoleUrl(row.flink_console_url, row.id)}
+            >
+              {isOp ? 'K8s 作业 UI' : '打开'}
+            </Button>
+          </Tooltip>
+        )
+      },
     },
     {
       title: '启动失败 / 诊断',
@@ -260,9 +290,15 @@ export default function StreamMonitorPage() {
           key: 'stop',
           width: 76,
           render: (_: unknown, row: any) => {
-            if (row.flink_job_id) {
+            const opJar =
+              row.job_type === 'JAR'
+              && (row.flink_jar_submit_mode || '').toString() === 'flink_operator'
+            if (row.flink_job_id || opJar) {
               return (
-                <Popconfirm title="在 Flink 上停止该作业？" onConfirm={() => handleStop(row)}>
+                <Popconfirm
+                  title={opJar ? '暂停 FlinkDeployment 并停止作业？' : '在 Flink 上停止该作业？'}
+                  onConfirm={() => handleStop(row)}
+                >
                   <Button type="link" size="small" danger icon={<StopOutlined />} />
                 </Popconfirm>
               )
@@ -304,7 +340,7 @@ export default function StreamMonitorPage() {
     <div>
       <Typography.Title level={4} style={{ marginBottom: 4 }}>作业运维</Typography.Title>
       <Paragraph type="secondary" style={{ marginBottom: 16, maxWidth: 960 }}>
-        对标成熟实时平台：<strong>部署模型</strong>（Session / K8s Application）、<strong>集群与 Job 标识</strong>、<strong>最近提交人时</strong>与<strong>就绪度提示</strong>集中展示；诊断抽屉内合并「平台同步结果」与 JM 异常，便于与 Flink Web UI / K8s 控制台交叉验证。
+        统一 <strong>Flink Operator</strong> 部署模型；<strong>集群与 Job 标识</strong>、<strong>最近提交人时</strong>与<strong>就绪度提示</strong>集中展示。诊断抽屉内合并「平台同步结果」与 JM 异常，便于与 Flink Web UI / K8s 控制台交叉验证。
         逻辑编辑请前往 <Link to={R.stream.studio}>作业开发</Link>。
       </Paragraph>
 
@@ -312,7 +348,15 @@ export default function StreamMonitorPage() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="控制台链接：有 Flink Job ID 时指向作业详情；K8s Application 若已配置 JM REST（FLINK_K8S_APPLICATION_JM_REST_TEMPLATE），在尚未回填 jobId 时也可打开 JM 总览页。Session 模式仍依赖 FLINK_UI_URL（或默认同 FLINK_URL）。"
+        message="控制台链接说明"
+        description={(
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+            <li><strong>Operator JAR（集群内 GIDO）</strong>：点「K8s 作业 UI」即可，经 GIDO 代理 JM，无需再 port-forward Flink。</li>
+            <li><strong>Operator JAR（Compose 开发）</strong>：可启用自动隧道，链接形如 <code>http://127.0.0.1:22003/#/job/…</code>。</li>
+            <li>生产环境配置 <code>GIDO_FLINK_OPERATOR_UI_URL_TEMPLATE</code>（Ingress 域名），无需 port-forward。</li>
+            <li>Session SQL / Session JAR 仍用平台 <code>FLINK_UI_URL</code>。</li>
+          </ul>
+        )}
       />
 
       <Space style={{ marginBottom: 16 }} wrap>

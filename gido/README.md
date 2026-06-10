@@ -31,7 +31,7 @@
 一键拉起整平台（含 Dolphin、Kafka、网络等）请参考仓库根目录：
 
 - `../README.md`
-- `../DEPLOYMENT_GUIDE.md`
+- `../DEPLOYMENT_GUIDE.md`（文档索引）
 - `../start-platform.sh`
 
 仅部署本目录时，请严格阅读 **`docs/DEPLOYMENT_SOP.md`** 中关于 **`.env` 路径**、**外部 Docker 网络** 与 **PostgreSQL 元数据库** 的说明。

@@ -133,6 +133,30 @@ def test_migrate_streaming_jobs_submit_audit_and_history_submit_mode_idempotent(
     assert "flink_sql_submit_mode" in hcols
 
 
+def test_migrate_flink_jar_operator_idempotent():
+    from app.core.database import Base
+    from app.services.rbac_seed import (
+        migrate_dw_streaming_jobs,
+        migrate_dw_streaming_job_history,
+        migrate_dw_streaming_jobs_flink_jar_operator,
+    )
+
+    _load_models()
+    import app.api.streaming  # noqa: F401
+
+    eng = _fresh_engine()
+    Base.metadata.create_all(eng)
+    migrate_dw_streaming_jobs(eng)
+    migrate_dw_streaming_job_history(eng)
+    migrate_dw_streaming_jobs_flink_jar_operator(eng)
+    migrate_dw_streaming_jobs_flink_jar_operator(eng)
+    jcols = {c["name"] for c in inspect(eng).get_columns("dw_streaming_jobs")}
+    assert "flink_jar_submit_mode" in jcols
+    assert "flink_operator_deployment_name" in jcols
+    hcols = {c["name"] for c in inspect(eng).get_columns("dw_streaming_job_history")}
+    assert "flink_jar_submit_mode" in hcols
+
+
 def test_migrate_flink_session_profiles_and_job_fk_idempotent():
     from app.core.database import Base
     from app.services.rbac_seed import (

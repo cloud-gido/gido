@@ -2,7 +2,7 @@
 
 面向：**从仓库克隆代码后，在全新环境跑起 GIDO（后端 + 前端 + PostgreSQL 元数据库），并完成库表与种子数据初始化**的同事。
 
-更完整的大数据平台（Dolphin、Flink、网络等）仍以仓库根目录 **`README.md`**、**`DEPLOYMENT_GUIDE.md`**、**`start-platform.sh`** 为准；本文聚焦 **本目录 `gido/`** 的部署与库初始化。
+更完整的大数据平台（Dolphin、Flink、网络等）仍以仓库根目录 **`README.md`**、**`start-platform.sh`** 为准；本文聚焦 **本目录 `gido/`** 的部署与库初始化。
 
 **AWS EKS 部署**（ECR、集群、Ingress、与 compose 的差异）见 **[EKS-DEPLOYMENT-SOP.md](./EKS-DEPLOYMENT-SOP.md)**。
 
@@ -12,7 +12,7 @@
 
 | 方式 | 说明 |
 |------|------|
-| **推荐** | 克隆整个 **`bigdata`** 仓库，需要 GIDO 时进入 **`gido/`**。 |
+| **推荐** | 克隆整个 **gido** 仓库，需要应用代码时进入 **`gido/`** 子目录。 |
 | **仅拷贝子目录** | 只拿 `gido/` 也可，但须**自备 PostgreSQL**（或自建 RDS/Aurora），并自行处理 **`docker-compose.yml` 中的外部 Docker 网络**（见 §4）。 |
 
 ---
@@ -22,7 +22,7 @@
 - **Git**
 - **Docker 20.10+**、**Docker Compose 2+**（若使用本目录下的 `docker-compose.yml`；**元数据库需自备 PostgreSQL**，在上一级 `.env` 配置 **`GIDO_DATABASE_URL`**，或按运维规范配置 **`INFRA_GIDO_DB_*`** 拆分变量；与全栈 **`./start-platform.sh`** 同机 PG 时，库名 **`gido`**，账号与 **`dockerFile/docker-compose.platform.yml`** 中 postgres 服务一致，可按实际改）
 - **PostgreSQL 12+**（推荐 14/15；业务元数据库，默认库名 **`gido`**）
-- **可选回退**：仍可将 **`DATABASE_URL`** 设为 **`mysql+pymysql://...`** 使用 MySQL 存元数据（需 `pymysql`；自动建库见 `backend/app/core/database.py`）
+- **可选回退**：MySQL 元库（`mysql+pymysql://...`）仅遗留兼容，新环境勿用。
 - **可选**：DolphinScheduler（工作流）、Flink JM + SQL Gateway（实时 SQL）；不配则相关功能不可用或需在界面/环境变量中再接入
 
 ---
@@ -46,7 +46,7 @@
 
 本目录 **`docker-compose.yml`** 中：
 
-- `env_file: ../.env` 表示 **`.env` 必须放在 `gido` 的上一级目录**（例如仓库根 `bigdata/.env`），在 **`gido/`** 下执行 `docker compose` 时才会被加载。
+- `env_file: ../.env` 表示 **`.env` 必须放在 `gido` 的上一级目录**（仓库根 `.env`），在 **`gido/`** 下执行 `docker compose` 时才会被加载。
 
 **建议在 `.env` 或宿主机环境中配置的关键项：**
 
@@ -106,7 +106,7 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-在 **`backend/.env`** 或上一级 **`.env`** 中配置 **`DATABASE_URL`** 或 **`INFRA_GIDO_DB_*`**（及其他需要项，见 `app/core/config.py`）。可参考 **`backend/env.example`**。
+在 **`backend/.env`** 或上一级 **`.env`** 中配置 **`DATABASE_URL`** 或 **`INFRA_GIDO_DB_*`**（及其他需要项，见 `app/core/config.py`）。可参考 **`backend/.env.example`** 与根目录 **`.env.example`**。
 
 ```bash
 python init_db.py

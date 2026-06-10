@@ -6,7 +6,8 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Body
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Body, Request
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from app.core import perm_codes as PC
 from sqlalchemy.orm import Session
 from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, JSON
@@ -24,6 +25,14 @@ from app.services.flink_runtime import (
     get_flink_runtime_for_workspace_profile,
 )
 from app.services.flink_k8s_jm import resolve_application_jm_rest_via_nodeport
+from app.services.flink_submit_mode import (
+    default_jar_submit_mode as _default_jar_submit_mode,
+    default_sql_submit_mode as _default_sql_submit_mode,
+    enforce_jar_submit_mode_allowed as _enforce_jar_submit_mode_allowed,
+    enforce_sql_submit_mode_allowed as _enforce_sql_submit_mode_allowed,
+    normalize_jar_submit_mode as _normalize_jar_submit_mode,
+    normalize_sql_submit_mode as _normalize_sql_submit_mode,
+)
 from app.services.rbac import (
     assert_workspace_data_capability,
     assert_gido_stream_infra_probe_access,
@@ -144,14 +153,31 @@ def _compute_flink_operational(job: StreamingJob, *, runtime_cfg: FlinkRuntimeCo
     readiness = "neutral"
     if (job.job_type or "").upper() != "SQL":
         return {"readiness": readiness, "hints": hints, "submit_mode": None}
-    mode = (getattr(job, "flink_sql_submit_mode", None) or "session").strip().lower()
+    mode = _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None))
     tmpl = (runtime_cfg.flink_k8s_application_jm_rest_template or "").strip()
     img = (runtime_cfg.flink_k8s_application_image or "").strip()
     cid = (getattr(job, "flink_application_cluster_id", None) or "").strip() or None
     fjid = (job.flink_job_id or "").strip() or None
     jmrest = (getattr(job, "flink_application_jm_rest", None) or "").strip() or None
+    op_dep = (getattr(job, "flink_operator_deployment_name", None) or "").strip() or None
     st = (job.status or "").strip().lower()
-    if mode == "kubernetes_application":
+    if mode == "flink_operator":
+        from app.services.flink_operator_submit import sql_operator_submit_ready
+
+        ok, reason = sql_operator_submit_ready()
+        if not ok:
+            readiness = "blocked"
+            hints.append(reason)
+        else:
+            hints.append(
+                "SQL Operator 使用 FlinkDeployment + SQL Runner；FLINK_OPERATOR_IMAGE 须包含 sql-runner.jar。"
+            )
+            if st == "running" and not fjid and not op_dep:
+                readiness = "warning"
+                hints.append("平台为 running 但未记录 Operator CR / JobId，请同步状态或查看 FlinkDeployment 事件。")
+            else:
+                readiness = "ok" if st in ("running", "finished", "failed", "cancelled") or fjid or op_dep else "neutral"
+    elif mode == "kubernetes_application":
         if not img:
             readiness = "blocked"
             hints.append("未配置 K8s Application 作业镜像（「系统管理 → 集成」或 FLINK_K8S_APPLICATION_IMAGE），提交将被拒绝。")
@@ -230,20 +256,29 @@ def flink_ui_base_url() -> str:
     return jm
 
 
+def _jm_rest_url_for_browser(jm_rest: Optional[str]) -> str:
+    from app.services.flink_operator_submit import jm_rest_url_for_browser
+
+    return jm_rest_url_for_browser(jm_rest) or (jm_rest or "").strip().rstrip("/")
+
+
 def flink_job_console_url(
     flink_job_id: Optional[str],
     *,
     application_jm_rest: Optional[str] = None,
     runtime_cfg: Optional[FlinkRuntimeConfig] = None,
+    operator_mode: bool = False,
 ) -> Optional[str]:
-    """Classic Flink Dashboard：`/#/job/{id}/overview`。Application 模式优先用该次部署的 JM REST 基址。
-    尚无 jobId 但已记录 JM REST 时，返回 `/#/overview`，便于在 UI 上观察 Application 集群启动过程。
+    """Classic Flink Dashboard：`/#/job/{id}/overview`。
+    Operator / K8s Application：仅用该次部署的 JM REST，禁止回退 Session 的 FLINK_UI_URL。
     """
-    app_jm = (application_jm_rest or "").strip().rstrip("/")
+    app_jm = _jm_rest_url_for_browser(application_jm_rest)
     jid = (str(flink_job_id).strip() if flink_job_id else "") or ""
     if jid:
         if app_jm:
             return f"{app_jm}/#/job/{jid}/overview"
+        if operator_mode:
+            return None
         base = flink_ui_base_from_runtime_cfg(runtime_cfg) if runtime_cfg is not None else flink_ui_base_url()
         if not base:
             return None
@@ -422,20 +457,75 @@ def _streaming_job_public_dict(
             lsub_name = u2.username if u2 else None
     cfg = runtime_cfg if runtime_cfg is not None else _flink_runtime_cfg_for_job(db, job)
     pid = getattr(job, "flink_session_profile_id", None)
+    op_dep = _operator_deployment_name_for_job(job)
+    pf_hint = None
+    browser_jm = getattr(job, "flink_application_jm_rest", None)
+    jar_mode = _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None))
+    is_op_jar = bool(op_dep) or (job.job_type == "JAR" and jar_mode == "flink_operator")
+    sql_mode_early = _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None))
+    if not op_dep and job.job_type == "SQL" and sql_mode_early == "flink_operator":
+        from app.services.flink_operator_submit import sql_deployment_name_for_job
+
+        op_dep = (
+            getattr(job, "flink_operator_deployment_name", None) or ""
+        ).strip() or sql_deployment_name_for_job(job.id, int(getattr(job, "workspace_id", None) or 0))
+    if op_dep:
+        from app.services.flink_operator_submit import (
+            browser_jm_base_for_deployment,
+            operator_jm_k8s_service_name,
+            operator_ui_port_forward_hint,
+        )
+
+        ns = (settings.FLINK_OPERATOR_NAMESPACE or settings.FLINK_K8S_NAMESPACE or "flink").strip()
+        browser_jm = browser_jm_base_for_deployment(
+            op_dep, ns, getattr(job, "flink_application_jm_rest", None), job_id=int(job.id)
+        ) or browser_jm
+        pf_hint = operator_ui_port_forward_hint(op_dep, ns, browser_jm)
+        k8s_svc = operator_jm_k8s_service_name(op_dep, ns)
+    else:
+        k8s_svc = None
+    sql_mode = sql_mode_early
+    is_op_sql = job.job_type == "SQL" and sql_mode == "flink_operator"
+    is_op_any = is_op_jar or is_op_sql
+    console_fjid = fjid
+    if is_op_any and op_dep:
+        from app.services.flink_operator_submit import resolve_live_flink_job_id
+
+        ns = (settings.FLINK_OPERATOR_NAMESPACE or settings.FLINK_K8S_NAMESPACE or "flink").strip()
+        live = resolve_live_flink_job_id(op_dep, ns, stored=fjid, job_id=int(job.id))
+        if live and live != (fjid or ""):
+            console_fjid = live
+    console_mode = (
+        "operator"
+        if is_op_any
+        else (
+            "k8s_application"
+            if sql_mode == "kubernetes_application"
+            else "session"
+        )
+    )
     return {
         "id": job.id,
         "name": job.name,
         "job_type": job.job_type,
         "status": job.status,
         "flink_job_id": fjid,
-        "flink_sql_submit_mode": getattr(job, "flink_sql_submit_mode", None) or "session",
+        "flink_sql_submit_mode": _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None)),
+        "flink_jar_submit_mode": _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None)),
+        "flink_operator_deployment_name": getattr(job, "flink_operator_deployment_name", None),
         "flink_application_cluster_id": getattr(job, "flink_application_cluster_id", None),
         "flink_application_jm_rest": getattr(job, "flink_application_jm_rest", None),
         "flink_session_profile_id": int(pid) if pid is not None else None,
         "flink_session_profile_name": profile_name,
         "flink_console_url": flink_job_console_url(
-            fjid, application_jm_rest=getattr(job, "flink_application_jm_rest", None), runtime_cfg=cfg
+            console_fjid,
+            application_jm_rest=browser_jm if is_op_any else getattr(job, "flink_application_jm_rest", None),
+            runtime_cfg=cfg,
+            operator_mode=is_op_any,
         ),
+        "flink_console_mode": console_mode,
+        "flink_k8s_jm_service": k8s_svc,
+        "flink_ui_port_forward_hint": pf_hint,
         "last_submit_error": job.last_submit_error,
         "last_submitted_at": getattr(job, "last_submitted_at", None),
         "last_submitted_by": getattr(job, "last_submitted_by", None),
@@ -472,8 +562,11 @@ class StreamingJob(Base):
     parallelism = Column(Integer, default=1)
     # Flink SQL Gateway Open Session 的额外 properties（JSON 对象字符串），与 parallelism 等合并后提交
     streaming_properties = Column(Text, nullable=True)
-    # session：SQL Gateway v1 连已有 JM；kubernetes_application：Gateway v4 deploy script 起独立 K8s 集群（须 Flink 2.x+ Gateway）
-    flink_sql_submit_mode = Column(String(32), default="session", nullable=False)
+    # flink_operator（默认）：FlinkDeployment + 统一运行时；遗留 session/kubernetes_application 须 GIDO_LEGACY_FLINK_SUBMIT
+    flink_sql_submit_mode = Column(String(32), default="flink_operator", nullable=False)
+    # JAR：session=Session JM /jars/run；flink_operator=FlinkDeployment CR（生产）
+    flink_jar_submit_mode = Column(String(32), default="flink_operator", nullable=False)
+    flink_operator_deployment_name = Column(String(128), nullable=True)
     flink_application_cluster_id = Column(String(256), nullable=True)
     flink_application_jm_rest = Column(String(512), nullable=True)
     # 选用工作空间下某套 Flink Session 配置；NULL 表示沿用「环境 + 平台集成」默认
@@ -503,6 +596,7 @@ class StreamingJobHistory(Base):
     parallelism = Column(Integer, nullable=True)
     streaming_properties = Column(Text, nullable=True)
     flink_sql_submit_mode = Column(String(32), nullable=True)
+    flink_jar_submit_mode = Column(String(32), nullable=True)
     saved_at = Column(DateTime, default=datetime.utcnow)
     saved_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
 
@@ -517,7 +611,8 @@ def _append_streaming_job_history_snapshot(db: Session, job: StreamingJob, user_
             program_args=job.program_args,
             parallelism=job.parallelism,
             streaming_properties=getattr(job, "streaming_properties", None),
-            flink_sql_submit_mode=(getattr(job, "flink_sql_submit_mode", None) or "session"),
+            flink_sql_submit_mode=_normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None)),
+            flink_jar_submit_mode=_normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None)),
             saved_by=user_id,
         )
     )
@@ -1300,16 +1395,25 @@ class JobCreate(BaseModel):
     parallelism: int = 1
     streaming_properties: Optional[str] = None  # JSON；合并进 Gateway properties；顶级 k8s_application 并入 Application executionConfig
     folder_id: Optional[int] = None
-    flink_sql_submit_mode: str = "session"
+    flink_sql_submit_mode: str = "flink_operator"
+    flink_jar_submit_mode: str = "flink_operator"
     flink_session_profile_id: Optional[int] = None
 
     @field_validator("flink_sql_submit_mode")
     @classmethod
     def _validate_submit_mode_create(cls, v: str) -> str:
-        s = (v or "session").strip().lower()
-        if s not in ("session", "kubernetes_application"):
-            raise ValueError("flink_sql_submit_mode 须为 session 或 kubernetes_application")
-        return s
+        s = (v or _default_sql_submit_mode()).strip().lower()
+        if s not in ("session", "kubernetes_application", "flink_operator"):
+            raise ValueError("flink_sql_submit_mode 须为 session、kubernetes_application 或 flink_operator")
+        return _enforce_sql_submit_mode_allowed(s)
+
+    @field_validator("flink_jar_submit_mode")
+    @classmethod
+    def _validate_jar_submit_mode_create(cls, v: str) -> str:
+        s = (v or _default_jar_submit_mode()).strip().lower()
+        if s not in ("session", "flink_operator"):
+            raise ValueError("flink_jar_submit_mode 须为 session 或 flink_operator")
+        return _enforce_jar_submit_mode_allowed(s)
 
 
 class JobUpdate(BaseModel):
@@ -1321,6 +1425,7 @@ class JobUpdate(BaseModel):
     streaming_properties: Optional[str] = None
     folder_id: Optional[int] = None
     flink_sql_submit_mode: Optional[str] = None
+    flink_jar_submit_mode: Optional[str] = None
     flink_session_profile_id: Optional[int] = None
 
     @field_validator("flink_sql_submit_mode")
@@ -1329,14 +1434,44 @@ class JobUpdate(BaseModel):
         if v is None:
             return None
         s = str(v).strip().lower()
-        if s not in ("session", "kubernetes_application"):
-            raise ValueError("flink_sql_submit_mode 须为 session 或 kubernetes_application")
-        return s
+        if s not in ("session", "kubernetes_application", "flink_operator"):
+            raise ValueError("flink_sql_submit_mode 须为 session、kubernetes_application 或 flink_operator")
+        return _enforce_sql_submit_mode_allowed(s)
+
+    @field_validator("flink_jar_submit_mode")
+    @classmethod
+    def _validate_jar_submit_mode_update(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        s = str(v).strip().lower()
+        if s not in ("session", "flink_operator"):
+            raise ValueError("flink_jar_submit_mode 须为 session 或 flink_operator")
+        return _enforce_jar_submit_mode_allowed(s)
 
 
 class SubmitJobBody(BaseModel):
     """POST /streaming/jobs/{id}/submit：大段 SQL 请放 body，勿用 query（易超长或被代理截断）。"""
     script_content: Optional[str] = None
+
+
+def _jar_session_blocked_reason() -> Optional[str]:
+    """Operator 与 Session Flink 主版本不一致时，阻止 Session JAR 误提交。"""
+    op_ver = (settings.FLINK_OPERATOR_FLINK_VERSION or "").strip().lower()
+    app_img = (settings.FLINK_K8S_APPLICATION_IMAGE or "").strip().lower()
+    if not op_ver or not app_img:
+        return None
+    op_major = op_ver.replace("v", "").split("_")[0] if "_" in op_ver else ""
+    session_major = "2" if "2.0" in app_img or "2.1" in app_img or "2.2" in app_img else "1"
+    if op_ver.startswith("v2_") and session_major == "2":
+        return None
+    if op_ver.startswith("v1_") and session_major == "1":
+        return None
+    if not (settings.FLINK_URL or "").strip():
+        return None
+    return (
+        f"当前 Operator flinkVersion={op_ver} 与 Session 镜像 {settings.FLINK_K8S_APPLICATION_IMAGE} 主版本不一致，"
+        "Session JAR 提交易类加载失败。请统一 Flink 版本，或改用「Flink Operator 生产」提交。"
+    )
 
 
 def _require_flink_profile_in_workspace(db: Session, workspace_id: int, profile_id: Optional[int]) -> None:
@@ -1634,6 +1769,18 @@ def _flink_session_profile_public(p: FlinkSessionProfile) -> dict:
     }
 
 
+@router.get("/flink-runtime")
+def flink_runtime_info(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """只读：统一 Flink 运行时（镜像内连接器、默认 Paimon warehouse、Operator 命名空间）。"""
+    from app.services.flink_runtime_catalog import flink_runtime_api_payload
+
+    assert_gido_stream_infra_probe_access(db, current_user)
+    return flink_runtime_api_payload()
+
+
 @router.get("/flink-platform-defaults")
 def flink_platform_defaults_for_workspace(
     workspace_id: int,
@@ -1747,11 +1894,148 @@ def delete_flink_session_profile(
     return {"message": "已删除"}
 
 
+def _operator_deployment_name_for_job(job: StreamingJob) -> Optional[str]:
+    from app.services.flink_operator_submit import deployment_name_for_job, sql_deployment_name_for_job
+
+    dep = (getattr(job, "flink_operator_deployment_name", None) or "").strip()
+    ws = int(getattr(job, "workspace_id", None) or 0)
+    jt = (job.job_type or "").upper()
+    if jt == "JAR":
+        if _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None)) != "flink_operator":
+            return None
+        return dep or deployment_name_for_job(job.id, ws)
+    if jt == "SQL":
+        if _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None)) != "flink_operator":
+            return None
+        return dep or sql_deployment_name_for_job(job.id, ws)
+    return None
+
+
+def _record_submit_history_version(
+    db: Session, job: StreamingJob, user_id: int
+) -> Tuple[Optional[int], Optional[str]]:
+    """提交前写入历史快照，返回 (history_id, sql_hash)。"""
+    from app.services.gido_deployment_meta import sql_script_hash
+
+    _append_streaming_job_history_snapshot(db, job, user_id)
+    db.flush()
+    hist = (
+        db.query(StreamingJobHistory)
+        .filter(StreamingJobHistory.job_id == job.id)
+        .order_by(StreamingJobHistory.id.desc())
+        .first()
+    )
+    version_id = int(hist.id) if hist else None
+    content = (job.script_content or "") if (job.job_type or "").upper() == "SQL" else ""
+    digest = sql_script_hash(content) if content else None
+    return version_id, digest
+
+
+def _build_operator_deployment_meta(
+    job: StreamingJob,
+    *,
+    user: User,
+    sql_version: Optional[int] = None,
+    sql_hash: Optional[str] = None,
+) -> "GidoDeploymentMeta":
+    from app.services.gido_deployment_meta import GidoDeploymentMeta, utc_now_iso
+
+    jt = "sql" if (job.job_type or "").upper() == "SQL" else "jar"
+    return GidoDeploymentMeta(
+        workspace_id=int(getattr(job, "workspace_id", None) or 0),
+        job_id=int(job.id),
+        job_type=jt,
+        sql_version=str(sql_version) if sql_version is not None else None,
+        sql_hash=sql_hash,
+        submitted_by=(getattr(user, "username", None) or str(user.id)),
+        submitted_at=utc_now_iso(),
+    )
+
+
+def _jm_base_for_job(job: StreamingJob) -> Optional[str]:
+    """Flink JM REST 基址；Operator 本机开发时运行时解析隧道/NodePort，不用 DB 内集群 DNS。"""
+    stored = (getattr(job, "flink_application_jm_rest", None) or "").strip() or None
+    dep = _operator_deployment_name_for_job(job)
+    if dep:
+        from app.services.flink_operator_submit import _operator_namespace, effective_operator_jm_rest
+
+        resolved = effective_operator_jm_rest(
+            job.id,
+            dep,
+            _operator_namespace(),
+            stored,
+        )
+        if resolved:
+            return resolved
+    return stored
+
+
+def _release_operator_ui_tunnel(job: StreamingJob) -> None:
+    dep = _operator_deployment_name_for_job(job)
+    if not dep:
+        return
+    from app.services.flink_operator_ui_tunnel import release_ui_tunnel
+    from app.services.flink_operator_submit import _operator_namespace
+
+    release_ui_tunnel(dep, _operator_namespace())
+
+
+def _ensure_operator_ui_tunnels(jobs: List[StreamingJob]) -> None:
+    from app.services.flink_operator_ui_tunnel import auto_ui_tunnel_enabled, ensure_ui_tunnel
+    from app.services.flink_operator_submit import _operator_namespace
+
+    if not auto_ui_tunnel_enabled():
+        return
+    ns = _operator_namespace()
+    for job in jobs:
+        dep = _operator_deployment_name_for_job(job)
+        if not dep:
+            continue
+        if (job.status or "").lower() in ("cancelled", "draft"):
+            continue
+        if not job.flink_job_id and not (getattr(job, "flink_operator_deployment_name", None) or "").strip():
+            continue
+        if dep:
+            try:
+                ensure_ui_tunnel(job.id, dep, ns)
+            except Exception:
+                logger.debug("ensure UI tunnel job=%s", job.id, exc_info=True)
+
+
+def _sync_operator_jobs_from_cluster(db: Session, jobs: List[StreamingJob]) -> None:
+    """Operator JAR 作业：若库内仍为 draft 但集群 CR 已运行，刷新列表时回填状态。"""
+    from app.services.flink_operator_submit import sync_job_from_flink_deployment
+
+    changed = False
+    for job in jobs:
+        dep = _operator_deployment_name_for_job(job)
+        if not dep:
+            continue
+        if job.status == "cancelled":
+            continue
+        patch = sync_job_from_flink_deployment(
+            job.id,
+            deployment_name=getattr(job, "flink_operator_deployment_name", None),
+        )
+        if not patch:
+            continue
+        for k, v in patch.items():
+            setattr(job, k, v)
+        changed = True
+    if changed:
+        db.commit()
+
+
 @router.get("/jobs")
 def list_jobs(workspace_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """列出工作空间下的实时任务"""
     assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_STREAM_READ)
     jobs = db.query(StreamingJob).filter(StreamingJob.workspace_id == workspace_id).all()
+    try:
+        _sync_operator_jobs_from_cluster(db, jobs)
+        _ensure_operator_ui_tunnels(jobs)
+    except Exception:
+        logger.debug("Operator 作业状态同步失败", exc_info=True)
     uids: List[Optional[int]] = []
     for j in jobs:
         uids.append(getattr(j, "owner_id", None) or j.created_by)
@@ -1819,6 +2103,7 @@ def update_job(job_id: int, job_in: JobUpdate, db: Session = Depends(get_db), cu
         "parallelism",
         "streaming_properties",
         "flink_sql_submit_mode",
+        "flink_jar_submit_mode",
         "flink_session_profile_id",
     }
     if watch & set(patch.keys()):
@@ -1854,7 +2139,7 @@ def list_streaming_job_history(job_id: int, db: Session = Depends(get_db), curre
                 "program_args": r.program_args,
                 "parallelism": r.parallelism,
                 "streaming_properties": getattr(r, "streaming_properties", None),
-                "flink_sql_submit_mode": getattr(r, "flink_sql_submit_mode", None) or "session",
+                "flink_sql_submit_mode": _normalize_sql_submit_mode(getattr(r, "flink_sql_submit_mode", None)),
                 "saved_at": r.saved_at,
                 "saved_by": r.saved_by,
                 "saved_by_username": u.username if u else None,
@@ -1888,6 +2173,9 @@ def rollback_streaming_job_history(
     sm = getattr(rec, "flink_sql_submit_mode", None)
     if sm:
         job.flink_sql_submit_mode = sm
+    jm = getattr(rec, "flink_jar_submit_mode", None)
+    if jm:
+        job.flink_jar_submit_mode = jm
     job.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(job)
@@ -1944,9 +2232,15 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
     if job.job_type == "SQL":
         if not (job.script_content or "").strip():
             raise HTTPException(status_code=400, detail="SQL 内容为空")
-        mode = (getattr(job, "flink_sql_submit_mode", None) or "session").strip().lower()
+        mode = _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None))
         fc = _flink_client_for_job(db, job)
-        if mode == "kubernetes_application" and not (fc.k8s_application_image() or "").strip():
+        if mode == "flink_operator":
+            from app.services.flink_operator_submit import sql_operator_submit_ready
+
+            ok, reason = sql_operator_submit_ready()
+            if not ok:
+                raise HTTPException(status_code=400, detail=reason)
+        elif mode == "kubernetes_application" and not (fc.k8s_application_image() or "").strip():
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -1955,21 +2249,79 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                 ),
             )
     elif job.job_type == "JAR":
-        if not job.jar_path:
+        from app.services.jar_artifact import jar_artifact_exists
+
+        jar_mode = _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None))
+        if jar_mode == "flink_operator":
+            if not jar_artifact_exists(job.id):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "JAR 制品不存在（Operator 从 backend 拉取 artifact.jar）。"
+                        "请重新上传 JAR；若 backend Pod 曾重启，emptyDir 会清空制品需重传。"
+                    ),
+                )
+        elif not job.jar_path and not jar_artifact_exists(job.id):
             raise HTTPException(status_code=400, detail="请先上传 JAR 文件")
+        if jar_mode == "session":
+            blocked = _jar_session_blocked_reason()
+            if blocked:
+                raise HTTPException(status_code=400, detail=blocked)
+        if jar_mode == "flink_operator":
+            if not (job.main_class or "").strip():
+                raise HTTPException(status_code=400, detail="Flink Operator 生产提交须填写入口类（Main Class）")
+            from app.services.flink_operator_submit import operator_submit_ready
+
+            ok, reason = operator_submit_ready()
+            if not ok:
+                raise HTTPException(status_code=400, detail=reason)
     else:
         raise HTTPException(status_code=400, detail=f"不支持的任务类型: {job.job_type}")
 
-    if job.job_type != "SQL":
+    sql_mode_exec = _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None)) if job.job_type == "SQL" else ""
+    if job.job_type == "SQL" and sql_mode_exec != "flink_operator":
         fc = _flink_client_for_job(db, job)
+    elif job.job_type == "JAR":
+        jar_mode = _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None))
+        if jar_mode != "flink_operator":
+            fc = _flink_client_for_job(db, job)
     try:
         submit_warning: Optional[str] = None
         job.flink_application_cluster_id = None
         job.flink_application_jm_rest = None
+        job.flink_operator_deployment_name = None
         if job.job_type == "SQL":
             extra = _parse_job_streaming_properties(getattr(job, "streaming_properties", None))
             props_only, k8s_ov = _split_streaming_properties_for_sql(extra or None)
-            if mode == "kubernetes_application":
+            from app.services.operator_resources import split_streaming_properties_for_operator
+
+            flink_extra, op_resources = split_streaming_properties_for_operator(extra or None)
+            sql_source = str((extra or {}).get("sql_source") or "mount").strip().lower()
+            if mode == "flink_operator":
+                from app.services.flink_operator_submit import submit_sql_via_operator
+
+                sql_version, sql_hash = _record_submit_history_version(db, job, current_user.id)
+                dep_meta = _build_operator_deployment_meta(
+                    job, user=current_user, sql_version=sql_version, sql_hash=sql_hash
+                )
+                out = submit_sql_via_operator(
+                    job_id=job.id,
+                    workspace_id=int(job.workspace_id or 0),
+                    sql_content=job.script_content or "",
+                    parallelism=job.parallelism or 1,
+                    operator_resources=op_resources,
+                    extra_flink_props=flink_extra or None,
+                    deployment_meta=dep_meta,
+                    sql_source=sql_source,
+                )
+                job.flink_operator_deployment_name = out.get("deployment_name")
+                job.flink_application_jm_rest = out.get("application_jm_rest")
+                fjid = (out.get("flink_job_id") or "").strip() or None
+                job.flink_job_id = fjid
+                submit_warning = out.get("warning")
+                if submit_warning and not fjid:
+                    job.last_submit_error = submit_warning
+            elif mode == "kubernetes_application":
                 out = fc.submit_sql_kubernetes_application(
                     job.script_content, job.parallelism, props_only, k8s_ov, job.id
                 )
@@ -1986,13 +2338,48 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                 )
         elif job.job_type == "JAR":
             _append_streaming_job_history_snapshot(db, job, current_user.id)
-            flink_job_id = fc.run_jar(job.jar_path, job.main_class, job.program_args, job.parallelism)
-            job.flink_job_id = flink_job_id
+            jar_mode = _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None))
+            if jar_mode == "flink_operator":
+                from app.services.flink_operator_submit import submit_jar_via_operator
+                from app.services.operator_resources import split_streaming_properties_for_operator
+
+                jar_extra = _parse_job_streaming_properties(getattr(job, "streaming_properties", None))
+                flink_extra, op_resources = split_streaming_properties_for_operator(jar_extra or None)
+                hist_version, _ = _record_submit_history_version(db, job, current_user.id)
+                dep_meta = _build_operator_deployment_meta(
+                    job,
+                    user=current_user,
+                    sql_version=hist_version,
+                    sql_hash=None,
+                )
+                out = submit_jar_via_operator(
+                    job_id=job.id,
+                    workspace_id=int(job.workspace_id or 0),
+                    entry_class=job.main_class or "",
+                    parallelism=job.parallelism or 1,
+                    program_args=job.program_args,
+                    operator_resources=op_resources,
+                    extra_flink_props=flink_extra or None,
+                    deployment_meta=dep_meta,
+                )
+                job.flink_operator_deployment_name = out.get("deployment_name")
+                job.flink_application_jm_rest = out.get("application_jm_rest")
+                fjid = (out.get("flink_job_id") or "").strip() or None
+                job.flink_job_id = fjid
+                submit_warning = out.get("warning")
+                if submit_warning and not fjid:
+                    job.last_submit_error = submit_warning
+            else:
+                flink_job_id = fc.run_jar(job.jar_path, job.main_class, job.program_args, job.parallelism)
+                job.flink_job_id = flink_job_id
         job.status = "running"
-        if not (
-            (getattr(job, "flink_sql_submit_mode", None) or "session").strip().lower() == "kubernetes_application"
-            and not job.flink_job_id
-        ):
+        sql_mode = _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None))
+        jar_mode_done = _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None))
+        pending_job_id = (
+            (job.job_type == "SQL" and sql_mode in ("kubernetes_application", "flink_operator") and not job.flink_job_id)
+            or (job.job_type == "JAR" and jar_mode_done == "flink_operator" and not job.flink_job_id)
+        )
+        if not pending_job_id:
             job.last_submit_error = None
         job.last_submitted_at = datetime.utcnow()
         job.last_submitted_by = current_user.id
@@ -2001,22 +2388,49 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
             job.is_locked = True
         db.commit()
         rt_cfg = _flink_runtime_cfg_for_job(db, job)
+        op_dep_submit = _operator_deployment_name_for_job(job)
+        submit_browser_jm = getattr(job, "flink_application_jm_rest", None)
+        is_op_submit = (
+            (jar_mode_done == "flink_operator" and job.job_type == "JAR")
+            or (sql_mode == "flink_operator" and job.job_type == "SQL")
+        ) and bool(op_dep_submit)
+        if is_op_submit and op_dep_submit:
+            from app.services.flink_operator_submit import browser_jm_base_for_deployment
+
+            ns = (settings.FLINK_OPERATOR_NAMESPACE or settings.FLINK_K8S_NAMESPACE or "flink").strip()
+            submit_browser_jm = browser_jm_base_for_deployment(
+                op_dep_submit, ns, submit_browser_jm, job_id=int(job.id)
+            ) or submit_browser_jm
         return {
             "message": "提交成功",
             "flink_job_id": job.flink_job_id,
             "flink_console_url": flink_job_console_url(
                 job.flink_job_id,
-                application_jm_rest=getattr(job, "flink_application_jm_rest", None),
+                application_jm_rest=submit_browser_jm,
                 runtime_cfg=rt_cfg,
+                operator_mode=is_op_submit,
             ),
             "submit_warning": submit_warning,
             "flink_application_cluster_id": getattr(job, "flink_application_cluster_id", None),
+            "flink_operator_deployment_name": getattr(job, "flink_operator_deployment_name", None),
             "is_locked": bool(getattr(job, "is_locked", False)),
         }
     except HTTPException:
         raise
     except Exception as e:
         err_full = str(e)
+        try:
+            from kubernetes.client import ApiException  # type: ignore
+
+            if isinstance(e, ApiException):
+                err_full = f"Kubernetes API HTTP {getattr(e, 'status', '?')}: {(e.body or e.reason or err_full)[:8000]}"
+        except ImportError:
+            pass
+        if job.job_type == "JAR" and "ParameterTool" in err_full:
+            err_full = (
+                f"{err_full}\n\n提示：JAR 编译用的 Flink 版本与运行时（Session/Operator 镜像）不一致。"
+                "请用 Flink 2.0.1 重新打包 JAR，或改用与 JAR 匹配的镜像与 flinkVersion。"
+            )
         if len(err_full) > 32000:
             err_full = err_full[:32000] + "\n…(truncated)"
         job.status = "failed"
@@ -2031,12 +2445,33 @@ def delete_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
     job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_WRITE)
     if getattr(job, "is_locked", False) and not workspace_data_full_control(db, current_user, job.workspace_id):
         raise HTTPException(status_code=403, detail="作业已锁定，仅空间管理员或平台管理员可删除")
-    if job.flink_job_id:
+    op_dep_del = _operator_deployment_name_for_job(job)
+    should_stop_flink = bool(job.flink_job_id or op_dep_del)
+    if should_stop_flink:
         try:
-            jm_ov = (getattr(job, "flink_application_jm_rest", None) or "").strip() or None
-            _flink_client_for_job(db, job).cancel_job(job.flink_job_id, jm_base=jm_ov)
+            jm_ov = _jm_base_for_job(job)
+            if op_dep_del:
+                from app.services.flink_operator_submit import suspend_flink_deployment
+
+                suspend_flink_deployment(op_dep_del)
+                _release_operator_ui_tunnel(job)
+                if job.job_type == "SQL" and _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None)) == "flink_operator":
+                    from app.services.flink_operator_submit import _operator_namespace
+                    from app.services.sql_artifact import delete_sql_script_configmap
+
+                    delete_sql_script_configmap(
+                        job.id, int(job.workspace_id or 0), _operator_namespace()
+                    )
+            elif job.flink_job_id:
+                _flink_client_for_job(db, job).cancel_job(job.flink_job_id, jm_base=jm_ov)
         except Exception:
-            logger.warning("删除前停止 Flink 任务失败 job_id=%s flink_job_id=%s", job.id, job.flink_job_id, exc_info=True)
+            logger.warning(
+                "删除前停止 Flink 任务失败 job_id=%s flink_job_id=%s deployment=%s",
+                job.id,
+                job.flink_job_id,
+                getattr(job, "flink_operator_deployment_name", None),
+                exc_info=True,
+            )
     db.delete(job)
     db.commit()
     return {"message": "已删除"}
@@ -2046,7 +2481,28 @@ def delete_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
 def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: User = Depends(get_current_user)):
     """停止 Flink 任务"""
     job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_RUN)
-    jm_ov = (getattr(job, "flink_application_jm_rest", None) or "").strip() or None
+    jm_ov = _jm_base_for_job(job)
+    dep_name = _operator_deployment_name_for_job(job)
+    if dep_name:
+        try:
+            from app.services.flink_operator_submit import suspend_flink_deployment
+
+            suspend_flink_deployment(dep_name)
+            _release_operator_ui_tunnel(job)
+            if job.job_type == "SQL" and _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None)) == "flink_operator":
+                from app.services.flink_operator_submit import _operator_namespace
+                from app.services.sql_artifact import delete_sql_script_configmap
+
+                delete_sql_script_configmap(
+                    job.id, int(job.workspace_id or 0), _operator_namespace()
+                )
+            job.flink_operator_deployment_name = dep_name
+            job.status = "cancelled"
+            job.updated_at = datetime.utcnow()
+            db.commit()
+            return {"message": "已通过 Flink Operator 暂停作业（FlinkDeployment suspended）"}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"停止失败: {e}")
     if not job.flink_job_id:
         if getattr(job, "flink_application_cluster_id", None):
             raise HTTPException(
@@ -2060,6 +2516,7 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
     try:
         _flink_client_for_job(db, job).cancel_job(job.flink_job_id, jm_base=jm_ov)
         job.status = "cancelled"
+        job.updated_at = datetime.utcnow()
         db.commit()
         return {"message": "已停止"}
     except Exception as e:
@@ -2078,7 +2535,29 @@ def get_job_status(job_id: int, db: Session = Depends(get_db_flink), current_use
         out.update(extra)
         return out
 
-    jm_ov = (getattr(job, "flink_application_jm_rest", None) or "").strip() or None
+    jm_ov = _jm_base_for_job(job)
+    if jm_ov and jm_ov != (getattr(job, "flink_application_jm_rest", None) or "").strip().rstrip("/"):
+        job.flink_application_jm_rest = jm_ov
+    dep_name = _operator_deployment_name_for_job(job)
+    if dep_name:
+        try:
+            from app.services.flink_operator_submit import read_flink_deployment
+
+            cr = read_flink_deployment(dep_name)
+            spec_state = (cr.get("spec", {}).get("job", {}).get("state") or "").strip().lower()
+            if spec_state == "suspended":
+                if job.status != "cancelled":
+                    job.status = "cancelled"
+                    job.flink_operator_deployment_name = dep_name
+                    job.updated_at = datetime.utcnow()
+                    db.commit()
+                return _payload(
+                    flink_status="SUSPENDED",
+                    note="FlinkDeployment 已暂停（Operator spec.job.state=suspended）",
+                )
+        except Exception:
+            logger.debug("读取 FlinkDeployment 状态失败 job_id=%s dep=%s", job.id, dep_name, exc_info=True)
+
     if not job.flink_job_id:
         cid = getattr(job, "flink_application_cluster_id", None)
         if cid and (getattr(job, "flink_sql_submit_mode", None) or "session").strip().lower() == "kubernetes_application":
@@ -2118,6 +2597,9 @@ def get_job_status(job_id: int, db: Session = Depends(get_db_flink), current_use
             "CANCELLING": "cancelled",
         }
         new_status = state_map.get(flink_state)
+        # Operator/Session 停止后 JM 可能仍短暂返回 RECONCILING/RUNNING，勿把平台 cancelled 冲回 running
+        if job.status == "cancelled" and new_status == "running":
+            new_status = None
         if new_status:
             job.status = new_status
         job.updated_at = datetime.utcnow()
@@ -2133,12 +2615,133 @@ def get_job_exceptions(job_id: int, db: Session = Depends(get_db_flink), current
     job = require_streaming_job(db, current_user, job_id)
     if not job.flink_job_id:
         return {"exceptions": []}
-    jm_ov = (getattr(job, "flink_application_jm_rest", None) or "").strip() or None
+    jm_ov = _jm_base_for_job(job)
     fc = _flink_client_for_job(db, job)
     try:
         return fc.job_exceptions(job.flink_job_id, jm_base=jm_ov)
     except Exception as e:
         return {"exceptions": [], "error": str(e)}
+
+
+@router.get("/jobs/{job_id}/flink-ui/bootstrap")
+def bootstrap_operator_flink_ui_proxy(
+    job_id: int,
+    access_token: str = Query(..., description="GIDO 登录 JWT"),
+    then: Optional[str] = Query(None, description="代理就绪后跳转的 Flink UI 路径（含 # 路由）"),
+    db: Session = Depends(get_db_flink),
+):
+    """签发 Flink UI 代理 Cookie 并跳转；供浏览器新标签打开（无需 kubectl port-forward JM）。"""
+    from app.core.security import get_user_from_access_token
+    from app.services.flink_operator_ui_proxy import (
+        issue_ui_proxy_cookie,
+        operator_ui_proxy_enabled,
+        operator_ui_proxy_prefix,
+    )
+
+    if not operator_ui_proxy_enabled():
+        raise HTTPException(status_code=404, detail="Flink UI 代理未启用")
+    user = get_user_from_access_token(access_token, db)
+    job = require_streaming_job(db, user, job_id)
+    dep = _operator_deployment_name_for_job(job)
+    if not dep:
+        raise HTTPException(status_code=400, detail="非 Flink Operator 作业")
+
+    prefix = operator_ui_proxy_prefix(job_id)
+    target = (then or prefix).strip()
+    if not target.startswith(prefix):
+        raise HTTPException(status_code=400, detail="非法跳转路径")
+
+    cookie_name, cookie_value = issue_ui_proxy_cookie(job_id, int(user.id))
+    resp = RedirectResponse(url=target, status_code=302)
+    from app.services.flink_operator_ui_proxy import _proxy_cookie_path
+
+    resp.set_cookie(
+        key=cookie_name,
+        value=cookie_value,
+        path=_proxy_cookie_path(job_id),
+        httponly=True,
+        samesite="lax",
+        max_age=4 * 3600,
+    )
+    return resp
+
+
+@router.api_route(
+    "/jobs/{job_id}/flink-ui",
+    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+@router.api_route(
+    "/jobs/{job_id}/flink-ui/{subpath:path}",
+    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+def proxy_operator_flink_ui(
+    job_id: int,
+    request: Request,
+    subpath: str = "",
+    db: Session = Depends(get_db_flink),
+):
+    """反向代理 Operator JM Web UI（集群内 DNS），浏览器仅访问 GIDO。"""
+    from app.services.flink_operator_ui_proxy import (
+        _PROXY_COOKIE,
+        operator_ui_proxy_enabled,
+        proxy_flink_ui_request,
+        validate_ui_proxy_cookie,
+    )
+
+    if not operator_ui_proxy_enabled():
+        raise HTTPException(status_code=404, detail="Flink UI 代理未启用")
+    if not validate_ui_proxy_cookie(job_id, request.cookies.get(_PROXY_COOKIE)):
+        raise HTTPException(status_code=401, detail="请从 GIDO 作业页点击打开 Flink UI")
+
+    job = db.query(StreamingJob).filter(StreamingJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="作业不存在")
+    dep = _operator_deployment_name_for_job(job)
+    if not dep:
+        raise HTTPException(status_code=400, detail="非 Flink Operator 作业")
+
+    ns = (settings.FLINK_OPERATOR_NAMESPACE or settings.FLINK_K8S_NAMESPACE or "flink").strip()
+    qs = str(request.url.query) if request.url.query else ""
+    status_code, headers, body = proxy_flink_ui_request(
+        job_id=job_id,
+        deployment_name=dep,
+        namespace=ns,
+        stored_jm_rest=getattr(job, "flink_application_jm_rest", None),
+        subpath=subpath,
+        method=request.method,
+        query_string=qs,
+        incoming_headers=dict(request.headers),
+    )
+    if request.method.upper() == "HEAD":
+        return Response(status_code=status_code, headers=headers)
+    return Response(content=body, status_code=status_code, headers=headers)
+
+
+@router.get("/jobs/{job_id}/artifact.jar")
+def download_jar_artifact(job_id: int, token: str = Query(..., description="与 FLINK_OPERATOR_ARTIFACT_TOKEN 一致")):
+    """供 Flink Operator Pod HTTP 拉取 JAR（无 JWT；校验 artifact token）。"""
+    from app.services.jar_artifact import artifact_file_path, artifact_download_token_is_valid
+
+    if not artifact_download_token_is_valid(token):
+        raise HTTPException(status_code=403, detail="无效 artifact token")
+    path = artifact_file_path(job_id)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="JAR 制品不存在")
+    return FileResponse(path, media_type="application/java-archive", filename="artifact.jar")
+
+
+@router.get("/jobs/{job_id}/artifact.sql")
+def download_sql_artifact(job_id: int, token: str = Query(..., description="与 FLINK_OPERATOR_ARTIFACT_TOKEN 一致")):
+    """供调试/备用：SQL Operator 主路径为 ConfigMap 挂载；此端点供 HTTP 拉取场景。"""
+    from app.services.jar_artifact import artifact_download_token_is_valid
+    from app.services.sql_artifact import sql_script_file_path
+
+    if not artifact_download_token_is_valid(token):
+        raise HTTPException(status_code=403, detail="无效 artifact token")
+    path = sql_script_file_path(job_id)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="SQL 制品不存在")
+    return FileResponse(path, media_type="text/plain; charset=utf-8", filename="artifact.sql")
 
 
 @router.post("/jobs/{job_id}/upload-jar")
@@ -2148,7 +2751,9 @@ async def upload_jar(
     db: Session = Depends(get_db_flink),
     current_user: User = Depends(get_current_user),
 ):
-    """上传 JAR 文件到 Flink"""
+    """上传 JAR：写入制品库；若已配置 Session JM 则同步上传到 Flink（开发试跑）。"""
+    from app.services.jar_artifact import save_jar_bytes
+
     job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_WRITE)
     if getattr(job, "is_locked", False):
         raise HTTPException(status_code=403, detail="作业已锁定，请先解锁后再上传 JAR")
@@ -2156,11 +2761,24 @@ async def upload_jar(
         raise HTTPException(status_code=400, detail="只支持 .jar 文件")
     try:
         content = await file.read()
-        jar_id = _flink_client_for_job(db, job).upload_jar(content, file.filename)
-        # jar_id 是 Flink 返回的完整路径，取文件名部分作为 jar_id
-        jar_name = jar_id.split("/")[-1] if "/" in jar_id else jar_id
+        save_jar_bytes(job.id, content)
+        jar_name = file.filename
+        jar_mode = _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None))
+        session_jar_id = None
+        if jar_mode == "session":
+            try:
+                session_jar_id = _flink_client_for_job(db, job).upload_jar(content, file.filename)
+                jar_name = session_jar_id.split("/")[-1] if "/" in session_jar_id else session_jar_id
+            except Exception as ex:
+                logger.warning("Session JM 上传 JAR 失败（制品已保存）: %s", ex)
         job.jar_path = jar_name
         db.commit()
-        return {"message": "上传成功", "jar_id": jar_name, "filename": file.filename}
+        return {
+            "message": "上传成功",
+            "jar_id": jar_name,
+            "filename": file.filename,
+            "artifact_saved": True,
+            "session_uploaded": bool(session_jar_id),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"上传失败: {e}")

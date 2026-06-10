@@ -390,6 +390,69 @@ def migrate_dw_streaming_jobs_flink_submit_mode(engine: Engine) -> None:
                 conn.execute(text("ALTER TABLE dw_streaming_jobs ADD COLUMN flink_application_jm_rest VARCHAR(512)"))
 
 
+def migrate_dw_streaming_jobs_flink_jar_operator(engine: Engine) -> None:
+    """JAR 提交模式（session=Session JM；flink_operator=FlinkDeployment CR）及 Operator 部署名。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_streaming_jobs"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_streaming_jobs")}
+    with engine.begin() as conn:
+        if "flink_jar_submit_mode" not in cols:
+            if engine.dialect.name in ("mysql", "postgresql"):
+                conn.execute(
+                    text(
+                        "ALTER TABLE dw_streaming_jobs ADD COLUMN flink_jar_submit_mode "
+                        "VARCHAR(32) NOT NULL DEFAULT 'session'"
+                    )
+                )
+            else:
+                conn.execute(
+                    text(
+                        "ALTER TABLE dw_streaming_jobs ADD COLUMN flink_jar_submit_mode "
+                        "VARCHAR(32) DEFAULT 'session'"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "UPDATE dw_streaming_jobs SET flink_jar_submit_mode = 'session' "
+                        "WHERE flink_jar_submit_mode IS NULL"
+                    )
+                )
+        if "flink_operator_deployment_name" not in cols:
+            if engine.dialect.name == "mysql":
+                conn.execute(
+                    text(
+                        "ALTER TABLE dw_streaming_jobs ADD COLUMN flink_operator_deployment_name "
+                        "VARCHAR(128) NULL"
+                    )
+                )
+            else:
+                conn.execute(
+                    text(
+                        "ALTER TABLE dw_streaming_jobs ADD COLUMN flink_operator_deployment_name "
+                        "VARCHAR(128)"
+                    )
+                )
+    if insp.has_table("dw_streaming_job_history"):
+        hcols = {c["name"] for c in insp.get_columns("dw_streaming_job_history")}
+        if "flink_jar_submit_mode" not in hcols:
+            with engine.begin() as conn:
+                if engine.dialect.name == "mysql":
+                    conn.execute(
+                        text(
+                            "ALTER TABLE dw_streaming_job_history ADD COLUMN flink_jar_submit_mode "
+                            "VARCHAR(32) NULL"
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE dw_streaming_job_history ADD COLUMN flink_jar_submit_mode "
+                            "VARCHAR(32)"
+                        )
+                    )
+
+
 def migrate_dw_streaming_jobs_submit_audit_and_history_submit_mode(engine: Engine) -> None:
     """实时作业：最近提交审计列；版本快照中记录当时的 SQL 提交模式（便于排障与合规）。"""
     insp = inspect(engine)

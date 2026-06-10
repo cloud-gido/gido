@@ -21,7 +21,7 @@ docker compose -f gido/docker-compose.yml down --remove-orphans 2>/dev/null || t
 log "停止全栈 compose 中的 GIDO 服务…"
 docker compose -f docker-compose-platform.yml stop frontend backend 2>/dev/null || true
 
-for c in gido-frontend gido-backend dataworks-frontend dataworks-backend; do
+for c in gido-frontend gido-backend; do
   if docker container inspect "$c" >/dev/null 2>&1; then
     log "移除容器: $c"
     docker rm -f "$c" >/dev/null 2>&1 || true

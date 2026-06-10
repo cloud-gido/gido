@@ -1,6 +1,6 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
@@ -75,8 +75,10 @@ class Settings(BaseSettings):
     # 若设置且文件存在，Application 提交后可用 Kubernetes API 自动解析 ``{cluster_id}-rest`` 的 NodePort，
     # 拼接为 http://{FLINK_K8S_JM_NODEPORT_HOST}:{port} 轮询 jobId（容器内可将 kubeconfig 挂到 /root/.kube/host-kubeconfig，由 entrypoint 写入 /tmp/kube-for-backend）。
     FLINK_K8S_KUBECONFIG_PATH: Optional[str] = None
-    # 与 NodePort 组合成 JM REST 基址；compose 内后端默认 host.docker.internal；本机 PyCharm 请改 127.0.0.1
-    FLINK_K8S_JM_NODEPORT_HOST: str = "host.docker.internal"
+    # 与 NodePort 组合成 JM REST 基址；生产用 LoadBalancer/Ingress；Kind 本机在 kind-local.env 设 host.docker.internal
+    FLINK_K8S_JM_NODEPORT_HOST: Optional[str] = None
+    # 浏览器打开 Flink Web UI（NodePort）；Kind 本机一般为 127.0.0.1
+    FLINK_K8S_JM_NODEPORT_BROWSER_HOST: Optional[str] = None
     # K8s Application 默认 executionConfig（可被作业「参数调优」里顶级 k8s_application 覆盖）
     FLINK_K8S_NAMESPACE: Optional[str] = None
     # 集群 DNS 后缀（默认 cluster.local）；非标准域时与 JM/Gateway Service FQDN 一致
@@ -88,14 +90,72 @@ class Settings(BaseSettings):
     # 可选：覆盖 sql-gateway REST 广告地址（留空则 flink-sql-gateway.<namespace>.svc.<domain>）
     FLINK_K8S_SQL_GATEWAY_REST_HOST: Optional[str] = None
     FLINK_K8S_CONTEXT: Optional[str] = None
-    FLINK_K8S_REST_EXPOSED_TYPE: Optional[str] = None
+    # 生产常见 LoadBalancer；本机 Kind 在 .env 覆盖为 NodePort
+    FLINK_K8S_REST_EXPOSED_TYPE: Optional[str] = "LoadBalancer"
     # Gateway 执行 SQL 时要把作业提交到哪套 JM REST（hostname 必须能被 Gateway 进程解析；默认同 FLINK_URL）
     FLINK_GATEWAY_JOBMANAGER_REST_URL: Optional[str] = None
     # Flink Web UI（浏览器打开作业拓扑用）；不填则用 FLINK_URL（与 JM REST 同 host:port）
     FLINK_UI_URL: Optional[str] = None
 
+    # --- GIDO Stream 提交策略（默认仅 Flink Operator）---
+    GIDO_FLINK_SUBMIT_MODE: str = "operator"
+    # 为 true 时允许 Session / K8s Application 提交（兼容旧环境，默认关闭）
+    GIDO_LEGACY_FLINK_SUBMIT: bool = False
+    # Paimon 默认 warehouse（SQL 模板与运维文档引用；作业可在 DDL 中覆写）
+    PAIMON_WAREHOUSE_DEFAULT: str = "s3://gido-paimon-warehouse"
+
+    # --- Flink Kubernetes Operator（JAR 生产 Application）---
+    # 生产：GIDO Backend 与 Flink 同集群时，用集群 DNS 访问 JM REST；浏览器用 Ingress 模板。
+    FLINK_OPERATOR_NAMESPACE: Optional[str] = None
+    FLINK_OPERATOR_IMAGE: Optional[str] = None
+    FLINK_OPERATOR_FLINK_VERSION: str = "v2_0"
+    FLINK_OPERATOR_SERVICE_ACCOUNT: str = "flink"
+    FLINK_OPERATOR_UPGRADE_MODE: str = "stateless"
+    FLINK_OPERATOR_CHECKPOINT_DIR: Optional[str] = None
+    FLINK_OPERATOR_CHECKPOINT_INTERVAL: str = "60s"
+    FLINK_OPERATOR_JM_MEMORY: str = "2048m"
+    FLINK_OPERATOR_TM_MEMORY: str = "2048m"
+    FLINK_OPERATOR_JM_CPU: float = 1.0
+    FLINK_OPERATOR_TM_CPU: float = 1.0
+    FLINK_OPERATOR_TASK_SLOTS: int = 2
+    # SQL Operator（FlinkDeployment Application + 官方 SQL Runner 模式）：镜像须含 sql-runner.jar
+    FLINK_OPERATOR_SQL_RUNNER_JAR_URI: str = "local:///opt/flink/usrlib/sql-runner.jar"
+    FLINK_OPERATOR_SQL_RUNNER_ENTRY_CLASS: Optional[str] = "com.gido.flink.SqlRunner"
+    FLINK_OPERATOR_JAR_HTTP_BASE: Optional[str] = None
+    FLINK_OPERATOR_JAR_S3_PREFIX: Optional[str] = None
+    FLINK_OPERATOR_ARTIFACT_TOKEN: Optional[str] = None
+    # 后端调 JM REST；生产（Backend 在集群内）建议：
+    # http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081
+    FLINK_OPERATOR_JM_REST_TEMPLATE: Optional[str] = (
+        "http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081"
+    )
+    # 浏览器 Flink Web UI（Ingress / 对外域名）；含 {deployment_name}、{namespace}
+    FLINK_OPERATOR_UI_URL_TEMPLATE: Optional[str] = None
+    # 可选：全组织统一浏览器入口（无 per-job Ingress 时）
+    FLINK_OPERATOR_BROWSER_JM_BASE: Optional[str] = None
+    # 经 GIDO Backend 反向代理 Flink Web UI（集群内 Backend 调 JM，浏览器只访问 GIDO /api/.../flink-ui）
+    FLINK_OPERATOR_UI_PROXY_ENABLED: bool = False
+    # 仅本机 Kind/Mac 开发：为 true 时在 UI 展示 kubectl port-forward 提示
+    FLINK_OPERATOR_DEV_LOCAL: bool = False
+    # 本机开发：GIDO 自动为每个 Operator 作业 kubectl port-forward（默认随 DEV_LOCAL 开启）
+    FLINK_OPERATOR_AUTO_UI_TUNNEL: Optional[bool] = None
+    FLINK_OPERATOR_UI_LOCAL_PORT_BASE: int = 22000
+    # 容器内 kubectl 绑定端口（与浏览器端口错开，避免 compose 端口映射占位导致 bind: address already in use）
+    FLINK_OPERATOR_UI_TUNNEL_BIND_PORT_BASE: int = 32000
+    FLINK_OPERATOR_UI_TUNNEL_BROWSER_HOST: str = "127.0.0.1"
+    FLINK_OPERATOR_KUBECTL_PATH: str = "kubectl"
+    # 本地 JAR 制品目录（容器内持久卷）
+    JAR_ARTIFACT_DIR: str = "/data/jar-artifacts"
+
     # 数据开发 publish / 实时作业提交 Flink 成功后是否自动锁定脚本与配置。生产建议 true（对齐 GIDO）；灰度/回滚可设 false
     STUDIO_LOCK_ON_PUBLISH: bool = True
+
+    @field_validator("FLINK_OPERATOR_AUTO_UI_TUNNEL", mode="before")
+    @classmethod
+    def _empty_optional_bool(cls, value):
+        if value == "" or value is None:
+            return None
+        return value
 
     @property
     def resolved_database_url(self) -> str:

@@ -32,8 +32,9 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None, e
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+def get_user_from_access_token(token: str, db: Session):
     from app.models.workspace import User
+
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="无效的认证凭据",
@@ -52,3 +53,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if user.is_active is False:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已禁用")
     return user
+
+
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    return get_user_from_access_token(token, db)

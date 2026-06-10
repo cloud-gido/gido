@@ -1,0 +1,18 @@
+# K3s 拉取集群内 HTTP registry（registry.gido.svc.cluster.local:5000）
+# K3s/containerd 默认对未知 registry 走 HTTPS，须配置 mirrors + tls.insecure_skip_verify。
+# apply 后若仍 ImagePullBackOff，在节点重启 k3s：sudo systemctl restart k3s（或 OrbStack 重启 K8s）。
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: k3s-registries
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    mirrors:
+      "registry.gido.svc.cluster.local:5000":
+        endpoint:
+          - "http://registry.gido.svc.cluster.local:5000"
+    configs:
+      "registry.gido.svc.cluster.local:5000":
+        tls:
+          insecure_skip_verify: true

@@ -1,0 +1,27 @@
+# GIDO 统一 Flink 运行时镜像（gido-flink-sql-runner / gido-flink-runtime）
+# 基座：apache/flink:2.0.1-java11
+# sql-runner：/opt/flink/usrlib/sql-runner.jar
+# 连接器：/opt/flink/lib/
+
+paimon:
+  artifact: org.apache.paimon:paimon-flink-2.0
+  version: "1.3.2"
+  path: /opt/flink/lib/paimon-flink-2.0-1.3.2.jar
+
+flink_cdc:
+  note: >
+    Flink CDC 3.6+ 在 Maven 上为 3.6.0-1.20 / 3.6.0-2.2（无裸 3.6.0）。
+    GIDO Flink 2.0.1 基座预置 3.5.0；生产 CDC→Paimon 请充分验证，
+    或升级 Flink 至 2.2.x 后改用 3.6.0-2.2。
+  mysql:
+    artifact: org.apache.flink:flink-sql-connector-mysql-cdc
+    version: "3.5.0"
+  postgres:
+    artifact: org.apache.flink:flink-sql-connector-postgres-cdc
+    version: "3.5.0"
+
+sql_runner:
+  artifact: com.gido:flink-sql-runner
+  version: "1.0.0"
+  path: /opt/flink/usrlib/sql-runner.jar
+  entry_class: com.gido.flink.SqlRunner

@@ -1,0 +1,40 @@
+# Flink Kubernetes Operator 作业 Pod 用 ServiceAccount + RBAC（namespace: flink）
+# GIDO Backend 提交 FlinkDeployment 的 CR 权限见 k8s/gido.yaml（gido-backend → flink RoleBinding）
+#
+# 用法（Operator CRD/Controller 须已安装）：
+#   kubectl apply -f k8s/flink-operator-rbac.yaml
+#
+# 与 ConfigMap FLINK_OPERATOR_NAMESPACE=flink、FLINK_OPERATOR_SERVICE_ACCOUNT=flink 对齐
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flink
+  namespace: flink
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flink
+  namespace: flink
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "configmaps", "services", "secrets", "persistentvolumeclaims"]
+    verbs: ["*"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flink
+  namespace: flink
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flink
+subjects:
+  - kind: ServiceAccount
+    name: flink
+    namespace: flink
