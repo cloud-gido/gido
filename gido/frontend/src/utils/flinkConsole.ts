@@ -2,6 +2,10 @@
  * @author felixzhu
  * @date 2026-06-10
  */
+/**
+ * Copyright 2026 玑渡 GIDO Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
 /** 经 GIDO 代理打开 Operator Flink Web UI（自动 bootstrap Cookie，无需 kubectl port-forward JM）。 */
 export function openFlinkConsoleUrl(consoleUrl: string, jobId: number): void {
   const token = localStorage.getItem('token')
