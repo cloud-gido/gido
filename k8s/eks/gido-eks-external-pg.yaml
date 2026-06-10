@@ -1,0 +1,333 @@
+# =============================================================================
+# GIDO on AWS EKS — 外置 PostgreSQL（RDS）+ Flink Operator + S3 制品
+# =============================================================================
+#
+# 适用：EKS 上已有 RDS PostgreSQL（元库），不部署集群内 postgres。
+#
+# 替换占位符（全局搜索 CHANGE_ME）：
+#   CHANGE_ME_AWS_ACCOUNT     AWS 账号 ID
+#   CHANGE_ME_AWS_REGION      如 ap-northeast-1
+#   CHANGE_ME_ECR_TAG         镜像 tag，建议 git-sha
+#   CHANGE_ME_S3_BUCKET       S3 bucket 名（无 s3:// 前缀）
+#   CHANGE_ME_RDS_HOST        RDS 端点，如 xxx.ap-northeast-1.rds.amazonaws.com
+#   CHANGE_ME_DB_USER         数据库用户
+#   CHANGE_ME_DB_PASSWORD     数据库密码（URL 特殊字符须编码，如 @ → %40）
+#   CHANGE_ME_DB_NAME         库名，默认 gido
+#   CHANGE_ME_SECRET_KEY      JWT 密钥（48+ 随机字符）
+#   CHANGE_ME_ARTIFACT_TOKEN  FLINK_OPERATOR_ARTIFACT_TOKEN（32+ 随机字符）
+#   CHANGE_ME_BACKEND_IRSA    gido-backend IRSA Role ARN
+#   CHANGE_ME_INGRESS_HOST    对外域名（可选 Ingress）
+#
+# 前置：
+#   1. kubectl create namespace flink
+#   2. kubectl apply -f k8s/flink-operator-rbac.yaml
+#   3. kubectl apply -f k8s/eks/flink-s3-irsa.example.yaml   # 替换 ACCOUNT_ID
+#   4. Helm 安装 Flink Kubernetes Operator 1.15
+#   5. RDS 安全组：允许 EKS 节点/worker SG → TCP 5432
+#   6. 在 RDS 上 CREATE DATABASE gido; 并执行 backend init_db（首次部署见文末）
+#
+# 应用：
+#   kubectl apply -f k8s/eks/gido-eks-external-pg.yaml
+#
+# 访问（无 Ingress 时）：
+#   kubectl -n gido port-forward svc/frontend 8080:80
+#
+# =============================================================================
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gido
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gido-backend-config
+  namespace: gido
+data:
+  GIDO_FLINK_SUBMIT_MODE: "operator"
+  GIDO_LEGACY_FLINK_SUBMIT: "false"
+  DS_ENABLED: "false"
+  DS_URL: ""
+  DS_UI_URL: ""
+  DS_PROJECT_NAME: "GIDO"
+  INTERNAL_TOKEN: ""
+  GIDO_FLINK_K8S_API_PATCH: "disable"
+  # --- Flink Operator（生产）---
+  FLINK_K8S_NAMESPACE: "flink"
+  FLINK_K8S_CLUSTER_DOMAIN: "cluster.local"
+  FLINK_OPERATOR_NAMESPACE: "flink"
+  FLINK_OPERATOR_SERVICE_ACCOUNT: "flink"
+  FLINK_OPERATOR_FLINK_VERSION: "v2_0"
+  FLINK_OPERATOR_UPGRADE_MODE: "savepoint"
+  FLINK_OPERATOR_UI_PROXY_ENABLED: "true"
+  FLINK_OPERATOR_DEV_LOCAL: "false"
+  FLINK_OPERATOR_AUTO_UI_TUNNEL: "false"
+  FLINK_OPERATOR_JM_REST_TEMPLATE: "http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081"
+  FLINK_OPERATOR_JAR_HTTP_BASE: "http://backend.gido.svc.cluster.local:8001"
+  FLINK_OPERATOR_SQL_RUNNER_JAR_URI: "local:///opt/flink/usrlib/sql-runner.jar"
+  FLINK_OPERATOR_SQL_RUNNER_ENTRY_CLASS: "com.gido.flink.SqlRunner"
+  FLINK_OPERATOR_JM_MEMORY: "2048m"
+  FLINK_OPERATOR_TM_MEMORY: "2048m"
+  FLINK_OPERATOR_JM_CPU: "1"
+  FLINK_OPERATOR_TM_CPU: "1"
+  FLINK_OPERATOR_TASK_SLOTS: "2"
+  JAR_ARTIFACT_DIR: "/data/jar-artifacts"
+  # ECR 镜像（三仓库须已 push）
+  FLINK_OPERATOR_IMAGE: "CHANGE_ME_AWS_ACCOUNT.dkr.ecr.CHANGE_ME_AWS_REGION.amazonaws.com/gido-flink-runtime:CHANGE_ME_ECR_TAG"
+  FLINK_K8S_APPLICATION_IMAGE: "CHANGE_ME_AWS_ACCOUNT.dkr.ecr.CHANGE_ME_AWS_REGION.amazonaws.com/gido-flink-runtime:CHANGE_ME_ECR_TAG"
+  # S3（须双 IRSA：gido-backend 写 + flink 读）
+  FLINK_OPERATOR_JAR_S3_PREFIX: "s3://CHANGE_ME_S3_BUCKET/gido-artifacts"
+  PAIMON_WAREHOUSE_DEFAULT: "s3://CHANGE_ME_S3_BUCKET/paimon-warehouse"
+  FLINK_OPERATOR_CHECKPOINT_DIR: "s3://CHANGE_ME_S3_BUCKET/flink-checkpoints"
+  # upgradeMode=savepoint 时 Operator 校验 execution.checkpointing.savepoint-dir（backend 自动写入 FlinkDeployment）
+  FLINK_OPERATOR_SAVEPOINT_DIR: "s3://CHANGE_ME_S3_BUCKET/flink-savepoints"
+  GIDO_ARTIFACT_S3_REGION: "CHANGE_ME_AWS_REGION"
+  # Session / Gateway（不部署，留空）
+  FLINK_URL: ""
+  FLINK_SQL_GATEWAY_URL: ""
+  FLINK_GATEWAY_JOBMANAGER_REST_URL: ""
+  FLINK_UI_URL: ""
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gido-secrets
+  namespace: gido
+type: Opaque
+stringData:
+  # 外置 RDS；密码含特殊字符须 URL 编码（# → %23, @ → %40）
+  DATABASE_URL: "postgresql+psycopg2://CHANGE_ME_DB_USER:CHANGE_ME_DB_PASSWORD@CHANGE_ME_RDS_HOST:5432/CHANGE_ME_DB_NAME"
+  # 可选：拆分变量（四项齐全时优先于 DATABASE_URL）
+  # INFRA_GIDO_DB_SERVICE_URL: "CHANGE_ME_RDS_HOST"
+  # INFRA_GIDO_DB_SERVICE_USER: "CHANGE_ME_DB_USER"
+  # INFRA_GIDO_DB_SERVICE_PASSWORD: "CHANGE_ME_DB_PASSWORD"
+  # INFRA_GIDO_DB_URL: "CHANGE_ME_DB_NAME"
+  SECRET_KEY: "CHANGE_ME_SECRET_KEY"
+  FLINK_OPERATOR_ARTIFACT_TOKEN: "CHANGE_ME_ARTIFACT_TOKEN"
+  DS_TOKEN: ""
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gido-backend
+  namespace: gido
+  annotations:
+    eks.amazonaws.com/role-arn: "CHANGE_ME_BACKEND_IRSA"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gido-flink-operator
+  namespace: flink
+rules:
+  - apiGroups: ["flink.apache.org"]
+    resources: ["flinkdeployments", "flinksessionjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "pods", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gido-backend-flink-operator
+  namespace: flink
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gido-flink-operator
+subjects:
+  - kind: ServiceAccount
+    name: gido-backend
+    namespace: gido
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gido-jar-artifacts
+  namespace: gido
+  labels:
+    app: gido
+    component: backend
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: gp3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gido-backend
+  namespace: gido
+  labels:
+    app: gido
+    component: backend
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gido
+      component: backend
+  template:
+    metadata:
+      labels:
+        app: gido
+        component: backend
+    spec:
+      serviceAccountName: gido-backend
+      containers:
+        - name: backend
+          image: CHANGE_ME_AWS_ACCOUNT.dkr.ecr.CHANGE_ME_AWS_REGION.amazonaws.com/gido-backend:CHANGE_ME_ECR_TAG
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8001
+          envFrom:
+            - configMapRef:
+                name: gido-backend-config
+            - secretRef:
+                name: gido-secrets
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 120
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "768Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          volumeMounts:
+            - name: jar-artifacts
+              mountPath: /data/jar-artifacts
+      volumes:
+        - name: jar-artifacts
+          persistentVolumeClaim:
+            claimName: gido-jar-artifacts
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: gido
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8001
+      targetPort: 8001
+      name: http
+  selector:
+    app: gido
+    component: backend
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gido-frontend
+  namespace: gido
+  labels:
+    app: gido
+    component: frontend
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gido
+      component: frontend
+  template:
+    metadata:
+      labels:
+        app: gido
+        component: frontend
+    spec:
+      initContainers:
+        - name: wait-backend
+          image: public.ecr.aws/docker/library/busybox:1.36
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until wget -qO- http://backend:8001/health >/dev/null 2>&1; do
+                echo waiting backend; sleep 3
+              done
+      containers:
+        - name: frontend
+          image: CHANGE_ME_AWS_ACCOUNT.dkr.ecr.CHANGE_ME_AWS_REGION.amazonaws.com/gido-frontend:CHANGE_ME_ECR_TAG
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: gido
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 80
+      name: http
+  selector:
+    app: gido
+    component: frontend
+---
+# 可选：AWS Load Balancer Controller（集群须已安装）
+# 不用 Ingress 时可删除本段，改用 port-forward 或单独建 ALB Service
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gido-ui
+  namespace: gido
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    # alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:CHANGE_ME_AWS_REGION:CHANGE_ME_AWS_ACCOUNT:certificate/CHANGE_ME_CERT_ID
+    alb.ingress.kubernetes.io/healthcheck-path: /
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=300
+spec:
+  ingressClassName: alb
+  rules:
+    - host: CHANGE_ME_INGRESS_HOST
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80

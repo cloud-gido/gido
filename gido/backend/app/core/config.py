@@ -114,6 +114,8 @@ class Settings(BaseSettings):
     FLINK_OPERATOR_SERVICE_ACCOUNT: str = "flink"
     FLINK_OPERATOR_UPGRADE_MODE: str = "stateless"
     FLINK_OPERATOR_CHECKPOINT_DIR: Optional[str] = None
+    # savepoint 目录；upgradeMode=savepoint 时 Operator 要求 execution.checkpointing.savepoint-dir
+    FLINK_OPERATOR_SAVEPOINT_DIR: Optional[str] = None
     FLINK_OPERATOR_CHECKPOINT_INTERVAL: str = "60s"
     FLINK_OPERATOR_JM_MEMORY: str = "2048m"
     FLINK_OPERATOR_TM_MEMORY: str = "2048m"

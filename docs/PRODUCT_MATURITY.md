@@ -1,11 +1,30 @@
 # GIDO 中台 · 功能完整度梳理
 
 > 璇玑指引 · 数据有渡 — 一站式 **批 / 流 / 服** 数据开发与治理中台  
-> 本文描述 **当前代码与默认部署路径** 下的能力边界，便于评估落地与裁剪。
+> 最后更新：2026-06 · 对应仓库 `main`（Flink Operator + S3 制品 + CDC→Paimon EKS）
+
+本文描述 **当前代码与典型部署路径** 下的能力边界，便于评估落地、裁剪与发包说明。
 
 ---
 
-## 1. 产品架构
+## 1. 总览评分（按部署路径）
+
+| 子产品 | Compose 全栈 | K3s 最小栈 | **AWS EKS 生产** |
+|--------|:------------:|:----------:|:----------------:|
+| **GIDO Batch**（批） | ★★★★☆ | ★★★☆☆ | ★★★☆☆ |
+| **GIDO Stream**（流） | ★★★☆☆ | ★★★★☆ | ★★★★★ |
+| **GIDO Serve**（服） | ★★★★★ | ★★★★★ | ★★★★★ |
+| **横切**（RBAC/审计/主题） | ★★★★★ | ★★★★★ | ★★★★★ |
+
+**解读**
+
+- **Serve** 只依赖元库 + 数据源，三条路径均完整。
+- **Stream** 在 **EKS + Operator + S3** 上最完整（制品持久化、CDC→Paimon、checkpoint）。
+- **Batch** 强依赖 **DolphinScheduler**；K8s 默认不 bundled DS，调度为最大缺口。
+
+---
+
+## 2. 产品架构
 
 GIDO 是 **单壳三产品** 的中台：
 
@@ -15,104 +34,145 @@ GIDO 是 **单壳三产品** 的中台：
 | **GIDO Stream**（玑渡·流） | `/gido/stream/*` | Flink SQL / JAR 开发与运维 |
 | **GIDO Serve**（玑渡·服） | `/gido/service/*` | SQL 封装 HTTP API、应用授权与监控 |
 
-共用：登录与 RBAC、工作空间、审计、主题、系统管理（集成 / 数据源 / 审批）。
+**共用能力**：登录、多工作空间、RBAC、审计、主题/品牌、数据源、发布审批、系统管理（集成配置）。
 
 ---
 
-## 2. 部署路径与能力对照
+## 3. 部署路径与能力对照
 
-| 部署方式 | 命令 / 清单 | Batch 调度 | Stream 提交 | Serve |
-|----------|-------------|------------|-------------|-------|
-| **Compose 全栈** | `./start-platform.sh` | Dolphin + Kafka + PG | Flink Session + Gateway | 完整 |
-| **K3s 最小栈（推荐生产流）** | `k8s/deploy-gido-k3s.sh` | 元库有表，**DS 默认关** | **Flink Operator + 自建 runtime 镜像** | 完整 |
-| **Kind 开发栈** | `k8s/apply-gido-stack.sh` | 同左 | Operator JAR；Session 可选 `GIDO_APPLY_FLINK=1` | 完整 |
+| 部署方式 | 入口 | Batch 调度 | Stream 提交 | 制品存储 | Serve |
+|----------|------|------------|-------------|----------|-------|
+| **Compose 全栈** | `./start-platform.sh` | Dolphin 完整 | Flink **Session** + Gateway | 本地 PVC / HTTP | 完整 |
+| **K3s 准生产** | `k8s/deploy-gido-k3s.sh` | DS 默认关 | **Operator** + runtime 镜像 | PVC + HTTP（可配 S3） | 完整 |
+| **Kind 开发** | `k8s/apply-gido-stack.sh` | 同 K3s | Operator；Session 可选 | 同 K3s | 完整 |
+| **AWS EKS 生产** | [CDC_PAIMON_EKS.md](./CDC_PAIMON_EKS.md) | 外置 DS | Operator + **S3 制品** + CDC→Paimon | **S3 持久化** | 完整 |
 
-**当前主推**：K3s/K8s + **Flink Kubernetes Operator 1.15** + **Flink 2.0.1**（`flinkVersion: v2_0`），作业镜像 `gido-flink-sql-runner`。
-
----
-
-## 3. GIDO Batch · 完整度
-
-| 模块 | 菜单 / API | 状态 | 说明 |
-|------|------------|------|------|
-| 数据开发 Studio | `/batch/studio` | **可用** | SQL 编辑、运行、结果面板 |
-| 工作流 DAG | `/batch/workflow` | **可用** | 可视化编排；发布依赖 Dolphin |
-| 调度 / 实例 | scheduler API | **条件可用** | K8s 最小栈 `DS_ENABLED=false` 时仅 UI/元数据，无真实调度 |
-| 数据集成 | `/batch/integration` | **可用** | 多源同步；CDC 为 **轮询增量**，非 Debezium 原生 |
-| 数据地图 | `/batch/datamap` | **可用** | 表/字段字典、血缘（**基于 SQL 正则**，非 OpenLineage） |
-| 数据探查 | `/batch/probe` | **可用** | 采样与统计 |
-| 数据质量 | `/batch/quality` | **部分** | 规则引擎可用；执行层偏 **MySQL 协议** 数据源 |
-| 运维中心 | `/batch/operation` | **可用** | 实例监控、趋势（依赖 DS 时有真实数据） |
-| 发布审批 | `/batch/approval` | **可用** | 批/流共用审批流 |
-| 数据源 | 系统管理 | **可用** | PG/MySQL 等；可与 DS 同步账号 |
-| RBAC | 系统管理 | **可用** | 角色、权限码、工作空间 |
-
-**Batch 落地缺口（最小 K8s）**：需单独部署 Dolphin（Compose 全栈或 `k8s/legacy/dolphinscheduler.yaml`）才能端到端「发布 → 调度 → 实例」。
+**流计算主推栈**：Flink Kubernetes Operator **1.15** + Flink **2.0.1**（`flinkVersion: v2_0`），镜像 `gido-flink-sql-runner`（Paimon + MySQL CDC + S3 插件）。
 
 ---
 
-## 4. GIDO Stream · 完整度
+## 4. GIDO Batch · 模块完整度
 
-| 模块 | 状态 | 说明 |
-|------|------|------|
-| Flink SQL 开发 | **可用** | 编辑器、模板（含 CDC→Paimon 示例 SQL） |
-| Flink JAR 作业 | **可用** | Operator `FlinkDeployment` 提交 |
-| 作业运维 / 状态 | **可用** | 对接 K8s Operator CR |
-| 发布审批 | **可用** | 与 Batch 共用 |
-| Session / Gateway 路径 | **遗留** | `GIDO_LEGACY_FLINK_SUBMIT=false` 默认关闭；清单在 `k8s/legacy/` |
-| CDC→Paimon 端到端 | **EKS 就绪** | 运行时含 Paimon + mysql-cdc + S3 插件；见 [docs/CDC_PAIMON_EKS.md](../docs/CDC_PAIMON_EKS.md) 与 `k8s/eks/` |
+| 模块 | 前端 | 后端 API | Compose | K8s 最小栈 | 说明 |
+|------|:----:|:--------:|:-------:|:----------:|------|
+| 数据开发 Studio | ✅ | `/studio` | ✅ | ✅ | SQL 编辑、运行、结果 |
+| 工作流 DAG | ✅ | `/workflows` | ✅ | ✅ | 可视化编排；**发布需 DS** |
+| 调度 / 实例 | ✅ | `/scheduler` | ✅ | ⚠️ | K8s 默认 `DS_ENABLED=false` |
+| 数据集成 | ✅ | `/integration` | ✅ | ✅ | 多源同步；CDC 为**轮询增量** |
+| 数据地图 | ✅ | `/datamap` | ✅ | ✅ | 字典 + **SQL 正则血缘** |
+| 数据探查 | ✅ | `/probe` | ✅ | ✅ | 采样统计 |
+| 数据质量 | ✅ | `/quality` | ⚠️ | ⚠️ | 规则可用；执行偏 **MySQL 协议** |
+| 运维中心 | ✅ | `/operation` | ✅ | ⚠️ | 有 DS 才有真实实例数据 |
+| 发布审批 | ✅ | `/approvals` | ✅ | ✅ | 批/流共用 |
+| 数据源 | ✅ | `/datasources` | ✅ | ✅ | PG/MySQL 等 |
+| RBAC | ✅ | `/admin` | ✅ | ✅ | 角色、权限码、工作空间 |
 
-**Stream 生产 checklist**：Operator RBAC、`gido-flink-runtime` 镜像、集成里配置 K8s 域与镜像仓库；SQL 作业走 SqlRunner JAR。
-
----
-
-## 5. GIDO Serve · 完整度
-
-| 模块 | 状态 | 说明 |
-|------|------|------|
-| 服务概览 | **可用** | 调用量、延迟聚合 |
-| API 开发（SQL→REST） | **可用** | 参数化 SQL、调试 |
-| 应用管理 AppKey | **可用** | 授权与密钥 |
-| 调用监控 | **可用** | Trace、错误 |
-| 开放网关 | **可用** | `/open/*` 对外路由 |
-
-Serve 对 **元库 PG + 已注册数据源** 依赖最少，在 K8s 最小栈上 **完整度最高**。
+**Batch 生产落地**：K8s/EKS 需外置 Dolphin（Compose 全栈或 `k8s/legacy/dolphinscheduler.yaml`）才能端到端「发布 → 调度 → 实例」。
 
 ---
 
-## 6. 横切能力
+## 5. GIDO Stream · 模块完整度
 
-| 能力 | 状态 |
+| 模块 | 状态 | Compose 全栈 | K3s / Kind | EKS 生产 |
+|------|------|:------------:|:----------:|:--------:|
+| Flink SQL 开发 | ✅ | Session 提交 | **Operator** | **Operator** |
+| Flink JAR 作业 | ✅ | Session / 遗留 | **Operator** | **Operator** |
+| 作业运维 / 状态同步 | ✅ | ✅ | ✅ | ✅ |
+| Flink UI 代理 | ✅ | 直连 JM | ✅ | ✅ |
+| 发布审批 | ✅ | ✅ | ✅ | ✅ |
+| 多套集群连接配置 | ✅ | ✅ | ✅ | ✅ |
+| **S3 制品库**（JAR/SQL） | ✅ | — | 可选 | **推荐** |
+| **CDC→Paimon** | ✅ | 需自建 MySQL+仓库 | 需基建 | **文档 + 模板就绪** |
+| Session / Gateway | 遗留 | ✅ 默认 | `k8s/legacy/` | 不推荐 |
+
+**Stream 关键配置（EKS）**
+
+| 变量 | 用途 |
 |------|------|
-| 多工作空间 | 可用 |
-| 审计日志 | 可用 |
-| 品牌 / 主题 | 可用 |
-| CI（backend pytest + frontend build） | 可用 |
-| 分层镜像部署（app 每次构建 / flink runtime 按需） | 可用 |
+| `FLINK_OPERATOR_JAR_S3_PREFIX` | JAR/SQL 制品 S3 前缀 |
+| `PAIMON_WAREHOUSE_DEFAULT` | Paimon 仓库存路径 |
+| `FLINK_OPERATOR_CHECKPOINT_DIR` | Flink checkpoint（建议 S3） |
+| `FLINK_OPERATOR_ARTIFACT_TOKEN` | HTTP 制品拉取校验（S3 未配时必需） |
+| `FLINK_OPERATOR_IMAGE` | 含 sql-runner + Paimon + CDC + S3 的运行时镜像 |
+
+详见 [CDC_PAIMON_EKS.md](./CDC_PAIMON_EKS.md)、[FLINK_ARCHITECTURE.md](./FLINK_ARCHITECTURE.md)。
 
 ---
 
-## 7. 已知局限（产品级）
+## 6. GIDO Serve · 模块完整度
 
-1. **调度**：K8s 默认不 bundled Dolphin，Batch「真调度」需外置 DS。  
-2. **集成 CDC**：非 Flink CDC / Debezium 一体化，适合轻量增量。  
-3. **血缘**：规则解析，复杂脚本可能不全。  
+| 模块 | 前端 | 后端 | 全路径 |
+|------|:----:|:----:|:------:|
+| 服务概览 | ✅ | `/data-service` | ✅ |
+| API 开发（SQL→REST） | ✅ | ✅ | ✅ |
+| 应用管理 AppKey | ✅ | ✅ | ✅ |
+| 调用监控 | ✅ | ✅ | ✅ |
+| 开放网关 | ✅ | `/open/v1` | ✅ |
+
+Serve **完整度最高**，EKS 上仅需 PG 元库 + 业务数据源即可独立上线。
+
+---
+
+## 7. 横切与工程化
+
+| 能力 | 状态 | 说明 |
+|------|------|------|
+| 多工作空间 | ✅ | 隔离脚本、作业、权限 |
+| 审计日志 | ✅ | 关键操作留痕 |
+| 品牌 / 多主题 | ✅ | 登录、关于页 |
+| CI | ✅ | backend pytest + frontend build |
+| K3s 分层部署 | ✅ | 应用每次构建 / Flink runtime 按需 |
+| EKS 示例清单 | ✅ | `k8s/eks/`（双 IRSA、MySQL Secret） |
+| 单元测试 | ✅ | Operator、S3 制品、runtime API 等 |
+
+---
+
+## 8. 生产就绪 vs 待增强
+
+### 已就绪（可上 EKS 生产）
+
+- Flink Operator SQL/JAR 提交与运维
+- S3 持久化制品库（JAR/SQL）
+- CDC→Paimon 运行时、SQL 模板、IRSA 示例、部署文档
+- Serve 全链路
+- RBAC、审批、审计、多工作空间
+
+### 条件就绪（需外置组件或配置）
+
+- Batch 调度 → 需 **DolphinScheduler**
+- Batch 集成 CDC → 轻量轮询，非 Debezium 管道
+- K3s 测试 → 无 IRSA 时 Paimon 可用 `file://`/PVC，S3 需 MinIO 或直连 AWS
+
+### 已知局限（产品级）
+
+1. **Batch 调度**：K8s/EKS 默认不 bundled Dolphin。  
+2. **Batch 集成 CDC**：非 Flink CDC / Debezium 一体化。  
+3. **血缘**：基于 SQL 正则，复杂脚本可能不全。  
 4. **质量执行**：非所有 JDBC 类型对等支持。  
-5. **流 SQL**：复杂 DDL/多语句依赖 SqlRunner 与集群 Catalog 配置。
+5. **流 SQL**：复杂 DDL/多语句依赖 SqlRunner 与 Catalog 配置。  
+6. **Postgres 元库**：K8s 清单默认 emptyDir，**生产须改 PVC**。
 
 ---
 
-## 8. 仓库清理说明（2026-06）
+## 9. 推荐落地组合
 
-已移入 **`k8s/legacy/`**：Session Flink、DS/Doris 示例、相关 shell。  
-已删除：过时 stub（`docker-compose.kind.override.yml.example`）、过时交接文档 `gido/docs/DEV_HANDOFF.md`。  
-**保留**：`gido/backend/tests/`（CI 单元测试）、Compose 内 Flink Session（全栈开发）、`docs/PRODUCT_OVERVIEW.md`（对外介绍）。
+| 目标 | 推荐路径 |
+|------|----------|
+| **5 分钟体验三产品** | `./start-platform.sh` |
+| **流计算生产（AWS）** | EKS + [CDC_PAIMON_EKS.md](./CDC_PAIMON_EKS.md) + S3 制品 |
+| **数据 API 中台** | EKS 最小栈（仅 GIDO）+ 外置 RDS PG |
+| **批流一体** | EKS GIDO + 外置 Dolphin + EKS Stream |
+| **本机 Operator 联调** | Kind + `apply-gido-stack.sh` |
 
 ---
 
-## 9. 相关文档
+## 10. 相关文档
 
-- [PRODUCT_OVERVIEW.md](./PRODUCT_OVERVIEW.md) — 界面与 5 分钟体验  
-- [FLINK_ARCHITECTURE.md](./FLINK_ARCHITECTURE.md) — 流计算架构  
-- [k8s/README.md](../k8s/README.md) — K8s 部署  
-- [DEPLOYMENT_GUIDE.md](../DEPLOYMENT_GUIDE.md) — 文档索引
+| 文档 | 说明 |
+|------|------|
+| [PRODUCT_OVERVIEW.md](./PRODUCT_OVERVIEW.md) | 界面截图与快速体验 |
+| [CDC_PAIMON_EKS.md](./CDC_PAIMON_EKS.md) | EKS CDC→Paimon + S3 |
+| [FLINK_ARCHITECTURE.md](./FLINK_ARCHITECTURE.md) | Operator vs 遗留 Session |
+| [k8s/README.md](../k8s/README.md) | Kind / K3s |
+| [k8s/eks/README.md](../k8s/eks/README.md) | EKS 示例 YAML |
+| [DEPLOYMENT_GUIDE.md](../DEPLOYMENT_GUIDE.md) | 部署索引 |

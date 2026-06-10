@@ -111,6 +111,17 @@ def _parse_program_args(program_args: Optional[str]) -> List[str]:
     return str(program_args).split()
 
 
+def _resolve_savepoint_dir(checkpoint_dir: str) -> str:
+    """savepoint 路径；显式配置优先，否则由 checkpoint 路径推导（flink-checkpoints → flink-savepoints）。"""
+    explicit = (settings.FLINK_OPERATOR_SAVEPOINT_DIR or "").strip()
+    if explicit:
+        return explicit
+    ckpt = checkpoint_dir.rstrip("/")
+    if ckpt.endswith("flink-checkpoints"):
+        return ckpt[: -len("flink-checkpoints")] + "flink-savepoints"
+    return f"{ckpt}/savepoints"
+
+
 def _base_flink_conf(*, enable_http_artifacts: bool = False) -> Dict[str, str]:
     flink_conf: Dict[str, str] = {}
     if enable_http_artifacts:
@@ -121,6 +132,7 @@ def _base_flink_conf(*, enable_http_artifacts: bool = False) -> Dict[str, str]:
         flink_conf["execution.checkpointing.interval"] = (
             settings.FLINK_OPERATOR_CHECKPOINT_INTERVAL or "60s"
         )
+        flink_conf["execution.checkpointing.savepoint-dir"] = _resolve_savepoint_dir(ckpt)
     rest_ex = (settings.FLINK_K8S_REST_EXPOSED_TYPE or "LoadBalancer").strip()
     if rest_ex:
         flink_conf["kubernetes.rest-service.exposed.type"] = rest_ex

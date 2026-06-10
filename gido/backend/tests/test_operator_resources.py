@@ -52,6 +52,27 @@ def test_split_streaming_properties_for_operator():
     assert res.task_slots == 6
 
 
+def test_build_flink_deployment_sets_savepoint_dir_when_checkpoint_configured(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(
+        settings,
+        "FLINK_OPERATOR_CHECKPOINT_DIR",
+        "s3://my-bucket/flink-checkpoints",
+    )
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_SAVEPOINT_DIR", "")
+    body = build_flink_deployment_body(
+        deployment_name="gido-jar-1",
+        namespace="flink",
+        jar_uri="s3://my-bucket/gido-artifacts/1/artifact.jar",
+        entry_class="com.example.Job",
+        parallelism=1,
+    )
+    fc = body["spec"]["flinkConfiguration"]
+    assert fc["state.checkpoints.dir"] == "s3://my-bucket/flink-checkpoints"
+    assert fc["execution.checkpointing.savepoint-dir"] == "s3://my-bucket/flink-savepoints"
+
+
 def test_build_flink_deployment_body_with_resources():
     from app.services.operator_resources import OperatorResources
 
