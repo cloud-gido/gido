@@ -223,8 +223,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ghcr.io/${{ github.repository }}/gido-flink-sql-runner
-            ghcr.io/${{ github.repository }}/gido-flink-runtime
+            ghcr.io/cloud-gido/gido/gido-flink-sql-runner
+            ghcr.io/cloud-gido/gido/gido-flink-runtime
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
