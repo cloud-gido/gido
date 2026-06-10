@@ -194,7 +194,7 @@ jobs:
       - name: Extract Flink version from pom.xml
         id: extract_flink_version
         run: |
-          FLINK_VERSION=$(python3 -c "import xml.etree.ElementTree as ET; print(ET.parse('k8s/flink-sql-runner/pom.xml').find('.//flink.version').text)")
+          FLINK_VERSION=$(grep -oP '<flink\.version>\K[^<]+' k8s/flink-sql-runner/pom.xml)
           echo "FLINK_VERSION=${FLINK_VERSION}" >> $GITHUB_OUTPUT
           echo "提取到 Flink 版本: ${FLINK_VERSION}"
 
