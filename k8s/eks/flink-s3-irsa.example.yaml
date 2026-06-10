@@ -1,0 +1,38 @@
+# Flink 作业 Pod 通过 IRSA 访问 S3（Paimon warehouse + checkpoint）
+#
+# 前置（AWS CLI / eksctl）：
+#   1. eksctl create iamserviceaccount \
+#        --cluster=gido --namespace=flink --name=flink \
+#        --role-name=gido-flink-s3 --attach-policy-arn=arn:aws:iam::ACCOUNT:policy/gido-flink-s3 \
+#        --approve --override-existing-serviceaccounts
+#   2. IAM Policy 至少允许 ListBucket / GetObject / PutObject / DeleteObject 于目标 bucket
+#      （含 gido-artifacts/* 读权限，供 Operator jarURI / SqlRunner 拉取制品）
+#
+# 若已用 eksctl 创建 SA，本文件仅作注解参考；否则 apply 前替换 ACCOUNT / REGION / ROLE_NAME。
+#
+# 与 gido.yaml 中 FLINK_OPERATOR_SERVICE_ACCOUNT=flink 对齐。
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flink
+  namespace: flink
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/gido-flink-s3
+---
+# 示例 IAM Policy（JSON，在 AWS 控制台创建后 attach 到上述 Role）
+# {
+#   "Version": "2012-10-17",
+#   "Statement": [
+#     {
+#       "Effect": "Allow",
+#       "Action": ["s3:ListBucket"],
+#       "Resource": "arn:aws:s3:::YOUR-BUCKET"
+#     },
+#     {
+#       "Effect": "Allow",
+#       "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+#       "Resource": "arn:aws:s3:::YOUR-BUCKET/*"
+#     }
+#   ]
+# }

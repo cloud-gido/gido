@@ -1,3 +1,5 @@
+
+
 # GIDO 统一 Flink 运行时镜像（sql-runner + Paimon + CDC，Operator 唯一提交路径）
 # 镜像名：gido-flink-sql-runner（主）/ gido-flink-runtime（别名）
 # 须先 source k8s/lib/kind-image.sh（平台由 gido_detect_build_platform 自动判断）
@@ -18,8 +20,8 @@ gido_flink_sql_runner_build() {
   local tag="${2:-$(gido_flink_sql_runner_default_tag)}"
   local root="${3:?root dir}"
   local context="${root}/k8s/flink-sql-runner"
-  local flink_base="${FLINK_BASE_IMAGE:-apache/flink:2.0.1-java11}"
-  local maven_image="${MAVEN_IMAGE:-maven:3.9-eclipse-temurin-11}"
+  local flink_base="${FLINK_BASE_IMAGE:-docker.m.daocloud.io/apache/flink:2.0.1-java11}"
+  local maven_image="${MAVEN_IMAGE:-docker.m.daocloud.io/library/maven:3.9-eclipse-temurin-11}"
 
   if [[ ! -f "${context}/Dockerfile" ]]; then
     echo "错误：未找到 ${context}/Dockerfile" >&2

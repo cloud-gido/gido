@@ -1,3 +1,5 @@
+
+
 # 需集群已安装 Ingress Controller（如 ingress-nginx），与 k8s/flink-sql-gateway-ingress.yaml 相同前提。
 # 使用前将 host 改成你的域名，并在本机 /etc/hosts 或 DNS 指向 Ingress IP。
 #

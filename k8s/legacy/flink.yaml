@@ -1,3 +1,5 @@
+
+
 # DEPRECATED — 遗留 Session / SQL Gateway 栈；GIDO Stream 生产路径请使用 Flink Kubernetes Operator + gido-flink-runtime。
 # 仅当 GIDO_LEGACY_FLINK_SUBMIT=true 且需 Session/Application 提交时保留本清单。
 #
@@ -21,7 +23,7 @@
 # 唯一 K8s 清单目录：仓库根下 k8s/（含 flink.yaml、Ingress、NodePort 可选件）。
 # 同集群部署 GIDO 本体：见 k8s/gido.yaml；一键脚本 bash k8s/apply-gido-stack.sh
 # 重新部署：
-#   kubectl apply -f k8s/flink.yaml && bash k8s/redeploy-flink.sh
+#   kubectl apply -f k8s/legacy/flink.yaml && bash k8s/legacy/redeploy-flink.sh
 #
 # Flink JobManager 容器内 REST 端口为 8081；宿主访问见上。SQL Gateway（ClusterIP）对外走 Ingress nginx + k8s/flink-sql-gateway-ingress.yaml。
 # Docker 内 GIDO 配合 Ingress 时配置 GIDO_FLINK_SQL_GATEWAY_HTTP_HOST / GIDO_FLINK_SQL_GATEWAY_URL（见 .env.example）。

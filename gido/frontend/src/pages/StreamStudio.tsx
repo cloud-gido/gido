@@ -1,6 +1,8 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
+ * @author felixzhu
+ * @date 2026-06-05
  */
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
@@ -130,7 +132,11 @@ function sqlModeLabel(mode: string | undefined) {
 
 function cdcPaimonSqlTemplate(warehouse: string) {
   const wh = warehouse || 's3://gido-paimon-warehouse'
-  return `-- MySQL CDC → Paimon（GIDO 统一运行时 · Flink Operator）
+  return `-- MySQL CDC → Paimon（GIDO 统一运行时 · Flink Operator · EKS 生产）
+-- 前置：RDS/Aurora 开启 binlog(ROW)；Flink Pod 网络可达 MySQL:3306；
+--       Paimon warehouse 为 s3://（runtime 含 flink-s3-fs-hadoop 插件 + IRSA）。
+-- 密码：生产请改为真实值，或通过运维 Secret 注入后替换下方占位符。
+
 CREATE TABLE mysql_orders (
   order_id BIGINT,
   user_id BIGINT,
@@ -139,12 +145,15 @@ CREATE TABLE mysql_orders (
   PRIMARY KEY (order_id) NOT ENFORCED
 ) WITH (
   'connector' = 'mysql-cdc',
-  'hostname' = 'mysql.example.svc',
+  'hostname' = 'your-mysql.cluster-xxxxx.ap-northeast-1.rds.amazonaws.com',
   'port' = '3306',
   'username' = 'cdc_user',
   'password' = '***',
   'database-name' = 'shop',
-  'table-name' = 'orders'
+  'table-name' = 'orders',
+  'server-id' = '5400-5404',
+  'scan.startup.mode' = 'initial',
+  'server-time-zone' = 'Asia/Shanghai'
 );
 
 CREATE CATALOG paimon WITH (
@@ -886,7 +895,7 @@ export default function StreamStudioPage() {
                       message="Operator 生产提交"
                       description={(
                         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                          <li>上传 JAR 会写入 GIDO 制品库；Flink Pod 通过 HTTP 拉取（后续可切 S3）。</li>
+                          <li>上传 JAR 写入 GIDO 制品库；未配 S3 时 Flink Pod HTTP 拉取，EKS 生产请设 <code>FLINK_OPERATOR_JAR_S3_PREFIX</code>。</li>
                           <li>须填写 <strong>Main Class</strong>；Backend 容器需挂载 kubeconfig。</li>
                           <li>默认 namespace：<code>flink</code>（Kind 集群 <code>kind-gido</code>），Flink 2.0.1 + Operator 1.15。</li>
                         </ul>

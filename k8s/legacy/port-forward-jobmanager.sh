@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # 将集群内 flink-jobmanager 的 8081 转到宿主 8081（需本机 8081 未被占用）
 set -euo pipefail
 while true; do

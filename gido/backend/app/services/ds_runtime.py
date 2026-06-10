@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """DolphinScheduler 运行时配置：工作空间覆盖 > 全局平台集成 > 环境变量。"""
 from __future__ import annotations
 

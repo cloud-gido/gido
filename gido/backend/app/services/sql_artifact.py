@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-10
 """SQL 脚本制品：持久化 + ConfigMap 挂载（Operator SQL Runner 业界推荐路径）。"""
 from __future__ import annotations
 
@@ -8,12 +10,19 @@ from pathlib import Path
 from typing import Optional
 
 from app.services.gido_deployment_meta import sql_configmap_name
+from app.services.artifact_s3 import (
+    SQL_ARTIFACT_FILENAME,
+    artifact_exists_in_s3,
+    artifact_s3_enabled,
+    build_s3_artifact_uri,
+    upload_artifact_bytes,
+)
 from app.services.jar_artifact import artifact_dir_for_job, resolved_artifact_download_token
 from app.services.flink_operator_submit import _load_k8s_config
 
 logger = logging.getLogger(__name__)
 
-SQL_SCRIPT_FILENAME = "artifact.sql"
+SQL_SCRIPT_FILENAME = SQL_ARTIFACT_FILENAME
 SQL_MOUNT_DIR = "/opt/flink/gido-scripts"
 SQL_MOUNT_PATH = f"{SQL_MOUNT_DIR}/{SQL_SCRIPT_FILENAME}"
 
@@ -24,13 +33,33 @@ def sql_script_file_path(job_id: int) -> Path:
 
 def save_sql_script(job_id: int, content: str) -> Path:
     path = sql_script_file_path(job_id)
-    path.write_text(content or "", encoding="utf-8")
+    text = content or ""
+    path.write_text(text, encoding="utf-8")
+    if artifact_s3_enabled():
+        try:
+            upload_artifact_bytes(
+                job_id,
+                SQL_ARTIFACT_FILENAME,
+                text.encode("utf-8"),
+                content_type="text/plain; charset=utf-8",
+            )
+        except Exception as ex:
+            logger.error("SQL 上传 S3 失败 job=%s: %s", job_id, ex)
+            raise RuntimeError(f"SQL 已写入本地但上传 S3 失败: {ex}") from ex
     return path
 
 
 def sql_script_exists(job_id: int) -> bool:
     p = sql_script_file_path(job_id)
-    return p.is_file() and p.stat().st_size > 0
+    if p.is_file() and p.stat().st_size > 0:
+        return True
+    if artifact_s3_enabled():
+        return artifact_exists_in_s3(job_id, SQL_ARTIFACT_FILENAME)
+    return False
+
+
+def build_sql_s3_uri_for_operator(job_id: int) -> Optional[str]:
+    return build_s3_artifact_uri(job_id, SQL_ARTIFACT_FILENAME)
 
 
 def configmap_name_for_job(job_id: int, workspace_id: int) -> str:

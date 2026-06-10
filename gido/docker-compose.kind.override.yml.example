@@ -1,2 +1,0 @@
-# 已合并至 docker-compose.kind-local.override.yml.example
-# 请使用：cp docker-compose.kind-local.override.yml.example docker-compose.override.yml

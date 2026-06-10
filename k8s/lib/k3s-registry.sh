@@ -1,3 +1,5 @@
+
+
 # 局域网 K3s：集群内 HTTP registry + 本机 docker push + 节点 pull（准生产路径）
 # 由 apply-gido-k3s-registry.sh / apply-gido-orbstack.sh（GIDO_K3S_USE_REGISTRY=1）source
 
@@ -47,6 +49,59 @@ k3s_registry_apply_insecure_config() {
   local kubectl="${KUBECTL:-kubectl}"
   k3s_registry_log "apply k3s-insecure-registry.yaml（mirrors + HTTP endpoint）"
   k3s_registry_kubectl_apply -f "${root}/k8s/k3s-insecure-registry.yaml" >&2
+}
+
+# 确保节点能 HTTP 拉取集群内 registry（hosts + registries.yaml）；部署前调用，避免 ImagePullBackOff。
+k3s_registry_ensure_node_registry() {
+  local kubectl="${KUBECTL:-kubectl}"
+  local reg_ip node
+  reg_ip="$(${kubectl} -n gido get svc registry -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+  node="${K3S_NODE_NAME:-$(k3s_registry_primary_node)}"
+  if [[ -z "${reg_ip}" || -z "${node}" ]]; then
+    k3s_registry_log "跳过节点 registry 修复（无 registry Service 或节点名）"
+    return 0
+  fi
+  k3s_registry_log "节点 registry 对齐（${node} → ${reg_ip}）"
+  k3s_registry_node_exec "
+set -e
+REG_IP='${reg_ip}'
+if grep -q 'registry.gido.svc.cluster.local' /etc/hosts 2>/dev/null; then
+  sed -i.bak '/registry.gido.svc.cluster.local/d' /etc/hosts
+fi
+echo \"\${REG_IP} registry.gido.svc.cluster.local\" >> /etc/hosts
+mkdir -p /etc/rancher/k3s
+if [ -f /etc/rancher/k3s/config.yaml ]; then
+  grep -q 'disable-default-registry-endpoint' /etc/rancher/k3s/config.yaml || \\
+    echo 'disable-default-registry-endpoint: true' >> /etc/rancher/k3s/config.yaml
+else
+  echo 'disable-default-registry-endpoint: true' > /etc/rancher/k3s/config.yaml
+fi
+cat > /etc/rancher/k3s/registries.yaml <<YAML
+mirrors:
+  docker.io:
+    endpoint:
+      - \"https://docker.1ms.run\"
+  registry-1.docker.io:
+    endpoint:
+      - \"https://docker.1ms.run\"
+  \"registry.gido.svc.cluster.local:5000\":
+    endpoint:
+      - \"http://registry.gido.svc.cluster.local:5000\"
+  \"\${REG_IP}:5000\":
+    endpoint:
+      - \"http://\${REG_IP}:5000\"
+configs:
+  \"registry.gido.svc.cluster.local:5000\":
+    tls:
+      insecure_skip_verify: true
+  \"\${REG_IP}:5000\":
+    tls:
+      insecure_skip_verify: true
+YAML
+systemctl restart k3s
+" || k3s_registry_log "警告：节点 registry 修复未确认成功，后续 pull 可能失败"
+  k3s_registry_wait_api_ready || true
+  k3s_registry_wait_nodes_ready || true
 }
 
 k3s_registry_restart_k3s() {

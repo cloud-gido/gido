@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 from sqlalchemy import Column, Integer, String, Text, Boolean, ForeignKey, Table, DateTime
 from sqlalchemy.orm import relationship
 from datetime import datetime

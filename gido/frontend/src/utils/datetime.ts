@@ -1,11 +1,8 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
- */
-/**
- * 后端统一为 **naive UTC**（`datetime.utcnow()` 以及 Dolphin 墙钟时间在后端已换算为 UTC）。
- * JSON 多为无 Z 的 `2026-01-15 08:00:00`：按 UTC 解析后再用 `timeZone` 格式化为工作区展示。
- * 请勿对已是东八区墙钟但未换算的字符串再套本函数（否则会多 +8）。
+ * @author felixzhu
+ * @date 2026-06-05
  */
 export function parseBackendUtcToDate(input: string | undefined | null): Date | null {
   if (input == null || String(input).trim() === '') return null

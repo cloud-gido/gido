@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-10
 """GIDO Stream Flink 提交模式（默认 Operator；遗留 Session/Application 由环境变量控制）。"""
 from typing import Optional
 

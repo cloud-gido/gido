@@ -1,10 +1,9 @@
 /**
- * 玑渡 GIDO — 品牌单一数据源（前端）
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
- * 与 backend/app/core/brand.py 对齐；规范见 docs/BRAND.md
+ * @author felixzhu
+ * @date 2026-06-05
  */
-
 export type ProductId = 'batch' | 'stream' | 'service'
 
 export const BRAND_ASSETS = {

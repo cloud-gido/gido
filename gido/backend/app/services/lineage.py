@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """
 血缘自动解析：从 SQL 脚本中提取 INSERT INTO ... SELECT ... 的表级血缘
 """

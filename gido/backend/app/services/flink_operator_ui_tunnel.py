@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-10
 """Operator 作业 Flink Web UI：本机开发自动 port-forward，免手工转发。"""
 from __future__ import annotations
 

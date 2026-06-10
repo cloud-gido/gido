@@ -1,6 +1,8 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
+ * @author felixzhu
+ * @date 2026-06-05
  */
 import { useState, useEffect, useRef, useCallback, useMemo, type PointerEvent } from 'react'
 import {

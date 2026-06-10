@@ -1,9 +1,9 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
+ * @author felixzhu
+ * @date 2026-06-05
  */
-/** 与后端 default_workspace_id / 默认空间 infras 对齐的选中逻辑 */
-
 export function pickDefaultWorkspace(workspaces: any[] | null | undefined, user: any | null | undefined): any | null {
   const list = workspaces || []
   if (!list.length) return null

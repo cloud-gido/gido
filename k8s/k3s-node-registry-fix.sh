@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # 在 Mac 上运行：打印需在 OrbStack ubuntu K3s 节点执行的 registry 修复命令
 #
 # 根因常见两类：

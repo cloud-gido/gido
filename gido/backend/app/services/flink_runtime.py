@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """Flink 运行时配置：数据库覆盖项 + 环境变量回退（与 Dolphin 集成同模式）。"""
 from __future__ import annotations
 

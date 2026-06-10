@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """
 将 DolphinScheduler 上的流程/任务实例同步回 GIDO 库（含 Dolphin 定时调度、未走 /workflows/{id}/run 的运行）。
 """

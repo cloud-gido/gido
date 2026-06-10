@@ -1,5 +1,6 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+
 """重置或创建 admin / admin123，并校验 bcrypt。在 backend 目录执行：
    .venv/bin/python reset_admin_password.py
 
@@ -19,7 +20,6 @@ from app.models.workspace import User
 
 NEW_PASSWORD = "admin123"
 
-
 def _mask_database_url(url: str) -> str:
     p = urlparse(url)
     if not p.password:
@@ -30,7 +30,6 @@ def _mask_database_url(url: str) -> str:
     if p.port:
         netloc = f"{netloc}:{p.port}"
     return urlunparse((p.scheme, netloc, p.path, p.params, p.query, p.fragment))
-
 
 def main() -> None:
     print(f"元数据库连接（脱敏）: {_mask_database_url(settings.resolved_database_url)}")
@@ -63,7 +62,6 @@ def main() -> None:
         print(f"校验通过。用户名: admin，密码: {NEW_PASSWORD}")
     finally:
         db.close()
-
 
 if __name__ == "__main__":
     main()

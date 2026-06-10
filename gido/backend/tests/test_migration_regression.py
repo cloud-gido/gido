@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """启动迁移函数的幂等回归：不连真实 DB，仅用内存 SQLite + create_all。"""
 
 from sqlalchemy import create_engine, inspect

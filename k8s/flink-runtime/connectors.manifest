@@ -1,7 +1,8 @@
-# GIDO 统一 Flink 运行时镜像（gido-flink-sql-runner / gido-flink-runtime）
+# GIDO Flink 运行时（sql-runner + Paimon + CDC + S3 插件）
 # 基座：apache/flink:2.0.1-java11
 # sql-runner：/opt/flink/usrlib/sql-runner.jar
 # 连接器：/opt/flink/lib/
+# S3：/opt/flink/plugins/s3-fs-hadoop/（Paimon warehouse / checkpoint 走 s3://）
 
 paimon:
   artifact: org.apache.paimon:paimon-flink-2.0
@@ -19,6 +20,14 @@ flink_cdc:
   postgres:
     artifact: org.apache.flink:flink-sql-connector-postgres-cdc
     version: "3.5.0"
+
+s3_filesystem:
+  artifact: org.apache.flink:flink-s3-fs-hadoop
+  version: "2.0.1"
+  path: /opt/flink/plugins/s3-fs-hadoop/flink-s3-fs-hadoop-2.0.1.jar
+  note: >
+    生产 Paimon warehouse 与 Flink checkpoint 走 s3:// 时须启用。
+    通过 Flink S3 插件访问对象存储；勿再添加 paimon-s3 JAR（会与插件冲突）。
 
 sql_runner:
   artifact: com.gido:flink-sql-runner

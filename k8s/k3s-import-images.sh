@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # 将本地 GIDO 镜像直接导入 K3s 节点 containerd（绕过 HTTP registry 拉取问题）
 #
 # 适用：ImagePullBackOff 且 Head "https://registry.../v2/...": EOF

@@ -1,5 +1,7 @@
+
+
 # 可选：固定 NodePort 32483，便于不经过 Ingress 时从宿主访问 SQL Gateway。
-# 先 kubectl apply -f k8s/flink.yaml，再按需 apply 本文件。
+# 先 kubectl apply -f k8s/legacy/flink.yaml，再按需 apply 本文件。
 apiVersion: v1
 kind: Service
 metadata:

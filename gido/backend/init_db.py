@@ -1,5 +1,6 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+
 """初始化管理员账号和默认工作空间"""
 import os
 import sys

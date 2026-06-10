@@ -1,6 +1,8 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
+ * @author felixzhu
+ * @date 2026-06-05
  */
 import { Alert, Button, Card, Col, Row, Space, Statistic, Table, Tag, Typography } from 'antd'
 import { useNavigate } from 'react-router-dom'

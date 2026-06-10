@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-10
 """经 GIDO Backend 反向代理 Operator Flink Web UI（集群内 Backend 可达 JM REST，浏览器只访问 GIDO）。"""
 from __future__ import annotations
 

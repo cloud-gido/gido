@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # 部署 GIDO 到局域网 OrbStack / K3s 集群（kubeconfig: ~/.kube/config-mac-orbstack）
 #
 # 本机导入（默认）：Docker 构建 → k3s ctr import，与 Kind 相同。

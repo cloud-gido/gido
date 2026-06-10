@@ -7,7 +7,7 @@
 | **本机 Kind 开发**（推荐） | 本文 §2 |
 | **局域网 K3s / OrbStack** | 本文 §5 |
 | Docker Compose 单机 | [gido/docs/DEPLOYMENT_SOP.md](../gido/docs/DEPLOYMENT_SOP.md) |
-| AWS EKS | [gido/docs/EKS-DEPLOYMENT-SOP.md](../gido/docs/EKS-DEPLOYMENT-SOP.md) |
+| AWS EKS | [gido/docs/EKS-DEPLOYMENT-SOP.md](../gido/docs/EKS-DEPLOYMENT-SOP.md) · CDC→Paimon：[docs/CDC_PAIMON_EKS.md](../docs/CDC_PAIMON_EKS.md) |
 
 ### 统一技术栈（当前默认）
 
@@ -38,7 +38,7 @@
 ```
 
 **实时 JAR 路径**：上传 JAR → GIDO backend 调 Operator API → 创建 `FlinkDeployment`。  
-**不含**：DolphinScheduler、Flink Session/SQL Gateway（可选见 `flink.yaml`）。
+**不含**：DolphinScheduler、Flink Session/SQL Gateway（可选见 `legacy/flink.yaml`）。
 
 **Flink UI**：开启 `FLINK_OPERATOR_UI_PROXY_ENABLED` 后，浏览器经 GIDO 反向代理打开作业 UI，**无需**再 `port-forward` JobManager；只需转发 frontend `8080`。
 
@@ -101,7 +101,7 @@ bash k8s/apply-gido-stack.sh
 | `GIDO_SKIP_BUILD=1` | — | 跳过构建，用已有本地镜像 |
 | `GIDO_KIND_LOAD=0` | 自动 | 强制不导入 Kind（非 Kind 集群时用） |
 | `GIDO_KIND_LOAD=1` | 自动 | 强制导入 Kind |
-| `GIDO_APPLY_FLINK=1` | — | 额外部署 Session Flink（`flink.yaml`，一般不需要） |
+| `GIDO_APPLY_FLINK=1` | — | 额外部署 Session Flink（`legacy/flink.yaml`，一般不需要） |
 | `GIDO_APPLY_INGRESS=1` | — | 部署 `gido-ingress.yaml` |
 | `GIDO_BUILD_PLATFORM` | 自动检测 | 强制覆盖镜像平台（`linux/arm64` / `linux/amd64`） |
 | `KIND_PLATFORM` | 同自动检测 | `kind-load-mirror-images.sh` 压平架构 |
@@ -307,7 +307,7 @@ sudo k3s crictl pull registry.gido.svc.cluster.local:5000/gido-backend:orbstack
 | `gido.yaml` | GIDO 最小栈清单 |
 | `upgrade-flink-operator-1.15.sh` | Operator 升级到 1.15.0 |
 | `flink-operator-rbac.yaml` | Operator 跨命名空间 RBAC |
-| `flink.yaml` | Session Flink（可选，默认不部署） |
+| `legacy/` | 遗留 Session Flink、DS/Doris 示例（默认不部署，见 `legacy/README.md`） |
 | `registry.yaml` | 集群内临时镜像仓库（K3s 用） |
 | `gido-ingress.yaml` | Ingress（可选） |
 
@@ -322,6 +322,7 @@ sudo k3s crictl pull registry.gido.svc.cluster.local:5000/gido-backend:orbstack
 | port-forward 断开 | frontend Pod 滚动更新 | 重新 `kubectl port-forward` |
 | Flink UI 空白 | 旧 `flink_job_id` 或代理 base href | 重同步作业；确认 `FLINK_OPERATOR_UI_PROXY_ENABLED` |
 | JAR 提交失败 | 从未上传 / PVC 未挂载 / artifact 404 | 在 UI 重传 JAR；`kubectl -n gido get pvc gido-jar-artifacts` |
+| 运维就绪度 blocked：`FLINK_OPERATOR_ARTIFACT_TOKEN` | Secret 缺 key 或 backend Pod 未重启 | 确认 `gido-secrets` 含该 key；`kubectl -n gido rollout restart deployment/gido-backend`；刷新作业详情 |
 | OrbStack ImagePullBackOff | registry HTTP vs K3s HTTPS | `bash k8s/apply-gido-k3s-registry.sh`（含 restart k3s）；或 §5.4 手动 |
 | postgres 数据丢失 | `gido.yaml` 使用 emptyDir | 生产改 PVC |
 

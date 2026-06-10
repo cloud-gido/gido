@@ -1,9 +1,9 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
+ * @author felixzhu
+ * @date 2026-06-05
  */
-/** 与后端 app/core/perm_codes.py 对齐，用于菜单与按钮显隐 */
-
 export type WorkspacePermContext = { my_role?: string | null } | null | undefined
 
 /**

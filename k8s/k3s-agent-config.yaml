@@ -1,3 +1,5 @@
+
+
 # K3s 节点配置片段：禁用 containerd 对 registry 的 HTTPS 默认回退
 # 合并到节点 /etc/rancher/k3s/config.yaml 后执行: sudo systemctl restart k3s
 #

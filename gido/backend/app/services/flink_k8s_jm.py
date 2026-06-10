@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """
 K8s Application / Operator：从集群读取 JM REST Service 的 NodePort 或 LoadBalancer，
 供 GIDO Backend 轮询 jobId、取消作业等。

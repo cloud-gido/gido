@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """数据集成：数据源连接、元数据探测（MySQL / Doris / PostgreSQL）。"""
 from __future__ import annotations
 

@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """GIDO 数据源 ⇄ DolphinScheduler：保存后推送、删除侧镜像删除（失败不阻断 GIDO API）"""
 from __future__ import annotations
 

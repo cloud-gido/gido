@@ -1,9 +1,8 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
- */
-/**
- * 侧栏可见性 = 平台权限码 ∩ 工作空间成员角色（my_role）。
+ * @author felixzhu
+ * @date 2026-06-05
  */
 import { R } from './routes'
 import { can, isPlatformAdmin, P, type WorkspacePermContext } from './perm'

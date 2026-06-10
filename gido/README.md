@@ -15,7 +15,7 @@
 | 文档 | 说明 |
 |------|------|
 | [../docs/PRODUCT_OVERVIEW.md](../docs/PRODUCT_OVERVIEW.md) | **产品截图与 5 分钟体验指南** |
-| [docs/DEV_HANDOFF.md](docs/DEV_HANDOFF.md) | **开发交接 / 会话沉淀**（给下一位开发者） |
+| [../docs/PRODUCT_MATURITY.md](../docs/PRODUCT_MATURITY.md) | **功能完整度与部署边界** |
 | [docs/OPEN_SOURCE.md](docs/OPEN_SOURCE.md) | **开源发布、合规与防侵权** |
 | [../.github/workflows/ci.yml](../.github/workflows/ci.yml) | GitHub Actions CI（构建 + 合规） |
 | [docs/MIGRATION_FROM_DATAWORKS.md](docs/MIGRATION_FROM_DATAWORKS.md) | 历史命名迁移说明 |

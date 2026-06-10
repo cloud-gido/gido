@@ -120,7 +120,7 @@ docker exec gido-backend sh -c \
 
 ### 2.4 与「Master BUSY、Pod 0/1 Running」区分
 
-- 日志 **`SystemMemoryUsedPercentage` > 0.7**、**`serverStatus=BUSY`** → **负载保护**，不是 137；见 **K8s** `k8s/dolphinscheduler.yaml` 中 `server-load-protection` 阈值调整说明，及 **[integration-troubleshooting.md](./integration-troubleshooting.md) §3**。
+- 日志 **`SystemMemoryUsedPercentage` > 0.7**、**`serverStatus=BUSY`** → **负载保护**，不是 137；见 **K8s** `k8s/legacy/dolphinscheduler.yaml` 中 `server-load-protection` 阈值调整说明，及 **[integration-troubleshooting.md](./integration-troubleshooting.md) §3**。
 
 ---
 

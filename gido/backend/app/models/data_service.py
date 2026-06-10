@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """数据服务：API 定义、消费者应用、授权与调用日志。"""
 from datetime import datetime
 

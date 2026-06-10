@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """MySQL 协议连接（Doris FE / MySQL）用户名：与 Dolphin JDBC、PyMySQL 行为对齐。"""
 
 

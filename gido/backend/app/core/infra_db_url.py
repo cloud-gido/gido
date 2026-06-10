@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """将运维拆分的环境变量组装为 SQLAlchemy 使用的 PostgreSQL 连接串（不含凭据拼接在单一「业务 URL」中）。"""
 from __future__ import annotations
 

@@ -1,6 +1,8 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
+ * @author felixzhu
+ * @date 2026-06-05
  */
 import { Button, Card, Descriptions, Divider, Space, Typography } from 'antd'
 import { ArrowLeftOutlined, ExportOutlined, SafetyCertificateOutlined } from '@ant-design/icons'

@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-10
 """FlinkDeployment 命名与 metadata annotations（多租户 + 版本追踪）。"""
 from __future__ import annotations
 

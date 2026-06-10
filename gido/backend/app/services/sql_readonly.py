@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """只读 SQL 拆分、校验与结果集列类型元数据。"""
 from __future__ import annotations
 

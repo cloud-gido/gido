@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """工作流 DAG / 调度校验 — 发布前与保存时复用，对齐编排平台常见约束。"""
 from __future__ import annotations
 

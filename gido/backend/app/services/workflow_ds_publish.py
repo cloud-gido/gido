@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """工作流 → DolphinScheduler：发布 / 批量再发布（修正 sqlType 等需推到 DS）。"""
 from typing import Dict, List, Optional
 

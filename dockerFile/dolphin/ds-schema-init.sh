@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # DolphinScheduler 库表初始化（供 platform / dolphin compose 挂载）
 # 镜像 ENTRYPOINT 已是 bash，compose 中 command 写: ["/opt/dolphinscheduler/tools/bin/ds-schema-init.sh"]
 set -uo pipefail

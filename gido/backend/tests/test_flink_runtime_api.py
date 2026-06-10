@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-10
 import os
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./pytest_gido_meta.db")
@@ -98,3 +100,4 @@ def test_flink_runtime_api_payload(monkeypatch):
     assert payload["checkpoint_dir_default"] == "s3://bucket/checkpoints"
     assert len(payload["connectors"]) == len(BUNDLED_CONNECTORS)
     assert any(c["id"] == "paimon" for c in payload["connectors"])
+    assert any(c["id"] == "s3-fs-hadoop" for c in payload["connectors"])

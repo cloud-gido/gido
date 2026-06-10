@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+
 """为 gido 源码批量添加 SPDX 文件头（幂等，可重复执行）。"""
 
 from __future__ import annotations
@@ -23,22 +24,18 @@ SKIP_DIRS = {
     "target",
 }
 
-
 def should_skip(path: Path) -> bool:
     return any(part in SKIP_DIRS for part in path.parts)
-
 
 def add_py_header(text: str) -> str:
     if MARKER in text:
         return text
     return PY_HEADER + text
 
-
 def add_ts_header(text: str) -> str:
     if MARKER in text:
         return text
     return TS_HEADER + text
-
 
 def iter_files(root: Path) -> list[Path]:
     files: list[Path] = []
@@ -48,7 +45,6 @@ def iter_files(root: Path) -> list[Path]:
         if path.suffix in {".py", ".ts", ".tsx"}:
             files.append(path)
     return sorted(files)
-
 
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
@@ -65,7 +61,6 @@ def main() -> int:
             print(f"updated: {path.relative_to(root.parent)}")
     print(f"done: {changed} file(s) updated")
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

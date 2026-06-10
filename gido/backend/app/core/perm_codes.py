@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """平台权限码（resource:action），与菜单/能力对齐，便于前后端共用。"""
 
 # 系统管理

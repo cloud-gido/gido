@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-10
 from app.services.flink_operator_submit import build_flink_deployment_body, build_flink_deployment_body_for_sql
 from app.services.operator_resources import resolve_operator_resources, split_streaming_properties_for_operator
 

@@ -116,10 +116,10 @@ kubectl apply -f k8s/paimon-warehouse-pvc.yaml
 
 | 模式 | 条件 | 说明 |
 |------|------|------|
-| Session | `GIDO_LEGACY_FLINK_SUBMIT=true` + `k8s/flink.yaml` Session 栈 | SQL Gateway / JM |
+| Session | `GIDO_LEGACY_FLINK_SUBMIT=true` + `k8s/legacy/flink.yaml` Session 栈 | SQL Gateway / JM |
 | K8s Application | 同上 + Gateway v4 | 已由 Operator 路径取代 |
 
-`k8s/flink.yaml` 已标记 **DEPRECATED**，新环境请勿依赖。
+`k8s/legacy/flink.yaml` 已标记 **DEPRECATED**，新环境请勿依赖。
 
 ## 一键部署
 

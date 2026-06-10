@@ -1,3 +1,5 @@
+
+
 # K3s 拉取集群内 HTTP registry（registry.gido.svc.cluster.local:5000）
 # K3s/containerd 默认对未知 registry 走 HTTPS，须配置 mirrors + tls.insecure_skip_verify。
 # apply 后若仍 ImagePullBackOff，在节点重启 k3s：sudo systemctl restart k3s（或 OrbStack 重启 K8s）。

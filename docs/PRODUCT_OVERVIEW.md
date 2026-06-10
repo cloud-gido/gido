@@ -74,7 +74,7 @@
 | Flink 集群连接 | 多套物理集群 REST / Gateway 配置 |
 | 集群与健康 | JobManager / Gateway 健康概览 |
 
-默认全栈已包含 Flink Session + SQL Gateway（`8081` / `8083`），也可对接 K8s 集群（见 `k8s/`）。
+Compose 全栈含 Flink Session + SQL Gateway（`8081` / `8083`）；K8s 生产推荐 **Flink Operator**（见 `k8s/README.md`）。功能边界见 [PRODUCT_MATURITY.md](./PRODUCT_MATURITY.md)。
 
 ---
 
@@ -139,7 +139,7 @@ cp .env.example .env
 | 前端 | React · Vite · Ant Design |
 | 后端 | FastAPI · PostgreSQL 元库 |
 | 调度 | Apache DolphinScheduler |
-| 流计算 | Apache Flink · SQL Gateway |
+| 流计算 | Apache Flink · Operator（K8s）/ SQL Gateway（Compose） |
 | 消息 | Apache Kafka |
 | 部署 | Docker Compose 一键全栈 |
 
@@ -148,6 +148,7 @@ cp .env.example .env
 ## 相关链接
 
 - [README](../README.md) — 仓库主文档
+- [PRODUCT_MATURITY.md](./PRODUCT_MATURITY.md) — 功能完整度与部署边界
 - [部署 SOP](../gido/docs/DEPLOYMENT_SOP.md) — 从 Git 到生产
 - [GitHub](https://github.com/felix199103/gido) · [Gitee 镜像](https://gitee.com/bigdata_troy/gido)
 

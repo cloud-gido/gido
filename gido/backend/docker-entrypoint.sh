@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # 若将宿主机 kubeconfig 只读挂载到 /root/.kube/host-kubeconfig（compose 默认），
 # 则复制到 /tmp 并按下方规则替换 apiserver 地址，供 Operator / NodePort 解析等在容器内访问 K8s API。
 set -euo pipefail

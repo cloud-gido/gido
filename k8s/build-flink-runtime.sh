@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # 本机构建 gido-flink-sql-runner / gido-flink-runtime（与 deploy 脚本同平台）
 #
 #   bash k8s/build-flink-runtime.sh

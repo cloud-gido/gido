@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """数据集成：表同步执行（全量 / 增量）、异步运行、水位持久化。"""
 from __future__ import annotations
 

@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """数据服务开放网关：AppKey + AppSecret 鉴权，对外提供 HTTP API。"""
 from __future__ import annotations
 

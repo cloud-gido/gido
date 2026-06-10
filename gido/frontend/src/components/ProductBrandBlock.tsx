@@ -1,9 +1,8 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
- */
-/**
- * 与登录后「进入工作台」卡片、侧栏左上角一致的产品名展示。
+ * @author felixzhu
+ * @date 2026-06-05
  */
 import ProductMark, { type ProductMarkVariant } from './ProductMark'
 import { PRODUCT_SHELL_META } from '../branding'

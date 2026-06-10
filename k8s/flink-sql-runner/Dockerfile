@@ -1,3 +1,5 @@
+
+
 # GIDO 统一 Flink 运行时（gido-flink-sql-runner / gido-flink-runtime）
 # Flink 2.0.1 + sql-runner.jar + Paimon + Flink CDC SQL connectors
 #
@@ -22,8 +24,11 @@ RUN mvn -B -q package -DskipTests -s settings.xml
 
 FROM --platform=$TARGETPLATFORM ${FLINK_BASE_IMAGE}
 USER root
-RUN mkdir -p /opt/flink/lib /opt/flink/usrlib /opt/flink/gido-scripts \
-    && chown -R flink:flink /opt/flink/lib /opt/flink/usrlib /opt/flink/gido-scripts
-COPY --from=connectors /conn/target/connectors/*.jar /opt/flink/lib/
+RUN mkdir -p /opt/flink/lib /opt/flink/usrlib /opt/flink/gido-scripts /opt/flink/plugins/s3-fs-hadoop \
+    && chown -R flink:flink /opt/flink/lib /opt/flink/usrlib /opt/flink/gido-scripts /opt/flink/plugins
+COPY --from=connectors /conn/target/connectors/ /tmp/connectors/
+RUN mv /tmp/connectors/flink-s3-fs-hadoop-*.jar /opt/flink/plugins/s3-fs-hadoop/ \
+    && mv /tmp/connectors/*.jar /opt/flink/lib/ \
+    && rm -rf /tmp/connectors
 COPY --from=builder /build/target/flink-sql-runner-1.0.0.jar /opt/flink/usrlib/sql-runner.jar
 USER flink

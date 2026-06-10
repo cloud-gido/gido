@@ -1,9 +1,9 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
+ * @author felixzhu
+ * @date 2026-06-05
  */
-/** 将库类型名映射为表头右上角通用徽章（123 / abc 等，对标 DataGrip、Excel） */
-
 export type ColumnTypeKind = 'number' | 'string' | 'datetime' | 'boolean' | 'json' | 'other'
 
 export type ColumnTypeBadge = {

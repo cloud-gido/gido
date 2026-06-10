@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """数据服务：API 管理、应用授权、测试、监控、OpenAPI 导出。"""
 from __future__ import annotations
 

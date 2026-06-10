@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """CDC / 准实时同步：后台按间隔执行增量同步（水位自动推进）。"""
 from __future__ import annotations
 

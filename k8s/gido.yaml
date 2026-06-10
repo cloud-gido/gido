@@ -1,3 +1,5 @@
+
+
 # =============================================================================
 # GIDO 最小 K8s 栈：PostgreSQL + backend + frontend（Operator JAR 生产路径）
 # =============================================================================
@@ -19,7 +21,8 @@
 # 访问：kubectl -n gido port-forward svc/frontend 8080:80 → http://127.0.0.1:8080
 # 登录：admin / admin123（生产请改 Secret）
 #
-# JAR 制品使用 PVC（gido-jar-artifacts），backend 重启不丢 JAR。
+# JAR/SQL 制品：默认 PVC（gido-jar-artifacts）；EKS 生产推荐 S3（见 k8s/eks/）。
+# 设置 FLINK_OPERATOR_JAR_S3_PREFIX 后 Operator 从 s3:// 拉取，Backend 须 IRSA 写 S3。
 # PostgreSQL 仍使用 emptyDir，Pod 重建丢库；生产请为 postgres 也改 PVC。
 #
 # =============================================================================
@@ -232,7 +235,7 @@ spec:
       containers:
         - name: backend
           image: __BACKEND_IMAGE__
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - containerPort: 8001
           envFrom:
@@ -353,7 +356,7 @@ spec:
       containers:
         - name: frontend
           image: __FRONTEND_IMAGE__
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - containerPort: 80
           readinessProbe:

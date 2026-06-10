@@ -1,3 +1,7 @@
+/**
+ * @author felixzhu
+ * @date 2026-06-10
+ */
 /** 经 GIDO 代理打开 Operator Flink Web UI（自动 bootstrap Cookie，无需 kubectl port-forward JM）。 */
 export function openFlinkConsoleUrl(consoleUrl: string, jobId: number): void {
   const token = localStorage.getItem('token')

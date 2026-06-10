@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """数据开发 SQL 节点执行：按数据源类型连接（PostgreSQL / MySQL / Doris）。"""
 from __future__ import annotations
 

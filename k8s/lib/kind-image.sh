@@ -1,3 +1,5 @@
+
+
 # Kind 镜像治理：单架构构建 + ctr 导入（避免 manifest list 导致 CreateContainerError）
 # Mac M 芯片默认 linux/arm64，与 OrbStack K3s 一致；Intel Mac 为 linux/amd64。
 # 由 apply-gido-stack.sh / kind-load-mirror-images.sh source，勿直接执行。

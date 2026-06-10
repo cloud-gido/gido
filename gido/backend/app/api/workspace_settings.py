@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """工作空间设置：默认数据源、数仓、按空间的 Dolphin/Flink 集成。"""
 from typing import Any, Dict, Optional
 

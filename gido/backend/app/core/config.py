@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
@@ -67,7 +69,7 @@ class Settings(BaseSettings):
     FLINK_URL: Optional[str] = None
     # Flink SQL Gateway REST（/v1/sessions）；留空则仅依赖集成页或环境注入
     FLINK_SQL_GATEWAY_URL: Optional[str] = None
-    # 实时作业「K8s Application」：Flink 作业镜像（SQL Gateway v4 deploy → kubernetes.container.image.ref）；默认同 k8s/flink.yaml
+    # 实时作业「K8s Application」：Flink 作业镜像（SQL Gateway v4 deploy → kubernetes.container.image.ref）；默认同 k8s/legacy/flink.yaml
     FLINK_K8S_APPLICATION_IMAGE: str = "apache/flink:2.0.1-java11"
     # 可选：Application 部署后 GIDO 拉 jobId / 取消作业用的 JM REST 基址模板，须含 {cluster_id}（与 K8s Service 命名一致）
     # 例：http://{cluster_id}-rest.flink.svc.cluster.local:8081
@@ -122,7 +124,12 @@ class Settings(BaseSettings):
     FLINK_OPERATOR_SQL_RUNNER_JAR_URI: str = "local:///opt/flink/usrlib/sql-runner.jar"
     FLINK_OPERATOR_SQL_RUNNER_ENTRY_CLASS: Optional[str] = "com.gido.flink.SqlRunner"
     FLINK_OPERATOR_JAR_HTTP_BASE: Optional[str] = None
+    # EKS 生产：JAR/SQL 制品 s3:// 前缀（与 GIDO_ARTIFACT_S3_PREFIX 二选一，前者优先）
     FLINK_OPERATOR_JAR_S3_PREFIX: Optional[str] = None
+    GIDO_ARTIFACT_S3_PREFIX: Optional[str] = None
+    # 可选：覆盖 boto3 区域 / 端点（MinIO 等）
+    GIDO_ARTIFACT_S3_REGION: Optional[str] = None
+    GIDO_ARTIFACT_S3_ENDPOINT_URL: Optional[str] = None
     FLINK_OPERATOR_ARTIFACT_TOKEN: Optional[str] = None
     # 后端调 JM REST；生产（Backend 在集群内）建议：
     # http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081

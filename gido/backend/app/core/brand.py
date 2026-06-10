@@ -2,6 +2,8 @@
 玑渡 GIDO 品牌常量（与 frontend/src/branding.ts 对齐）。
 Copyright 2026 玑渡 GIDO Contributors
 SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 
 用户可见文案、告警、Dolphin 项目默认名等请引用本模块，避免散落旧名 GIDO / DataBatch。
 """

@@ -1,0 +1,47 @@
+# GIDO Backend 通过 IRSA 上传 JAR/SQL 制品到 S3（FLINK_OPERATOR_JAR_S3_PREFIX）
+#
+# 前置（AWS CLI / eksctl）：
+#   1. 创建 IAM Policy gido-backend-s3（PutObject / HeadObject / GetObject / ListBucket）
+#   2. eksctl create iamserviceaccount \
+#        --cluster=gido --namespace=gido --name=gido-backend \
+#        --role-name=gido-backend-s3 --attach-policy-arn=arn:aws:iam::ACCOUNT:policy/gido-backend-s3 \
+#        --approve --override-existing-serviceaccounts
+#
+# Backend 与 Flink 作业可共用同一 bucket、不同前缀，例如：
+#   FLINK_OPERATOR_JAR_S3_PREFIX=s3://YOUR-BUCKET/gido-artifacts
+#   PAIMON_WAREHOUSE_DEFAULT=s3://YOUR-BUCKET/paimon-warehouse
+#   FLINK_OPERATOR_CHECKPOINT_DIR=s3://YOUR-BUCKET/flink-checkpoints
+#
+# Flink 作业读制品 / 写 warehouse 仍须 flink SA 的 IRSA（见 flink-s3-irsa.example.yaml）。
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gido-backend
+  namespace: gido
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/gido-backend-s3
+---
+# 示例 IAM Policy（JSON）
+# {
+#   "Version": "2012-10-17",
+#   "Statement": [
+#     {
+#       "Effect": "Allow",
+#       "Action": ["s3:ListBucket"],
+#       "Resource": "arn:aws:s3:::YOUR-BUCKET",
+#       "Condition": {
+#         "StringLike": { "s3:prefix": ["gido-artifacts/*", "paimon-warehouse/*", "flink-checkpoints/*"] }
+#       }
+#     },
+#     {
+#       "Effect": "Allow",
+#       "Action": ["s3:GetObject", "s3:PutObject", "s3:HeadObject", "s3:DeleteObject"],
+#       "Resource": [
+#         "arn:aws:s3:::YOUR-BUCKET/gido-artifacts/*",
+#         "arn:aws:s3:::YOUR-BUCKET/paimon-warehouse/*",
+#         "arn:aws:s3:::YOUR-BUCKET/flink-checkpoints/*"
+#       ]
+#     }
+#   ]
+# }

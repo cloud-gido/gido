@@ -1,5 +1,6 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+
 #!/usr/bin/env python3
 """
 清空运维中心相关数据：工作流运行实例（dw_workflow_instances）与节点运行实例（dw_node_instances）。
@@ -20,7 +21,6 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 os.chdir(_ROOT)
-
 
 def main() -> int:
     from app.models import rbac_models  # noqa: F401
@@ -93,7 +93,6 @@ def main() -> int:
         return 1
     finally:
         db.close()
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

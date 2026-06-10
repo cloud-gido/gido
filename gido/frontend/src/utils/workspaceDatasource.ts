@@ -1,13 +1,9 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
+ * @author felixzhu
+ * @date 2026-06-05
  */
-/**
- * 工作空间数据源策略（与后端 studio_sql_run.resolve_sql_datasource 一致）：
- * - 脚本/节点已保存 datasource_id → 固定使用该数据源
- * - 未保存（空）→ 运行与展示时继承工作空间「默认数据源」
- */
-
 export type DatasourceRow = { id: number; name: string; ds_type?: string }
 
 export type WorkspaceDatasourceCtx = {

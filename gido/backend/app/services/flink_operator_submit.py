@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-10
 """通过 Flink Kubernetes Operator 提交 JAR Application（FlinkDeployment CR）。"""
 from __future__ import annotations
 
@@ -10,7 +12,8 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.config import settings
-from app.services.jar_artifact import build_jar_http_uri_for_operator, future_s3_uri_hint
+from app.services.jar_artifact import resolve_jar_uri_for_operator
+from app.services.artifact_s3 import artifact_s3_enabled
 from app.services.gido_deployment_meta import (
     GidoDeploymentMeta,
     jar_deployment_name,
@@ -295,10 +298,15 @@ def sql_operator_submit_ready() -> Tuple[bool, str]:
 
 
 def resolve_jar_uri_for_job(job_id: int) -> str:
-    s3_uri = future_s3_uri_hint(job_id)
-    if s3_uri:
-        return s3_uri
-    return build_jar_http_uri_for_operator(job_id)
+    return resolve_jar_uri_for_operator(job_id)
+
+
+def effective_sql_source(sql_source: Optional[str]) -> str:
+    """S3 制品前缀已配置时，默认 sql_source=s3（EKS 生产，避免仅依赖 ConfigMap）。"""
+    source = (sql_source or "mount").strip().lower()
+    if source == "mount" and artifact_s3_enabled():
+        return "s3"
+    return source
 
 
 def apply_flink_deployment(body: Dict[str, Any]) -> Dict[str, Any]:
@@ -778,7 +786,7 @@ def submit_sql_via_operator(
     namespace = _operator_namespace()
     save_sql_script(job_id, sql_content)
 
-    source = (sql_source or "mount").strip().lower()
+    source = effective_sql_source(sql_source)
     cm_name: Optional[str] = None
     script_location = SQL_MOUNT_PATH
     http_artifacts = False
@@ -790,13 +798,14 @@ def submit_sql_via_operator(
     elif source == "s3":
         s3_uri = (extra_flink_props or {}).get("sql_s3_uri") if extra_flink_props else None
         if not s3_uri:
-            from app.services.jar_artifact import future_s3_uri_hint
+            from app.services.sql_artifact import build_sql_s3_uri_for_operator
 
-            hint = future_s3_uri_hint(job_id)
-            if hint:
-                script_location = hint.replace("artifact.jar", "artifact.sql")
-            else:
-                raise RuntimeError("sql_source=s3 须配置 FLINK_OPERATOR_JAR_S3_PREFIX 或 streaming_properties.sql_s3_uri")
+            script_location = build_sql_s3_uri_for_operator(job_id) or ""
+            if not script_location:
+                raise RuntimeError(
+                    "sql_source=s3 须配置 FLINK_OPERATOR_JAR_S3_PREFIX / GIDO_ARTIFACT_S3_PREFIX"
+                    " 或 streaming_properties.sql_s3_uri"
+                )
         else:
             script_location = str(s3_uri)
     else:
@@ -825,7 +834,7 @@ def submit_sql_via_operator(
         job_id=job_id,
         deployment_name=deployment_name,
         namespace=namespace,
-        artifact_uri=SQL_MOUNT_PATH,
+        artifact_uri=script_location,
     )
 
 

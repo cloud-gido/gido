@@ -1,6 +1,8 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
+ * @author felixzhu
+ * @date 2026-06-05
  */
 import { useState } from 'react'
 import { Avatar, Dropdown, Space, Modal, Form, Input, Button, Typography, Tooltip, message } from 'antd'

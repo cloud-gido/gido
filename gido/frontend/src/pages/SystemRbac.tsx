@@ -1,6 +1,8 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
+ * @author felixzhu
+ * @date 2026-06-05
  */
 import { useEffect, useState, useMemo } from 'react'
 import {
@@ -670,7 +672,7 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
         style={{ marginBottom: 16 }}
         message="可插拔对接 Flink（Kubernetes Session + 可选 Application）"
         description={
-          'Flink Session 请用仓库根 k8s/flink.yaml 部署；此处配置写入数据库后会覆盖环境变量 FLINK_* / FLINK_K8S_*（REST、K8s Application、集群域与 SQL Gateway 清单相关项），后端即时生效。'
+          'Flink Session 请用仓库根 k8s/legacy/flink.yaml 部署；此处配置写入数据库后会覆盖环境变量 FLINK_* / FLINK_K8S_*（REST、K8s Application、集群域与 SQL Gateway 清单相关项），后端即时生效。'
           + ' 「生成部署变量」可导出与当前生效值一致的 GIDO_* 片段；「导出 SQL Gateway Deployment YAML」按下方 K8s 可插拔项生成与集群对齐的 flink-sql-gateway Deployment，便于对接不同 K8s。'
         }
       />

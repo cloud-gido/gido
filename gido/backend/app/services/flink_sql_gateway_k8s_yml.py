@@ -1,8 +1,10 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """
 根据 FlinkRuntimeConfig 生成「集群内 SQL Gateway」Deployment YAML 片段，
-与仓库 k8s/flink.yaml 中 flink-sql-gateway 逻辑对齐，便于对接不同 K8s（集群域、命名空间、apiserver 回退等）。
+与仓库 k8s/legacy/flink.yaml 中 flink-sql-gateway 逻辑对齐，便于对接不同 K8s（集群域、命名空间、apiserver 回退等）。
 """
 from __future__ import annotations
 
@@ -20,10 +22,10 @@ def render_flink_sql_gateway_deployment_yaml(cfg: FlinkRuntimeConfig) -> str:
     fb_q = shlex.quote(fb)
     img = (cfg.flink_k8s_application_image or "apache/flink:2.0.1-java11").strip()
 
-    # 与 k8s/flink.yaml 中 init + sql-gateway 容器等价；apiserver 回退 URL 经 shlex 安全嵌入 shell。
+    # 与 k8s/legacy/flink.yaml 中 init + sql-gateway 容器等价；apiserver 回退 URL 经 shlex 安全嵌入 shell。
     t = Template(
         """# 由 GIDO「系统管理 → 集成」当前生效配置生成；可 kubectl apply -f -
-# 须已存在 ServiceAccount flink-sql-gateway 与 Role flink-sql-gateway-application（见仓库 k8s/flink.yaml 全文）。
+# 须已存在 ServiceAccount flink-sql-gateway 与 Role flink-sql-gateway-application（见仓库 k8s/legacy/flink.yaml 全文）。
 apiVersion: apps/v1
 kind: Deployment
 metadata:

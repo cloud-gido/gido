@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 from types import SimpleNamespace
 
 from app.services.datasource_mysql_user import mysql_protocol_connect_user

@@ -1,3 +1,5 @@
+
+
 # Doris 示例清单（与 Flink 等统一放在仓库根 k8s/；原路径 gido/k8s/doris-fixed.yaml 已废弃）。
 # 使用：kubectl apply -f k8s/doris-fixed.yaml（按需调整镜像与存储）。
 ---

@@ -1,3 +1,5 @@
+
+
 # 可选：开发环境 Paimon 本地 warehouse（file://）
 # 生产请使用对象存储（s3:// / oss://）并在 gido-backend-config 设置 PAIMON_WAREHOUSE_DEFAULT。
 #

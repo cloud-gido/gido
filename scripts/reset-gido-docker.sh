@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # 清理 GIDO Docker 端口冲突与 OrbStack 残留转发（3002 / 8001）
 set -eo pipefail
 

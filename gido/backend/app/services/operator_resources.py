@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-10
 """Flink Operator 作业级资源配置（对标 Ververica / 实时计算 JM/TM/Slots 调优）。"""
 from __future__ import annotations
 

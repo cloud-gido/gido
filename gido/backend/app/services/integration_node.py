@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """数据开发 / 工作流 SYNC 节点：绑定数据集成任务并执行。"""
 from __future__ import annotations
 

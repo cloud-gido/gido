@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """工作流实例 trigger_type 展示：区分 Dolphin 流程实例 ID 与纯本地触发。"""
 
 from typing import Optional

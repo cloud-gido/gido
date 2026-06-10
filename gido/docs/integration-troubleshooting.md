@@ -299,8 +299,8 @@ docker exec datagovrn nc -zv 192.168.1.68 9092
 | Dolphin JDBC 驱动目录 | `dockerFile/jdbc/`（`mysql-connector-j-8.0.33.jar`，`.gitignore` 忽略 jar） |
 | **平台一键脚本** | **`start-platform.sh`**（根目录） |
 | Flink Kafka 连接器 jar | `dockerFile/flink-lib/flink-sql-connector-kafka-4.0.1-2.0.jar` |
-| Flink K8s 参考清单 | `k8s/flink.yaml` |
-| Dolphin K8s 参考清单 | `k8s/dolphinscheduler.yaml` |
+| Flink K8s 参考清单（遗留） | `k8s/legacy/flink.yaml` |
+| Dolphin K8s 参考清单 | `k8s/legacy/dolphinscheduler.yaml` |
 | SQL Gateway 提交与回落逻辑 | `gido/backend/app/api/streaming.py`（`submit_sql`、`_observe_new_job_for_gateway_error`） |
 | 成员与权限 / 集成 UI | `gido/frontend/src/pages/SystemRbac.tsx`、`MainLayout.tsx`、`routes.ts`、`App.tsx` |
 

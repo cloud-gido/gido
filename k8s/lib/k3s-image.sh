@@ -1,3 +1,5 @@
+
+
 # 局域网 K3s / OrbStack：构建单架构镜像并推送到集群内 registry
 # 平台由 kind-image.sh gido_detect_build_platform 自动检测（集群节点 > 本机 CPU）。
 
@@ -10,6 +12,8 @@ k3s_image_build() {
   local tag="$2"
   local context="$3"
   shift 3 || true
+  local -a nocache=()
+  [[ "${GIDO_DOCKER_NO_CACHE:-}" == "1" ]] && nocache=(--no-cache)
 
   k3s_image_log "构建 ${tag} (${platform}) …"
   if docker buildx version >/dev/null 2>&1; then
@@ -18,16 +22,22 @@ k3s_image_build() {
     else
       docker buildx use gido-k3s-builder >/dev/null 2>&1 || true
     fi
-    docker buildx build \
-      --platform "${platform}" \
-      --provenance=false \
-      --sbom=false \
-      --load \
-      -t "${tag}" \
-      "$@" \
-      "${context}"
+    local -a cmd=(
+      docker buildx build
+      --platform "${platform}"
+      --provenance=false
+      --sbom=false
+      --load
+    )
+    ((${#nocache[@]})) && cmd+=("${nocache[@]}")
+    cmd+=(-t "${tag}" "$@" "${context}")
+    "${cmd[@]}"
   else
-    docker build -t "${tag}" "$@" "${context}"
+    if ((${#nocache[@]})); then
+      docker build "${nocache[@]}" -t "${tag}" "$@" "${context}"
+    else
+      docker build -t "${tag}" "$@" "${context}"
+    fi
   fi
   k3s_image_log "构建完成: ${tag}"
 }

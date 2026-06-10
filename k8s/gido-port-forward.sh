@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # 单独管理 GIDO frontend port-forward（在 Mac / 有 kubeconfig 的机器上执行）
 #
 #   export KUBECONFIG=~/.kube/config-mac-orbstack

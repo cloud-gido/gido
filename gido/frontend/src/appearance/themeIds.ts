@@ -1,8 +1,9 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
+ * @author felixzhu
+ * @date 2026-06-05
  */
-/** 固定工作台配色（全部为浅色可读底，不使用纯黑 OLED 暗主题） */
 export const UI_THEME_IDS = ['lightClassic', 'warmPaper', 'coolMist', 'eveningMist', 'mintWater'] as const
 
 export type UiThemeId = (typeof UI_THEME_IDS)[number]

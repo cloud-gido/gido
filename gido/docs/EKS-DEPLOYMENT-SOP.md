@@ -157,6 +157,22 @@ k8s/
 - 若在 **同一 EKS** 内提交 Flink Application 并调 **Kubernetes API**：需要 **集群内 ServiceAccount + RBAC**，或 **IRSA** 等，**不能**依赖 compose 里的 `host.docker.internal`。
 - `FLINK_URL`、`FLINK_SQL_GATEWAY_URL` 等：必须填 **从 backend Pod 内能解析且能访问** 的地址（ClusterIP、NLB、内网 Ingress 等）。
 
+### 7.1 Stream 生产路径（Flink Operator + CDC→Paimon）
+
+GIDO **默认**不走 Session/Gateway，而走 **Flink Kubernetes Operator 1.15** + 自建运行时镜像 `gido-flink-runtime`（Flink 2.0.1，`flinkVersion: v2_0`）。
+
+| 步骤 | 说明 |
+|------|------|
+| Operator | Helm 安装 Operator 1.15；`kubectl apply -f k8s/flink-operator-rbac.yaml` |
+| 运行时镜像 | `bash k8s/build-flink-runtime.sh` → push ECR；含 Paimon、MySQL CDC、**S3 插件** |
+| Backend | 使用 `k8s/gido.yaml` 或等价清单；`GIDO_FLINK_SUBMIT_MODE=operator` |
+| S3 / IRSA | Paimon warehouse、checkpoint、`FLINK_OPERATOR_JAR_S3_PREFIX` 制品；`flink` + `gido-backend` SA 各绑 IAM Role |
+| CDC 源库 | RDS MySQL binlog + 安全组放行 EKS→:3306 |
+
+**端到端 CDC→Paimon 专篇**（架构、RDS、IRSA、SQL 模板、Checklist）：**[docs/CDC_PAIMON_EKS.md](../../docs/CDC_PAIMON_EKS.md)**  
+
+EKS 示例清单：`k8s/eks/`（IRSA、MySQL Secret 模板、Backend ConfigMap 覆盖）。
+
 ---
 
 ## 8. 发布与验证
@@ -199,3 +215,4 @@ kubectl -n gido get ingress
 
 - 本目录本地与 Docker：**[DEPLOYMENT_SOP.md](./DEPLOYMENT_SOP.md)**  
 - 集成排障：**[integration-troubleshooting.md](./integration-troubleshooting.md)**
+- **CDC→Paimon on EKS：** **[../../docs/CDC_PAIMON_EKS.md](../../docs/CDC_PAIMON_EKS.md)**

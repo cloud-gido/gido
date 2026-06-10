@@ -1,6 +1,8 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
+ * @author felixzhu
+ * @date 2026-06-05
  */
 import { useCallback, useRef, type TdHTMLAttributes, type ThHTMLAttributes, type ReactNode } from 'react'
 import { message } from 'antd'

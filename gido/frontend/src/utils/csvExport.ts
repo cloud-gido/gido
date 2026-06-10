@@ -1,9 +1,9 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
+ * @author felixzhu
+ * @date 2026-06-05
  */
-/** 将列名 + 行数据导出为 CSV（UTF-8 BOM，Excel 可正确打开中文） */
-
 function escapeCell(v: unknown): string {
   if (v === null || v === undefined) return ''
   const s = String(v)

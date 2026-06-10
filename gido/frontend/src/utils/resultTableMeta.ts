@@ -1,8 +1,9 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
+ * @author felixzhu
+ * @date 2026-06-05
  */
-/** 合并列顺序：保留已有顺序，新列追加到末尾 */
 export function mergeColumnOrderWithKeys(order: string[] | undefined | null, keys: string[]): string[] {
   const seen = new Set<string>()
   const out: string[] = []

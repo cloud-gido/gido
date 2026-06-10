@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """数据探查：临时只读 SQL（SELECT / WITH），支持多条语句。"""
 from typing import Any, Dict, List, Optional
 

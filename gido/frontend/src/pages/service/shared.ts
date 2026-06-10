@@ -1,6 +1,8 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
+ * @author felixzhu
+ * @date 2026-06-05
  */
 export function formatApiError(e: any, fallback = '操作失败'): string {
   const detail = e?.response?.data?.detail

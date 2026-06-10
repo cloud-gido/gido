@@ -1,0 +1,31 @@
+# GIDO Backend ConfigMap — EKS 生产 CDC→Paimon 推荐项
+# 合并到 gido 命名空间 gido-backend-config（kubectl edit 或 strategic merge patch）
+#
+# 镜像：须为含 sql-runner + Paimon + CDC + S3 插件的 ECR 镜像，例如：
+#   ACCOUNT.dkr.ecr.REGION.amazonaws.com/gido-flink-runtime:stable
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gido-backend-config
+  namespace: gido
+data:
+  PAIMON_WAREHOUSE_DEFAULT: "s3://YOUR-BUCKET/paimon-warehouse"
+  FLINK_OPERATOR_CHECKPOINT_DIR: "s3://YOUR-BUCKET/flink-checkpoints"
+  FLINK_OPERATOR_UPGRADE_MODE: "savepoint"
+  FLINK_OPERATOR_IMAGE: "ACCOUNT.dkr.ecr.REGION.amazonaws.com/gido-flink-runtime:stable"
+  FLINK_K8S_APPLICATION_IMAGE: "ACCOUNT.dkr.ecr.REGION.amazonaws.com/gido-flink-runtime:stable"
+  # EKS 生产推荐：JAR/SQL 制品持久化到 S3；Operator jarURI / SqlRunner 从 s3:// 拉取
+  FLINK_OPERATOR_JAR_S3_PREFIX: "s3://YOUR-BUCKET/gido-artifacts"
+  # Backend 上传制品须 IRSA：kubectl apply -f k8s/eks/gido-backend-s3-irsa.example.yaml
+  # SQL CDC→Paimon 在配置 S3 前缀后默认 sql_source=s3（无需 ConfigMap 挂载 SQL）
+---
+# gido-secrets 须含 FLINK_OPERATOR_ARTIFACT_TOKEN（Operator Pod 拉取 SQL/JAR 制品时校验）。
+# 示例（勿提交明文；生产用 External Secrets / Secrets Manager）：
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: gido-secrets
+#   namespace: gido
+# stringData:
+#   FLINK_OPERATOR_ARTIFACT_TOKEN: "<random-32+ chars>"

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # =============================================================================
 # 大数据平台一键编排：PostgreSQL + Kafka + Flink + DolphinScheduler + GIDO
 #

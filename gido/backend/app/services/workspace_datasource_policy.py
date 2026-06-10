@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """工作空间数据源继承策略（与前端 workspaceDatasource.ts 一致）。"""
 from __future__ import annotations
 

@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """管理员配置 DolphinScheduler、Flink 等集成项（库覆盖环境变量，可插拔对接外部集群）。"""
 from typing import Any, Dict, Optional
 
@@ -440,7 +442,7 @@ def flink_deploy_hint(db: Session = Depends(get_db), _: User = Depends(get_curre
     compose = "environment:\n      - " + "\n      - ".join(lines)
     return {
         "note": (
-            "GIDO 不会在远端集群自动安装 Flink；请用 kubectl / Helm / Operator 部署 Session（见仓库根 k8s/flink.yaml），"
+            "GIDO 不会在远端集群自动安装 Flink；请用 kubectl / Helm / Operator 部署 Session（见仓库根 k8s/legacy/flink.yaml），"
             "再在「系统管理 → 集成」填写 JM / SQL Gateway 与 K8s Application 相关项。"
             " 对接非标准集群域或命名空间时，可填下方「K8s / SQL Gateway」后点「导出 SQL Gateway Deployment YAML」生成与生效配置一致的清单。"
             " 下方变量与「当前生效」一致，可粘贴到 K8s Secret、CI 或 gido/docker-compose.yml。"

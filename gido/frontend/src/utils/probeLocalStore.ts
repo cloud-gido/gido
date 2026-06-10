@@ -1,9 +1,9 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
+ * @author felixzhu
+ * @date 2026-06-05
  */
-/** 数据探查：本地目录树 + 脚本（按工作区存 localStorage，切换路由不丢） */
-
 export const probeStorageKey = (wsId: number) => `gido.probe.tree.v1.w${wsId}`
 
 export type ProbeFolder = { id: string; name: string; parentId: string | null }

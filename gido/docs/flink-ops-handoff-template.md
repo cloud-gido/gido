@@ -31,7 +31,7 @@ GIDO **实时开发（Flink SQL / JAR）** 需要：
 
 ## 3. 部署形态勾选（便于排障）
 
-- [ ] **Kubernetes（推荐）**：Flink Session 使用仓库根 `k8s/flink.yaml`；GIDO 在「系统管理 → 集成」填写 JM / Gateway REST（或环境变量 `FLINK_*`）。
+- [ ] **Kubernetes（推荐）**：Flink Session（遗留）使用 `k8s/legacy/flink.yaml`；生产推荐 Flink Operator；GIDO 在「系统管理 → 集成」填写 JM / Gateway REST（或环境变量 `FLINK_*`）。
   - 必须明确：**从 GIDO 后端 出站** 到 JM、Gateway 的 **Service / Ingress / port-forward** 是否放行。
   - `FLINK_GATEWAY_JOBMANAGER_REST_URL` 建议使用 **Gateway Pod 内可解析** 的 JM Service DNS（如 `http://flink-jobmanager.flink.svc.cluster.local:8081`）。
 - [ ] **云上托管 Flink**（如全托管实时计算底层）  

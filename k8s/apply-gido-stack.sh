@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # 一键：构建 GIDO 镜像并部署最小栈（PostgreSQL + backend + frontend）到当前 kubectl 上下文。
 #
 # 用法：
@@ -8,7 +9,7 @@
 # 环境变量（可选）：
 #   GIDO_BACKEND_IMAGE   默认 gido-backend:latest
 #   GIDO_FRONTEND_IMAGE  默认 gido-frontend:latest
-#   GIDO_APPLY_FLINK=1   可选：额外 apply k8s/flink.yaml（Session Flink，一般不需要）
+#   GIDO_APPLY_FLINK=1   可选：额外 apply k8s/legacy/flink.yaml（Session Flink，一般不需要）
 #   GIDO_KIND_LOAD=0     强制不导入 Kind（非 Kind 集群时用）
 #   GIDO_APPLY_INGRESS=1 再 kubectl apply k8s/gido-ingress.yaml
 #
@@ -59,7 +60,7 @@ fi
 
 if [[ "${GIDO_APPLY_FLINK:-}" == "1" ]]; then
   echo "==> kubectl apply flink (Session，可选)"
-  ${KUBECTL} apply -f "${ROOT}/k8s/flink.yaml"
+  ${KUBECTL} apply -f "${ROOT}/k8s/legacy/flink.yaml"
 fi
 
 echo "==> kubectl apply gido (sed image placeholders)"
@@ -68,6 +69,10 @@ sed \
   -e "s#__FRONTEND_IMAGE__#${FRONTEND_IMAGE}#g" \
   -e "s#__FLINK_OPERATOR_IMAGE__#${FLINK_OPERATOR_IMAGE}#g" \
   "${ROOT}/k8s/gido.yaml" | ${KUBECTL} apply -f -
+
+# Secret/ConfigMap 变更不会自动重启 Pod；显式 rollout 以加载 FLINK_OPERATOR_ARTIFACT_TOKEN 等 env
+echo "==> rollout restart backend (reload Secret/ConfigMap env)"
+${KUBECTL} rollout restart deployment/gido-backend -n gido
 
 if ${KUBECTL} get ns flink >/dev/null 2>&1; then
   echo "==> kubectl apply flink-operator-rbac"

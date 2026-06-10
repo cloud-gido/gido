@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-10
 """统一 Flink 运行时镜像内预置连接器清单（与 k8s/flink-runtime/connectors.manifest 对齐）。"""
 
 from typing import List
@@ -27,6 +29,14 @@ BUNDLED_CONNECTORS: List[dict] = [
         "artifact": "org.apache.flink:flink-sql-connector-postgres-cdc",
         "version": "3.5.0",
         "connector": "postgres-cdc",
+    },
+    {
+        "id": "s3-fs-hadoop",
+        "name": "Flink S3 Filesystem (Hadoop)",
+        "artifact": "org.apache.flink:flink-s3-fs-hadoop",
+        "version": "2.0.1",
+        "path": "/opt/flink/plugins/s3-fs-hadoop/flink-s3-fs-hadoop-2.0.1.jar",
+        "scheme": "s3://",
     },
 ]
 

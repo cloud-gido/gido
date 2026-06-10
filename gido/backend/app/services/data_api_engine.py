@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """数据服务：SQL 绑定、只读执行、脱敏、分页、简易缓存与限流。"""
 from __future__ import annotations
 

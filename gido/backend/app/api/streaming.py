@@ -1,5 +1,7 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-06-05
 """
 实时开发 API — 封装 Flink REST API
 支持 SQL 任务（通过 Flink SQL Gateway）和 JAR 任务
@@ -321,7 +323,7 @@ def _sql_gateway_response_error_detail(status: int, body: str) -> str:
     if "forbidden" in low or " is forbidden" in low:
         hints.append(
             "【Gateway 响应中含 Forbidden】多为命名空间内 RBAC：对照下方堆栈里的 resource/verb，"
-            "补全 `k8s/flink.yaml` 中 `flink-sql-gateway-application` Role 后 `kubectl apply` 并 rollout sql-gateway。"
+            "补全 `k8s/legacy/flink.yaml` 中 `flink-sql-gateway-application` Role 后 `kubectl apply` 并 rollout sql-gateway。"
         )
     if "unauthorized" in low or ("401" in low and "response code" in low):
         hints.append("【Unauthorized / 401】kubeconfig 凭据过期、上下文错误，或集群拒绝当前身份。")
@@ -329,7 +331,7 @@ def _sql_gateway_response_error_detail(status: int, body: str) -> str:
         hints.append(
             "【UnknownHost kubernetes.default.svc】Flink 用 Configuration 的 kubernetes.config.file 建 Fabric8 客户端，"
             "默认是 ~/.kube/config，不会用 KUBECONFIG。"
-            " 请对集群应用最新 `k8s/flink.yaml`（init 写 kubeconfig + 主容器复制到 /opt/flink/.kube/config，并带 "
+            " 请对集群应用最新 `k8s/legacy/flink.yaml`（init 写 kubeconfig + 主容器复制到 /opt/flink/.kube/config，并带 "
             "-Dkubernetes.config.file=… 与 -Dkubernetes.namespace=flink），再 rollout sql-gateway。"
         )
     if "connection refused" in low or "failed to connect to" in low or "unknown host" in low:
@@ -355,10 +357,10 @@ def _application_deploy_error_hint(detail: str) -> str:
         " 若不需要替换，设 GIDO_FLINK_K8S_API_PATCH=disable。\n"
         "2) 未向 backend 提供 kubeconfig：请设 FLINK_K8S_KUBECONFIG_PATH，或自建 compose override / docker run -v 挂载到 /root/.kube/host-kubeconfig。\n"
         "3) 镜像拉取失败、命名空间无权限、资源不足：在目标 namespace 执行 `kubectl get events` 排查。\n"
-        "4) SQL Gateway 跑在集群内 Pod 时：须为 Gateway SA 绑定可创建 Deployment/Service/Secret 及 **Role+RoleBinding** 的 Role（见 k8s/flink.yaml 中 flink-sql-gateway-application）；"
+        "4) SQL Gateway 跑在集群内 Pod 时：须为 Gateway SA 绑定可创建 Deployment/Service/Secret 及 **Role+RoleBinding** 的 Role（见 k8s/legacy/flink.yaml 中 flink-sql-gateway-application）；"
         " 缺「创建 rolebindings」权限时 apiserver 为 Forbidden，Gateway 只显示 deploy script 500。应用最新清单后 rollout sql-gateway。\n"
         "5) 堆栈含 UnknownHostException: kubernetes.default.svc：Flink 默认读 ~/.kube/config 建 K8s 客户端（不用 KUBECONFIG）；"
-        "本仓库 `k8s/flink.yaml` 由 init 写 kubeconfig（apiserver 为 IP:443）并 `-Dkubernetes.config.file=/opt/flink/.kube/config`，请 apply + rollout。\n"
+        "本仓库 `k8s/legacy/flink.yaml` 由 init 写 kubeconfig（apiserver 为 IP:443）并 `-Dkubernetes.config.file=/opt/flink/.kube/config`，请 apply + rollout。\n"
         "6) 仍失败：`kubectl logs -n flink deploy/flink-sql-gateway --tail=200` 搜 Caused by / Forbidden；`kubectl get events -n flink --sort-by=.lastTimestamp | tail -40`。\n"
     )
 
@@ -374,7 +376,7 @@ def _explain_sql_gateway_connect_error(base: str, cause: Exception) -> str:
     if refused:
         chunks.append(
             "【未监听】目标地址上无进程监听。"
-            " 请确认 Flink SQL Gateway 已按仓库根 k8s/flink.yaml 部署且可从后端访问（Ingress / NodePort / port-forward），"
+            " 请确认 Flink SQL Gateway 已按仓库根 k8s/legacy/flink.yaml 部署且可从后端访问（Ingress / NodePort / port-forward），"
             " 再 curl `…/v1/info`；仍失败则 kubectl logs -n flink deploy/flink-sql-gateway。"
             " 若在「系统管理 → 集成」里覆盖过 Gateway URL，请核对或清空库内覆盖。"
         )
@@ -763,7 +765,7 @@ class FlinkClient:
                 raw = "http://flink-jobmanager.flink.svc.cluster.local:8081"
                 logger.info(
                     "FLINK_GATEWAY_JOBMANAGER_REST_URL 未设置且 FLINK_URL 为回环地址："
-                    "对 Gateway 使用 %s（与本仓库 k8s/flink.yaml 命名空间 flink 一致；"
+                    "对 Gateway 使用 %s（与本仓库 k8s/legacy/flink.yaml 命名空间 flink 一致；"
                     "若 JM Service 名或命名空间不同请显式设置 FLINK_GATEWAY_JOBMANAGER_REST_URL）",
                     raw,
                 )
@@ -1578,7 +1580,7 @@ def _streaming_connectivity_payload(fc: FlinkClient, cfg: FlinkRuntimeConfig, pr
         hints.append(
             "未配置 SQL Gateway：在「系统管理 → 集成」填写 Gateway REST，或在 backend .env / 部署环境设 FLINK_SQL_GATEWAY_URL。"
             " 须为 Gateway 的 /v1 根（常见端口 8083），不要用 JobManager 的 :8081。"
-            " Kubernetes Session 见仓库根 k8s/flink.yaml，对外常配合 Ingress 或 NodePort。"
+            " Kubernetes Session 见仓库根 k8s/legacy/flink.yaml，对外常配合 Ingress 或 NodePort。"
         )
     elif not gw.get("ok"):
         hints.append(
@@ -1601,7 +1603,7 @@ def _streaming_connectivity_payload(fc: FlinkClient, cfg: FlinkRuntimeConfig, pr
             safe = eff.replace("'", "%27")
             hints.append(f"在后端所在机器上自检（应返回 JSON）：curl -sS -m 8 '{safe}/overview'")
         hints.append(
-            "常见原因：① Flink Session 未部署或端口不对（推荐 kubectl apply -f k8s/flink.yaml）；"
+            "常见原因：① Flink Session 未部署或端口不对（推荐 kubectl apply -f k8s/legacy/flink.yaml）；"
             "② 后端在 Docker 内且配置了 127.0.0.1——会自动改为 host.docker.internal，Linux 需在 compose 增加 extra_hosts: "
             "\"host.docker.internal:host-gateway\"；③ 跨网络时请在集成页填写 JM 可被后端访问的 URL。"
         )
@@ -2254,13 +2256,19 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
         jar_mode = _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None))
         if jar_mode == "flink_operator":
             if not jar_artifact_exists(job.id):
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "JAR 制品不存在（Operator 从 backend 拉取 artifact.jar）。"
-                        "请重新上传 JAR；若 backend Pod 曾重启，emptyDir 会清空制品需重传。"
-                    ),
+                from app.services.artifact_s3 import artifact_s3_enabled
+
+                hint = (
+                    "请重新上传 JAR。"
+                    + (
+                        " 已配置 S3 制品前缀时，Operator 从 s3:// 拉取；"
+                        "否则经 HTTP 拉取，backend Pod 重启且未用 PVC 时会丢制品。"
+                        if artifact_s3_enabled()
+                        else " Operator 从 backend HTTP 拉取 artifact.jar；"
+                        "若 backend Pod 曾重启且未用 PVC/S3，制品会丢失需重传。"
+                    )
                 )
+                raise HTTPException(status_code=400, detail=f"JAR 制品不存在。{hint}")
         elif not job.jar_path and not jar_artifact_exists(job.id):
             raise HTTPException(status_code=400, detail="请先上传 JAR 文件")
         if jar_mode == "session":
@@ -2762,6 +2770,9 @@ async def upload_jar(
     try:
         content = await file.read()
         save_jar_bytes(job.id, content)
+        from app.services.jar_artifact import build_jar_s3_uri_for_operator
+
+        s3_uri = build_jar_s3_uri_for_operator(job.id)
         jar_name = file.filename
         jar_mode = _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None))
         session_jar_id = None
@@ -2779,6 +2790,7 @@ async def upload_jar(
             "filename": file.filename,
             "artifact_saved": True,
             "session_uploaded": bool(session_jar_id),
+            "s3_uri": s3_uri,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"上传失败: {e}")
