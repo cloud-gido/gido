@@ -1,13 +1,47 @@
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
-  <!-- 阿里云加速；maven-central-direct 直连 Central（Paimon 等新包镜像未同步时） -->
+  <!-- Maven 镜像配置：主用阿里云，备用其他仓库以防 502 错误 -->
   <mirrors>
     <mirror>
       <id>aliyun-public</id>
-      <mirrorOf>*,!maven-central-direct</mirrorOf>
-      <name>Aliyun Public</name>
+      <mirrorOf>central</mirrorOf>
+      <name>Aliyun Public Mirror</name>
       <url>https://maven.aliyun.com/repository/public</url>
     </mirror>
+    <mirror>
+      <id>maven-central</id>
+      <mirrorOf>central</mirrorOf>
+      <name>Maven Central</name>
+      <url>https://repo.maven.apache.org/maven2</url>
+    </mirror>
+    <mirror>
+      <id>repo1-maven-org</id>
+      <mirrorOf>central</mirrorOf>
+      <name>repo1.maven.org</name>
+      <url>https://repo1.maven.org/maven2</url>
+    </mirror>
   </mirrors>
+  <!-- 配置仓库优先级和容错 -->
+  <profiles>
+    <profile>
+      <id>default</id>
+      <activation>
+        <activeByDefault>true</activeByDefault>
+      </activation>
+      <repositories>
+        <repository>
+          <id>central</id>
+          <url>https://repo.maven.apache.org/maven2</url>
+          <releases>
+            <enabled>true</enabled>
+            <updatePolicy>never</updatePolicy>
+          </releases>
+          <snapshots>
+            <enabled>false</enabled>
+          </snapshots>
+        </repository>
+      </repositories>
+    </profile>
+  </profiles>
 </settings>
