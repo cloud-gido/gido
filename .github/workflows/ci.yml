@@ -227,9 +227,7 @@ jobs:
             ghcr.io/cloud-gido/gido/gido-flink-runtime
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
-            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
-            type=raw,value=2.0.1,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
-            type=sha,prefix=${{ github.ref_name }}-
+            type=raw,value=${{ env.FLINK_VERSION }}
 
       - name: Build and push flink-runtime image
 #        if: steps.check_flink_change.outputs.flink_changed == 'true'
