@@ -16,6 +16,11 @@
 |------|------|
 | [../docs/PRODUCT_OVERVIEW.md](../docs/PRODUCT_OVERVIEW.md) | **产品截图与 5 分钟体验指南** |
 | [../docs/PRODUCT_MATURITY.md](../docs/PRODUCT_MATURITY.md) | **功能完整度与部署边界** |
+| [../docs/CDC_PAIMON_EKS.md](../docs/CDC_PAIMON_EKS.md) | **EKS 生产 CDC→Paimon + S3 制品库** |
+| [../docs/FLINK_ARCHITECTURE.md](../docs/FLINK_ARCHITECTURE.md) | Flink Operator 架构说明 |
+| [../k8s/README.md](../k8s/README.md) | Kind / K3s 部署 |
+| [../k8s/eks/README.md](../k8s/eks/README.md) | EKS 示例清单（IRSA 等） |
+| [docs/EKS-DEPLOYMENT-SOP.md](docs/EKS-DEPLOYMENT-SOP.md) | **AWS EKS 部署 SOP** |
 | [docs/OPEN_SOURCE.md](docs/OPEN_SOURCE.md) | **开源发布、合规与防侵权** |
 | [../.github/workflows/ci.yml](../.github/workflows/ci.yml) | GitHub Actions CI（构建 + 合规） |
 | [docs/MIGRATION_FROM_DATAWORKS.md](docs/MIGRATION_FROM_DATAWORKS.md) | 历史命名迁移说明 |
@@ -25,6 +30,8 @@
 | [docs/flink-ops-handoff-template.md](docs/flink-ops-handoff-template.md) | Flink 运维交接模板 |
 
 实时侧 **多套 Flink 物理集群**：菜单 **「Flink 集群连接」**（`/gido/stream/flink-sessions`），在**平台默认**之上按字段覆写，与数据源「多连接」用法类似。
+
+**生产流作业（EKS / K8s）**：默认 **Flink Kubernetes Operator** 提交；JAR/SQL 制品可配置 **S3 持久化**（`FLINK_OPERATOR_JAR_S3_PREFIX`）。CDC→Paimon 见 [../docs/CDC_PAIMON_EKS.md](../docs/CDC_PAIMON_EKS.md)。
 
 ## 与整仓的关系
 
