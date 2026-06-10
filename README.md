@@ -13,9 +13,7 @@
   <a href="https://gitee.com/bigdata_troy/gido"><img src="https://img.shields.io/badge/Gitee-镜像-C71D23.svg" alt="Gitee" /></a>
 </p>
 
-<p align="center">
-  <img src="docs/screenshots/01-login.png" alt="GIDO 登录页" width="640" />
-</p>
+![GIDO 登录页](docs/screenshots/01-login.png)
 
 <p align="center">
   <em>开源大数据开发、调度与数据服务套件 · FastAPI + React · Docker 一键全栈</em>
@@ -41,33 +39,25 @@
 | 🌊 | **GIDO Stream**（玑渡·流） | 实时流转 · Flink 引擎 | [作业开发](docs/screenshots/04-stream-studio.png) |
 | 🔌 | **GIDO Serve**（玑渡·服） | 数据出渡 · API 网关 | [服务概览](docs/screenshots/05-serve-overview.png) |
 
-<p align="center">
-  <img src="docs/screenshots/02-product-selector.png" alt="进入 GIDO 产品选择" width="720" />
-</p>
+![进入 GIDO 产品选择](docs/screenshots/02-product-selector.png)
 
 ### GIDO Batch · 离线开发与治理
 
 SQL 开发、工作流 DAG、DolphinScheduler 调度、数据集成、运维中心、发布审批，以及数据字典 / 探查 / 质量治理。
 
-<p align="center">
-  <img src="docs/screenshots/03-batch-studio.png" alt="GIDO Batch" width="880" />
-</p>
+![GIDO Batch](docs/screenshots/03-batch-studio.png)
 
 ### GIDO Stream · 实时流计算
 
 Flink SQL / JAR 作业开发、运维监控、发布审批；**生产推荐 Flink Kubernetes Operator 1.15 + Flink 2.0.1**（`FlinkDeployment`）。内置 **CDC→Paimon** SQL 模板，EKS 上可对接 RDS MySQL + S3 仓库。本地全栈 Compose 仍含 Flink Session（8081）与 SQL Gateway（8083）。
 
-<p align="center">
-  <img src="docs/screenshots/04-stream-studio.png" alt="GIDO Stream" width="880" />
-</p>
+![GIDO Stream](docs/screenshots/04-stream-studio.png)
 
 ### GIDO Serve · 数据服务
 
 将 SQL 封装为 HTTP API，AppKey / AppSecret 授权，提供服务概览、调用监控与开放网关。
 
-<p align="center">
-  <img src="docs/screenshots/05-serve-overview.png" alt="GIDO Serve" width="880" />
-</p>
+![GIDO Serve](docs/screenshots/05-serve-overview.png)
 
 > 更多界面说明与菜单详解见 **[docs/PRODUCT_OVERVIEW.md](docs/PRODUCT_OVERVIEW.md)**。
 
