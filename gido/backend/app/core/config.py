@@ -122,6 +122,10 @@ class Settings(BaseSettings):
     FLINK_OPERATOR_JM_CPU: float = 1.0
     FLINK_OPERATOR_TM_CPU: float = 1.0
     FLINK_OPERATOR_TASK_SLOTS: int = 2
+    # Flink 作业 Pod 调度到指定节点池（如 EKS bigdata）；与 node.gamelinelab.com/pool taint 对齐
+    FLINK_OPERATOR_NODE_POOL: Optional[str] = None
+    FLINK_OPERATOR_NODE_SELECTOR_KEY: str = "node.gamelinelab.com/pool"
+    FLINK_OPERATOR_TAINT_EFFECT: str = "NoSchedule"
     # SQL Operator（FlinkDeployment Application + 官方 SQL Runner 模式）：镜像须含 sql-runner.jar
     FLINK_OPERATOR_SQL_RUNNER_JAR_URI: str = "local:///opt/flink/usrlib/sql-runner.jar"
     FLINK_OPERATOR_SQL_RUNNER_ENTRY_CLASS: Optional[str] = "com.gido.flink.SqlRunner"

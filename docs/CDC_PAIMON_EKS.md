@@ -240,6 +240,7 @@ Backend 支持 JSON 字段（Stream Studio 高级配置）：
 | `Access denied` 连 MySQL | 安全组 / 用户 GRANT | 放行 EKS→RDS:3306；检查 REPLICATION 权限 |
 | CDC 无增量 | binlog 未开或非 ROW | 改 RDS 参数组并重启 |
 | Operator CR `FAILED` | SQL 语法 / 连接器版本 | `kubectl describe flinkdeployment`；查 TM 日志 |
+| Pod `FailedScheduling` / untolerated taint | Flink 未调度到 bigdata 等节点池 | ConfigMap 设 `FLINK_OPERATOR_NODE_POOL=bigdata`；重建 backend 后重新提交作业 |
 | 与 paimon-s3 冲突 | 同时存在两套 S3 实现 | 仅保留 `flink-s3-fs-hadoop` 插件 |
 
 Flink CDC **3.5.0** 与 Flink **2.0.1** 为 GIDO 当前锁定组合；升级 Flink 2.2.x 时可评估 CDC **3.6.0-2.2**（见 `/api/streaming/flink-runtime` 的 `cdc_flink_compatibility_note`）。

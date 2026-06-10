@@ -72,6 +72,10 @@ data:
   FLINK_OPERATOR_JM_CPU: "1"
   FLINK_OPERATOR_TM_CPU: "1"
   FLINK_OPERATOR_TASK_SLOTS: "2"
+  # Flink JM/TM 调度到 bigdata 节点池（与 node.gamelinelab.com/pool taint 对齐）
+  FLINK_OPERATOR_NODE_POOL: "bigdata"
+  FLINK_OPERATOR_NODE_SELECTOR_KEY: "node.gamelinelab.com/pool"
+  FLINK_OPERATOR_TAINT_EFFECT: "NoSchedule"
   JAR_ARTIFACT_DIR: "/data/jar-artifacts"
   # ECR 镜像（三仓库须已 push）
   FLINK_OPERATOR_IMAGE: "CHANGE_ME_AWS_ACCOUNT.dkr.ecr.CHANGE_ME_AWS_REGION.amazonaws.com/gido-flink-runtime:CHANGE_ME_ECR_TAG"

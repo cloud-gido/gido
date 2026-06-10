@@ -18,4 +18,5 @@
 3. 安装 Flink Kubernetes Operator 1.15 + `kubectl apply -f k8s/flink-operator-rbac.yaml`
 4. 构建并 push `gido-flink-runtime` 到 ECR（含 S3 插件，见 `k8s/build-flink-runtime.sh`）
 5. 部署 GIDO：**外置 RDS** 用 `gido-eks-external-pg.yaml`（或 `bash k8s/eks/apply-gido-eks.sh`）；已有集群内栈则 merge `gido-backend-eks-overrides.example.yaml`
-6. Stream Studio → 插入 CDC→Paimon 模板 → 提交 SQL 作业
+6. ConfigMap 配置 `FLINK_OPERATOR_NODE_POOL=bigdata`（多节点池 + taint 集群必填）
+7. Stream Studio → 插入 CDC→Paimon 模板 → 提交 SQL 作业

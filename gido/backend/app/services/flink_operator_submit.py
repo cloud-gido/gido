@@ -19,6 +19,7 @@ from app.services.gido_deployment_meta import (
     jar_deployment_name,
     sql_deployment_name,
 )
+from app.services.flink_pod_scheduling import merge_pod_templates, operator_scheduling_pod_template
 from app.services.operator_resources import (
     OperatorResources,
     merge_flink_configuration,
@@ -228,8 +229,11 @@ def build_flink_deployment_body(
         "taskManager": tm_spec,
         "job": job_spec,
     }
-    if pod_template:
-        spec["podTemplate"] = pod_template
+    merged_pod_template = merge_pod_templates(operator_scheduling_pod_template(), pod_template)
+    if merged_pod_template:
+        spec["podTemplate"] = merged_pod_template
+    elif "podTemplate" in spec:
+        del spec["podTemplate"]
 
     body: Dict[str, Any] = {
         "apiVersion": f"{FLINK_DEPLOYMENT_GROUP}/{FLINK_DEPLOYMENT_VERSION}",
@@ -291,8 +295,6 @@ def build_flink_deployment_body_for_sql(
     )
     body["spec"]["job"]["args"] = [sql_script_path]
     body["spec"]["flinkConfiguration"] = flink_conf
-    if not pod_template and "podTemplate" in body.get("spec", {}):
-        del body["spec"]["podTemplate"]
     return body
 
 
