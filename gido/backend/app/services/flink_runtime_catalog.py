@@ -45,6 +45,20 @@ BUNDLED_CONNECTORS: List[dict] = [
         "version": "3.3.4",
         "path": "/opt/flink/lib/hadoop-common-3.3.4.jar",
     },
+    {
+        "id": "hadoop-hdfs-client",
+        "name": "Hadoop HDFS Client (Paimon CatalogContext)",
+        "artifact": "org.apache.hadoop:hadoop-hdfs-client",
+        "version": "3.3.4",
+        "path": "/opt/flink/lib/hadoop-hdfs-client-3.3.4.jar",
+    },
+    {
+        "id": "hadoop-auth",
+        "name": "Hadoop Auth (Paimon / S3 credentials)",
+        "artifact": "org.apache.hadoop:hadoop-auth",
+        "version": "3.3.4",
+        "path": "/opt/flink/lib/hadoop-auth-3.3.4.jar",
+    },
 ]
 
 CDC_FLINK_COMPATIBILITY_NOTE = (

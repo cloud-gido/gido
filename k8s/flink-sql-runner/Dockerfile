@@ -14,13 +14,17 @@ FROM --platform=$TARGETPLATFORM ${MAVEN_IMAGE} AS connectors
 WORKDIR /conn
 COPY connectors-pom.xml pom.xml
 COPY settings.xml settings.xml
-# copy-dependencies（Paimon/CDC/S3 插件）+ 仅单 jar hadoop-common（勿拉传递依赖，避免 commons-cli 与 Flink 冲突）
+# copy-dependencies（Paimon/CDC/S3 插件）+ Paimon 所需 Hadoop 最小单 jar 集（勿拉传递依赖）
 RUN mvn -B -q package -DskipTests -s settings.xml \
-    && mvn -B -q dependency:copy \
-        -Dartifact=org.apache.hadoop:hadoop-common:3.3.4 \
-        -DoutputDirectory=target/connectors \
-        -s settings.xml \
-    && test -n "$(ls target/connectors/hadoop-common-*.jar)"
+    && for artifact in \
+        org.apache.hadoop:hadoop-common:3.3.4 \
+        org.apache.hadoop:hadoop-hdfs-client:3.3.4 \
+        org.apache.hadoop:hadoop-auth:3.3.4; do \
+        mvn -B -q dependency:copy -Dartifact="${artifact}" \
+            -DoutputDirectory=target/connectors -s settings.xml; \
+    done \
+    && test -n "$(ls target/connectors/hadoop-common-*.jar)" \
+    && test -n "$(ls target/connectors/hadoop-hdfs-client-*.jar)"
 
 FROM --platform=$TARGETPLATFORM ${MAVEN_IMAGE} AS builder
 WORKDIR /build
@@ -36,6 +40,7 @@ COPY --from=connectors /conn/target/connectors/ /tmp/connectors/
 RUN mv /tmp/connectors/flink-s3-fs-hadoop-*.jar /opt/flink/plugins/s3-fs-hadoop/ \
     && mv /tmp/connectors/*.jar /opt/flink/lib/ \
     && test -n "$(ls /opt/flink/lib/hadoop-common-*.jar)" \
+    && test -n "$(ls /opt/flink/lib/hadoop-hdfs-client-*.jar)" \
     && rm -f /opt/flink/lib/commons-cli-1.2.jar /opt/flink/lib/log4j-1.2.17.jar \
     && rm -rf /tmp/connectors
 COPY --from=builder /build/target/flink-sql-runner-1.0.0.jar /opt/flink/usrlib/sql-runner.jar

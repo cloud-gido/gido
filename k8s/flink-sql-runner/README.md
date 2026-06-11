@@ -8,13 +8,17 @@
 
 - 基座：`apache/flink:2.0.1-java11`
 - `/opt/flink/usrlib/sql-runner.jar`（GIDO SQL 入口，`FLINK_OPERATOR_SQL_RUNNER_JAR_URI`）
-- Paimon、MySQL/Postgres CDC、hadoop-common → `/opt/flink/lib/`
+- Paimon、MySQL/Postgres CDC、hadoop-common/hdfs-client/auth → `/opt/flink/lib/`
 - S3 插件 → `/opt/flink/plugins/s3-fs-hadoop/`
 
-构建后自检（须在 lib 中看到 `hadoop-common-3.3.4.jar`）：
+构建后自检：
 
 ```bash
-docker run --rm gido-flink-runtime:<tag> ls /opt/flink/lib/hadoop-common-*.jar
+docker run --rm gido-flink-runtime:<tag> sh -c '
+  ls /opt/flink/lib/hadoop-common-*.jar
+  ls /opt/flink/lib/hadoop-hdfs-client-*.jar
+  test ! -f /opt/flink/lib/commons-cli-1.2.jar && echo commons-cli OK
+'
 ```
 
 ## K8s 配置

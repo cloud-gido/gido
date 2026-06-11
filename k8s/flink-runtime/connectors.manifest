@@ -30,13 +30,18 @@ s3_filesystem:
     通过 Flink S3 插件访问对象存储；勿再添加 paimon-s3 JAR（会与插件冲突）。
     Paimon catalog 另须 /opt/flink/lib/ 含 hadoop-common（CatalogContext 依赖 Configuration）。
 
-hadoop_common:
-  artifact: org.apache.hadoop:hadoop-common
+hadoop_client_minimal:
   version: "3.3.4"
-  path: /opt/flink/lib/hadoop-common-3.3.4.jar
+  jars:
+    - artifact: org.apache.hadoop:hadoop-common
+      path: /opt/flink/lib/hadoop-common-3.3.4.jar
+    - artifact: org.apache.hadoop:hadoop-hdfs-client
+      path: /opt/flink/lib/hadoop-hdfs-client-3.3.4.jar
+    - artifact: org.apache.hadoop:hadoop-auth
+      path: /opt/flink/lib/hadoop-auth-3.3.4.jar
   note: >
-    仅打入 hadoop-common 单 jar（Dockerfile dependency:copy），勿拉传递依赖。
-    commons-cli-1.2 等会与 Flink 2.0.1 启动冲突（NoSuchMethodError Option.builder）。
+    Paimon CatalogContext 须 Configuration + HdfsConfiguration；仅 dependency:copy 单 jar，
+    勿 copy-dependencies 拉传递树（commons-cli-1.2 与 Flink 冲突）。S3 读写仍走 flink-s3-fs-hadoop 插件。
 
 sql_runner:
   artifact: com.gido:flink-sql-runner
