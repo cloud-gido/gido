@@ -5,7 +5,7 @@ set -euo pipefail
 
 IMAGE="${1:?用法: verify-image.sh <镜像名:tag>}"
 
-echo "==> 校验镜像 ${IMAGE} (verify-image v3)"
+echo "==> 校验镜像 ${IMAGE} (verify-image v4)"
 
 docker run --rm "${IMAGE}" bash -c '
 set -euo pipefail
@@ -38,17 +38,27 @@ if ((${#bad_jars[@]})); then
   exit 1
 fi
 
-CP="$(ls /opt/flink/lib/hadoop-common-*.jar /opt/flink/lib/hadoop-hdfs-client-*.jar \
-  /opt/flink/lib/hadoop-auth-*.jar /opt/flink/lib/woodstox-core-*.jar \
-  /opt/flink/lib/stax2-api-*.jar | paste -sd: -)"
+CP="$(ls /opt/flink/lib/*.jar | paste -sd: -)"
 
-# VersionInfo 有 main，不依赖 jar/jshell 命令
-if ! "${JAVA}" -cp "${CP}" org.apache.hadoop.util.VersionInfo >/dev/null 2>&1; then
-  echo "hadoop 类加载失败，classpath=${CP}"
-  "${JAVA}" -cp "${CP}" org.apache.hadoop.util.VersionInfo || true
-  exit 1
+# 与 Flink JM 一致：全 lib classpath（含 slf4j）；jshell 实例化 Configuration
+JSHELL="${JAVA_HOME:-/opt/java/openjdk}/bin/jshell"
+if [ -x "${JSHELL}" ]; then
+  if ! printf "%s\n" "new org.apache.hadoop.conf.Configuration();" "/exit" \
+    | "${JSHELL}" --class-path "${CP}" -q >/dev/null 2>&1; then
+    echo "hadoop Configuration 类加载失败"
+    printf "%s\n" "new org.apache.hadoop.conf.Configuration();" "/exit" \
+      | "${JSHELL}" --class-path "${CP}" -q || true
+    exit 1
+  fi
+  echo "OK Hadoop Configuration 可加载 (jshell, full lib cp)"
+else
+  if ! "${JAVA}" -cp "${CP}" org.apache.hadoop.util.VersionInfo >/dev/null 2>&1; then
+    echo "hadoop 类加载失败"
+    "${JAVA}" -cp "${CP}" org.apache.hadoop.util.VersionInfo || true
+    exit 1
+  fi
+  echo "OK Hadoop classpath 可加载 (VersionInfo, full lib cp)"
 fi
-echo "OK Hadoop classpath 可加载 (VersionInfo)"
 '
 
 echo "==> 镜像校验通过: ${IMAGE}"
