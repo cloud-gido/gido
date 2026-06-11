@@ -14,7 +14,13 @@ FROM --platform=$TARGETPLATFORM ${MAVEN_IMAGE} AS connectors
 WORKDIR /conn
 COPY connectors-pom.xml pom.xml
 COPY settings.xml settings.xml
-RUN mvn -B -q package -DskipTests -s settings.xml
+# copy-dependencies + 显式拉取 hadoop-common（Paimon catalog 须主 classpath 有 Configuration）
+RUN mvn -B -q package -DskipTests -s settings.xml \
+    && mvn -B -q dependency:copy \
+        -Dartifact=org.apache.hadoop:hadoop-common:3.3.4 \
+        -DoutputDirectory=target/connectors \
+        -s settings.xml \
+    && test -n "$(ls target/connectors/hadoop-common-*.jar)"
 
 FROM --platform=$TARGETPLATFORM ${MAVEN_IMAGE} AS builder
 WORKDIR /build
@@ -29,6 +35,7 @@ RUN mkdir -p /opt/flink/lib /opt/flink/usrlib /opt/flink/gido-scripts /opt/flink
 COPY --from=connectors /conn/target/connectors/ /tmp/connectors/
 RUN mv /tmp/connectors/flink-s3-fs-hadoop-*.jar /opt/flink/plugins/s3-fs-hadoop/ \
     && mv /tmp/connectors/*.jar /opt/flink/lib/ \
+    && test -n "$(ls /opt/flink/lib/hadoop-common-*.jar)" \
     && rm -rf /tmp/connectors
 COPY --from=builder /build/target/flink-sql-runner-1.0.0.jar /opt/flink/usrlib/sql-runner.jar
 USER flink

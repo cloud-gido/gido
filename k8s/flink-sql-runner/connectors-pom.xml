@@ -74,8 +74,8 @@
                         </goals>
                         <configuration>
                             <outputDirectory>${project.build.directory}/connectors</outputDirectory>
-                            <!-- connector JAR 为 compile 作用域 fat jar -->
-                            <includeScope>compile</includeScope>
+                            <!-- 须含 hadoop-common 及其 runtime 传递依赖（Paimon CatalogContext） -->
+                            <includeScope>runtime</includeScope>
                         </configuration>
                     </execution>
                 </executions>

@@ -38,6 +38,13 @@ BUNDLED_CONNECTORS: List[dict] = [
         "path": "/opt/flink/plugins/s3-fs-hadoop/flink-s3-fs-hadoop-2.0.1.jar",
         "scheme": "s3://",
     },
+    {
+        "id": "hadoop-common",
+        "name": "Hadoop Common (Paimon catalog)",
+        "artifact": "org.apache.hadoop:hadoop-common",
+        "version": "3.3.4",
+        "path": "/opt/flink/lib/hadoop-common-3.3.4.jar",
+    },
 ]
 
 CDC_FLINK_COMPATIBILITY_NOTE = (

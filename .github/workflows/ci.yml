@@ -245,6 +245,8 @@ jobs:
         with:
           context: k8s/flink-sql-runner
           push: true
+          # connectors 阶段须每次重跑 Maven（hadoop-common 等 lib 变更不能被 layer 缓存跳过）
+          no-cache: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |

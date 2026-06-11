@@ -30,6 +30,14 @@ s3_filesystem:
     通过 Flink S3 插件访问对象存储；勿再添加 paimon-s3 JAR（会与插件冲突）。
     Paimon catalog 另须 /opt/flink/lib/ 含 hadoop-common（CatalogContext 依赖 Configuration）。
 
+hadoop_common:
+  artifact: org.apache.hadoop:hadoop-common
+  version: "3.3.4"
+  path: /opt/flink/lib/hadoop-common-3.3.4.jar
+  note: >
+    Paimon CatalogContext 创建 s3:// warehouse 时须主 classpath 可加载 Configuration。
+    flink-s3-fs-hadoop 在 plugins 隔离 classloader，不能替代。
+
 sql_runner:
   artifact: com.gido:flink-sql-runner
   version: "1.0.0"
