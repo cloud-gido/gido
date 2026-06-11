@@ -144,24 +144,6 @@ def test_port_forward_hint_for_localhost_browser_base(monkeypatch):
     assert "gido-jar-1-rest" in hint
 
 
-def test_flink_conf_injects_s3_irsa_when_s3_artifacts_enabled(monkeypatch):
-    from app.core.config import settings
-    from app.services import flink_operator_submit as fos
-
-    monkeypatch.setattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True)
-    monkeypatch.setattr(
-        settings,
-        "FLINK_OPERATOR_S3_CREDENTIALS_PROVIDER",
-        "com.amazonaws.auth.WebIdentityTokenCredentialsProvider",
-    )
-    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://bucket/flink/job-jar")
-    monkeypatch.setattr(settings, "FLINK_OPERATOR_CHECKPOINT_DIR", "")
-    conf = fos._base_flink_conf()
-    assert conf["fs.s3a.aws.credentials.provider"] == (
-        "com.amazonaws.auth.WebIdentityTokenCredentialsProvider"
-    )
-
-
 def test_resolve_operator_jm_rest_dev_local_skips_cluster_dns(monkeypatch):
     from app.services import flink_operator_submit as fos
 

@@ -414,6 +414,28 @@ def suspend_flink_deployment(deployment_name: str, namespace: Optional[str] = No
     )
 
 
+def delete_flink_deployment(deployment_name: str, namespace: Optional[str] = None) -> None:
+    """删除 FlinkDeployment CR；Operator 会回收 JM/TM Pod 与 REST Service。CR 已不存在时忽略 404。"""
+    api = _custom_objects_api()
+    ns = namespace or _operator_namespace()
+    try:
+        api.delete_namespaced_custom_object(
+            group=FLINK_DEPLOYMENT_GROUP,
+            version=FLINK_DEPLOYMENT_VERSION,
+            namespace=ns,
+            plural=FLINK_DEPLOYMENT_PLURAL,
+            name=deployment_name,
+        )
+        logger.info("已删除 FlinkDeployment %s/%s", ns, deployment_name)
+    except Exception as e:
+        from kubernetes.client import ApiException  # type: ignore
+
+        if isinstance(e, ApiException) and getattr(e, "status", None) == 404:
+            logger.debug("FlinkDeployment 已不存在 %s/%s", ns, deployment_name)
+            return
+        raise
+
+
 def extract_status_from_cr(cr: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """返回 (flink_job_id, lifecycle_state, error_message)。"""
     status = cr.get("status") or {}

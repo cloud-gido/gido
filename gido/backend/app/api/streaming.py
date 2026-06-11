@@ -2459,9 +2459,9 @@ def delete_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
         try:
             jm_ov = _jm_base_for_job(job)
             if op_dep_del:
-                from app.services.flink_operator_submit import suspend_flink_deployment
+                from app.services.flink_operator_submit import delete_flink_deployment
 
-                suspend_flink_deployment(op_dep_del)
+                delete_flink_deployment(op_dep_del)
                 _release_operator_ui_tunnel(job)
                 if job.job_type == "SQL" and _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None)) == "flink_operator":
                     from app.services.flink_operator_submit import _operator_namespace
