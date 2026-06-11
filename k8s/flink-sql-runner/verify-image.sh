@@ -36,7 +36,16 @@ for bad in /opt/flink/lib/paimon-s3*.jar; do
 done
 
 HADOOP=$(ls /opt/flink/lib/hadoop-common-*.jar | head -1)
-java -cp "${HADOOP}" org.apache.hadoop.conf.Configuration >/dev/null 2>&1 \
+jar tf "${HADOOP}" | grep -q org/apache/hadoop/conf/Configuration.class \
+  || { echo "hadoop-common 缺少 Configuration.class"; exit 1; }
+
+CP="$(ls /opt/flink/lib/hadoop-common-*.jar /opt/flink/lib/hadoop-hdfs-client-*.jar \
+  /opt/flink/lib/hadoop-auth-*.jar /opt/flink/lib/woodstox-core-*.jar \
+  /opt/flink/lib/stax2-api-*.jar | paste -sd: -)"
+
+# Configuration 无 main；用 jshell 实例化（与 Paimon catalog 类加载路径一致）
+printf "%s\n" "new org.apache.hadoop.conf.Configuration();" "/exit" \
+  | jshell --class-path "${CP}" -q >/dev/null 2>&1 \
   || { echo "hadoop Configuration 类加载失败"; exit 1; }
 echo "OK Hadoop Configuration 可加载"
 '
