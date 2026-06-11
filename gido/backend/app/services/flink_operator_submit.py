@@ -123,6 +123,29 @@ def _resolve_savepoint_dir(checkpoint_dir: str) -> str:
     return f"{ckpt}/savepoints"
 
 
+def _s3_paths_configured() -> bool:
+    from app.services.artifact_s3 import artifact_s3_enabled
+
+    if artifact_s3_enabled():
+        return True
+    ckpt = (settings.FLINK_OPERATOR_CHECKPOINT_DIR or "").strip().lower()
+    if ckpt.startswith("s3://") or ckpt.startswith("s3a://"):
+        return True
+    wh = (settings.PAIMON_WAREHOUSE_DEFAULT or "").strip().lower()
+    return wh.startswith("s3://") or wh.startswith("s3a://")
+
+
+def _apply_s3_irsa_flink_conf(flink_conf: Dict[str, str]) -> None:
+    """EKS 上读 s3/s3a 制品与 checkpoint 须 IRSA；注入 fs.s3a.aws.credentials.provider。"""
+    if not getattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True):
+        return
+    if not _s3_paths_configured():
+        return
+    provider = (settings.FLINK_OPERATOR_S3_CREDENTIALS_PROVIDER or "").strip()
+    if provider:
+        flink_conf["fs.s3a.aws.credentials.provider"] = provider
+
+
 def _base_flink_conf(*, enable_http_artifacts: bool = False) -> Dict[str, str]:
     flink_conf: Dict[str, str] = {}
     if enable_http_artifacts:
@@ -134,6 +157,7 @@ def _base_flink_conf(*, enable_http_artifacts: bool = False) -> Dict[str, str]:
             settings.FLINK_OPERATOR_CHECKPOINT_INTERVAL or "60s"
         )
         flink_conf["execution.checkpointing.savepoint-dir"] = _resolve_savepoint_dir(ckpt)
+    _apply_s3_irsa_flink_conf(flink_conf)
     rest_ex = (settings.FLINK_K8S_REST_EXPOSED_TYPE or "LoadBalancer").strip()
     if rest_ex:
         flink_conf["kubernetes.rest-service.exposed.type"] = rest_ex

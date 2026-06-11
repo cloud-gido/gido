@@ -126,6 +126,11 @@ class Settings(BaseSettings):
     FLINK_OPERATOR_NODE_POOL: Optional[str] = None
     FLINK_OPERATOR_NODE_SELECTOR_KEY: str = "node.gamelinelab.com/pool"
     FLINK_OPERATOR_TAINT_EFFECT: str = "NoSchedule"
+    # EKS IRSA：Flink 作业访问 s3/s3a（制品、checkpoint、Paimon）时的 Hadoop 凭证 Provider
+    FLINK_OPERATOR_S3_USE_IRSA: bool = True
+    FLINK_OPERATOR_S3_CREDENTIALS_PROVIDER: str = (
+        "com.amazonaws.auth.WebIdentityTokenCredentialsProvider"
+    )
     # SQL Operator（FlinkDeployment Application + 官方 SQL Runner 模式）：镜像须含 sql-runner.jar
     FLINK_OPERATOR_SQL_RUNNER_JAR_URI: str = "local:///opt/flink/usrlib/sql-runner.jar"
     FLINK_OPERATOR_SQL_RUNNER_ENTRY_CLASS: Optional[str] = "com.gido.flink.SqlRunner"

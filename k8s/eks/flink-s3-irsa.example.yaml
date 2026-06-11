@@ -1,4 +1,12 @@
-# Flink 作业 Pod 通过 IRSA 访问 S3（Paimon warehouse + checkpoint）
+# Flink 作业 Pod 通过 IRSA 访问 S3（artifact.sql / jar / checkpoint / Paimon）
+#
+# 常见失败：NoAuthWithAWSException — Flink Pod 未挂 IRSA 或 flinkConfiguration 未含
+#   fs.s3a.aws.credentials.provider: com.amazonaws.auth.WebIdentityTokenCredentialsProvider
+# GIDO backend 在 FLINK_OPERATOR_S3_USE_IRSA=true 且配置了 S3 路径时会自动注入。
+#
+# 验证（JobManager Pod 启动后）：
+#   kubectl -n flink get sa flink -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}{"\n"}'
+#   kubectl -n flink exec deploy/<deployment>-jobmanager -- env | grep -E '^AWS_(ROLE_ARN|WEB_IDENTITY)'
 #
 # 前置（AWS CLI / eksctl）：
 #   1. eksctl create iamserviceaccount \

@@ -81,11 +81,13 @@ data:
   FLINK_OPERATOR_IMAGE: "CHANGE_ME_AWS_ACCOUNT.dkr.ecr.CHANGE_ME_AWS_REGION.amazonaws.com/gido-flink-runtime:CHANGE_ME_ECR_TAG"
   FLINK_K8S_APPLICATION_IMAGE: "CHANGE_ME_AWS_ACCOUNT.dkr.ecr.CHANGE_ME_AWS_REGION.amazonaws.com/gido-flink-runtime:CHANGE_ME_ECR_TAG"
   # S3（须双 IRSA：gido-backend 写 + flink 读）
-  FLINK_OPERATOR_JAR_S3_PREFIX: "s3://CHANGE_ME_S3_BUCKET/gido-artifacts"
-  PAIMON_WAREHOUSE_DEFAULT: "s3://CHANGE_ME_S3_BUCKET/paimon-warehouse"
-  FLINK_OPERATOR_CHECKPOINT_DIR: "s3://CHANGE_ME_S3_BUCKET/flink-checkpoints"
-  # upgradeMode=savepoint 时 Operator 校验 execution.checkpointing.savepoint-dir（backend 自动写入 FlinkDeployment）
-  FLINK_OPERATOR_SAVEPOINT_DIR: "s3://CHANGE_ME_S3_BUCKET/flink-savepoints"
+  FLINK_OPERATOR_JAR_S3_PREFIX: "s3://CHANGE_ME_S3_BUCKET/flink/job-jar"
+  PAIMON_WAREHOUSE_DEFAULT: "s3a://CHANGE_ME_S3_BUCKET/paimon-warehouse"
+  FLINK_OPERATOR_CHECKPOINT_DIR: "s3a://CHANGE_ME_S3_BUCKET/flink/checkpoints"
+  FLINK_OPERATOR_SAVEPOINT_DIR: "s3a://CHANGE_ME_S3_BUCKET/flink/savepoints"
+  # EKS IRSA：Flink 作业读 S3 制品/SQL/checkpoint（须 flink SA 绑 IAM Role）
+  FLINK_OPERATOR_S3_USE_IRSA: "true"
+  FLINK_OPERATOR_S3_CREDENTIALS_PROVIDER: "com.amazonaws.auth.WebIdentityTokenCredentialsProvider"
   GIDO_ARTIFACT_S3_REGION: "CHANGE_ME_AWS_REGION"
   # Session / Gateway（不部署，留空）
   FLINK_URL: ""
