@@ -47,7 +47,7 @@ GIDO 是 **单壳三产品** 的中台：
 | **Kind 开发** | `k8s/apply-gido-stack.sh` | 同 K3s | Operator；Session 可选 | 同 K3s | 完整 |
 | **AWS EKS 生产** | [CDC_PAIMON_EKS.md](./CDC_PAIMON_EKS.md) | 外置 DS | Operator + **S3 制品** + CDC→Paimon | **S3 持久化** | 完整 |
 
-**流计算主推栈**：Flink Kubernetes Operator **1.15** + Flink **2.0.1**（`flinkVersion: v2_0`），镜像 `gido-flink-sql-runner`（Paimon + MySQL CDC + S3 插件）。
+**流计算主推栈**：Flink Kubernetes Operator **1.15** + Flink **2.0.1**（`flinkVersion: v2_0`），镜像 `gido-flink-runtime`（Paimon + MySQL CDC + S3 插件）。
 
 ---
 

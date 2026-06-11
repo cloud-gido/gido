@@ -178,12 +178,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  # 单次 docker build（context: k8s/flink-sql-runner）推送到 GHCR 两个包名，digest 完全相同：
-  #   gido-flink-sql-runner — 构建脚本主名（k8s/lib/flink-sql-runner-image.sh）
-  #   gido-flink-runtime    — K8s/Operator 配置用名（FLINK_OPERATOR_IMAGE）
-  # EKS/GIDO 只需引用 gido-flink-runtime；sql-runner 不是第二个要部署的镜像。
+  # 单次 docker build（context: k8s/flink-sql-runner）仅推送 gido-flink-runtime 至 GHCR。
+  # sql-runner 指镜像内 JAR（/opt/flink/usrlib/sql-runner.jar），非独立容器镜像。
   docker-flink-runtime:
-    name: Build and push Flink runtime (sql-runner + runtime, same digest) to GHCR
+    name: Build and push Flink runtime image to GHCR
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev')
     permissions:
@@ -234,17 +232,14 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # 两个 images 共享同一次 build 的全部 tags（metadata-action 笛卡尔积 → 相同 digest）
-          images: |
-            ghcr.io/${{ github.repository }}/gido-flink-sql-runner
-            ghcr.io/${{ github.repository }}/gido-flink-runtime
+          images: ghcr.io/${{ github.repository }}/gido-flink-runtime
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
             type=sha,prefix=${{ github.ref_name }}-,enable=${{ github.ref == 'refs/heads/dev' }}
             type=raw,value=${{ steps.extract_flink_version.outputs.FLINK_VERSION }}
 
-      - name: Build and push flink-runtime image (one build → two GHCR packages)
+      - name: Build and push flink-runtime image
 #        if: steps.check_flink_change.outputs.flink_changed == 'true'
         uses: docker/build-push-action@v5
         with:

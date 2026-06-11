@@ -77,9 +77,8 @@ data:
   FLINK_OPERATOR_NODE_SELECTOR_KEY: "node.gamelinelab.com/pool"
   FLINK_OPERATOR_TAINT_EFFECT: "NoSchedule"
   JAR_ARTIFACT_DIR: "/data/jar-artifacts"
-  # Flink 运行时（CI 一次构建推 GHCR 两包，digest 相同，YAML 只引用 runtime 即可）：
+  # Flink 运行时（CI 推 GHCR gido-flink-runtime；ECR 自建同理）：
   #   ghcr.io/cloud-gido/gido/gido-flink-runtime:<flink版本或dev-sha>
-  #   ghcr.io/cloud-gido/gido/gido-flink-sql-runner:<同上>  ← 与上行完全相同，不必重复配置
   # ECR 示例：CHANGE_ME_AWS_ACCOUNT.dkr.ecr.CHANGE_ME_AWS_REGION.amazonaws.com/gido-flink-runtime:CHANGE_ME_ECR_TAG
   FLINK_OPERATOR_IMAGE: "CHANGE_ME_AWS_ACCOUNT.dkr.ecr.CHANGE_ME_AWS_REGION.amazonaws.com/gido-flink-runtime:CHANGE_ME_ECR_TAG"
   FLINK_K8S_APPLICATION_IMAGE: "CHANGE_ME_AWS_ACCOUNT.dkr.ecr.CHANGE_ME_AWS_REGION.amazonaws.com/gido-flink-runtime:CHANGE_ME_ECR_TAG"

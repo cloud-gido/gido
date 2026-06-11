@@ -62,7 +62,7 @@ def flink_runtime_api_payload() -> dict:
         "flink_operator_version": (settings.FLINK_OPERATOR_FLINK_VERSION or "v2_0").strip(),
         "operator_namespace": op_ns,
         "runtime_image": img or "gido-flink-runtime",
-        "runtime_image_aliases": ["gido-flink-sql-runner", "gido-flink-runtime"],
+        "runtime_image_aliases": ["gido-flink-runtime"],
         "paimon_warehouse_default": (settings.PAIMON_WAREHOUSE_DEFAULT or "").strip() or None,
         "checkpoint_dir_default": (settings.FLINK_OPERATOR_CHECKPOINT_DIR or "").strip() or None,
         "sql_runner": SQL_RUNNER_INFO,
