@@ -190,7 +190,7 @@ kubectl -n bigdata rollout restart deploy/gido-backend
 JM=$(kubectl -n bigdata get pods -l component=jobmanager -o jsonpath='{.items[0].metadata.name}')
 kubectl -n bigdata get pod "$JM" -o jsonpath='{.spec.containers[0].image}{"\n"}'
 kubectl -n bigdata exec "$JM" -- ls /opt/flink/lib/ | grep -E 'hadoop|configuration2|woodstox'
-kubectl -n bigdata exec "$JM" -- bash -c 'CP=$(ls /opt/flink/lib/*.jar|paste -sd: -); $JAVA_HOME/bin/jshell --class-path "$CP" -q <<< "new org.apache.hadoop.conf.Configuration();"'
+kubectl -n bigdata exec "$JM" -- bash -c 'CP=$(ls /opt/flink/lib/*.jar|paste -sd: -):/opt/flink/usrlib/sql-runner.jar; $JAVA_HOME/bin/java -cp "$CP" com.gido.flink.RuntimeSmoke'
 ```
 
 镜像不是 `ghcr.io/cloud-gido/gido/gido-flink-runtime:dev`（或 `2.0.1`）或缺少 `commons-configuration2` → 仍是旧 runtime。

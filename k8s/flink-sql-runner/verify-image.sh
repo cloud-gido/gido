@@ -5,12 +5,11 @@ set -euo pipefail
 
 IMAGE="${1:?用法: verify-image.sh <镜像名:tag>}"
 
-echo "==> 校验镜像 ${IMAGE} (verify-image v5)"
+echo "==> 校验镜像 ${IMAGE} (verify-image v6)"
 
 docker run --rm "${IMAGE}" bash -c '
 set -euo pipefail
 JAVA="${JAVA_HOME:-/opt/java/openjdk}/bin/java"
-JSHELL="${JAVA_HOME:-/opt/java/openjdk}/bin/jshell"
 test -x "${JAVA}" || JAVA="$(command -v java)"
 
 for j in \
@@ -41,42 +40,15 @@ if ((${#bad_jars[@]})); then
   exit 1
 fi
 
-CP="$(ls /opt/flink/lib/*.jar | paste -sd: -)"
+CP="$(ls /opt/flink/lib/*.jar | paste -sd: -):/opt/flink/usrlib/sql-runner.jar"
 
-if [ ! -x "${JSHELL}" ]; then
-  echo "缺少 jshell，无法校验 Configuration"
+# Flink 镜像为 JRE，无 jshell；用 RuntimeSmoke.main 与 SqlRunner 同 classpath
+if ! "${JAVA}" -cp "${CP}" com.gido.flink.RuntimeSmoke >/dev/null 2>&1; then
+  echo "RuntimeSmoke 失败（Configuration / CatalogContext 初始化）"
+  "${JAVA}" -cp "${CP}" com.gido.flink.RuntimeSmoke || true
   exit 1
 fi
-
-# 与 Paimon CatalogContext 一致：Configuration 须能完整初始化（非仅类存在）
-if ! printf "%s\n" \
-  "new org.apache.hadoop.conf.Configuration();" \
-  "/exit" | "${JSHELL}" --class-path "${CP}" -q >/dev/null 2>&1; then
-  echo "hadoop Configuration 初始化失败"
-  printf "%s\n" \
-    "new org.apache.hadoop.conf.Configuration();" \
-    "/exit" | "${JSHELL}" --class-path "${CP}" -q || true
-  exit 1
-fi
-echo "OK Hadoop Configuration 可初始化"
-
-# Paimon catalog 路径（与 SqlRunner CREATE CATALOG 相同）
-if ! printf "%s\n" \
-  "import org.apache.paimon.catalog.CatalogContext;" \
-  "import org.apache.hadoop.conf.Configuration;" \
-  "import java.util.HashMap;" \
-  "CatalogContext.create(new Configuration(), new HashMap<>());" \
-  "/exit" | "${JSHELL}" --class-path "${CP}" -q >/dev/null 2>&1; then
-  echo "Paimon CatalogContext 初始化失败"
-  printf "%s\n" \
-    "import org.apache.paimon.catalog.CatalogContext;" \
-    "import org.apache.hadoop.conf.Configuration;" \
-    "import java.util.HashMap;" \
-    "CatalogContext.create(new Configuration(), new HashMap<>());" \
-    "/exit" | "${JSHELL}" --class-path "${CP}" -q || true
-  exit 1
-fi
-echo "OK Paimon CatalogContext 可初始化"
+echo "OK RuntimeSmoke: Configuration + Paimon CatalogContext"
 '
 
 echo "==> 镜像校验通过: ${IMAGE}"
