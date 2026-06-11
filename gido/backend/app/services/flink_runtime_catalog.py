@@ -59,6 +59,20 @@ BUNDLED_CONNECTORS: List[dict] = [
         "version": "3.3.4",
         "path": "/opt/flink/lib/hadoop-auth-3.3.4.jar",
     },
+    {
+        "id": "woodstox-core",
+        "name": "Woodstox XML (HdfsConfiguration default XML)",
+        "artifact": "com.fasterxml.woodstox:woodstox-core",
+        "version": "5.3.0",
+        "path": "/opt/flink/lib/woodstox-core-5.3.0.jar",
+    },
+    {
+        "id": "stax2-api",
+        "name": "StAX2 API (Woodstox)",
+        "artifact": "org.codehaus.woodstox:stax2-api",
+        "version": "4.2.1",
+        "path": "/opt/flink/lib/stax2-api-4.2.1.jar",
+    },
 ]
 
 CDC_FLINK_COMPATIBILITY_NOTE = (

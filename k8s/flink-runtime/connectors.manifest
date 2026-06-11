@@ -39,9 +39,15 @@ hadoop_client_minimal:
       path: /opt/flink/lib/hadoop-hdfs-client-3.3.4.jar
     - artifact: org.apache.hadoop:hadoop-auth
       path: /opt/flink/lib/hadoop-auth-3.3.4.jar
+    - artifact: com.fasterxml.woodstox:woodstox-core
+      version: "5.3.0"
+      path: /opt/flink/lib/woodstox-core-5.3.0.jar
+    - artifact: org.codehaus.woodstox:stax2-api
+      version: "4.2.1"
+      path: /opt/flink/lib/stax2-api-4.2.1.jar
   note: >
-    Paimon CatalogContext 须 Configuration + HdfsConfiguration；仅 dependency:copy 单 jar，
-    勿 copy-dependencies 拉传递树（commons-cli-1.2 与 Flink 冲突）。S3 读写仍走 flink-s3-fs-hadoop 插件。
+    Paimon CatalogContext 须 Configuration + HdfsConfiguration；HdfsConfiguration 解析默认 XML 须 woodstox。
+    仅 dependency:copy 单 jar，勿 copy-dependencies 拉传递树（commons-cli-1.2 与 Flink 冲突）。S3 读写仍走 flink-s3-fs-hadoop 插件。
 
 sql_runner:
   artifact: com.gido:flink-sql-runner

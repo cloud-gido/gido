@@ -8,7 +8,7 @@
 
 - 基座：`apache/flink:2.0.1-java11`
 - `/opt/flink/usrlib/sql-runner.jar`（GIDO SQL 入口，`FLINK_OPERATOR_SQL_RUNNER_JAR_URI`）
-- Paimon、MySQL/Postgres CDC、hadoop-common/hdfs-client/auth → `/opt/flink/lib/`
+- Paimon、MySQL/Postgres CDC、hadoop-common/hdfs-client/auth、woodstox → `/opt/flink/lib/`
 - S3 插件 → `/opt/flink/plugins/s3-fs-hadoop/`
 
 构建后自检：
@@ -17,6 +17,8 @@
 docker run --rm gido-flink-runtime:<tag> sh -c '
   ls /opt/flink/lib/hadoop-common-*.jar
   ls /opt/flink/lib/hadoop-hdfs-client-*.jar
+  ls /opt/flink/lib/woodstox-core-*.jar
+  ls /opt/flink/lib/stax2-api-*.jar
   test ! -f /opt/flink/lib/commons-cli-1.2.jar && echo commons-cli OK
 '
 ```

@@ -49,7 +49,7 @@
 | MySQL CDC | `flink-sql-connector-mysql-cdc` 3.5.0 |
 | Postgres CDC | 3.5.0（可选） |
 | **S3 文件系统** | `flink-s3-fs-hadoop` 2.0.1 → `/opt/flink/plugins/s3-fs-hadoop/` |
-| **Hadoop 最小客户端** | `hadoop-common` + `hadoop-hdfs-client` + `hadoop-auth` 3.3.4 → `/opt/flink/lib/`（Paimon `CatalogContext`） |
+| **Hadoop 最小客户端** | `hadoop-common` + `hadoop-hdfs-client` + `hadoop-auth` 3.3.4 + `woodstox-core` 5.3.0 + `stax2-api` 4.2.1 → `/opt/flink/lib/`（Paimon `CatalogContext` / `HdfsConfiguration` 默认 XML） |
 
 **重要**：Paimon 文档说明若已通过 Flink S3 插件访问 S3，**不要**再添加 `paimon-s3-*.jar`，否则可能与 `flink-s3-fs-hadoop` 冲突。但 **仍须** 在 `/opt/flink/lib/` 提供 `hadoop-common`（插件 classloader 与 Paimon 主 classpath 隔离）。
 
@@ -245,6 +245,7 @@ Backend 支持 JSON 字段（Stream Studio 高级配置）：
 | 与 paimon-s3 冲突 | 同时存在两套 S3 实现 | 仅保留 `flink-s3-fs-hadoop` 插件 |
 | `NoClassDefFoundError: ...Configuration` | 缺 hadoop-common | 重建镜像，确认 `hadoop-common-3.3.4.jar` 在 lib |
 | `NoClassDefFoundError: ...HdfsConfiguration` | 缺 hadoop-hdfs-client | 同上，另须 `hadoop-hdfs-client-3.3.4.jar` |
+| `NoClassDefFoundError: ...InputBootstrapper` | 缺 woodstox（HdfsConfiguration 解析默认 XML） | 另须 `woodstox-core-5.3.0.jar` + `stax2-api-4.2.1.jar` |
 | `NoSuchMethodError: commons-cli Option.builder` | hadoop 传递依赖污染 classpath | 仅 dependency:copy 单 jar，勿引入 `commons-cli-1.2` |
 
 Flink CDC **3.5.0** 与 Flink **2.0.1** 为 GIDO 当前锁定组合；升级 Flink 2.2.x 时可评估 CDC **3.6.0-2.2**（见 `/api/streaming/flink-runtime` 的 `cdc_flink_compatibility_note`）。

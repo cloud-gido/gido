@@ -19,12 +19,15 @@ RUN mvn -B -q package -DskipTests -s settings.xml \
     && for artifact in \
         org.apache.hadoop:hadoop-common:3.3.4 \
         org.apache.hadoop:hadoop-hdfs-client:3.3.4 \
-        org.apache.hadoop:hadoop-auth:3.3.4; do \
+        org.apache.hadoop:hadoop-auth:3.3.4 \
+        com.fasterxml.woodstox:woodstox-core:5.3.0 \
+        org.codehaus.woodstox:stax2-api:4.2.1; do \
         mvn -B -q dependency:copy -Dartifact="${artifact}" \
             -DoutputDirectory=target/connectors -s settings.xml; \
     done \
     && test -n "$(ls target/connectors/hadoop-common-*.jar)" \
-    && test -n "$(ls target/connectors/hadoop-hdfs-client-*.jar)"
+    && test -n "$(ls target/connectors/hadoop-hdfs-client-*.jar)" \
+    && test -n "$(ls target/connectors/woodstox-core-*.jar)"
 
 FROM --platform=$TARGETPLATFORM ${MAVEN_IMAGE} AS builder
 WORKDIR /build
@@ -41,6 +44,7 @@ RUN mv /tmp/connectors/flink-s3-fs-hadoop-*.jar /opt/flink/plugins/s3-fs-hadoop/
     && mv /tmp/connectors/*.jar /opt/flink/lib/ \
     && test -n "$(ls /opt/flink/lib/hadoop-common-*.jar)" \
     && test -n "$(ls /opt/flink/lib/hadoop-hdfs-client-*.jar)" \
+    && test -n "$(ls /opt/flink/lib/woodstox-core-*.jar)" \
     && rm -f /opt/flink/lib/commons-cli-1.2.jar /opt/flink/lib/log4j-1.2.17.jar \
     && rm -rf /tmp/connectors
 COPY --from=builder /build/target/flink-sql-runner-1.0.0.jar /opt/flink/usrlib/sql-runner.jar
