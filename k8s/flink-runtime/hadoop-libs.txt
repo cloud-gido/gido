@@ -1,0 +1,7 @@
+# Paimon S3 catalog 主 classpath 白名单（group:artifact:version）
+# 构建用副本：k8s/flink-sql-runner/hadoop-libs.txt
+org.apache.hadoop:hadoop-common:3.3.4
+org.apache.hadoop:hadoop-hdfs-client:3.3.4
+org.apache.hadoop:hadoop-auth:3.3.4
+com.fasterxml.woodstox:woodstox-core:5.3.0
+org.codehaus.woodstox:stax2-api:4.2.1

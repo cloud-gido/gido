@@ -14,26 +14,14 @@
 构建后自检：
 
 ```bash
-docker run --rm gido-flink-runtime:<tag> sh -c '
-  ls /opt/flink/lib/hadoop-common-*.jar
-  ls /opt/flink/lib/hadoop-hdfs-client-*.jar
-  ls /opt/flink/lib/woodstox-core-*.jar
-  ls /opt/flink/lib/stax2-api-*.jar
-  test ! -f /opt/flink/lib/commons-cli-1.2.jar && echo commons-cli OK
-'
+bash k8s/flink-sql-runner/verify-image.sh ghcr.io/cloud-gido/gido/gido-flink-runtime:dev
 ```
 
-## K8s 配置
-
-```yaml
-FLINK_OPERATOR_IMAGE: "ghcr.io/cloud-gido/gido/gido-flink-runtime:2.0.1"
-FLINK_K8S_APPLICATION_IMAGE: "ghcr.io/cloud-gido/gido/gido-flink-runtime:2.0.1"
-FLINK_OPERATOR_SQL_RUNNER_JAR_URI: "local:///opt/flink/usrlib/sql-runner.jar"
-```
-
-## 本地构建
+本地构建：
 
 ```bash
 bash k8s/build-flink-runtime.sh
-# 本地 tag：gido-flink-sql-runner:<tag>，可 docker tag 为 gido-flink-runtime:<tag>
+bash k8s/flink-sql-runner/verify-image.sh gido-flink-runtime:orbstack
 ```
+
+Hadoop 白名单见 `hadoop-libs.txt`（与 `k8s/flink-runtime/hadoop-libs.txt` 同步）。

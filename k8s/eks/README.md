@@ -4,7 +4,7 @@
 
 | 文件 | 用途 |
 |------|------|
-| **`gido-eks-external-pg.yaml`** | **一键清单**：外置 RDS PG + backend/frontend + S3 配置 + ALB Ingress |
+| **`DEPLOY-GIDO.md`** | **小白向：EKS 部署 GIDO + Flink Operator 逐步清单** |
 | `apply-gido-eks.sh` | 替换 `CHANGE_ME_*` 占位符并 `kubectl apply` |
 | `flink-s3-irsa.example.yaml` | Flink 作业 SA + IRSA 注解（S3 warehouse / checkpoint / 读制品） |
 | `gido-backend-s3-irsa.example.yaml` | GIDO Backend SA + IRSA（上传 JAR/SQL 制品到 S3） |

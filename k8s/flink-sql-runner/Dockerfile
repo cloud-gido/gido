@@ -1,10 +1,10 @@
 
 
-# GIDO 统一 Flink 运行时（gido-flink-sql-runner / gido-flink-runtime）
-# Flink 2.0.1 + sql-runner.jar + Paimon + Flink CDC SQL connectors
+# GIDO 统一 Flink 运行时（gido-flink-runtime）
+# Flink 2.0.1 + sql-runner.jar + Paimon + CDC + S3 插件 + Hadoop 白名单（Paimon catalog）
 #
-# 平台由构建脚本自动检测（集群节点 > 本机 CPU），见 k8s/build-flink-runtime.sh
-# 勿裸 docker build；须 buildx --platform 与 TARGETPLATFORM 一致
+# 平台由构建脚本自动检测，见 k8s/build-flink-runtime.sh
+# 构建后校验：bash k8s/flink-sql-runner/verify-image.sh <tag>
 
 ARG TARGETPLATFORM
 ARG FLINK_BASE_IMAGE=apache/flink:2.0.1-java11
@@ -14,14 +14,9 @@ FROM --platform=$TARGETPLATFORM ${MAVEN_IMAGE} AS connectors
 WORKDIR /conn
 COPY connectors-pom.xml pom.xml
 COPY settings.xml settings.xml
-# copy-dependencies（Paimon/CDC/S3 插件）+ Paimon 所需 Hadoop 最小单 jar 集（勿拉传递依赖）
+COPY hadoop-libs.txt hadoop-libs.txt
 RUN mvn -B -q package -DskipTests -s settings.xml \
-    && for artifact in \
-        org.apache.hadoop:hadoop-common:3.3.4 \
-        org.apache.hadoop:hadoop-hdfs-client:3.3.4 \
-        org.apache.hadoop:hadoop-auth:3.3.4 \
-        com.fasterxml.woodstox:woodstox-core:5.3.0 \
-        org.codehaus.woodstox:stax2-api:4.2.1; do \
+    && grep -v '^#' hadoop-libs.txt | grep -v '^[[:space:]]*$' | while IFS= read -r artifact; do \
         mvn -B -q dependency:copy -Dartifact="${artifact}" \
             -DoutputDirectory=target/connectors -s settings.xml; \
     done \
@@ -45,6 +40,8 @@ RUN mv /tmp/connectors/flink-s3-fs-hadoop-*.jar /opt/flink/plugins/s3-fs-hadoop/
     && test -n "$(ls /opt/flink/lib/hadoop-common-*.jar)" \
     && test -n "$(ls /opt/flink/lib/hadoop-hdfs-client-*.jar)" \
     && test -n "$(ls /opt/flink/lib/woodstox-core-*.jar)" \
+    && test -n "$(ls /opt/flink/lib/paimon-flink-2.0-*.jar)" \
+    && test -n "$(ls /opt/flink/plugins/s3-fs-hadoop/flink-s3-fs-hadoop-*.jar)" \
     && rm -f /opt/flink/lib/commons-cli-1.2.jar /opt/flink/lib/log4j-1.2.17.jar \
     && rm -rf /tmp/connectors
 COPY --from=builder /build/target/flink-sql-runner-1.0.0.jar /opt/flink/usrlib/sql-runner.jar

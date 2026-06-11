@@ -253,3 +253,10 @@ jobs:
             TARGETPLATFORM=linux/amd64
             FLINK_BASE_IMAGE=apache/flink:${{ steps.extract_flink_version.outputs.FLINK_VERSION }}-java11
             MAVEN_IMAGE=maven:3.9-eclipse-temurin-11
+
+      - name: Verify Flink runtime image (Paimon S3 deps)
+        run: |
+          chmod +x k8s/flink-sql-runner/verify-image.sh
+          IMAGE="ghcr.io/${{ github.repository }}/gido-flink-runtime:${{ steps.extract_flink_version.outputs.FLINK_VERSION }}"
+          docker pull "${IMAGE}"
+          bash k8s/flink-sql-runner/verify-image.sh "${IMAGE}"

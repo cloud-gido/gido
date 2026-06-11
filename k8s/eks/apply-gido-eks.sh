@@ -1,25 +1,29 @@
 #!/usr/bin/env bash
-# 将 gido-eks-external-pg.yaml 中的 CHANGE_ME_* 占位符替换后 apply。
+# 将 gido-eks-external-pg.yaml 占位符替换后 apply。
 #
-# 用法：
+# GHCR（推荐，push dev 后 CI 自动打镜像）：
+#   export GIDO_USE_GHCR=1
+#   export GIDO_GHCR_REPO=ghcr.io/cloud-gido/gido
+#   export GIDO_EKS_IMAGE_TAG=dev
+#   export GIDO_EKS_S3_BUCKET=...
+#   ... 其余见下方
+#   bash k8s/eks/apply-gido-eks.sh
+#
+# ECR：
+#   export GIDO_USE_GHCR=0
 #   export GIDO_EKS_ACCOUNT=066158985613
 #   export GIDO_EKS_REGION=ap-northeast-1
 #   export GIDO_EKS_IMAGE_TAG=v1.0.0
-#   export GIDO_EKS_S3_BUCKET=gll-prod-gamelinelab-066158985613
-#   export GIDO_EKS_RDS_HOST=mydb.xxx.ap-northeast-1.rds.amazonaws.com
-#   export GIDO_EKS_DB_USER=gido
-#   export GIDO_EKS_DB_PASSWORD='your-password'
-#   export GIDO_EKS_DB_NAME=gido
-#   export GIDO_EKS_SECRET_KEY='random-jwt-secret-48chars-minimum'
-#   export GIDO_EKS_ARTIFACT_TOKEN='random-artifact-token-32chars'
-#   export GIDO_EKS_BACKEND_IRSA=arn:aws:iam::066158985613:role/gido-backend-s3
-#   export GIDO_EKS_INGRESS_HOST=gido.example.com
-#   bash k8s/eks/apply-gido-eks.sh
 #
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 MANIFEST="${DIR}/gido-eks-external-pg.yaml"
 KUBECTL="${KUBECTL:-kubectl}"
+
+GIDO_USE_GHCR="${GIDO_USE_GHCR:-1}"
+GIDO_GHCR_REPO="${GIDO_GHCR_REPO:-ghcr.io/cloud-gido/gido}"
+GIDO_EKS_NAMESPACE="${GIDO_EKS_NAMESPACE:-gido}"
+GIDO_EKS_FLINK_NAMESPACE="${GIDO_EKS_FLINK_NAMESPACE:-flink}"
 
 _required() {
   local name="$1" val="${!1:-}"
@@ -29,8 +33,6 @@ _required() {
   fi
 }
 
-_required GIDO_EKS_ACCOUNT
-_required GIDO_EKS_REGION
 _required GIDO_EKS_IMAGE_TAG
 _required GIDO_EKS_S3_BUCKET
 _required GIDO_EKS_RDS_HOST
@@ -40,12 +42,36 @@ _required GIDO_EKS_DB_NAME
 _required GIDO_EKS_SECRET_KEY
 _required GIDO_EKS_ARTIFACT_TOKEN
 _required GIDO_EKS_BACKEND_IRSA
-_required GIDO_EKS_INGRESS_HOST
 
-# URL 编码密码（python 比 sed 可靠）
+# 无 Ingress 时用占位域名（port-forward 访问不受影响）
+GIDO_EKS_INGRESS_HOST="${GIDO_EKS_INGRESS_HOST:-gido.local}"
+
+if [[ "${GIDO_USE_GHCR}" != "1" ]]; then
+  _required GIDO_EKS_ACCOUNT
+  _required GIDO_EKS_REGION
+fi
+
+GIDO_EKS_ACCOUNT="${GIDO_EKS_ACCOUNT:-000000000000}"
+GIDO_EKS_REGION="${GIDO_EKS_REGION:-us-east-1}"
+
+if [[ "${GIDO_USE_GHCR}" == "1" ]]; then
+  BACKEND_IMAGE="${GIDO_GHCR_REPO}/gido-backend:${GIDO_EKS_IMAGE_TAG}"
+  FRONTEND_IMAGE="${GIDO_GHCR_REPO}/gido-frontend:${GIDO_EKS_IMAGE_TAG}"
+  FLINK_RUNTIME_IMAGE="${GIDO_GHCR_REPO}/gido-flink-runtime:${GIDO_EKS_IMAGE_TAG}"
+else
+  REG="${GIDO_EKS_ACCOUNT}.dkr.ecr.${GIDO_EKS_REGION}.amazonaws.com"
+  BACKEND_IMAGE="${REG}/gido-backend:${GIDO_EKS_IMAGE_TAG}"
+  FRONTEND_IMAGE="${REG}/gido-frontend:${GIDO_EKS_IMAGE_TAG}"
+  FLINK_RUNTIME_IMAGE="${REG}/gido-flink-runtime:${GIDO_EKS_IMAGE_TAG}"
+fi
+
 DB_PASSWORD_ENC="$(python3 -c "import urllib.parse; print(urllib.parse.quote('''${GIDO_EKS_DB_PASSWORD}''', safe=''))")"
 
 echo "==> apply GIDO EKS stack (external RDS)"
+echo "    backend:  ${BACKEND_IMAGE}"
+echo "    frontend: ${FRONTEND_IMAGE}"
+echo "    flink:    ${FLINK_RUNTIME_IMAGE}"
+
 sed \
   -e "s#CHANGE_ME_AWS_ACCOUNT#${GIDO_EKS_ACCOUNT}#g" \
   -e "s#CHANGE_ME_AWS_REGION#${GIDO_EKS_REGION}#g" \
@@ -59,15 +85,24 @@ sed \
   -e "s#CHANGE_ME_ARTIFACT_TOKEN#${GIDO_EKS_ARTIFACT_TOKEN}#g" \
   -e "s#CHANGE_ME_BACKEND_IRSA#${GIDO_EKS_BACKEND_IRSA}#g" \
   -e "s#CHANGE_ME_INGRESS_HOST#${GIDO_EKS_INGRESS_HOST}#g" \
+  -e "s#CHANGE_ME_GIDO_NAMESPACE#${GIDO_EKS_NAMESPACE}#g" \
+  -e "s#CHANGE_ME_BACKEND_IMAGE#${BACKEND_IMAGE}#g" \
+  -e "s#CHANGE_ME_FRONTEND_IMAGE#${FRONTEND_IMAGE}#g" \
+  -e "s#CHANGE_ME_FLINK_RUNTIME_IMAGE#${FLINK_RUNTIME_IMAGE}#g" \
   "${MANIFEST}" | ${KUBECTL} apply -f -
 
 echo "==> wait rollout"
-${KUBECTL} rollout status deployment/gido-backend -n gido --timeout=300s
-${KUBECTL} rollout status deployment/gido-frontend -n gido --timeout=180s
+${KUBECTL} rollout status deployment/gido-backend -n "${GIDO_EKS_NAMESPACE}" --timeout=300s
+${KUBECTL} rollout status deployment/gido-frontend -n "${GIDO_EKS_NAMESPACE}" --timeout=180s
 
 echo ""
 echo "完成。首次部署请初始化元库表："
-echo "  kubectl -n gido exec deploy/gido-backend -- python init_db.py"
+echo "  kubectl -n ${GIDO_EKS_NAMESPACE} exec deploy/gido-backend -- python init_db.py"
 echo ""
-echo "访问: https://${GIDO_EKS_INGRESS_HOST}  或  kubectl -n gido port-forward svc/frontend 8080:80"
-echo "默认账号 admin / admin123（登录后务必改密；生产勿设 GIDO_BOOTSTRAP_ADMIN_PASSWORD）"
+echo "Flink runtime 自检（可选）："
+echo "  bash k8s/flink-sql-runner/verify-image.sh ${FLINK_RUNTIME_IMAGE}"
+echo ""
+echo "访问: https://${GIDO_EKS_INGRESS_HOST}  或  kubectl -n ${GIDO_EKS_NAMESPACE} port-forward svc/frontend 8080:80"
+echo "默认账号 admin / admin123（登录后务必改密）"
+echo ""
+echo "部署清单详见: k8s/eks/DEPLOY-GIDO.md"

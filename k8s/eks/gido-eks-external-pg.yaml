@@ -64,7 +64,7 @@ data:
   FLINK_OPERATOR_DEV_LOCAL: "false"
   FLINK_OPERATOR_AUTO_UI_TUNNEL: "false"
   FLINK_OPERATOR_JM_REST_TEMPLATE: "http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081"
-  FLINK_OPERATOR_JAR_HTTP_BASE: "http://backend.gido.svc.cluster.local:8001"
+  FLINK_OPERATOR_JAR_HTTP_BASE: "http://backend.CHANGE_ME_GIDO_NAMESPACE.svc.cluster.local:8001"
   FLINK_OPERATOR_SQL_RUNNER_JAR_URI: "local:///opt/flink/usrlib/sql-runner.jar"
   FLINK_OPERATOR_SQL_RUNNER_ENTRY_CLASS: "com.gido.flink.SqlRunner"
   FLINK_OPERATOR_JM_MEMORY: "2048m"
@@ -80,8 +80,8 @@ data:
   # Flink 运行时（CI 推 GHCR gido-flink-runtime；ECR 自建同理）：
   #   ghcr.io/cloud-gido/gido/gido-flink-runtime:<flink版本或dev-sha>
   # ECR 示例：CHANGE_ME_AWS_ACCOUNT.dkr.ecr.CHANGE_ME_AWS_REGION.amazonaws.com/gido-flink-runtime:CHANGE_ME_ECR_TAG
-  FLINK_OPERATOR_IMAGE: "CHANGE_ME_AWS_ACCOUNT.dkr.ecr.CHANGE_ME_AWS_REGION.amazonaws.com/gido-flink-runtime:CHANGE_ME_ECR_TAG"
-  FLINK_K8S_APPLICATION_IMAGE: "CHANGE_ME_AWS_ACCOUNT.dkr.ecr.CHANGE_ME_AWS_REGION.amazonaws.com/gido-flink-runtime:CHANGE_ME_ECR_TAG"
+  FLINK_OPERATOR_IMAGE: "CHANGE_ME_FLINK_RUNTIME_IMAGE"
+  FLINK_K8S_APPLICATION_IMAGE: "CHANGE_ME_FLINK_RUNTIME_IMAGE"
   # S3（须双 IRSA：gido-backend 写 + flink 读）
   FLINK_OPERATOR_JAR_S3_PREFIX: "s3://CHANGE_ME_S3_BUCKET/flink/job-jar"
   PAIMON_WAREHOUSE_DEFAULT: "s3a://CHANGE_ME_S3_BUCKET/paimon-warehouse"
@@ -191,7 +191,7 @@ spec:
       serviceAccountName: gido-backend
       containers:
         - name: backend
-          image: CHANGE_ME_AWS_ACCOUNT.dkr.ecr.CHANGE_ME_AWS_REGION.amazonaws.com/gido-backend:CHANGE_ME_ECR_TAG
+          image: CHANGE_ME_BACKEND_IMAGE
           imagePullPolicy: Always
           ports:
             - containerPort: 8001
@@ -279,7 +279,7 @@ spec:
               done
       containers:
         - name: frontend
-          image: CHANGE_ME_AWS_ACCOUNT.dkr.ecr.CHANGE_ME_AWS_REGION.amazonaws.com/gido-frontend:CHANGE_ME_ECR_TAG
+          image: CHANGE_ME_FRONTEND_IMAGE
           imagePullPolicy: Always
           ports:
             - containerPort: 80
