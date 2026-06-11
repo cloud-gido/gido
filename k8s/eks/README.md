@@ -16,7 +16,11 @@
 1. 创建 S3 bucket、RDS MySQL（binlog）、EKS 集群（`--with-oidc`）
 2. 创建 IAM Role + IRSA（`flink-s3-irsa.example.yaml` + `gido-backend-s3-irsa.example.yaml`）
 3. 安装 Flink Kubernetes Operator 1.15 + `kubectl apply -f k8s/flink-operator-rbac.yaml`
-4. 构建并 push `gido-flink-runtime` 到 ECR（含 S3 插件，见 `k8s/build-flink-runtime.sh`）
+4. Flink 运行时镜像：GitHub `dev`/`main` push 后 CI 自动推 GHCR（**一次构建、两包同名 digest**）：
+   - `ghcr.io/cloud-gido/gido/gido-flink-runtime` ← **EKS 配置用这个**
+   - `ghcr.io/cloud-gido/gido/gido-flink-sql-runner` ← 与上行完全相同
+   - 见 `k8s/flink-sql-runner/README.md`、`.github/workflows/ci.yml`
+   - 自建 ECR 时：`k8s/build-flink-runtime.sh`
 5. 部署 GIDO：**外置 RDS** 用 `gido-eks-external-pg.yaml`（或 `bash k8s/eks/apply-gido-eks.sh`）；已有集群内栈则 merge `gido-backend-eks-overrides.example.yaml`
 6. ConfigMap 配置 `FLINK_OPERATOR_NODE_POOL=bigdata`（多节点池 + taint 集群必填）
 7. Stream Studio → 插入 CDC→Paimon 模板 → 提交 SQL 作业
