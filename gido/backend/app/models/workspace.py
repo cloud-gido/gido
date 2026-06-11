@@ -409,3 +409,18 @@ class PublishApproval(Base):
     reviewed_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
     submitted_at = Column(DateTime, default=datetime.utcnow)
     reviewed_at = Column(DateTime, nullable=True)
+
+
+class WorkspaceVariable(Base):
+    """工作空间全局变量：SQL / Flink 脚本中引用 ${var_key}，Batch/Stream/Serve 共用。"""
+    __tablename__ = "dw_workspace_variables"
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("dw_workspaces.id"), nullable=False, index=True)
+    var_key = Column(String(128), nullable=False)
+    var_value = Column(Text, nullable=True)
+    is_secret = Column(Boolean, default=False, nullable=False)
+    scope = Column(String(32), default="all", nullable=False)  # all | batch | stream | serve
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)

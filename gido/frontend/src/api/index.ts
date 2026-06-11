@@ -43,6 +43,14 @@ export const workspaceApi = {
   getFlink: (workspaceId: number) => request.get(`/workspaces/${workspaceId}/settings/flink`),
   putFlink: (workspaceId: number, data: Record<string, unknown>) =>
     request.put(`/workspaces/${workspaceId}/settings/flink`, data),
+  listVariables: (workspaceId: number, scope?: string) =>
+    request.get(`/workspaces/${workspaceId}/variables`, { params: scope ? { scope } : {} }),
+  createVariable: (workspaceId: number, data: Record<string, unknown>) =>
+    request.post(`/workspaces/${workspaceId}/variables`, data),
+  updateVariable: (workspaceId: number, varId: number, data: Record<string, unknown>) =>
+    request.put(`/workspaces/${workspaceId}/variables/${varId}`, data),
+  deleteVariable: (workspaceId: number, varId: number) =>
+    request.delete(`/workspaces/${workspaceId}/variables/${varId}`),
 }
 
 // 数据源
@@ -247,6 +255,7 @@ export const streamingApi = {
   deleteFlinkSessionProfile: (id: number) => request.delete(`/streaming/flink-session-profiles/${id}`),
   listJobs: (workspaceId: number) => request.get('/streaming/jobs', { params: { workspace_id: workspaceId } }),
   createJob: (data: any) => request.post('/streaming/jobs', data),
+  copyJob: (id: number, data?: { name?: string }) => request.post(`/streaming/jobs/${id}/copy`, data || {}),
   updateJob: (id: number, data: any) => request.put(`/streaming/jobs/${id}`, data),
   unlockJob: (id: number) => request.post(`/streaming/jobs/${id}/unlock`),
   getJobHistory: (jobId: number) => request.get(`/streaming/jobs/${jobId}/history`),

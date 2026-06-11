@@ -23,6 +23,11 @@ function flinkStatusDisplay(fs: string | undefined) {
   if (!fs) return <Text type="secondary">—</Text>
   const color: Record<string, string> = {
     APPLICATION_PENDING_JOB_ID: 'orange',
+    STARTING: 'processing',
+    DEPLOYING: 'processing',
+    CREATED: 'processing',
+    STABLE: 'processing',
+    SUSPENDED: 'warning',
     NOT_FOUND_ON_JM: 'volcano',
     UNKNOWN: 'default',
     RUNNING: 'processing',
@@ -37,14 +42,26 @@ function flinkStatusDisplay(fs: string | undefined) {
   return <Tag color={color[fs] || 'blue'}>{fs}</Tag>
 }
 
-/** Session：有 jobId 才轮询 JM。K8s Application：cluster 已创建即可轮询。cancelled 不再轮询以免冲回 running。 */
+function isOperatorJob(j: any) {
+  if (j.job_type === 'JAR') return (j.flink_jar_submit_mode || 'flink_operator') === 'flink_operator'
+  if (j.job_type === 'SQL') return (j.flink_sql_submit_mode || 'flink_operator') === 'flink_operator'
+  return false
+}
+
+/** Session：有 jobId 才轮询 JM。Operator：有 deployment 即轮询（含 cancelled→SUSPENDED）。 */
 function jobNeedsFlinkStatusPoll(j: any) {
-  if ((j.status || '').toString().toLowerCase() === 'cancelled') return false
   if (j.flink_job_id) return true
+  if (isOperatorJob(j) && j.flink_operator_deployment_name) return true
+  if ((j.status || '').toString().toLowerCase() === 'cancelled') return false
   const mode = (j.flink_sql_submit_mode || 'session').toString().toLowerCase()
   if (mode === 'kubernetes_application') return Boolean(j.flink_application_cluster_id)
-  if (mode === 'flink_operator') return Boolean(j.flink_operator_deployment_name)
   return false
+}
+
+function diagnosticsButtonLabel(row: any) {
+  if (row.last_submit_error) return '启动失败'
+  if (row.flink_job_id) return '运行时异常'
+  return '诊断'
 }
 
 export default function StreamMonitorPage() {
@@ -210,18 +227,23 @@ export default function StreamMonitorPage() {
       render: (_: any, row: any) => flinkStatusDisplay(flinkMap[row.id]?.flink_status),
     },
     {
-      title: 'clusterID',
+      title: '部署标识',
       key: 'cid',
-      width: 120,
+      width: 140,
       ellipsis: true,
-      render: (_: unknown, row: any) =>
-        row.flink_application_cluster_id ? (
-          <Typography.Paragraph copyable={{ text: row.flink_application_cluster_id }} style={{ marginBottom: 0, fontSize: 12 }}>
-            {row.flink_application_cluster_id}
-          </Typography.Paragraph>
-        ) : (
-          <Text type="secondary">—</Text>
-        ),
+      render: (_: unknown, row: any) => {
+        const dep = row.flink_operator_deployment_name
+        const cid = row.flink_application_cluster_id
+        const label = dep || cid
+        if (!label) return <Text type="secondary">—</Text>
+        return (
+          <Tooltip title={dep ? 'FlinkDeployment' : 'K8s Application clusterID'}>
+            <Typography.Paragraph copyable={{ text: label }} style={{ marginBottom: 0, fontSize: 12 }}>
+              {label}
+            </Typography.Paragraph>
+          </Tooltip>
+        )
+      },
     },
     {
       title: '最近提交',
@@ -280,7 +302,7 @@ export default function StreamMonitorPage() {
           icon={<BugOutlined />}
           onClick={() => openDiagnostics(row)}
         >
-          {row.last_submit_error ? '查看' : '运行时异常'}
+          {diagnosticsButtonLabel(row)}
         </Button>
       ),
     },

@@ -85,7 +85,11 @@ def run_sql_with_result(
         f"[INFO] 数据源({source}): {ds.name} ({ds.ds_type}) #{ds.id} @ {ds.host}:{ds.port or (5432 if lt == 'postgresql' else 3306)}",
     ]
 
-    script = node.script_content or ""
+    from app.services.workspace_variables import substitute_script_variables
+
+    script = substitute_script_variables(
+        db, int(node.workspace_id), node.script_content or "", "batch", bizdate=bizdate
+    )
     biz = bizdate or now_local.strftime("%Y-%m-%d")
     yesterday_str = (now_local - timedelta(days=1)).strftime("%Y-%m-%d")
     script = script.replace("${bizdate}", biz).replace("${yesterday}", yesterday_str)

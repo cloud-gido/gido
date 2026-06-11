@@ -1109,6 +1109,81 @@ def migrate_dw_data_service(engine: Engine) -> None:
                 conn.execute(text(ddl))
 
 
+def migrate_dw_workspace_variables(engine: Engine) -> None:
+    """工作空间全局变量（Batch/Stream/Serve 共用 ${var_key}）。"""
+    insp = inspect(engine)
+    if insp.has_table("dw_workspace_variables"):
+        return
+    with engine.begin() as conn:
+        if engine.dialect.name == "mysql":
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE dw_workspace_variables (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        workspace_id INT NOT NULL,
+                        var_key VARCHAR(128) NOT NULL,
+                        var_value TEXT NULL,
+                        is_secret TINYINT(1) NOT NULL DEFAULT 0,
+                        scope VARCHAR(32) NOT NULL DEFAULT 'all',
+                        description TEXT NULL,
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL,
+                        created_by INT NULL,
+                        INDEX idx_wv_workspace (workspace_id),
+                        UNIQUE KEY uq_wv_ws_key (workspace_id, var_key),
+                        CONSTRAINT fk_wv_workspace FOREIGN KEY (workspace_id) REFERENCES dw_workspaces(id),
+                        CONSTRAINT fk_wv_user FOREIGN KEY (created_by) REFERENCES dw_users(id)
+                    )
+                    """
+                )
+            )
+        elif engine.dialect.name == "postgresql":
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE dw_workspace_variables (
+                        id SERIAL PRIMARY KEY,
+                        workspace_id INTEGER NOT NULL REFERENCES dw_workspaces(id),
+                        var_key VARCHAR(128) NOT NULL,
+                        var_value TEXT,
+                        is_secret BOOLEAN NOT NULL DEFAULT FALSE,
+                        scope VARCHAR(32) NOT NULL DEFAULT 'all',
+                        description TEXT,
+                        created_at TIMESTAMP NOT NULL,
+                        updated_at TIMESTAMP NOT NULL,
+                        created_by INTEGER REFERENCES dw_users(id),
+                        UNIQUE (workspace_id, var_key)
+                    )
+                    """
+                )
+            )
+            conn.execute(text("CREATE INDEX idx_wv_workspace ON dw_workspace_variables (workspace_id)"))
+        else:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE dw_workspace_variables (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        workspace_id INTEGER NOT NULL,
+                        var_key VARCHAR(128) NOT NULL,
+                        var_value TEXT,
+                        is_secret BOOLEAN NOT NULL DEFAULT 0,
+                        scope VARCHAR(32) NOT NULL DEFAULT 'all',
+                        description TEXT,
+                        created_at TIMESTAMP NOT NULL,
+                        updated_at TIMESTAMP NOT NULL,
+                        created_by INTEGER,
+                        FOREIGN KEY (workspace_id) REFERENCES dw_workspaces(id),
+                        FOREIGN KEY (created_by) REFERENCES dw_users(id),
+                        UNIQUE (workspace_id, var_key)
+                    )
+                    """
+                )
+            )
+            conn.execute(text("CREATE INDEX idx_wv_workspace ON dw_workspace_variables (workspace_id)"))
+
+
 def run_rbac_bootstrap(db: Session):
     by_code = seed_permissions(db)
     roles = seed_roles(db, by_code)

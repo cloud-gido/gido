@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import Base, engine
-from app.api import auth, workspace, workspace_settings, datasource, studio, workflow, integration, datamap, quality, operation, probe
+from app.api import auth, workspace, workspace_settings, workspace_variables, datasource, studio, workflow, integration, datamap, quality, operation, probe
 from app.api import scheduler as scheduler_api
 from app.api import audit
 from app.api import streaming
@@ -25,7 +25,7 @@ from app.api import admin_rbac, admin_integration
 from app.api import data_service, data_service_open
 from app.api import approval
 from app.models import rbac_models  # noqa: F401  — 注册 RBAC 表
-from app.models.workspace import PlatformIntegration, FlinkSessionProfile, WorkspacePlatformIntegration, PublishApproval  # noqa: F401
+from app.models.workspace import PlatformIntegration, FlinkSessionProfile, WorkspacePlatformIntegration, PublishApproval, WorkspaceVariable  # noqa: F401
 from app.models import data_service as data_service_models  # noqa: F401
 
 Base.metadata.create_all(bind=engine)
@@ -97,6 +97,7 @@ async def lifespan(app: FastAPI):
         migrate_dw_workflow_updated_by,
         migrate_dw_workflow_instance_submitted_by,
         migrate_dw_quality_dolphin_refs,
+        migrate_dw_workspace_variables,
         run_rbac_bootstrap,
     )
     from app.core.database import SessionLocal
@@ -125,6 +126,7 @@ async def lifespan(app: FastAPI):
     migrate_workspace_owner_members(engine)
     migrate_platform_integration(engine)
     migrate_platform_integration_flink(engine)
+    migrate_dw_workspace_variables(engine)
     db = SessionLocal()
     try:
         run_rbac_bootstrap(db)
@@ -204,6 +206,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api")
 app.include_router(workspace.router, prefix="/api")
 app.include_router(workspace_settings.router, prefix="/api")
+app.include_router(workspace_variables.router, prefix="/api")
 app.include_router(datasource.router, prefix="/api")
 app.include_router(studio.router, prefix="/api")
 app.include_router(workflow.router, prefix="/api")

@@ -11,7 +11,7 @@ import {
 } from 'antd'
 import {
   PlusOutlined, PlayCircleOutlined, StopOutlined, SaveOutlined, ReloadOutlined, UploadOutlined, DeleteOutlined,
-  UnlockOutlined, HistoryOutlined,
+  UnlockOutlined, HistoryOutlined, CopyOutlined,
 } from '@ant-design/icons'
 import Editor from '@monaco-editor/react'
 import { streamingApi, approvalApi } from '../api'
@@ -259,8 +259,11 @@ export default function StreamStudioPage() {
         const list = (await streamingApi.listJobs(wsId)) as unknown as any[]
         const tracked = list.filter(
           (j: any) =>
-            j.status !== 'cancelled'
-            && (j.flink_job_id || j.flink_application_cluster_id),
+            j.flink_job_id
+            || j.flink_application_cluster_id
+            || ((j.flink_sql_submit_mode || j.flink_jar_submit_mode) === 'flink_operator'
+              && j.flink_operator_deployment_name
+              && j.status !== 'draft'),
         )
         if (tracked.length === 0) return
         await Promise.all(tracked.map((j: any) => streamingApi.getStatus(j.id).catch(() => null)))
@@ -510,6 +513,17 @@ export default function StreamStudioPage() {
     })
   }
 
+  const handleCopy = async (row: any) => {
+    try {
+      const created: any = await streamingApi.copyJob(row.id)
+      message.success(`已复制为「${created.name}」`)
+      await load(false)
+      setSelected(created)
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '复制失败')
+    }
+  }
+
   const columns = [
     { title: '名称', dataIndex: 'name', key: 'name', ellipsis: true },
     {
@@ -526,9 +540,12 @@ export default function StreamStudioPage() {
       render: (t: string) => <Tag color={t === 'SQL' ? 'blue' : 'orange'}>{t}</Tag>,
     },
     {
-      title: '操作', key: 'op', width: 56,
+      title: '操作', key: 'op', width: 88,
       render: (_: any, row: any) => (
-        <Button type="link" danger size="small" icon={<DeleteOutlined />} onClick={(e) => { e.stopPropagation(); handleDelete(row) }} />
+        <Space size={0}>
+          <Button type="link" size="small" icon={<CopyOutlined />} title="复制作业" onClick={(e) => { e.stopPropagation(); handleCopy(row) }} />
+          <Button type="link" danger size="small" icon={<DeleteOutlined />} onClick={(e) => { e.stopPropagation(); handleDelete(row) }} />
+        </Space>
       ),
     },
   ]

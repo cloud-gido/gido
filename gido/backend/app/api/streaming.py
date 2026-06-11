@@ -1387,6 +1387,10 @@ def _flink_client_from_runtime_config(cfg: FlinkRuntimeConfig) -> FlinkClient:
 
 # ==================== Schema ====================
 
+class JobCopyBody(BaseModel):
+    name: Optional[str] = None
+
+
 class JobCreate(BaseModel):
     workspace_id: int
     name: str
@@ -2087,6 +2091,69 @@ def create_job(job_in: JobCreate, db: Session = Depends(get_db), current_user: U
     return _streaming_job_public_dict(db, job)
 
 
+def _unique_streaming_job_copy_name(db: Session, workspace_id: int, base_name: str) -> str:
+    root = (base_name or "job").strip() or "job"
+    candidate = f"{root}-copy"
+    n = 1
+    while (
+        db.query(StreamingJob)
+        .filter(StreamingJob.workspace_id == workspace_id, StreamingJob.name == candidate)
+        .first()
+    ):
+        n += 1
+        candidate = f"{root}-copy-{n}"
+    return candidate
+
+
+def _sql_script_for_submit(db: Session, job: StreamingJob, script: Optional[str] = None) -> str:
+    from app.services.workspace_variables import substitute_script_variables
+
+    raw = script if script is not None else (job.script_content or "")
+    return substitute_script_variables(db, int(job.workspace_id or 0), raw, "stream")
+
+
+@router.post("/jobs/{job_id}/copy")
+def copy_streaming_job(
+    job_id: int,
+    body: JobCopyBody = Body(default_factory=JobCopyBody),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """复制为新草稿作业（不含 Flink 运行时状态）。"""
+    src = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_WRITE)
+    name = (body.name or "").strip() or _unique_streaming_job_copy_name(db, src.workspace_id, src.name)
+    dup = (
+        db.query(StreamingJob)
+        .filter(StreamingJob.workspace_id == src.workspace_id, StreamingJob.name == name)
+        .first()
+    )
+    if dup:
+        raise HTTPException(status_code=409, detail=f"作业名 {name} 已存在")
+    job = StreamingJob(
+        workspace_id=src.workspace_id,
+        name=name,
+        job_type=src.job_type,
+        script_content=src.script_content,
+        jar_path=None,
+        main_class=src.main_class,
+        program_args=src.program_args,
+        parallelism=src.parallelism or 1,
+        streaming_properties=getattr(src, "streaming_properties", None),
+        flink_sql_submit_mode=_normalize_sql_submit_mode(getattr(src, "flink_sql_submit_mode", None)),
+        flink_jar_submit_mode=_normalize_jar_submit_mode(getattr(src, "flink_jar_submit_mode", None)),
+        flink_session_profile_id=getattr(src, "flink_session_profile_id", None),
+        folder_id=getattr(src, "folder_id", None),
+        status="draft",
+        is_locked=False,
+        created_by=current_user.id,
+        owner_id=current_user.id,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return _streaming_job_public_dict(db, job)
+
+
 @router.put("/jobs/{job_id}")
 def update_job(job_id: int, job_in: JobUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_WRITE)
@@ -2298,6 +2365,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
         job.flink_application_cluster_id = None
         job.flink_application_jm_rest = None
         job.flink_operator_deployment_name = None
+        sql_to_run = _sql_script_for_submit(db, job) if job.job_type == "SQL" else None
         if job.job_type == "SQL":
             extra = _parse_job_streaming_properties(getattr(job, "streaming_properties", None))
             props_only, k8s_ov = _split_streaming_properties_for_sql(extra or None)
@@ -2315,7 +2383,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                 out = submit_sql_via_operator(
                     job_id=job.id,
                     workspace_id=int(job.workspace_id or 0),
-                    sql_content=job.script_content or "",
+                    sql_content=sql_to_run or "",
                     parallelism=job.parallelism or 1,
                     operator_resources=op_resources,
                     extra_flink_props=flink_extra or None,
@@ -2331,7 +2399,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                     job.last_submit_error = submit_warning
             elif mode == "kubernetes_application":
                 out = fc.submit_sql_kubernetes_application(
-                    job.script_content, job.parallelism, props_only, k8s_ov, job.id
+                    sql_to_run or "", job.parallelism, props_only, k8s_ov, job.id
                 )
                 job.flink_application_cluster_id = out.get("cluster_id")
                 job.flink_application_jm_rest = out.get("application_jm_rest")
@@ -2342,7 +2410,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                     job.last_submit_error = submit_warning
             else:
                 job.flink_job_id = fc.submit_sql(
-                    job.script_content, job.parallelism, extra_properties=props_only or None
+                    sql_to_run or "", job.parallelism, extra_properties=props_only or None
                 )
         elif job.job_type == "JAR":
             _append_streaming_job_history_snapshot(db, job, current_user.id)
@@ -2565,6 +2633,34 @@ def get_job_status(job_id: int, db: Session = Depends(get_db_flink), current_use
                 )
         except Exception:
             logger.debug("读取 FlinkDeployment 状态失败 job_id=%s dep=%s", job.id, dep_name, exc_info=True)
+
+    if dep_name and not job.flink_job_id:
+        try:
+            from app.services.flink_operator_submit import extract_status_from_cr, read_flink_deployment
+
+            cr = read_flink_deployment(dep_name)
+            jid, lifecycle, err = extract_status_from_cr(cr)
+            if jid:
+                job.flink_job_id = jid
+                job.updated_at = datetime.utcnow()
+                db.commit()
+            else:
+                lifecycle_up = (lifecycle or "").strip().upper()
+                if job.status == "cancelled":
+                    flink_st = "SUSPENDED"
+                elif err or lifecycle_up == "FAILED":
+                    flink_st = "FAILED"
+                elif lifecycle_up:
+                    flink_st = lifecycle_up
+                else:
+                    flink_st = "STARTING"
+                note = err or (f"Operator lifecycle: {lifecycle}" if lifecycle else "等待 Flink Job ID 回填")
+                return _payload(flink_status=flink_st, note=note)
+        except Exception as ex:
+            logger.debug("Operator CR 状态读取失败 job_id=%s dep=%s", job.id, dep_name, exc_info=True)
+            if job.status == "cancelled":
+                return _payload(flink_status="SUSPENDED", note=str(ex))
+            return _payload(flink_status="UNKNOWN", note=str(ex))
 
     if not job.flink_job_id:
         cid = getattr(job, "flink_application_cluster_id", None)

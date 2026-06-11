@@ -300,6 +300,10 @@ def execute_data_api(
     if not sql_tpl:
         raise HTTPException(status_code=400, detail="API 未配置 SQL")
 
+    from app.services.workspace_variables import substitute_script_variables
+
+    sql_tpl = substitute_script_variables(db, int(api.workspace_id), sql_tpl, "serve")
+
     assert_readonly_statement(re.sub(r":([a-zA-Z_][a-zA-Z0-9_]*)", "1", sql_tpl))
 
     bound = bind_params(api, raw_params, sql_tpl)

@@ -4,9 +4,9 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useEffect, useState } from 'react'
-import { Alert, Button, Card, Form, Input, Select, Space, Switch, Tabs, message } from 'antd'
-import { ApiOutlined, DatabaseOutlined, ExperimentOutlined } from '@ant-design/icons'
+import { useCallback, useEffect, useState } from 'react'
+import { Alert, Button, Card, Form, Input, Select, Space, Switch, Tabs, Table, Modal, message } from 'antd'
+import { ApiOutlined, DatabaseOutlined, ExperimentOutlined, KeyOutlined, PlusOutlined } from '@ant-design/icons'
 import { useAppStore } from '../store'
 import { datasourceApi, workspaceApi } from '../api'
 
@@ -21,6 +21,16 @@ export default function WorkspaceSettingsPage() {
   const [flinkForm] = Form.useForm()
   const [dolphinMeta, setDolphinMeta] = useState<any>(null)
   const [loading, setLoading] = useState(false)
+  const [variables, setVariables] = useState<any[]>([])
+  const [varModalOpen, setVarModalOpen] = useState(false)
+  const [editingVar, setEditingVar] = useState<any | null>(null)
+  const [varForm] = Form.useForm()
+
+  const loadVariables = useCallback(async () => {
+    if (!wsId) return
+    const rows: any = await workspaceApi.listVariables(wsId)
+    setVariables(Array.isArray(rows) ? rows : [])
+  }, [wsId])
 
   const loadAll = async () => {
     if (!wsId) return
@@ -50,6 +60,7 @@ export default function WorkspaceSettingsPage() {
       } catch {
         /* flink optional */
       }
+      await loadVariables()
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '加载空间设置失败')
     } finally {
@@ -105,6 +116,52 @@ export default function WorkspaceSettingsPage() {
     const v = await flinkForm.validateFields()
     await workspaceApi.putFlink(wsId, v)
     message.success('本空间 Flink 配置已保存')
+  }
+
+  const openVarModal = (row?: any) => {
+    setEditingVar(row || null)
+    varForm.resetFields()
+    if (row) {
+      varForm.setFieldsValue({
+        var_key: row.var_key,
+        var_value: row.is_secret ? '' : row.var_value,
+        is_secret: row.is_secret,
+        scope: row.scope || 'all',
+        description: row.description,
+      })
+    } else {
+      varForm.setFieldsValue({ scope: 'all', is_secret: false })
+    }
+    setVarModalOpen(true)
+  }
+
+  const saveVariable = async () => {
+    if (!wsId) return
+    const v = await varForm.validateFields()
+    const body: Record<string, unknown> = {
+      var_key: v.var_key,
+      is_secret: !!v.is_secret,
+      scope: v.scope || 'all',
+      description: v.description || null,
+    }
+    if (v.var_value !== undefined && v.var_value !== '') body.var_value = v.var_value
+    if (editingVar) {
+      if (!v.var_value && editingVar.is_secret) body.clear_value = false
+      await workspaceApi.updateVariable(wsId, editingVar.id, body)
+      message.success('变量已更新')
+    } else {
+      await workspaceApi.createVariable(wsId, body)
+      message.success('变量已创建')
+    }
+    setVarModalOpen(false)
+    await loadVariables()
+  }
+
+  const deleteVariable = async (row: any) => {
+    if (!wsId) return
+    await workspaceApi.deleteVariable(wsId, row.id)
+    message.success('已删除')
+    await loadVariables()
   }
 
   if (!wsId) {
@@ -220,6 +277,91 @@ export default function WorkspaceSettingsPage() {
                     保存 Flink
                   </Button>
                 </Form>
+              </Card>
+            ),
+          },
+          {
+            key: 'variables',
+            label: (
+              <span>
+                <KeyOutlined /> 全局变量
+              </span>
+            ),
+            children: (
+              <Card loading={loading}>
+                <Alert
+                  type="info"
+                  showIcon
+                  style={{ marginBottom: 16 }}
+                  message="在 Batch / Stream / Serve 的 SQL 中用 ${var_key} 引用；支持 ${bizdate}、$[yyyy-MM-dd-1] 时间宏。密钥类请勾选「敏感」。"
+                />
+                <Button type="primary" icon={<PlusOutlined />} style={{ marginBottom: 12 }} onClick={() => openVarModal()}>
+                  新建变量
+                </Button>
+                <Table
+                  rowKey="id"
+                  size="small"
+                  dataSource={variables}
+                  pagination={false}
+                  columns={[
+                    { title: '键', dataIndex: 'var_key', width: 160 },
+                    {
+                      title: '值',
+                      dataIndex: 'var_value',
+                      ellipsis: true,
+                      render: (v: string, row: any) => (row.is_secret ? row.value_masked || '****' : v || '—'),
+                    },
+                    {
+                      title: '范围',
+                      dataIndex: 'scope',
+                      width: 88,
+                      render: (s: string) => s || 'all',
+                    },
+                    { title: '说明', dataIndex: 'description', ellipsis: true },
+                    {
+                      title: '操作',
+                      width: 120,
+                      render: (_: unknown, row: any) => (
+                        <Space>
+                          <Button type="link" size="small" onClick={() => openVarModal(row)}>编辑</Button>
+                          <Button type="link" danger size="small" onClick={() => deleteVariable(row)}>删除</Button>
+                        </Space>
+                      ),
+                    },
+                  ]}
+                />
+                <Modal
+                  title={editingVar ? '编辑变量' : '新建变量'}
+                  open={varModalOpen}
+                  onCancel={() => setVarModalOpen(false)}
+                  onOk={saveVariable}
+                  destroyOnClose
+                >
+                  <Form form={varForm} layout="vertical">
+                    <Form.Item name="var_key" label="变量名" rules={[{ required: true }]} extra="SQL 中写 ${var_key}">
+                      <Input disabled={!!editingVar} placeholder="kafka.bootstrap" />
+                    </Form.Item>
+                    <Form.Item name="var_value" label="值" extra={editingVar?.is_secret ? '留空表示不修改密钥' : undefined}>
+                      <Input.TextArea rows={3} placeholder="s3://bucket/path 或 SASL JAAS 配置" />
+                    </Form.Item>
+                    <Form.Item name="is_secret" label="敏感（列表脱敏）" valuePropName="checked">
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item name="scope" label="生效范围">
+                      <Select
+                        options={[
+                          { value: 'all', label: '全部（Batch/Stream/Serve）' },
+                          { value: 'batch', label: '仅 Batch' },
+                          { value: 'stream', label: '仅 Stream' },
+                          { value: 'serve', label: '仅 Serve' },
+                        ]}
+                      />
+                    </Form.Item>
+                    <Form.Item name="description" label="说明">
+                      <Input />
+                    </Form.Item>
+                  </Form>
+                </Modal>
               </Card>
             ),
           },
