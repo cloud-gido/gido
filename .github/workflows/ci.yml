@@ -230,7 +230,9 @@ jobs:
 
       - name: Verify Flink runtime image (Paimon S3 deps)
         run: |
+          echo "verify script sha: $(sha256sum k8s/flink-sql-runner/verify-image.sh | awk '{print $1}')"
           chmod +x k8s/flink-sql-runner/verify-image.sh
+          head -3 k8s/flink-sql-runner/verify-image.sh
           IMAGE="${{ env.REGISTRY }}/${{ github.repository }}/gido-flink-runtime:${{ steps.extract_flink_version.outputs.FLINK_VERSION }}"
           for attempt in $(seq 1 5); do
             if docker pull "${IMAGE}"; then
