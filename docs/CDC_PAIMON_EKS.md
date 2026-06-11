@@ -243,7 +243,8 @@ Backend 支持 JSON 字段（Stream Studio 高级配置）：
 | Operator CR `FAILED` | SQL 语法 / 连接器版本 | `kubectl describe flinkdeployment`；查 TM 日志 |
 | Pod `FailedScheduling` / untolerated taint | Flink 未调度到 bigdata 等节点池 | ConfigMap 设 `FLINK_OPERATOR_NODE_POOL=bigdata`；重建 backend 后重新提交作业 |
 | 与 paimon-s3 冲突 | 同时存在两套 S3 实现 | 仅保留 `flink-s3-fs-hadoop` 插件 |
-| `NoClassDefFoundError: org/apache/hadoop/conf/Configuration` | 镜像 `lib/` 缺 Hadoop | 重建 `gido-flink-runtime`（含 `hadoop-common`），勿只装 S3 插件 |
+| `NoClassDefFoundError: org/apache/hadoop/conf/Configuration` | 镜像 `lib/` 缺 Hadoop | 重建 `gido-flink-runtime`（含 `hadoop-common` 单 jar），勿只装 S3 插件 |
+| `NoSuchMethodError: commons-cli Option.builder` | hadoop 传递依赖污染 classpath | 仅保留 `hadoop-common-3.3.4.jar`，勿引入 `commons-cli-1.2` |
 
 Flink CDC **3.5.0** 与 Flink **2.0.1** 为 GIDO 当前锁定组合；升级 Flink 2.2.x 时可评估 CDC **3.6.0-2.2**（见 `/api/streaming/flink-runtime` 的 `cdc_flink_compatibility_note`）。
 
