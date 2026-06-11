@@ -1,20 +1,21 @@
 package com.gido.flink;
 
-import java.util.HashMap;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.paimon.catalog.CatalogContext;
+import org.apache.paimon.options.Options;
+import org.apache.paimon.utils.HadoopUtils;
 
 /**
- * 镜像自检入口（CI verify-image.sh）：与 SqlRunner CREATE CATALOG 相同的类加载路径。
- * 不打包 Hadoop/Paimon 依赖，运行时由 /opt/flink/lib/*.jar 提供。
+ * 镜像自检（CI verify-image.sh）：复现 SqlRunner CREATE CATALOG paimon 的 Hadoop 初始化路径。
  */
 public final class RuntimeSmoke {
 
     private RuntimeSmoke() {}
 
     public static void main(String[] args) {
-        new Configuration();
-        CatalogContext.create(new Configuration(), new HashMap<>());
+        Configuration conf = new Configuration();
+        Options options = new Options();
+        HadoopUtils.getHadoopConfiguration(options);
+        CatalogContext.create(options, conf);
     }
 }

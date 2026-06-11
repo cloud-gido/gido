@@ -48,7 +48,7 @@ if ! "${JAVA}" -cp "${CP}" com.gido.flink.RuntimeSmoke >/dev/null 2>&1; then
   "${JAVA}" -cp "${CP}" com.gido.flink.RuntimeSmoke || true
   exit 1
 fi
-echo "OK RuntimeSmoke: Configuration + Paimon CatalogContext"
+echo "OK RuntimeSmoke: HadoopUtils + CatalogContext"
 '
 
 echo "==> 镜像校验通过: ${IMAGE}"
