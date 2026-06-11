@@ -49,8 +49,9 @@
 | MySQL CDC | `flink-sql-connector-mysql-cdc` 3.5.0 |
 | Postgres CDC | 3.5.0（可选） |
 | **S3 文件系统** | `flink-s3-fs-hadoop` 2.0.1 → `/opt/flink/plugins/s3-fs-hadoop/` |
+| **Hadoop common** | `hadoop-common` 3.3.4 → `/opt/flink/lib/`（Paimon `CatalogContext` 须主 classpath 有 `Configuration`） |
 
-**重要**：Paimon 文档说明若已通过 Flink S3 插件访问 S3，**不要**再添加 `paimon-s3-*.jar`，否则可能与 `flink-s3-fs-hadoop` 冲突。
+**重要**：Paimon 文档说明若已通过 Flink S3 插件访问 S3，**不要**再添加 `paimon-s3-*.jar`，否则可能与 `flink-s3-fs-hadoop` 冲突。但 **仍须** 在 `/opt/flink/lib/` 提供 `hadoop-common`（插件 classloader 与 Paimon 主 classpath 隔离）。
 
 EKS 上须将镜像 push 到 ECR，并在 `gido-backend-config` 设置：
 
@@ -242,6 +243,7 @@ Backend 支持 JSON 字段（Stream Studio 高级配置）：
 | Operator CR `FAILED` | SQL 语法 / 连接器版本 | `kubectl describe flinkdeployment`；查 TM 日志 |
 | Pod `FailedScheduling` / untolerated taint | Flink 未调度到 bigdata 等节点池 | ConfigMap 设 `FLINK_OPERATOR_NODE_POOL=bigdata`；重建 backend 后重新提交作业 |
 | 与 paimon-s3 冲突 | 同时存在两套 S3 实现 | 仅保留 `flink-s3-fs-hadoop` 插件 |
+| `NoClassDefFoundError: org/apache/hadoop/conf/Configuration` | 镜像 `lib/` 缺 Hadoop | 重建 `gido-flink-runtime`（含 `hadoop-common`），勿只装 S3 插件 |
 
 Flink CDC **3.5.0** 与 Flink **2.0.1** 为 GIDO 当前锁定组合；升级 Flink 2.2.x 时可评估 CDC **3.6.0-2.2**（见 `/api/streaming/flink-runtime` 的 `cdc_flink_compatibility_note`）。
 

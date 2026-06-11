@@ -28,6 +28,7 @@ s3_filesystem:
   note: >
     生产 Paimon warehouse 与 Flink checkpoint 走 s3:// 时须启用。
     通过 Flink S3 插件访问对象存储；勿再添加 paimon-s3 JAR（会与插件冲突）。
+    Paimon catalog 另须 /opt/flink/lib/ 含 hadoop-common（CatalogContext 依赖 Configuration）。
 
 sql_runner:
   artifact: com.gido:flink-sql-runner
