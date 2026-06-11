@@ -116,11 +116,18 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 5); do
+            if echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin; then
+              echo "GHCR login succeeded on attempt ${attempt}"
+              exit 0
+            fi
+            echo "GHCR login attempt ${attempt}/5 failed (context deadline / network), retry in 20s..."
+            sleep 20
+          done
+          echo "::error::GHCR login failed after 5 attempts"
+          exit 1
 
       - name: Extract metadata (tags, labels) for backend
         id: meta
@@ -154,11 +161,18 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 5); do
+            if echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin; then
+              echo "GHCR login succeeded on attempt ${attempt}"
+              exit 0
+            fi
+            echo "GHCR login attempt ${attempt}/5 failed (context deadline / network), retry in 20s..."
+            sleep 20
+          done
+          echo "::error::GHCR login failed after 5 attempts"
+          exit 1
 
       - name: Extract metadata (tags, labels) for frontend
         id: meta
@@ -221,11 +235,18 @@ jobs:
 
       - name: Log in to GHCR
 #        if: steps.check_flink_change.outputs.flink_changed == 'true'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 5); do
+            if echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin; then
+              echo "GHCR login succeeded on attempt ${attempt}"
+              exit 0
+            fi
+            echo "GHCR login attempt ${attempt}/5 failed (context deadline / network), retry in 20s..."
+            sleep 20
+          done
+          echo "::error::GHCR login failed after 5 attempts"
+          exit 1
 
       - name: Extract metadata (tags, labels) for flink-runtime
 #        if: steps.check_flink_change.outputs.flink_changed == 'true'
@@ -258,5 +279,15 @@ jobs:
         run: |
           chmod +x k8s/flink-sql-runner/verify-image.sh
           IMAGE="ghcr.io/${{ github.repository }}/gido-flink-runtime:${{ steps.extract_flink_version.outputs.FLINK_VERSION }}"
-          docker pull "${IMAGE}"
+          for attempt in $(seq 1 5); do
+            if docker pull "${IMAGE}"; then
+              break
+            fi
+            echo "docker pull attempt ${attempt}/5 failed, retry in 20s..."
+            sleep 20
+            if [ "${attempt}" -eq 5 ]; then
+              echo "::error::docker pull ${IMAGE} failed after 5 attempts"
+              exit 1
+            fi
+          done
           bash k8s/flink-sql-runner/verify-image.sh "${IMAGE}"
