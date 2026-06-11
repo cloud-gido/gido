@@ -32,7 +32,6 @@ function flinkStatusDisplay(fs: string | undefined) {
     UNKNOWN: 'default',
     RUNNING: 'processing',
     INITIALIZING: 'processing',
-    CREATED: 'default',
     FINISHED: 'success',
     FAILED: 'error',
     CANCELED: 'warning',
