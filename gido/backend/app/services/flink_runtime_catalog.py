@@ -60,6 +60,20 @@ BUNDLED_CONNECTORS: List[dict] = [
         "path": "/opt/flink/lib/hadoop-auth-3.3.4.jar",
     },
     {
+        "id": "commons-configuration2",
+        "name": "Commons Configuration2 (Hadoop Configuration init)",
+        "artifact": "org.apache.commons:commons-configuration2",
+        "version": "2.1.1",
+        "path": "/opt/flink/lib/commons-configuration2-2.1.1.jar",
+    },
+    {
+        "id": "hadoop-shaded-guava",
+        "name": "Hadoop Shaded Guava",
+        "artifact": "org.apache.hadoop.thirdparty:hadoop-shaded-guava",
+        "version": "1.1.1",
+        "path": "/opt/flink/lib/hadoop-shaded-guava-1.1.1.jar",
+    },
+    {
         "id": "woodstox-core",
         "name": "Woodstox XML (HdfsConfiguration default XML)",
         "artifact": "com.fasterxml.woodstox:woodstox-core",

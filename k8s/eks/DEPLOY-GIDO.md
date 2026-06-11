@@ -184,13 +184,24 @@ kubectl -n bigdata rollout restart deploy/gido-backend
 
 然后 **新建一条 SQL 作业** 提交（不要复用旧的 FlinkDeployment）。
 
+**JM 内自检（报错时必做）：**
+
+```bash
+JM=$(kubectl -n bigdata get pods -l component=jobmanager -o jsonpath='{.items[0].metadata.name}')
+kubectl -n bigdata get pod "$JM" -o jsonpath='{.spec.containers[0].image}{"\n"}'
+kubectl -n bigdata exec "$JM" -- ls /opt/flink/lib/ | grep -E 'hadoop|configuration2|woodstox'
+kubectl -n bigdata exec "$JM" -- bash -c 'CP=$(ls /opt/flink/lib/*.jar|paste -sd: -); $JAVA_HOME/bin/jshell --class-path "$CP" -q <<< "new org.apache.hadoop.conf.Configuration();"'
+```
+
+镜像不是 `ghcr.io/cloud-gido/gido/gido-flink-runtime:dev`（或 `2.0.1`）或缺少 `commons-configuration2` → 仍是旧 runtime。
+
 ---
 
 ## 常见问题
 
 | 现象 | 处理 |
 |------|------|
-| `NoClassDefFoundError: Configuration` | 用最新 `gido-flink-runtime:dev`，**新建作业**重提 |
+| `NoClassDefFoundError: Configuration` | 换最新 runtime；JM 须有 `commons-configuration2-*.jar`；**新建作业**重提 |
 | S3 AccessDenied | 检查 flink SA 的 IRSA + IAM 对 bucket 的权限 |
 | Pod Pending | 设 `FLINK_OPERATOR_NODE_POOL=bigdata` + 对应 tolerations |
 | JM REST DNS 失败 | 作业已崩溃，看 jobmanager logs |
