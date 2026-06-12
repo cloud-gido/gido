@@ -25,6 +25,41 @@ def operator_runtime_pod_template() -> Dict[str, Any]:
     }
 
 
+def operator_paimon_warehouse_pod_template() -> Optional[Dict[str, Any]]:
+    """
+    file:// Paimon warehouse 须 JM/TM 共享卷；/tmp 各 Pod 独立会导致 commit 找不到 schema。
+    本地 K3s：kubectl apply -f k8s/paimon-warehouse-pvc.yaml
+    """
+    wh = (settings.PAIMON_WAREHOUSE_DEFAULT or "").strip().lower()
+    if not wh.startswith("file://"):
+        return None
+    pvc = (settings.FLINK_OPERATOR_PAIMON_PVC or "").strip()
+    if not pvc:
+        return None
+    mount = (settings.FLINK_OPERATOR_PAIMON_WAREHOUSE_MOUNT or "/opt/flink/paimon-warehouse").strip()
+    return {
+        "spec": {
+            "containers": [
+                {
+                    "name": "flink-main-container",
+                    "volumeMounts": [
+                        {
+                            "name": "paimon-warehouse",
+                            "mountPath": mount,
+                        }
+                    ],
+                }
+            ],
+            "volumes": [
+                {
+                    "name": "paimon-warehouse",
+                    "persistentVolumeClaim": {"claimName": pvc},
+                }
+            ],
+        }
+    }
+
+
 def operator_scheduling_pod_template() -> Optional[Dict[str, Any]]:
     """
     当 FLINK_OPERATOR_NODE_POOL 配置时，生成 podTemplate.spec 调度片段。
