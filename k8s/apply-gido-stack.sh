@@ -63,6 +63,9 @@ if [[ "${GIDO_APPLY_FLINK:-}" == "1" ]]; then
   ${KUBECTL} apply -f "${ROOT}/k8s/legacy/flink.yaml"
 fi
 
+echo "==> apply paimon-warehouse PVC（本地 file:// warehouse）"
+${KUBECTL} apply -f "${ROOT}/k8s/paimon-warehouse-pvc.yaml"
+
 echo "==> kubectl apply gido (sed image placeholders)"
 sed \
   -e "s#__BACKEND_IMAGE__#${BACKEND_IMAGE}#g" \
