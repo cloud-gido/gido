@@ -5,7 +5,7 @@ set -euo pipefail
 
 IMAGE="${1:?用法: verify-image.sh <镜像名:tag>}"
 
-echo "==> 校验镜像 ${IMAGE} (verify-image v6)"
+echo "==> 校验镜像 ${IMAGE} (verify-image v7)"
 
 docker run --rm "${IMAGE}" bash -c '
 set -euo pipefail
@@ -16,6 +16,7 @@ for j in \
   /opt/flink/lib/paimon-flink-2.0-*.jar \
   /opt/flink/lib/hadoop-common-*.jar \
   /opt/flink/lib/hadoop-hdfs-client-*.jar \
+  /opt/flink/lib/hadoop-mapreduce-client-core-*.jar \
   /opt/flink/lib/hadoop-auth-*.jar \
   /opt/flink/lib/commons-configuration2-*.jar \
   /opt/flink/lib/hadoop-shaded-guava-*.jar \
@@ -48,7 +49,7 @@ if ! "${JAVA}" -cp "${CP}" com.gido.flink.RuntimeSmoke >/dev/null 2>&1; then
   "${JAVA}" -cp "${CP}" com.gido.flink.RuntimeSmoke || true
   exit 1
 fi
-echo "OK RuntimeSmoke: HadoopUtils + CatalogContext"
+echo "OK RuntimeSmoke: CatalogContext + ParquetReadOptions"
 '
 
 echo "==> 镜像校验通过: ${IMAGE}"

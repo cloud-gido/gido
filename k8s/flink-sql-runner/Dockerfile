@@ -22,6 +22,7 @@ RUN mvn -B -q package -DskipTests -s settings.xml \
     done \
     && test -n "$(ls target/connectors/hadoop-common-*.jar)" \
     && test -n "$(ls target/connectors/hadoop-hdfs-client-*.jar)" \
+    && test -n "$(ls target/connectors/hadoop-mapreduce-client-core-*.jar)" \
     && test -n "$(ls target/connectors/commons-configuration2-*.jar)" \
     && test -n "$(ls target/connectors/woodstox-core-*.jar)"
 
@@ -40,6 +41,7 @@ RUN mv /tmp/connectors/flink-s3-fs-hadoop-*.jar /opt/flink/plugins/s3-fs-hadoop/
     && mv /tmp/connectors/*.jar /opt/flink/lib/ \
     && test -n "$(ls /opt/flink/lib/hadoop-common-*.jar)" \
     && test -n "$(ls /opt/flink/lib/hadoop-hdfs-client-*.jar)" \
+    && test -n "$(ls /opt/flink/lib/hadoop-mapreduce-client-core-*.jar)" \
     && test -n "$(ls /opt/flink/lib/commons-configuration2-*.jar)" \
     && test -n "$(ls /opt/flink/lib/woodstox-core-*.jar)" \
     && test -n "$(ls /opt/flink/lib/paimon-flink-2.0-*.jar)" \

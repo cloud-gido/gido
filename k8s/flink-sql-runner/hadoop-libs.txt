@@ -3,6 +3,7 @@
 # 仅 dependency:copy 单 jar；勿 copy-dependencies（会拉 commons-cli-1.2 与 Flink 冲突）
 org.apache.hadoop:hadoop-common:3.3.4
 org.apache.hadoop:hadoop-hdfs-client:3.3.4
+org.apache.hadoop:hadoop-mapreduce-client-core:3.3.4
 org.apache.hadoop:hadoop-auth:3.3.4
 org.apache.hadoop:hadoop-annotations:3.3.4
 org.apache.hadoop.thirdparty:hadoop-shaded-guava:1.1.1

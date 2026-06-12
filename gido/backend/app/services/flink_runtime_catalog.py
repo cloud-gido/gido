@@ -53,6 +53,13 @@ BUNDLED_CONNECTORS: List[dict] = [
         "path": "/opt/flink/lib/hadoop-hdfs-client-3.3.4.jar",
     },
     {
+        "id": "hadoop-mapreduce-client-core",
+        "name": "Hadoop MapReduce Client (Paimon Parquet stats)",
+        "artifact": "org.apache.hadoop:hadoop-mapreduce-client-core",
+        "version": "3.3.4",
+        "path": "/opt/flink/lib/hadoop-mapreduce-client-core-3.3.4.jar",
+    },
+    {
         "id": "hadoop-auth",
         "name": "Hadoop Auth (Paimon / S3 credentials)",
         "artifact": "org.apache.hadoop:hadoop-auth",

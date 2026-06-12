@@ -2,6 +2,7 @@
 # 构建用副本：k8s/flink-sql-runner/hadoop-libs.txt
 org.apache.hadoop:hadoop-common:3.3.4
 org.apache.hadoop:hadoop-hdfs-client:3.3.4
+org.apache.hadoop:hadoop-mapreduce-client-core:3.3.4
 org.apache.hadoop:hadoop-auth:3.3.4
 org.apache.hadoop:hadoop-annotations:3.3.4
 org.apache.hadoop.thirdparty:hadoop-shaded-guava:1.1.1

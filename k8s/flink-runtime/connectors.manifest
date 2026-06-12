@@ -37,6 +37,8 @@ hadoop_client_minimal:
       path: /opt/flink/lib/hadoop-common-3.3.4.jar
     - artifact: org.apache.hadoop:hadoop-hdfs-client
       path: /opt/flink/lib/hadoop-hdfs-client-3.3.4.jar
+    - artifact: org.apache.hadoop:hadoop-mapreduce-client-core
+      path: /opt/flink/lib/hadoop-mapreduce-client-core-3.3.4.jar
     - artifact: org.apache.hadoop:hadoop-auth
       path: /opt/flink/lib/hadoop-auth-3.3.4.jar
     - artifact: org.apache.hadoop.thirdparty:hadoop-shaded-guava
@@ -52,7 +54,7 @@ hadoop_client_minimal:
       version: "4.2.1"
       path: /opt/flink/lib/stax2-api-4.2.1.jar
   note: >
-    Paimon CatalogContext 须 Configuration + HdfsConfiguration；HdfsConfiguration 解析默认 XML 须 woodstox。
+    Paimon CatalogContext 须 Configuration + HdfsConfiguration；写 Parquet 统计还须 hadoop-mapreduce-client-core（FileInputFormat）。
     仅 dependency:copy 单 jar，勿 copy-dependencies 拉传递树（commons-cli-1.2 与 Flink 冲突）。S3 读写仍走 flink-s3-fs-hadoop 插件。
 
 sql_runner:
