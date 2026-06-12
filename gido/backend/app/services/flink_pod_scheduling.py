@@ -11,6 +11,20 @@ from typing import Any, Dict, List, Optional
 from app.core.config import settings
 
 
+def operator_runtime_pod_template() -> Dict[str, Any]:
+    """GHCR 可变 tag（dev）须 Always 拉取，避免节点缓存旧 gido-flink-runtime。"""
+    return {
+        "spec": {
+            "containers": [
+                {
+                    "name": "flink-main-container",
+                    "imagePullPolicy": "Always",
+                }
+            ]
+        }
+    }
+
+
 def operator_scheduling_pod_template() -> Optional[Dict[str, Any]]:
     """
     当 FLINK_OPERATOR_NODE_POOL 配置时，生成 podTemplate.spec 调度片段。

@@ -206,9 +206,6 @@ export default function StreamStudioPage() {
   const [jarSubmitMode] = useState<'session' | 'flink_operator'>('flink_operator')
   const [historyModal, setHistoryModal] = useState(false)
   const [historyList, setHistoryList] = useState<any[]>([])
-  /** 作业绑定的 Flink Session 配置（null = 使用平台集成默认） */
-  const [flinkProfileId, setFlinkProfileId] = useState<number | null>(null)
-  const [flinkProfiles, setFlinkProfiles] = useState<any[]>([])
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set())
   const [approvalOpen, setApprovalOpen] = useState(false)
   const [approvalNote, setApprovalNote] = useState('')
@@ -225,12 +222,6 @@ export default function StreamStudioPage() {
       setPendingKeys(
         new Set((pendingRes?.items || []).map((i: any) => approvalPendingKey(i.resource_type, i.resource_id, i.action))),
       )
-      try {
-        const profs: any = await streamingApi.listFlinkSessionProfiles(wsId)
-        setFlinkProfiles(Array.isArray(profs) ? profs : [])
-      } catch {
-        setFlinkProfiles([])
-      }
       setSelected((prev) => {
         if (!prev) return prev
         const fresh = list.find((j: any) => j.id === prev.id)
@@ -315,12 +306,6 @@ export default function StreamStudioPage() {
     }
   }, [selected?.id, selected?.job_type, selected?.flink_jar_submit_mode, selected?.streaming_properties])
 
-  useEffect(() => {
-    if (!selected?.id) return
-    const v = selected.flink_session_profile_id
-    setFlinkProfileId(v != null && v !== '' ? Number(v) : null)
-  }, [selected?.id, selected?.flink_session_profile_id])
-
   const handleCreate = async () => {
     const v = await createForm.validateFields()
     await streamingApi.createJob({
@@ -377,7 +362,6 @@ export default function StreamStudioPage() {
       main_class: selected.job_type === 'JAR' ? (jarForm.main_class || undefined) : undefined,
       program_args: selected.job_type === 'JAR' ? (jarForm.program_args || undefined) : undefined,
       parallelism: selected.job_type === 'JAR' ? jarForm.parallelism : sqlParallelism,
-      flink_session_profile_id: flinkProfileId,
       ...(selected.job_type === 'SQL' ? { streaming_properties, flink_sql_submit_mode: effectiveSqlMode } : {}),
       ...(selected.job_type === 'JAR' ? { flink_jar_submit_mode: effectiveJarMode, streaming_properties } : {}),
     })

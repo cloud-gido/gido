@@ -19,7 +19,11 @@ from app.services.gido_deployment_meta import (
     jar_deployment_name,
     sql_deployment_name,
 )
-from app.services.flink_pod_scheduling import merge_pod_templates, operator_scheduling_pod_template
+from app.services.flink_pod_scheduling import (
+    merge_pod_templates,
+    operator_runtime_pod_template,
+    operator_scheduling_pod_template,
+)
 from app.services.operator_resources import (
     OperatorResources,
     merge_flink_configuration,
@@ -253,7 +257,11 @@ def build_flink_deployment_body(
         "taskManager": tm_spec,
         "job": job_spec,
     }
-    merged_pod_template = merge_pod_templates(operator_scheduling_pod_template(), pod_template)
+    merged_pod_template = merge_pod_templates(
+        operator_runtime_pod_template(),
+        operator_scheduling_pod_template(),
+        pod_template,
+    )
     if merged_pod_template:
         spec["podTemplate"] = merged_pod_template
     elif "podTemplate" in spec:
@@ -398,6 +406,111 @@ def read_flink_deployment(deployment_name: str, namespace: Optional[str] = None)
         plural=FLINK_DEPLOYMENT_PLURAL,
         name=deployment_name,
     )
+
+
+def list_flink_deployments(
+    *,
+    namespace: Optional[str] = None,
+    workspace_id: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """列出命名空间内 FlinkDeployment CR；可选按 gido.io/workspace-id 标签过滤。"""
+    api = _custom_objects_api()
+    ns = namespace or _operator_namespace()
+    kwargs: Dict[str, Any] = {}
+    if workspace_id is not None:
+        kwargs["label_selector"] = f"gido.io/workspace-id={int(workspace_id)}"
+    resp = api.list_namespaced_custom_object(
+        group=FLINK_DEPLOYMENT_GROUP,
+        version=FLINK_DEPLOYMENT_VERSION,
+        namespace=ns,
+        plural=FLINK_DEPLOYMENT_PLURAL,
+        **kwargs,
+    )
+    items = resp.get("items") if isinstance(resp, dict) else None
+    return list(items) if isinstance(items, list) else []
+
+
+def deployment_summary_from_cr(cr: Dict[str, Any]) -> Dict[str, Any]:
+    """FlinkDeployment CR → 运维概览行（含 JM/TM 健康摘要）。"""
+    meta = cr.get("metadata") or {}
+    status = cr.get("status") or {}
+    spec = cr.get("spec") or {}
+    labels = meta.get("labels") or {}
+    jid, lifecycle, err = extract_status_from_cr(cr)
+    job_status = status.get("jobStatus") or {}
+    spec_state = (spec.get("job") or {}).get("state")
+    spec_state = str(spec_state).strip().lower() if spec_state else None
+    cluster = status.get("clusterInfo") or status.get("cluster") or {}
+    jm_status = cluster.get("jobManagerStatus") or status.get("jobManagerDeploymentStatus")
+    tm_status = cluster.get("taskManagerStatus") or status.get("taskManager")
+    lifecycle_up = (lifecycle or "").strip().upper()
+    health = "unknown"
+    if spec_state == "suspended":
+        health = "suspended"
+    elif err or lifecycle_up in ("FAILED", "FAILING"):
+        health = "failed"
+    elif lifecycle_up in ("STABLE", "DEPLOYED", "RUNNING", "CREATED"):
+        health = "healthy"
+    elif lifecycle_up in ("DEPLOYING", "STARTING", "RECONCILING", "APPLICATION_PENDING_JOB_ID"):
+        health = "starting"
+    return {
+        "name": meta.get("name"),
+        "namespace": meta.get("namespace") or _operator_namespace(),
+        "workspace_id": labels.get("gido.io/workspace-id"),
+        "job_id": labels.get("gido.io/job-id"),
+        "job_type": labels.get("gido.io/job-type"),
+        "lifecycle": lifecycle,
+        "health": health,
+        "flink_job_id": jid,
+        "error": err or job_status.get("error"),
+        "spec_state": spec_state,
+        "image": spec.get("image"),
+        "flink_version": spec.get("flinkVersion"),
+        "job_manager_status": jm_status,
+        "task_manager_status": tm_status,
+        "created_at": meta.get("creationTimestamp"),
+    }
+
+
+def operator_overview_payload(*, workspace_id: Optional[int] = None) -> Dict[str, Any]:
+    """Flink Operator 运维概览：运行时配置 + K8s FlinkDeployment 列表与汇总。"""
+    from app.services.flink_runtime_catalog import flink_runtime_api_payload
+
+    runtime = flink_runtime_api_payload()
+    ns = runtime.get("operator_namespace") or _operator_namespace()
+    ready, ready_reason = operator_submit_ready()
+    deployments: List[Dict[str, Any]] = []
+    k8s_error: Optional[str] = None
+    if kubernetes_api_available():
+        try:
+            crs = list_flink_deployments(namespace=ns, workspace_id=workspace_id)
+            deployments = [deployment_summary_from_cr(cr) for cr in crs]
+        except Exception as ex:
+            logger.debug("list FlinkDeployments failed", exc_info=True)
+            k8s_error = str(ex)
+    else:
+        k8s_error = "Backend 无法访问 Kubernetes API（需集群内 ServiceAccount 或 kubeconfig）"
+
+    running = sum(1 for d in deployments if d.get("health") == "healthy")
+    failed = sum(1 for d in deployments if d.get("health") == "failed")
+    suspended = sum(1 for d in deployments if d.get("health") == "suspended")
+    starting = sum(1 for d in deployments if d.get("health") == "starting")
+
+    return {
+        "runtime": runtime,
+        "operator_ready": ready,
+        "operator_ready_reason": None if ready else ready_reason,
+        "namespace": ns,
+        "summary": {
+            "deployments_total": len(deployments),
+            "running": running,
+            "failed": failed,
+            "suspended": suspended,
+            "starting": starting,
+        },
+        "deployments": deployments,
+        "k8s_error": k8s_error,
+    }
 
 
 def suspend_flink_deployment(deployment_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:

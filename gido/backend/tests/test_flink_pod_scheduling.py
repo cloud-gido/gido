@@ -46,6 +46,7 @@ def test_sql_pod_template_merges_scheduling_and_configmap(monkeypatch):
     assert pt["nodeSelector"]["node.gamelinelab.com/pool"] == "bigdata"
     assert pt["volumes"][0]["configMap"]["name"] == "gido-sql-script-0-1"
     assert pt["containers"][0]["volumeMounts"][0]["mountPath"] == "/opt/flink/gido-scripts"
+    assert pt["containers"][0]["imagePullPolicy"] == "Always"
 
 
 def test_merge_pod_templates_preserves_both():

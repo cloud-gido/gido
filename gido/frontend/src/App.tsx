@@ -23,7 +23,6 @@ import WorkflowPage from './pages/Workflow'
 import StreamStudioPage from './pages/StreamStudio'
 import StreamMonitorPage from './pages/StreamMonitor'
 import StreamOverviewPage from './pages/StreamOverview'
-import FlinkSessionProfilesPage from './pages/FlinkSessionProfiles'
 import SystemRbacPage from './pages/SystemRbac'
 import WorkspaceSettingsPage from './pages/WorkspaceSettings'
 import ServiceOverviewPage from './pages/service/ServiceOverviewPage'
@@ -91,7 +90,7 @@ export default function App() {
             <Route path="studio" element={<StreamStudioPage />} />
             <Route path="monitor" element={<StreamMonitorPage />} />
             <Route path="overview" element={<StreamOverviewPage />} />
-            <Route path="flink-sessions" element={<FlinkSessionProfilesPage />} />
+            <Route path="flink-sessions" element={<Navigate to={R.stream.overview} replace />} />
             <Route path="approval" element={<ApprovalPage />} />
           </Route>
 

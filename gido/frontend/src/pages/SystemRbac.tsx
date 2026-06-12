@@ -677,15 +677,15 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
         }
       />
       <Alert
-        type="warning"
+        type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="与「实时 → Flink 集群连接」的关系（避免重复维护）"
+        message="Flink Operator 模式"
         description={(
           <span>
-            <strong>本页 = 租户级默认</strong>（全工作空间、未选作业连接时的合并基线）。若同一 Flink 集群被多数作业共用，只在此处配置即可。
-            <strong> 工作空间「Flink 集群连接」</strong>用于<strong>多套物理集群</strong>（风控 / 对账等）：仅填写与默认<strong>不同</strong>的字段，在默认之上覆写，不形成第二套真相源。
-            详见 <Link to={R.stream.flinkSessions}>实时 → Flink 集群连接</Link> 页顶说明。
+            GIDO Stream 生产路径使用 <strong>Flink Kubernetes Operator</strong> 提交 SQL/JAR 作业（FlinkDeployment CR）。
+            租户级 Flink 镜像、命名空间、Checkpoint 等在此配置；运行态概览见{' '}
+            <Link to={R.stream.overview}>实时 → Flink 运行概览</Link>。
           </span>
         )}
       />

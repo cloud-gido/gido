@@ -4,100 +4,112 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Card, Row, Col, Statistic, Alert, Spin, Descriptions, Button, Space, Select } from 'antd'
-import { CloudServerOutlined, DatabaseOutlined, ThunderboltOutlined, ApiOutlined, ReloadOutlined } from '@ant-design/icons'
+import { useState, useEffect, useCallback } from 'react'
+import {
+  Alert, Badge, Button, Card, Col, Descriptions, Row, Space, Spin, Statistic, Table, Tag, Tooltip, Typography,
+} from 'antd'
+import {
+  CloudServerOutlined, CheckCircleOutlined, CloseCircleOutlined, ClusterOutlined,
+  ContainerOutlined, ReloadOutlined, SyncOutlined, ThunderboltOutlined,
+} from '@ant-design/icons'
+import { Link } from 'react-router-dom'
 import { streamingApi } from '../api'
 import { useAppStore } from '../store'
+import { R } from '../routes'
 
-type FlinkProfileRow = { id: number; name: string }
+const { Text, Paragraph } = Typography
+
+type DeploymentRow = {
+  name?: string
+  namespace?: string
+  workspace_id?: string
+  job_id?: string
+  job_type?: string
+  lifecycle?: string
+  health?: string
+  flink_job_id?: string
+  error?: string
+  spec_state?: string
+  image?: string
+  flink_version?: string
+  job_manager_status?: Record<string, unknown>
+  task_manager_status?: Record<string, unknown>
+  created_at?: string
+}
+
+const HEALTH_COLOR: Record<string, string> = {
+  healthy: 'success',
+  failed: 'error',
+  suspended: 'warning',
+  starting: 'processing',
+  unknown: 'default',
+}
+
+const HEALTH_LABEL: Record<string, string> = {
+  healthy: '运行中',
+  failed: '失败',
+  suspended: '已暂停',
+  starting: '启动中',
+  unknown: '未知',
+}
+
+function PodHealthCard({ title, status }: { title: string; status?: Record<string, unknown> | string | null }) {
+  if (!status) {
+    return (
+      <Card size="small" style={{ textAlign: 'center', minHeight: 88 }}>
+        <Text type="secondary">{title}</Text>
+        <div style={{ marginTop: 8 }}><Badge status="default" text="无数据" /></div>
+      </Card>
+    )
+  }
+  const raw = typeof status === 'string' ? status : (status.status as string) || JSON.stringify(status)
+  const ok = /ready|running|stable/i.test(String(raw))
+  return (
+    <Card size="small" style={{ textAlign: 'center', minHeight: 88 }}>
+      <Text type="secondary">{title}</Text>
+      <div style={{ marginTop: 8, fontSize: 22 }}>
+        {ok ? <CheckCircleOutlined style={{ color: '#52c41a' }} /> : <SyncOutlined spin style={{ color: '#1677ff' }} />}
+      </div>
+      <Text style={{ fontSize: 12 }}>{String(raw)}</Text>
+    </Card>
+  )
+}
 
 export default function StreamOverviewPage() {
   const { currentWorkspace } = useAppStore()
   const wsId = currentWorkspace?.id
 
   const [data, setData] = useState<Record<string, any> | null>(null)
-  const [conn, setConn] = useState<any | null>(null)
-  const [err, setErr] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [profiles, setProfiles] = useState<FlinkProfileRow[]>([])
-  const [profilesLoading, setProfilesLoading] = useState(false)
-  /** null = 平台默认；数字 = 当前工作空间下的命名 Flink 集群连接 */
-  const [probeProfileId, setProbeProfileId] = useState<number | null>(null)
-
-  const queryParams = useMemo(() => {
-    if (probeProfileId != null && wsId != null) {
-      return { workspace_id: wsId, flink_session_profile_id: probeProfileId }
-    }
-    return undefined
-  }, [probeProfileId, wsId])
-
-  useEffect(() => {
-    setProbeProfileId(null)
-  }, [wsId])
-
-  useEffect(() => {
-    if (!wsId) {
-      setProfiles([])
-      return
-    }
-    let cancelled = false
-    setProfilesLoading(true)
-    streamingApi
-      .listFlinkSessionProfiles(wsId)
-      .then((rows: unknown) => {
-        if (!cancelled) {
-          const list = Array.isArray(rows) ? rows : []
-          setProfiles(
-            list.map((r: { id: number; name?: string }) => ({
-              id: r.id,
-              name: (r.name || '').trim() || `连接 #${r.id}`,
-            })),
-          )
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setProfiles([])
-      })
-      .finally(() => {
-        if (!cancelled) setProfilesLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [wsId])
+  const [err, setErr] = useState<string | null>(null)
 
   const load = useCallback(async () => {
+    if (!wsId) {
+      setData(null)
+      setErr(null)
+      setLoading(false)
+      return
+    }
     setLoading(true)
     try {
-      let c: any
-      try {
-        c = await streamingApi.connectivity(queryParams)
-      } catch (e: any) {
-        c = {
-          _failed: true,
-          detail: e?.response?.data?.detail || e.message || String(e),
-        }
-      }
-      setConn(c)
-      try {
-        const ov = await streamingApi.overview(queryParams)
-        setData(ov)
-        setErr(null)
-      } catch (e: any) {
-        setData(null)
-        setErr(e?.response?.data?.detail || e.message || '无法连接 JobManager')
-      }
+      const ov = await streamingApi.operatorOverview(wsId)
+      setData(ov)
+      setErr(null)
+    } catch (e: any) {
+      setData(null)
+      setErr(e?.response?.data?.detail || e.message || '加载失败')
     } finally {
       setLoading(false)
     }
-  }, [queryParams])
+  }, [wsId])
 
-  useEffect(() => {
-    load()
-  }, [load])
+  useEffect(() => { load() }, [load])
 
-  if (loading && !conn) {
+  if (!wsId) {
+    return <Alert type="info" message="请先选择工作空间" showIcon />
+  }
+
+  if (loading && !data) {
     return (
       <div style={{ textAlign: 'center', padding: 48 }}>
         <Spin size="large" />
@@ -105,172 +117,247 @@ export default function StreamOverviewPage() {
     )
   }
 
-  const slotsTotal = data?.['slots-total'] ?? data?.slotsTotal
-  const slotsAvail = data?.['slots-available'] ?? data?.slotsAvailable
-  const tm = data?.taskmanagers ?? data?.['taskmanagers']
-
-  const jmOk = conn?.jobmanager?.ok
-  const gwOk = conn?.sql_gateway?.ok
-  const hints: string[] = conn?.hints || []
-  const probe = conn?.probe
-
-  const probeLabel =
-    probe?.kind === 'flink_session_profile'
-      ? `命名连接「${probe.profile_name || ''}」(#${probe.profile_id})`
-      : '平台默认（环境 + 系统 Flink 集成）'
-
-  const mergeConfigHint =
-    probe?.kind === 'flink_session_profile'
-      ? '以下为当前命名连接与平台默认合并后的基址（连接中非空字段覆盖同名集成项）。'
-      : '合并 .env / 环境变量 + 系统管理 → 集成与连接 → Flink（库内有覆盖时以库内为准）。'
+  const runtime = data?.runtime || {}
+  const summary = data?.summary || {}
+  const deployments: DeploymentRow[] = data?.deployments || []
 
   return (
     <div>
-      <Space wrap style={{ marginBottom: 16 }} align="center">
-        <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>
-          刷新
-        </Button>
-        <span style={{ color: '#666' }}>探测目标</span>
-        <Select
-          style={{ minWidth: 280 }}
-          loading={profilesLoading}
-          disabled={!wsId}
-          value={probeProfileId === null ? '__platform__' : probeProfileId}
-          onChange={(v) => {
-            if (v === '__platform__') setProbeProfileId(null)
-            else setProbeProfileId(Number(v))
-          }}
-          options={[
-            { value: '__platform__', label: '平台默认（全局 Flink 配置）' },
-            ...profiles.map((p) => ({ value: p.id, label: `${p.name} (#${p.id})` })),
-          ]}
-        />
-        {!wsId && (
-          <span style={{ color: '#999', fontSize: 12 }}>请先在顶部选择工作空间，即可按「Flink 集群连接」逐项探测。</span>
-        )}
-      </Space>
+      <div style={{ marginBottom: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>Flink 运行概览</h2>
+          <Text type="secondary">Flink Kubernetes Operator 模式 — 查看命名空间内 FlinkDeployment 与运行时配置</Text>
+        </div>
+        <Space>
+          <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>刷新</Button>
+          <Link to={R.stream.monitor}><Button icon={<ThunderboltOutlined />}>作业运维</Button></Link>
+        </Space>
+      </div>
 
-      {conn?._failed && (
-        <Alert type="error" showIcon style={{ marginBottom: 16 }} message="连通性接口失败" description={conn.detail} />
+      {err && (
+        <Alert type="error" showIcon style={{ marginBottom: 16 }} message="加载概览失败" description={err} />
       )}
 
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 16 }}
-        message={`当前探测：${probeLabel}`}
-        description={
-          wsId
-            ? '与实时开发里作业可选的「Flink 集群连接」使用同一套合并规则；在此切换即可核对各套地址是否对后端可达。'
-            : '未选工作空间时仅展示平台默认；选择空间后可下拉切换该空间下的命名连接。'
-        }
-      />
-
-      {hints.length > 0 && (
+      {data?.operator_ready === false && (
         <Alert
-          type={jmOk && gwOk ? 'info' : 'warning'}
+          type="warning"
           showIcon
           style={{ marginBottom: 16 }}
-          message="连接与配置提示"
-          description={
-            <ul style={{ margin: 0, paddingLeft: 20 }}>
-              {hints.map((h, i) => (
-                <li key={i}>{h}</li>
-              ))}
-            </ul>
-          }
+          message="Operator 提交未就绪"
+          description={data.operator_ready_reason || '请检查 K8s 访问与 FLINK_OPERATOR_* 环境变量'}
         />
       )}
 
-      <Card title={<><ApiOutlined /> GIDO → Flink 连通性</>} size="small" style={{ marginBottom: 16 }}>
-        <Descriptions column={1} size="small" bordered>
-          <Descriptions.Item label="JobManager（配置 → 实际 HTTP）">
-            <div style={{ fontSize: 12, marginBottom: 4 }}>
-              <strong>合并配置基址</strong>（{mergeConfigHint}）{' '}
-              <code style={{ wordBreak: 'break-all' }}>{conn?.jobmanager?.configured_url || '—'}</code>
-            </div>
-            <div style={{ fontSize: 12, marginBottom: 4 }}>
-              <strong>本进程实际请求</strong>（容器内可能把 127.0.0.1 改写为 host.docker.internal）：{' '}
-              <code style={{ wordBreak: 'break-all' }}>{conn?.jobmanager?.effective_url ?? conn?.jobmanager?.url ?? '—'}</code>
-            </div>
-            {conn?.jobmanager?.running_in_docker && (
-              <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>后端进程判定为：运行在 Docker 容器内</div>
-            )}
-            {conn?.jobmanager?.localhost_rewritten_for_docker && (
-              <div style={{ fontSize: 12, color: '#d48806', marginBottom: 4 }}>
-                已对 localhost/127.0.0.1 做容器内改写；Linux 若仍失败，请在 compose 为 JobManager 可达性配置 extra_hosts（见上方提示）。
-              </div>
-            )}
-            {jmOk ? <span style={{ color: '#52c41a' }}>状态：可达</span> : <span style={{ color: '#faad14' }}>状态：不可达</span>}
-            {conn?.jobmanager?.error && (
-              <div style={{ color: '#cf1322', fontSize: 12, marginTop: 8 }}>{conn.jobmanager.error}</div>
-            )}
-          </Descriptions.Item>
-          <Descriptions.Item label="SQL Gateway">
-            {conn?.sql_gateway?.configured
-              ? conn?.sql_gateway?.base_url || '已配置'
-              : '未配置 FLINK_SQL_GATEWAY_URL'}
-            {conn?.sql_gateway?.configured &&
-              (gwOk ? (
-                <span style={{ color: '#52c41a', marginLeft: 8 }}>
-                  /v1/info 正常
-                </span>
-              ) : (
-                <span style={{ color: '#faad14', marginLeft: 8 }}>
-                  不可达或异常
-                </span>
-              ))}
-            {conn?.sql_gateway?.error && (
-              <div style={{ color: '#cf1322', fontSize: 12, marginTop: 4 }}>{conn.sql_gateway.error}</div>
-            )}
-            {conn?.sql_gateway?.info && (
-              <pre style={{ fontSize: 11, marginTop: 8, background: '#f5f5f5', padding: 8, borderRadius: 4 }}>
-                {JSON.stringify(conn.sql_gateway.info, null, 2)}
-              </pre>
-            )}
-          </Descriptions.Item>
-          <Descriptions.Item label="Gateway 提交作业时的 JM REST 目标">
-            {conn?.gateway_jm_execution_target && Object.keys(conn.gateway_jm_execution_target).length > 0
-              ? JSON.stringify(conn.gateway_jm_execution_target)
-              : '—'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Flink Web UI 基址（作业链接用）">{conn?.flink_ui_base ?? '—'}</Descriptions.Item>
-        </Descriptions>
-      </Card>
-
-      {err && !data && (
-        <Alert type="warning" showIcon style={{ marginBottom: 16 }} message="JobManager /overview 不可用" description={err} />
+      {data?.k8s_error && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="Kubernetes 集群信息不可用"
+          description={data.k8s_error}
+        />
       )}
 
-      <Row gutter={[16, 16]}>
-        <Col xs={24} sm={8}>
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col xs={24} sm={12} lg={6}>
           <Card>
-            <Statistic title="TaskManagers" value={data ? (tm ?? '—') : '—'} prefix={<CloudServerOutlined />} />
+            <Statistic
+              title="FlinkDeployment"
+              value={summary.deployments_total ?? 0}
+              prefix={<ClusterOutlined />}
+              suffix={<Text type="secondary" style={{ fontSize: 13 }}>/ {summary.running ?? 0} 运行</Text>}
+            />
           </Card>
         </Col>
-        <Col xs={24} sm={8}>
+        <Col xs={24} sm={12} lg={6}>
           <Card>
-            <Statistic title="总 Slot" value={data ? (slotsTotal ?? '—') : '—'} prefix={<DatabaseOutlined />} />
+            <Statistic
+              title="失败 / 暂停"
+              value={summary.failed ?? 0}
+              valueStyle={{ color: (summary.failed ?? 0) > 0 ? '#ff4d4f' : undefined }}
+              prefix={<CloseCircleOutlined />}
+              suffix={<Text type="secondary" style={{ fontSize: 13 }}>/ {summary.suspended ?? 0} 暂停</Text>}
+            />
           </Card>
         </Col>
-        <Col xs={24} sm={8}>
+        <Col xs={24} sm={12} lg={6}>
           <Card>
-            <Statistic title="可用 Slot" value={data ? (slotsAvail ?? '—') : '—'} prefix={<ThunderboltOutlined />} />
+            <Statistic
+              title="GIDO 作业"
+              value={summary.jobs_total ?? 0}
+              prefix={<ContainerOutlined />}
+              suffix={<Text type="secondary" style={{ fontSize: 13 }}>/ {summary.jobs_running ?? 0} 运行</Text>}
+            />
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card>
+            <Statistic
+              title="启动中"
+              value={summary.starting ?? 0}
+              prefix={<SyncOutlined spin={(summary.starting ?? 0) > 0} />}
+            />
           </Card>
         </Col>
       </Row>
-      <Card title="Flink /overview 原始数据" style={{ marginTop: 16 }}>
-        {!data ? (
-          <div style={{ color: '#999' }}>无数据（JobManager 未连通）</div>
-        ) : (
-          <Descriptions column={1} size="small">
-            {Object.entries(data).map(([k, v]) => (
-              <Descriptions.Item key={k} label={k}>
-                {typeof v === 'object' ? JSON.stringify(v) : String(v)}
+
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col xs={24} lg={14}>
+          <Card title={<><CloudServerOutlined /> 运行时配置</>} size="small">
+            <Descriptions column={{ xs: 1, sm: 2 }} size="small">
+              <Descriptions.Item label="提交模式">
+                <Tag color="purple">Flink Operator</Tag>
               </Descriptions.Item>
-            ))}
-          </Descriptions>
-        )}
+              <Descriptions.Item label="K8s 命名空间">
+                <Text code>{data?.namespace || runtime.operator_namespace || '—'}</Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="运行时镜像" span={2}>
+                <Paragraph copyable={{ text: runtime.runtime_image }} style={{ marginBottom: 0 }}>
+                  <Text code style={{ wordBreak: 'break-all' }}>{runtime.runtime_image || '—'}</Text>
+                </Paragraph>
+              </Descriptions.Item>
+              <Descriptions.Item label="Flink 版本">{runtime.flink_version || '—'}</Descriptions.Item>
+              <Descriptions.Item label="Operator flinkVersion">
+                <Text code>{runtime.flink_operator_version || '—'}</Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="Checkpoint 目录" span={2}>
+                <Text code style={{ wordBreak: 'break-all' }}>{runtime.checkpoint_dir_default || '—'}</Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="Paimon Warehouse" span={2}>
+                <Text code style={{ wordBreak: 'break-all' }}>{runtime.paimon_warehouse_default || '—'}</Text>
+              </Descriptions.Item>
+            </Descriptions>
+          </Card>
+        </Col>
+        <Col xs={24} lg={10}>
+          <Card title="Operator 架构" size="small">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 24, padding: '12px 0' }}>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 28, color: '#722ed1' }}><ClusterOutlined /></div>
+                <Text strong>GIDO Backend</Text>
+                <div><Text type="secondary" style={{ fontSize: 11 }}>创建 FlinkDeployment CR</Text></div>
+              </div>
+              <Text type="secondary">→</Text>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 28, color: '#1677ff' }}><CloudServerOutlined /></div>
+                <Text strong>Flink Operator</Text>
+                <div><Text type="secondary" style={{ fontSize: 11 }}>协调 JM / TM Pod</Text></div>
+              </div>
+              <Text type="secondary">→</Text>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 28, color: '#52c41a' }}><ThunderboltOutlined /></div>
+                <Text strong>Flink Job</Text>
+                <div><Text type="secondary" style={{ fontSize: 11 }}>SQL / JAR Application</Text></div>
+              </div>
+            </div>
+          </Card>
+        </Col>
+      </Row>
+
+      <Card title="FlinkDeployment 列表" style={{ marginBottom: 16 }}>
+        <Table
+          size="small"
+          rowKey="name"
+          loading={loading}
+          dataSource={deployments}
+          pagination={{ pageSize: 10, showSizeChanger: true }}
+          locale={{ emptyText: '当前工作空间暂无 FlinkDeployment（提交作业后将自动创建）' }}
+          columns={[
+            {
+              title: '部署名',
+              dataIndex: 'name',
+              ellipsis: true,
+              render: (name: string) => (
+                <Tooltip title="FlinkDeployment CR 名称">
+                  <Text code style={{ fontSize: 11 }}>{name}</Text>
+                </Tooltip>
+              ),
+            },
+            {
+              title: 'GIDO 作业',
+              key: 'job',
+              width: 100,
+              render: (_: unknown, row: DeploymentRow) => (
+                row.job_id
+                  ? <Link to={R.stream.monitor}>#{row.job_id}</Link>
+                  : <Text type="secondary">—</Text>
+              ),
+            },
+            {
+              title: '类型',
+              dataIndex: 'job_type',
+              width: 64,
+              render: (t: string) => t ? <Tag>{t.toUpperCase()}</Tag> : '—',
+            },
+            {
+              title: '健康',
+              dataIndex: 'health',
+              width: 88,
+              render: (h: string) => (
+                <Tag color={HEALTH_COLOR[h] || 'default'}>{HEALTH_LABEL[h] || h || '—'}</Tag>
+              ),
+            },
+            {
+              title: 'Lifecycle',
+              dataIndex: 'lifecycle',
+              width: 120,
+              render: (lc: string) => lc ? <Tag>{lc}</Tag> : '—',
+            },
+            {
+              title: 'Flink JobId',
+              dataIndex: 'flink_job_id',
+              width: 120,
+              ellipsis: true,
+              render: (id: string) => id ? <Text code style={{ fontSize: 11 }}>{id.slice(0, 8)}…</Text> : '—',
+            },
+            {
+              title: 'JM / TM',
+              key: 'pods',
+              width: 140,
+              render: (_: unknown, row: DeploymentRow) => {
+                const jm = row.job_manager_status
+                const tm = row.task_manager_status
+                const jmOk = jm && /ready|running|stable/i.test(JSON.stringify(jm))
+                const tmOk = tm && /ready|running|stable/i.test(JSON.stringify(tm))
+                return (
+                  <Space size={4}>
+                    <Tooltip title={`JobManager: ${jm ? JSON.stringify(jm) : '无'}`}>
+                      <Tag color={jmOk ? 'success' : 'default'}>JM</Tag>
+                    </Tooltip>
+                    <Tooltip title={`TaskManager: ${tm ? JSON.stringify(tm) : '无'}`}>
+                      <Tag color={tmOk ? 'success' : 'default'}>TM</Tag>
+                    </Tooltip>
+                  </Space>
+                )
+              },
+            },
+            {
+              title: '错误',
+              dataIndex: 'error',
+              ellipsis: true,
+              render: (e: string) => e ? <Text type="danger" style={{ fontSize: 12 }}>{e}</Text> : '—',
+            },
+          ]}
+          expandable={{
+            expandedRowRender: (row: DeploymentRow) => (
+              <Row gutter={12}>
+                <Col xs={24} sm={12}>
+                  <PodHealthCard title="JobManager" status={row.job_manager_status as Record<string, unknown>} />
+                </Col>
+                <Col xs={24} sm={12}>
+                  <PodHealthCard title="TaskManager" status={row.task_manager_status as Record<string, unknown>} />
+                </Col>
+                {row.image && (
+                  <Col span={24} style={{ marginTop: 8 }}>
+                    <Text type="secondary">镜像：</Text>
+                    <Text code style={{ fontSize: 11 }}>{row.image}</Text>
+                  </Col>
+                )}
+              </Row>
+            ),
+            rowExpandable: (row) => Boolean(row.job_manager_status || row.task_manager_status || row.image),
+          }}
+        />
       </Card>
     </div>
   )

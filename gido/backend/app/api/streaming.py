@@ -1787,6 +1787,33 @@ def flink_runtime_info(
     return flink_runtime_api_payload()
 
 
+@router.get("/operator-overview")
+def operator_overview(
+    workspace_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Flink Kubernetes Operator 运维概览：运行时配置、FlinkDeployment 列表与 JM/TM 健康摘要。"""
+    from app.services.flink_operator_submit import operator_overview_payload
+
+    assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_STREAM_READ)
+    payload = operator_overview_payload(workspace_id=workspace_id)
+    jobs = (
+        db.query(StreamingJob)
+        .filter(StreamingJob.workspace_id == workspace_id)
+        .all()
+    )
+    with_dep = [
+        j for j in jobs
+        if (getattr(j, "flink_operator_deployment_name", None) or "").strip()
+    ]
+    payload["summary"]["jobs_total"] = len(jobs)
+    payload["summary"]["jobs_with_deployment"] = len(with_dep)
+    payload["summary"]["jobs_running"] = sum(1 for j in jobs if (j.status or "").lower() == "running")
+    payload["summary"]["jobs_failed"] = sum(1 for j in jobs if (j.status or "").lower() == "failed")
+    return payload
+
+
 @router.get("/flink-platform-defaults")
 def flink_platform_defaults_for_workspace(
     workspace_id: int,

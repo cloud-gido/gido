@@ -18,6 +18,14 @@ export const authApi = {
   register: (data: any) => request.post('/auth/register', data),
   changePassword: (current_password: string, new_password: string) =>
     request.post('/auth/change-password', { current_password, new_password }),
+  updateAvatar: (avatar: string | null) => request.patch('/auth/me/avatar', { avatar }),
+  uploadAvatar: (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request.post('/auth/me/avatar/upload', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
 }
 
 // 工作空间
@@ -241,18 +249,9 @@ export const adminApi = {
 
 // 实时开发
 export const streamingApi = {
-  overview: (params?: { workspace_id?: number; flink_session_profile_id?: number }) =>
-    request.get('/streaming/overview', { params }),
-  connectivity: (params?: { workspace_id?: number; flink_session_profile_id?: number }) =>
-    request.get('/streaming/connectivity', { params }),
-  listFlinkSessionProfiles: (workspaceId: number) =>
-    request.get('/streaming/flink-session-profiles', { params: { workspace_id: workspaceId } }),
-  flinkPlatformDefaults: (workspaceId: number) =>
-    request.get('/streaming/flink-platform-defaults', { params: { workspace_id: workspaceId } }),
+  operatorOverview: (workspaceId: number) =>
+    request.get('/streaming/operator-overview', { params: { workspace_id: workspaceId } }),
   flinkRuntime: () => request.get('/streaming/flink-runtime'),
-  createFlinkSessionProfile: (data: any) => request.post('/streaming/flink-session-profiles', data),
-  updateFlinkSessionProfile: (id: number, data: any) => request.put(`/streaming/flink-session-profiles/${id}`, data),
-  deleteFlinkSessionProfile: (id: number) => request.delete(`/streaming/flink-session-profiles/${id}`),
   listJobs: (workspaceId: number) => request.get('/streaming/jobs', { params: { workspace_id: workspaceId } }),
   createJob: (data: any) => request.post('/streaming/jobs', data),
   copyJob: (id: number, data?: { name?: string }) => request.post(`/streaming/jobs/${id}/copy`, data || {}),
