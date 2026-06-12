@@ -6,7 +6,8 @@ import json
 import logging
 from urllib.parse import parse_qs
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List, Any, Dict
@@ -18,6 +19,14 @@ from app.core import perm_codes as P
 from app.models.workspace import User
 from app.models.rbac_models import Role
 from app.services.workspace_default import ensure_default_workspace_membership, resolve_default_workspace_id
+from app.services.user_avatar import (
+    normalize_avatar_value,
+    replace_avatar_upload,
+    avatar_file_path,
+    media_type_for_stored_name,
+    parse_upload_stored_name,
+    delete_uploaded_avatar,
+)
 
 _log = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["认证"])
@@ -40,6 +49,7 @@ class UserOut(BaseModel):
     username: str
     email: str
     full_name: Optional[str]
+    avatar: Optional[str] = None
     is_admin: bool
     is_active: bool = True
     role_id: Optional[int] = None
@@ -48,6 +58,10 @@ class UserOut(BaseModel):
     permissions: List[str] = []
     # 登录后前端默认选中的工作空间（通常为 infras）
     default_workspace_id: Optional[int] = None
+
+
+class AvatarUpdate(BaseModel):
+    avatar: Optional[str] = None
 
 
 def _user_payload(db: Session, user: User) -> UserOut:
@@ -62,6 +76,7 @@ def _user_payload(db: Session, user: User) -> UserOut:
         username=user.username,
         email=user.email,
         full_name=user.full_name,
+        avatar=getattr(user, "avatar", None),
         is_admin=plat_admin,
         is_active=user.is_active is not False,
         role_id=user.role_id,
@@ -96,6 +111,7 @@ def _user_payload_for_login(db: Session, user: User) -> Dict[str, Any]:
             "username": user.username,
             "email": user.email or "",
             "full_name": user.full_name,
+            "avatar": getattr(user, "avatar", None),
             "is_admin": is_platform_admin(user),
             "is_active": user.is_active is not False,
             "role_id": user.role_id,
@@ -211,6 +227,57 @@ async def login(request: Request, db: Session = Depends(get_db)):
 @router.get("/me", response_model=UserOut)
 def get_me(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     return _user_payload(db, current_user)
+
+
+@router.patch("/me/avatar", response_model=UserOut)
+def update_my_avatar(
+    body: AvatarUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        new_avatar = normalize_avatar_value(body.avatar)
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    old_stored = parse_upload_stored_name(getattr(current_user, "avatar", None))
+    current_user.avatar = new_avatar
+    db.commit()
+    db.refresh(current_user)
+    if old_stored and parse_upload_stored_name(new_avatar) != old_stored:
+        delete_uploaded_avatar(old_stored)
+    return _user_payload(db, current_user)
+
+
+@router.post("/me/avatar/upload", response_model=UserOut)
+async def upload_my_avatar(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="空文件")
+    try:
+        _, avatar_value = replace_avatar_upload(
+            current_user.id,
+            getattr(current_user, "avatar", None),
+            content,
+            file.content_type or "",
+        )
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    current_user.avatar = avatar_value
+    db.commit()
+    db.refresh(current_user)
+    return _user_payload(db, current_user)
+
+
+@router.get("/avatars/{stored_name}")
+def get_avatar_file(stored_name: str):
+    path = avatar_file_path(stored_name)
+    if not path:
+        raise HTTPException(status_code=404, detail="头像不存在")
+    return FileResponse(path, media_type=media_type_for_stored_name(stored_name))
 
 
 @router.post("/change-password")

@@ -164,6 +164,9 @@ class Settings(BaseSettings):
     FLINK_OPERATOR_KUBECTL_PATH: str = "kubectl"
     # 本地 JAR 制品目录（容器内持久卷）
     JAR_ARTIFACT_DIR: str = "/data/jar-artifacts"
+    # 用户自定义头像（容器内建议挂卷持久化）
+    AVATAR_UPLOAD_DIR: str = "/data/user-avatars"
+    AVATAR_MAX_BYTES: int = 2 * 1024 * 1024
 
     # 数据开发 publish / 实时作业提交 Flink 成功后是否自动锁定脚本与配置。生产建议 true（对齐 GIDO）；灰度/回滚可设 false
     STUDIO_LOCK_ON_PUBLISH: bool = True

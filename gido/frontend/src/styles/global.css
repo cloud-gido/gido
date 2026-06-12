@@ -830,6 +830,70 @@ body {
 
 .dw-user-avatar {
   background: #334155 !important;
+  flex-shrink: 0;
+}
+
+.dw-user-avatar .ant-avatar-string {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.dw-user-avatar-trigger {
+  display: inline-flex;
+  cursor: pointer;
+  border-radius: 50%;
+  line-height: 0;
+}
+
+.dw-user-avatar-trigger:hover .dw-user-avatar {
+  outline: 2px solid var(--ant-color-primary);
+  outline-offset: 2px;
+}
+
+.dw-avatar-picker-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.dw-avatar-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.dw-avatar-picker-item {
+  border: 2px solid transparent;
+  border-radius: 12px;
+  padding: 6px;
+  background: rgba(0, 0, 0, 0.02);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.dw-avatar-picker-item:hover {
+  border-color: var(--ant-color-primary-border);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.dw-avatar-picker-item--active {
+  border-color: var(--ant-color-primary);
+  background: var(--ant-color-primary-bg);
+}
+
+.dw-avatar-picker-item:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.dw-avatar-picker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
 }
 
 .dw-link-quiet {

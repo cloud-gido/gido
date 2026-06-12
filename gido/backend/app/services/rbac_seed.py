@@ -11,6 +11,21 @@ from app.core import perm_codes as P
 from app.models.workspace import User
 
 
+def migrate_dw_users_avatar(engine: Engine) -> None:
+    """User：头像 preset/upload 引用。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_users"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_users")}
+    if "avatar" in cols:
+        return
+    with engine.begin() as conn:
+        if engine.dialect.name == "mysql":
+            conn.execute(text("ALTER TABLE dw_users ADD COLUMN avatar VARCHAR(256) NULL"))
+        else:
+            conn.execute(text("ALTER TABLE dw_users ADD COLUMN avatar VARCHAR(256)"))
+
+
 def migrate_schema(engine: Engine) -> None:
     """SQLite：为已存在的 dw_users 表补齐 role_id 列。"""
     if engine.dialect.name != "sqlite":

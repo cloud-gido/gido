@@ -21,6 +21,8 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
     role_id = Column(Integer, ForeignKey("dw_roles.id"), nullable=True)
+    # preset:<id> 或 upload:<stored_filename>；空则前端用姓名首字母
+    avatar = Column(String(256), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     system_role = relationship("Role", back_populates="users", foreign_keys=[role_id])

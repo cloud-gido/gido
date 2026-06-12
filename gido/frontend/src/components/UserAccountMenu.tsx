@@ -5,10 +5,9 @@
  * @date 2026-06-05
  */
 import { useState } from 'react'
-import { Avatar, Dropdown, Space, Modal, Form, Input, Button, Typography, Tooltip, message } from 'antd'
+import { Dropdown, Space, Modal, Form, Input, Button, Typography, Tooltip, message } from 'antd'
 import type { MenuProps } from 'antd'
 import {
-  UserOutlined,
   LogoutOutlined,
   KeyOutlined,
   SafetyCertificateOutlined,
@@ -33,6 +32,8 @@ const FIXED_THEME_LABELS: Record<UiThemeId, string> = {
 import { R } from '../routes'
 import { can, isPlatformAdmin, P } from '../perm'
 import { BRAND } from '../branding'
+import UserAvatarDisplay from './UserAvatarDisplay'
+import AvatarPickerModal from './AvatarPickerModal'
 
 const { Text } = Typography
 
@@ -46,6 +47,7 @@ export default function UserAccountMenu() {
   const onPickPreset = (p: AppearancePreset) => {
     setAppearancePreset(p)
   }
+  const [avatarOpen, setAvatarOpen] = useState(false)
   const [pwdOpen, setPwdOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [form] = Form.useForm()
@@ -74,6 +76,12 @@ export default function UserAccountMenu() {
   }
 
   const items: MenuProps['items'] = [
+    {
+      key: 'avatar',
+      icon: <UserAvatarDisplay user={user} size={18} />,
+      label: '更换头像',
+      onClick: () => setAvatarOpen(true),
+    },
     {
       key: 'appearance',
       icon: <BgColorsOutlined />,
@@ -145,7 +153,21 @@ export default function UserAccountMenu() {
               </span>
             }
           >
-            <Avatar size="small" className="dw-user-avatar" icon={<UserOutlined />} />
+            <span
+              className="dw-user-avatar-trigger"
+              role="button"
+              tabIndex={0}
+              onClick={(e) => { e.stopPropagation(); setAvatarOpen(true) }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setAvatarOpen(true)
+                }
+              }}
+            >
+              <UserAvatarDisplay user={user} size="small" className="dw-user-avatar" />
+            </span>
           </Tooltip>
           <Space direction="vertical" size={0} style={{ lineHeight: 1.15, alignItems: 'flex-start' }}>
             <Text style={{ fontSize: 14 }}>{user?.username ?? '…'}</Text>
@@ -157,6 +179,8 @@ export default function UserAccountMenu() {
           </Space>
         </Space>
       </Dropdown>
+
+      <AvatarPickerModal open={avatarOpen} onClose={() => setAvatarOpen(false)} />
 
       <Modal
         title={<><SafetyCertificateOutlined style={{ marginRight: 8 }} />修改登录密码</>}

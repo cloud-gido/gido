@@ -98,10 +98,12 @@ async def lifespan(app: FastAPI):
         migrate_dw_workflow_instance_submitted_by,
         migrate_dw_quality_dolphin_refs,
         migrate_dw_workspace_variables,
+        migrate_dw_users_avatar,
         run_rbac_bootstrap,
     )
     from app.core.database import SessionLocal
     migrate_schema(engine)
+    migrate_dw_users_avatar(engine)
     migrate_dw_task_nodes_owner_lock(engine)
     migrate_dw_task_nodes_edit_lock(engine)
     migrate_dw_task_nodes_sort_order(engine)
