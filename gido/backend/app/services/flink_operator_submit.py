@@ -21,6 +21,7 @@ from app.services.gido_deployment_meta import (
 )
 from app.services.flink_pod_scheduling import (
     merge_pod_templates,
+    operator_paimon_warehouse_pod_template,
     operator_runtime_pod_template,
     operator_scheduling_pod_template,
 )
@@ -259,6 +260,7 @@ def build_flink_deployment_body(
     }
     merged_pod_template = merge_pod_templates(
         operator_runtime_pod_template(),
+        operator_paimon_warehouse_pod_template(),
         operator_scheduling_pod_template(),
         pod_template,
     )

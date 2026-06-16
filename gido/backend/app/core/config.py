@@ -105,6 +105,9 @@ class Settings(BaseSettings):
     GIDO_LEGACY_FLINK_SUBMIT: bool = False
     # Paimon 默认 warehouse（SQL 模板与运维文档引用；作业可在 DDL 中覆写）
     PAIMON_WAREHOUSE_DEFAULT: str = "s3://gido-paimon-warehouse"
+    # file:// warehouse 时挂载到 JM/TM 的共享路径（须 apply k8s/paimon-warehouse-pvc.yaml）
+    FLINK_OPERATOR_PAIMON_PVC: str = "paimon-warehouse"
+    FLINK_OPERATOR_PAIMON_WAREHOUSE_MOUNT: str = "/opt/flink/paimon-warehouse"
 
     # --- Flink Kubernetes Operator（JAR 生产 Application）---
     # 生产：GIDO Backend 与 Flink 同集群时，用集群 DNS 访问 JM REST；浏览器用 Ingress 模板。

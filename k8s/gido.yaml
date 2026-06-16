@@ -41,7 +41,9 @@ data:
   # 统一提交：仅 Flink Operator（Session/Application 须 GIDO_LEGACY_FLINK_SUBMIT=true）
   GIDO_FLINK_SUBMIT_MODE: "operator"
   GIDO_LEGACY_FLINK_SUBMIT: "false"
-  PAIMON_WAREHOUSE_DEFAULT: "s3://gido-paimon-warehouse"
+  # 本地 K3s/OrbStack：file:// + paimon-warehouse PVC（apply-gido-stack 自动 apply）
+  # EKS 生产请用 gido-eks-external-pg.yaml 覆盖为 s3a://...
+  PAIMON_WAREHOUSE_DEFAULT: "file:///opt/flink/paimon-warehouse"
   # Session Flink / SQL Gateway（本清单不部署；遗留模式才需要）
   FLINK_URL: ""
   FLINK_SQL_GATEWAY_URL: ""
