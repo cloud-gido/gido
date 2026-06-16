@@ -9,22 +9,23 @@
 ARG TARGETPLATFORM
 ARG FLINK_BASE_IMAGE=apache/flink:2.2.1-java11
 ARG MAVEN_IMAGE=maven:3.9-eclipse-temurin-11
+ARG MAVEN_SETTINGS=settings.xml
 
 FROM --platform=$TARGETPLATFORM ${MAVEN_IMAGE} AS connectors
 WORKDIR /conn
 COPY connectors-pom.xml pom.xml
-COPY settings.xml settings.xml
+COPY ${MAVEN_SETTINGS} settings.xml
 COPY hadoop-libs.txt hadoop-libs.txt
 COPY security-overrides.txt security-overrides.txt
 COPY dedupe-lib-jars.sh dedupe-lib-jars.sh
-RUN mvn -B -q package -DskipTests -s settings.xml \
+RUN mvn -B -q package -DskipTests -s settings.xml -gs settings.xml \
     && grep -v '^#' hadoop-libs.txt | grep -v '^[[:space:]]*$' | while IFS= read -r artifact; do \
         mvn -B -q dependency:copy -Dartifact="${artifact}" \
-            -DoutputDirectory=target/connectors -s settings.xml; \
+            -DoutputDirectory=target/connectors -s settings.xml -gs settings.xml; \
     done \
     && grep -v '^#' security-overrides.txt | grep -v '^[[:space:]]*$' | while IFS= read -r artifact; do \
         mvn -B -q dependency:copy -Dartifact="${artifact}" \
-            -DoutputDirectory=target/connectors -s settings.xml; \
+            -DoutputDirectory=target/connectors -s settings.xml -gs settings.xml; \
     done \
     && chmod +x dedupe-lib-jars.sh \
     && ./dedupe-lib-jars.sh target/connectors security-overrides.txt \
@@ -37,10 +38,12 @@ RUN mvn -B -q package -DskipTests -s settings.xml \
     && test -n "$(ls target/connectors/snappy-java-1.1.10.7.jar)"
 
 FROM --platform=$TARGETPLATFORM ${MAVEN_IMAGE} AS builder
+ARG MAVEN_SETTINGS=settings.xml
 WORKDIR /build
-COPY pom.xml settings.xml ./
+COPY pom.xml ./
+COPY ${MAVEN_SETTINGS} settings.xml
 COPY src ./src
-RUN mvn -B -q package -DskipTests -s settings.xml
+RUN mvn -B -q package -DskipTests -s settings.xml -gs settings.xml
 
 FROM --platform=$TARGETPLATFORM ${FLINK_BASE_IMAGE}
 USER root

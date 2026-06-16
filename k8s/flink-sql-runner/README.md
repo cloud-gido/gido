@@ -25,3 +25,9 @@ bash k8s/flink-sql-runner/verify-image.sh gido-flink-runtime:orbstack
 ```
 
 Hadoop 白名单见 `hadoop-libs.txt`；CVE 覆盖见 `security-overrides.txt`（构建时 dedupe 移除同 artifact 旧版本）。
+
+Maven 默认直连 **Maven Central**（`settings.xml`）。国内若需阿里云镜像：
+
+```bash
+docker build --build-arg MAVEN_SETTINGS=settings.aliyun.xml -f k8s/flink-sql-runner/Dockerfile k8s/flink-sql-runner
+```
