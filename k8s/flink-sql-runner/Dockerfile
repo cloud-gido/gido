@@ -12,9 +12,11 @@ ARG MAVEN_IMAGE=maven:3.9-eclipse-temurin-11
 ARG MAVEN_SETTINGS=settings.xml
 
 FROM --platform=$TARGETPLATFORM ${MAVEN_IMAGE} AS connectors
+ARG MAVEN_SETTINGS=settings.xml
 WORKDIR /conn
 COPY connectors-pom.xml pom.xml
-COPY ${MAVEN_SETTINGS} settings.xml
+COPY settings.xml settings.aliyun.xml ./
+RUN cp "${MAVEN_SETTINGS}" settings.xml
 COPY hadoop-libs.txt hadoop-libs.txt
 COPY security-overrides.txt security-overrides.txt
 COPY dedupe-lib-jars.sh dedupe-lib-jars.sh
@@ -41,7 +43,8 @@ FROM --platform=$TARGETPLATFORM ${MAVEN_IMAGE} AS builder
 ARG MAVEN_SETTINGS=settings.xml
 WORKDIR /build
 COPY pom.xml ./
-COPY ${MAVEN_SETTINGS} settings.xml
+COPY settings.xml settings.aliyun.xml ./
+RUN cp "${MAVEN_SETTINGS}" settings.xml
 COPY src ./src
 RUN mvn -B -q package -DskipTests -s settings.xml -gs settings.xml
 
