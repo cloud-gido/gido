@@ -15,10 +15,14 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   keep="${artifact}-${version}.jar"
   for j in "${LIB_DIR}/${artifact}-"*.jar; do
     [[ -f "$j" ]] || continue
-    if [[ "$(basename "$j")" != "$keep" ]]; then
-      echo "dedupe: remove $(basename "$j") (keep ${keep})"
-      rm -f "$j"
-    fi
+    base="$(basename "$j")"
+    [[ "$base" == "$keep" ]] && continue
+    # 避免 netty-codec 误匹配 netty-codec-http 等同前缀 artifact
+    rest="${base#${artifact}-}"
+    rest="${rest%.jar}"
+    [[ "$rest" =~ ^[0-9] ]] || continue
+    echo "dedupe: remove ${base} (keep ${keep})"
+    rm -f "$j"
   done
 done < "${OVERRIDES_FILE}"
 

@@ -37,6 +37,7 @@ RUN mvn -B -q package -DskipTests -s settings-active.xml -gs settings-active.xml
     && test -n "$(ls target/connectors/commons-configuration2-*.jar)" \
     && test -n "$(ls target/connectors/woodstox-core-*.jar)" \
     && test -n "$(ls target/connectors/netty-codec-4.2.13.Final.jar)" \
+    && test -n "$(ls target/connectors/netty-codec-http-4.2.13.Final.jar)" \
     && test -n "$(ls target/connectors/snappy-java-1.1.10.7.jar)"
 
 FROM --platform=$TARGETPLATFORM ${MAVEN_IMAGE} AS builder
@@ -61,6 +62,7 @@ RUN mv /tmp/connectors/flink-s3-fs-hadoop-*.jar /opt/flink/plugins/s3-fs-hadoop/
     && test -n "$(ls /opt/flink/lib/commons-configuration2-*.jar)" \
     && test -n "$(ls /opt/flink/lib/woodstox-core-*.jar)" \
     && test -n "$(ls /opt/flink/lib/netty-codec-4.2.13.Final.jar)" \
+    && test -n "$(ls /opt/flink/lib/netty-codec-http-4.2.13.Final.jar)" \
     && test -n "$(ls /opt/flink/lib/snappy-java-1.1.10.7.jar)" \
     && test -n "$(ls /opt/flink/lib/paimon-flink-2.2-*.jar)" \
     && test -n "$(ls /opt/flink/plugins/s3-fs-hadoop/flink-s3-fs-hadoop-*.jar)" \

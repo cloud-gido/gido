@@ -5,7 +5,7 @@ set -euo pipefail
 
 IMAGE="${1:?用法: verify-image.sh <镜像名:tag>}"
 
-echo "==> 校验镜像 ${IMAGE} (verify-image v8)"
+echo "==> 校验镜像 ${IMAGE} (verify-image v9)"
 
 docker run --rm "${IMAGE}" bash -c '
 set -euo pipefail
