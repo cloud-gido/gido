@@ -62,7 +62,7 @@ aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --
 
 # 在 AWS 上构建时建议显式使用官方基础镜像（避免默认 DaoCloud 镜像拉取失败）
 docker build -t $REGISTRY/gido-backend:latest \
-  --build-arg PY_IMAGE=python:3.9-slim \
+  --build-arg PY_IMAGE=python:3.11-slim \
   -f backend/Dockerfile backend
 
 docker build -t $REGISTRY/gido-frontend:latest \

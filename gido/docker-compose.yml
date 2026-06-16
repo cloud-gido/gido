@@ -18,7 +18,7 @@ services:
     build:
       context: ./backend
       args:
-        PY_IMAGE: ${PY_IMAGE:-docker.m.daocloud.io/library/python:3.9-slim}
+        PY_IMAGE: ${PY_IMAGE:-docker.m.daocloud.io/library/python:3.11-slim}
     container_name: gido-backend
     ports:
       - "${GIDO_BIND_HOST:-0.0.0.0}:${GIDO_API_PORT:-8001}:8001"
