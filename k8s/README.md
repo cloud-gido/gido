@@ -14,9 +14,9 @@
 | 组件 | 版本 |
 |------|------|
 | Flink Kubernetes Operator | **1.15.0**（升级：`k8s/upgrade-flink-operator-1.15.sh`；Chart 包名 `*-helm.tgz`） |
-| Flink 运行时（Session + Operator JAR） | **2.0.1**（`apache/flink:2.0.1-java11`） |
-| FlinkDeployment `flinkVersion` | **`v2_0`** |
-| 示例 JAR（flink-wordcount-demo） | Maven `flink.version=2.0.1` |
+| Flink 运行时（Session + Operator JAR） | **2.2.1**（`apache/flink:2.2.1-java11`） |
+| FlinkDeployment `flinkVersion` | **`v2_2`** |
+| 示例 JAR（flink-wordcount-demo） | Maven `flink.version=2.2.1` |
 
 ---
 

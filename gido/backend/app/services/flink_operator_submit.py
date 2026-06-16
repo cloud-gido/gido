@@ -173,7 +173,7 @@ def _operator_image() -> str:
     return (
         settings.FLINK_OPERATOR_IMAGE
         or settings.FLINK_K8S_APPLICATION_IMAGE
-        or "apache/flink:2.0.1-java11"
+        or "apache/flink:2.2.1-java11"
     ).strip()
 
 
@@ -220,7 +220,7 @@ def build_flink_deployment_body(
 ) -> Dict[str, Any]:
     resources = operator_resources or resolve_operator_resources(None)
     image = _operator_image()
-    flink_version = (settings.FLINK_OPERATOR_FLINK_VERSION or "v2_0").strip()
+    flink_version = (settings.FLINK_OPERATOR_FLINK_VERSION or "v2_2").strip()
     sa = (settings.FLINK_OPERATOR_SERVICE_ACCOUNT or "flink").strip() or "flink"
 
     flink_conf = merge_flink_configuration(

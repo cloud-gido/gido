@@ -20,7 +20,7 @@ def render_flink_sql_gateway_deployment_yaml(cfg: FlinkRuntimeConfig) -> str:
     gw = resolved_flink_k8s_sql_gateway_rest_host(cfg)
     fb = resolved_flink_k8s_apiserver_fallback(cfg)
     fb_q = shlex.quote(fb)
-    img = (cfg.flink_k8s_application_image or "apache/flink:2.0.1-java11").strip()
+    img = (cfg.flink_k8s_application_image or "apache/flink:2.2.1-java11").strip()
 
     # 与 k8s/legacy/flink.yaml 中 init + sql-gateway 容器等价；apiserver 回退 URL 经 shlex 安全嵌入 shell。
     t = Template(

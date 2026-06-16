@@ -1203,7 +1203,7 @@ class FlinkClient:
         if not image:
             raise RuntimeError(
                 "未配置 K8s Application 作业镜像。"
-                " 请在「系统管理 → 集成」填写 Flink 作业镜像，或设置环境变量 FLINK_K8S_APPLICATION_IMAGE（须与 Session 集群版本一致，例如 apache/flink:2.0.1-java11）。"
+                " 请在「系统管理 → 集成」填写 Flink 作业镜像，或设置环境变量 FLINK_K8S_APPLICATION_IMAGE（须与 Session 集群版本一致，例如 apache/flink:2.2.1-java11）。"
             )
         cid_raw = f"dwj-{datworks_job_id}-{int(time.time() * 1000)}"
         cluster_id = re.sub(r"[^a-z0-9\-]", "-", cid_raw.lower()).strip("-")[:63] or f"dwj-{datworks_job_id}"
@@ -2532,7 +2532,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
         if job.job_type == "JAR" and "ParameterTool" in err_full:
             err_full = (
                 f"{err_full}\n\n提示：JAR 编译用的 Flink 版本与运行时（Session/Operator 镜像）不一致。"
-                "请用 Flink 2.0.1 重新打包 JAR，或改用与 JAR 匹配的镜像与 flinkVersion。"
+                "请用 Flink 2.2.1 重新打包 JAR，或改用与 JAR 匹配的镜像与 flinkVersion。"
             )
         if len(err_full) > 32000:
             err_full = err_full[:32000] + "\n…(truncated)"

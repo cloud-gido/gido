@@ -5,7 +5,7 @@ set -euo pipefail
 
 IMAGE="${1:?用法: verify-image.sh <镜像名:tag>}"
 
-echo "==> 校验镜像 ${IMAGE} (verify-image v7)"
+echo "==> 校验镜像 ${IMAGE} (verify-image v8)"
 
 docker run --rm "${IMAGE}" bash -c '
 set -euo pipefail
@@ -13,7 +13,7 @@ JAVA="${JAVA_HOME:-/opt/java/openjdk}/bin/java"
 test -x "${JAVA}" || JAVA="$(command -v java)"
 
 for j in \
-  /opt/flink/lib/paimon-flink-2.0-*.jar \
+  /opt/flink/lib/paimon-flink-2.2-*.jar \
   /opt/flink/lib/hadoop-common-*.jar \
   /opt/flink/lib/hadoop-hdfs-client-*.jar \
   /opt/flink/lib/hadoop-mapreduce-client-core-*.jar \
@@ -34,6 +34,17 @@ for bad in commons-cli-1.2.jar log4j-1.2.17.jar; do
     exit 1
   fi
 done
+
+for sec in \
+  netty-codec-4.2.13.Final.jar \
+  netty-codec-http-4.2.13.Final.jar \
+  snappy-java-1.1.10.7.jar \
+  jackson-core-2.18.6.jar \
+  jackson-databind-2.18.6.jar; do
+  test -f "/opt/flink/lib/${sec}" || { echo "缺少安全升级 jar: ${sec}"; exit 1; }
+  echo "OK /opt/flink/lib/${sec}"
+done
+
 shopt -s nullglob
 bad_jars=(/opt/flink/lib/paimon-s3*.jar)
 if ((${#bad_jars[@]})); then

@@ -126,7 +126,7 @@
 ### 4.1 官方镜像 `/opt/flink/lib` 无 Kafka SQL 连接器
 
 - **现象**：`docker exec ... ls /opt/flink/lib | grep kafka` 为空；GIDO / SQL Client 里 `connector = 'kafka'` 的 INSERT 易失败或仅 Gateway 报 500。
-- **原因**：**`apache/flink:2.0.1-java11` 不包含 `flink-sql-connector-kafka`**。
+- **原因**：**`apache/flink:2.2.1-java11` 不包含 `flink-sql-connector-kafka`**。
 - **处理**：下载与 Flink 2.0 线匹配的 **`flink-sql-connector-kafka-4.0.1-2.0.jar`**（Maven Central），挂到 **jobmanager / taskmanager / sql-gateway** 的 `/opt/flink/lib/`（见 `dockerFile/docker-compose.platform.yml` 与 `dockerFile/flink-lib/`）。修改后需 **`./start-platform.sh --recreate`** 或 **`docker compose -f docker-compose-platform.yml up --force-recreate`**。
 
 ### 4.2 `bootstrap.servers` 与「本机能连」

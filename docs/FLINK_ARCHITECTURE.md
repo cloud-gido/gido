@@ -6,7 +6,7 @@ GIDO Stream 中台默认采用 **单一 Flink 部署路径**：通过 **Flink Ku
 
 GitHub Actions（`.github/workflows/ci.yml` → `docker-flink-runtime`）构建 `k8s/flink-sql-runner/Dockerfile` 并推送 **`gido-flink-runtime`** 至 GHCR（`FLINK_OPERATOR_IMAGE`）。`sql-runner` 指镜像内的 JAR（`local:///opt/flink/usrlib/sql-runner.jar`），不是独立容器镜像。详见 `k8s/flink-sql-runner/README.md`。
 
-- Flink 版本：**2.0.1**（Operator `flinkVersion: v2_0`）
+- Flink 版本：**2.2.1**（Operator `flinkVersion: v2_2`）
 - SQL / JAR 均提交为 Operator Application 模式
 - 镜像内预置 **Paimon**、**MySQL CDC**、**PostgreSQL CDC** 与 **sql-runner.jar**
 
@@ -21,18 +21,18 @@ GitHub Actions（`.github/workflows/ci.yml` → `docker-flink-runtime`）构建 
                               ↓
               FlinkDeployment (gido-sql-* / gido-jar-*)
                               ↓
-         Pod: gido-flink-runtime (Flink 2.0.1 + connectors + sql-runner)
+         Pod: gido-flink-runtime (Flink 2.2.1 + connectors + sql-runner)
 ```
 
 ## 统一运行时镜像
 
 | 组件 | 路径 / 坐标 |
 |------|-------------|
-| 基座 | `apache/flink:2.0.1-java11` |
+| 基座 | `apache/flink:2.2.1-java11` |
 | SQL Runner | `/opt/flink/usrlib/sql-runner.jar` |
-| Paimon | `org.apache.paimon:paimon-flink-2.0:1.3.2` → `/opt/flink/lib/` |
-| MySQL CDC | `org.apache.flink:flink-sql-connector-mysql-cdc:3.5.0` |
-| Postgres CDC | `org.apache.flink:flink-sql-connector-postgres-cdc:3.5.0` |
+| Paimon | `org.apache.paimon:paimon-flink-2.2:1.4.1` → `/opt/flink/lib/` |
+| MySQL CDC | `org.apache.flink:flink-sql-connector-mysql-cdc:3.6.0-2.2` |
+| Postgres CDC | `org.apache.flink:flink-sql-connector-postgres-cdc:3.6.0-2.2` |
 
 完整清单见 `k8s/flink-runtime/connectors.manifest`。
 
@@ -101,9 +101,9 @@ INSERT INTO ods.orders
 SELECT order_id, user_id, amount, updated_at FROM default_catalog.default_database.mysql_orders;
 ```
 
-## Flink CDC 与 Flink 2.0.1 说明
+## Flink CDC 与 Flink 2.2.1 说明
 
-Flink CDC **3.6+** 在 Maven 上为 `3.6.0-1.20` / `3.6.0-2.2`（无裸 `3.6.0`）。GIDO **Flink 2.0.1** 预置 **CDC 3.5.0** 以便构建与联调；**生产 CDC 链路请验证**，或升级 Flink 至 **2.2.x** 后改用 `3.6.0-2.2`。
+Flink CDC **3.6+** 在 Maven 上为 `3.6.0-1.20` / `3.6.0-2.2`（无裸 `3.6.0`）。GIDO **Flink 2.2.1** 预置 **CDC 3.6.0-2.2**；**生产 CDC 链路请在目标环境验证**。
 
 ## Paimon Warehouse（开发可选）
 

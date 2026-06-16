@@ -733,7 +733,7 @@ export default function StreamStudioPage() {
                     message="统一运行时 · Flink Operator + gido-flink-runtime（Paimon / CDC）"
                     description={(
                       <div style={{ fontSize: 13 }}>
-                        <div>Flink {flinkRuntime?.flink_version || '2.0.1'} · 命名空间 {flinkRuntime?.operator_namespace || 'flink'}</div>
+                        <div>Flink {flinkRuntime?.flink_version || '2.2.1'} · 命名空间 {flinkRuntime?.operator_namespace || 'flink'}</div>
                         {flinkRuntime?.paimon_warehouse_default && (
                           <div>默认 Paimon warehouse：<code>{flinkRuntime.paimon_warehouse_default}</code></div>
                         )}
@@ -898,7 +898,7 @@ export default function StreamStudioPage() {
                         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
                           <li>上传 JAR 写入 GIDO 制品库；未配 S3 时 Flink Pod HTTP 拉取，EKS 生产请设 <code>FLINK_OPERATOR_JAR_S3_PREFIX</code>。</li>
                           <li>须填写 <strong>Main Class</strong>；Backend 容器需挂载 kubeconfig。</li>
-                          <li>默认 namespace：<code>flink</code>（Kind 集群 <code>kind-gido</code>），Flink 2.0.1 + Operator 1.15。</li>
+                          <li>默认 namespace：<code>flink</code>（Kind 集群 <code>kind-gido</code>），Flink 2.2.1 + Operator 1.15。</li>
                         </ul>
                       )}
                     />

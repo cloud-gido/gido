@@ -6,7 +6,7 @@
 
 ## 镜像内容
 
-- 基座：`apache/flink:2.0.1-java11`
+- 基座：`apache/flink:2.2.1-java11`
 - `/opt/flink/usrlib/sql-runner.jar`（GIDO SQL 入口，`FLINK_OPERATOR_SQL_RUNNER_JAR_URI`）
 - Paimon、MySQL/Postgres CDC、hadoop-common/hdfs-client/auth、woodstox → `/opt/flink/lib/`
 - S3 插件 → `/opt/flink/plugins/s3-fs-hadoop/`
@@ -24,4 +24,4 @@ bash k8s/build-flink-runtime.sh
 bash k8s/flink-sql-runner/verify-image.sh gido-flink-runtime:orbstack
 ```
 
-Hadoop 白名单见 `hadoop-libs.txt`（与 `k8s/flink-runtime/hadoop-libs.txt` 同步）。
+Hadoop 白名单见 `hadoop-libs.txt`；CVE 覆盖见 `security-overrides.txt`（构建时 dedupe 移除同 artifact 旧版本）。

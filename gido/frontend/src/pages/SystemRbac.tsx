@@ -755,7 +755,7 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
             <Form.Item
               name="flink_k8s_application_image"
               label="K8s Application 作业镜像"
-              tooltip="如 apache/flink:2.0.1-java11；留空则使用环境变量 FLINK_K8S_APPLICATION_IMAGE"
+              tooltip="如 apache/flink:2.2.1-java11；留空则使用环境变量 FLINK_K8S_APPLICATION_IMAGE"
             >
               <Input placeholder="可选覆盖" />
             </Form.Item>

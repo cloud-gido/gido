@@ -13,10 +13,10 @@
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <flink.version>2.0.1</flink.version>
-        <paimon.version>1.3.2</paimon.version>
-        <!-- 3.6+ 须带 Flink 行版本（如 3.6.0-1.20）；2.0.1 基座用 Central 可用的 3.5.0 -->
-        <flink.cdc.version>3.5.0</flink.cdc.version>
+        <flink.version>2.2.1</flink.version>
+        <paimon.version>1.4.1</paimon.version>
+        <!-- Flink CDC 3.6+ 须带 Flink 行版本（Flink 2.2.x → 3.6.0-2.2） -->
+        <flink.cdc.version>3.6.0-2.2</flink.cdc.version>
     </properties>
 
     <repositories>
@@ -31,7 +31,7 @@
     <dependencies>
         <dependency>
             <groupId>org.apache.paimon</groupId>
-            <artifactId>paimon-flink-2.0</artifactId>
+            <artifactId>paimon-flink-2.2</artifactId>
             <version>${paimon.version}</version>
         </dependency>
         <dependency>
@@ -50,8 +50,7 @@
             <artifactId>flink-s3-fs-hadoop</artifactId>
             <version>${flink.version}</version>
         </dependency>
-        <!-- hadoop-common 由 Dockerfile dependency:copy 单独打入（勿经 copy-dependencies 拉传递依赖，
-             否则会引入 commons-cli-1.2 等与 Flink 2.0.1 冲突的 jar） -->
+        <!-- hadoop 白名单由 Dockerfile hadoop-libs.txt + security-overrides.txt 单独打入 -->
     </dependencies>
 
     <build>
@@ -69,7 +68,6 @@
                         </goals>
                         <configuration>
                             <outputDirectory>${project.build.directory}/connectors</outputDirectory>
-                            <!-- connector JAR 为 compile 作用域 fat jar；勿用 runtime（hadoop 传递依赖会污染 classpath） -->
                             <includeScope>compile</includeScope>
                         </configuration>
                     </execution>

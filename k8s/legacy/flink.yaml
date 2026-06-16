@@ -4,7 +4,7 @@
 # 仅当 GIDO_LEGACY_FLINK_SUBMIT=true 且需 Session/Application 提交时保留本清单。
 #
 # Flink Session 集群（JobManager / TaskManager / SQL Gateway）
-# 版本与 GIDO「系统管理 → 集成」及 FLINK_K8S_APPLICATION_IMAGE 默认对齐：apache/flink:2.0.1-java11
+# 版本与 GIDO「系统管理 → 集成」及 FLINK_K8S_APPLICATION_IMAGE 默认对齐：apache/flink:2.2.1-java11
 #
 # 重要：只改 Git 里的 yaml 不会让集群自动升级，必须在能连到目标集群的机器上执行 apply + rollout。
 # 浏览器仍显示旧版本时常见原因：
@@ -52,7 +52,7 @@ spec:
     spec:
       containers:
       - name: jobmanager
-        image: apache/flink:2.0.1-java11
+        image: apache/flink:2.2.1-java11
         imagePullPolicy: Always
         args:
         - jobmanager
@@ -84,7 +84,7 @@ spec:
     spec:
       containers:
       - name: taskmanager
-        image: apache/flink:2.0.1-java11
+        image: apache/flink:2.2.1-java11
         imagePullPolicy: Always
         args:
         - taskmanager
@@ -193,7 +193,7 @@ spec:
           emptyDir: {}
       initContainers:
         - name: write-incluster-kubeconfig
-          image: apache/flink:2.0.1-java11
+          image: apache/flink:2.2.1-java11
           imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "-exc"]
           args:
@@ -230,7 +230,7 @@ spec:
               mountPath: /kube
       containers:
         - name: sql-gateway
-          image: apache/flink:2.0.1-java11
+          image: apache/flink:2.2.1-java11
           imagePullPolicy: Always
           env:
             - name: KUBECONFIG

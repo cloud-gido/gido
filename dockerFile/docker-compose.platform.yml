@@ -264,7 +264,7 @@ services:
   # Flink Session（JobManager + TaskManager + SQL Gateway）
   # ---------------------------------------------------------------------------
   jobmanager:
-    image: ${FLINK_IMAGE:-apache/flink:2.0.1-java11}
+    image: ${FLINK_IMAGE:-apache/flink:2.2.1-java11}
     container_name: platform-flink-jm
     hostname: jobmanager
     command: jobmanager
@@ -284,7 +284,7 @@ services:
       - platform
 
   taskmanager:
-    image: ${FLINK_IMAGE:-apache/flink:2.0.1-java11}
+    image: ${FLINK_IMAGE:-apache/flink:2.2.1-java11}
     container_name: platform-flink-tm
     depends_on:
       jobmanager:
@@ -299,7 +299,7 @@ services:
       - platform
 
   sql-gateway:
-    image: ${FLINK_IMAGE:-apache/flink:2.0.1-java11}
+    image: ${FLINK_IMAGE:-apache/flink:2.2.1-java11}
     container_name: platform-flink-gateway
     hostname: sql-gateway
     depends_on:

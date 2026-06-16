@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 将 Flink Kubernetes Operator 升级到 1.15.0（与 Flink 2.0.1 技术栈对齐）
+# 将 Flink Kubernetes Operator 升级到 1.15.0（与 Flink 2.2.1 技术栈对齐）
 #
 # 用法（须已安装 helm）：
 #   KUBECONFIG=~/.kube/kind-gido.yaml bash k8s/upgrade-flink-operator-1.15.sh

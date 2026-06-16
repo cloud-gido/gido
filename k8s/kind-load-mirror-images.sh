@@ -31,7 +31,7 @@ declare -a SPECS=(
   "library/busybox:1.36|docker.m.daocloud.io/library/busybox:1.36"
 )
 declare -a FLINK_SPECS=(
-  "apache/flink:2.0.1-java11|apache/flink:2.0.1-java11"
+  "apache/flink:2.2.1-java11|apache/flink:2.2.1-java11"
 )
 
 prepare_and_load() {

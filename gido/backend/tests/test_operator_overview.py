@@ -20,8 +20,8 @@ def test_deployment_summary_from_cr_stable():
             },
         },
         "spec": {
-            "image": "ghcr.io/acme/gido-flink-runtime:2.0.1",
-            "flinkVersion": "v2_0",
+            "image": "ghcr.io/acme/gido-flink-runtime:2.2.1",
+            "flinkVersion": "v2_2",
             "job": {"state": "running"},
         },
         "status": {

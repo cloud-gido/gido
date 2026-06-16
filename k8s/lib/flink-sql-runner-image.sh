@@ -20,7 +20,7 @@ gido_flink_sql_runner_build() {
   local tag="${2:-$(gido_flink_sql_runner_default_tag)}"
   local root="${3:?root dir}"
   local context="${root}/k8s/flink-sql-runner"
-  local flink_base="${FLINK_BASE_IMAGE:-docker.m.daocloud.io/apache/flink:2.0.1-java11}"
+  local flink_base="${FLINK_BASE_IMAGE:-docker.m.daocloud.io/apache/flink:2.2.1-java11}"
   local maven_image="${MAVEN_IMAGE:-docker.m.daocloud.io/library/maven:3.9-eclipse-temurin-11}"
 
   if [[ ! -f "${context}/Dockerfile" ]]; then

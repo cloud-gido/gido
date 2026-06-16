@@ -193,7 +193,7 @@ kubectl -n bigdata exec "$JM" -- ls /opt/flink/lib/ | grep -E 'hadoop|configurat
 kubectl -n bigdata exec "$JM" -- bash -c 'CP=$(ls /opt/flink/lib/*.jar|paste -sd: -):/opt/flink/usrlib/sql-runner.jar; $JAVA_HOME/bin/java -cp "$CP" com.gido.flink.RuntimeSmoke'
 ```
 
-镜像不是 `ghcr.io/cloud-gido/gido/gido-flink-runtime:dev`（或 `2.0.1`）或缺少 `commons-configuration2` → 仍是旧 runtime。
+镜像不是 `ghcr.io/cloud-gido/gido/gido-flink-runtime:dev`（或 `2.2.1`）或缺少 `commons-configuration2` → 仍是旧 runtime。
 
 ---
 

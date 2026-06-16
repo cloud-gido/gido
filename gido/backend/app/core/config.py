@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     # Flink SQL Gateway REST（/v1/sessions）；留空则仅依赖集成页或环境注入
     FLINK_SQL_GATEWAY_URL: Optional[str] = None
     # 实时作业「K8s Application」：Flink 作业镜像（SQL Gateway v4 deploy → kubernetes.container.image.ref）；默认同 k8s/legacy/flink.yaml
-    FLINK_K8S_APPLICATION_IMAGE: str = "apache/flink:2.0.1-java11"
+    FLINK_K8S_APPLICATION_IMAGE: str = "apache/flink:2.2.1-java11"
     # 可选：Application 部署后 GIDO 拉 jobId / 取消作业用的 JM REST 基址模板，须含 {cluster_id}（与 K8s Service 命名一致）
     # 例：http://{cluster_id}-rest.flink.svc.cluster.local:8081
     FLINK_K8S_APPLICATION_JM_REST_TEMPLATE: Optional[str] = None
@@ -113,7 +113,7 @@ class Settings(BaseSettings):
     # 生产：GIDO Backend 与 Flink 同集群时，用集群 DNS 访问 JM REST；浏览器用 Ingress 模板。
     FLINK_OPERATOR_NAMESPACE: Optional[str] = None
     FLINK_OPERATOR_IMAGE: Optional[str] = None
-    FLINK_OPERATOR_FLINK_VERSION: str = "v2_0"
+    FLINK_OPERATOR_FLINK_VERSION: str = "v2_2"
     FLINK_OPERATOR_SERVICE_ACCOUNT: str = "flink"
     FLINK_OPERATOR_UPGRADE_MODE: str = "stateless"
     FLINK_OPERATOR_CHECKPOINT_DIR: Optional[str] = None

@@ -8,7 +8,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License" /></a>
   <a href="https://github.com/cloud-gido/gido/actions/workflows/ci.yml"><img src="https://github.com/cloud-gido/gido/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://flink.apache.org/"><img src="https://img.shields.io/badge/Flink-2.0.1-blue.svg" alt="Flink" /></a>
+  <a href="https://flink.apache.org/"><img src="https://img.shields.io/badge/Flink-2.2.1-blue.svg" alt="Flink" /></a>
   <a href="https://kafka.apache.org/"><img src="https://img.shields.io/badge/Kafka-7.5.0-green.svg" alt="Kafka" /></a>
   <a href="https://gitee.com/bigdata_troy/gido"><img src="https://img.shields.io/badge/Gitee-镜像-C71D23.svg" alt="Gitee" /></a>
 </p>
@@ -49,7 +49,7 @@ SQL 开发、工作流 DAG、DolphinScheduler 调度、数据集成、运维中�
 
 ### GIDO Stream · 实时流计算
 
-Flink SQL / JAR 作业开发、运维监控、发布审批；**生产推荐 Flink Kubernetes Operator 1.15 + Flink 2.0.1**（`FlinkDeployment`）。内置 **CDC→Paimon** SQL 模板，EKS 上可对接 RDS MySQL + S3 仓库。本地全栈 Compose 仍含 Flink Session（8081）与 SQL Gateway（8083）。
+Flink SQL / JAR 作业开发、运维监控、发布审批；**生产推荐 Flink Kubernetes Operator 1.15 + Flink 2.2.1**（`FlinkDeployment`）。内置 **CDC→Paimon** SQL 模板，EKS 上可对接 RDS MySQL + S3 仓库。本地全栈 Compose 仍含 Flink Session（8081）与 SQL Gateway（8083）。
 
 ![GIDO Stream](docs/screenshots/04-stream-studio.png)
 
@@ -173,7 +173,7 @@ bash scripts/reset-gido-docker.sh   # 端口冲突时清理
 | 前端 | React · Vite · Ant Design |
 | 后端 | FastAPI · PostgreSQL · boto3（S3 制品） |
 | 调度 | Apache DolphinScheduler（Compose 全栈 / 外置） |
-| 流计算 | **Flink Operator 1.15** · Flink **2.0.1** · Paimon · MySQL CDC |
+| 流计算 | **Flink Operator 1.15** · Flink **2.2.1** · Paimon · MySQL CDC |
 | 对象存储 | AWS S3（EKS 生产：制品 / checkpoint / Paimon warehouse） |
 | 消息 | Apache Kafka（Compose 全栈） |
 | 部署 | Docker Compose · Kind · K3s · **AWS EKS** |

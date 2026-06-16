@@ -17,7 +17,7 @@
 
 **元数据库**：默认 **PostgreSQL**（`GIDO_DATABASE_URL` 或 `INFRA_GIDO_DB_*`）。MySQL 仅代码层可选回退，新环境请勿使用。
 
-**Flink JAR 生产**：**Flink Kubernetes Operator 1.15** + **Flink 2.0.1**（`FlinkDeployment`，`flinkVersion: v2_0`）。K8s 最小栈不含 Session Flink / Dolphin；SQL 走 Operator + `gido-flink-runtime` 镜像，或 Compose 全栈 / 遗留 `k8s/legacy/flink.yaml`。
+**Flink JAR 生产**：**Flink Kubernetes Operator 1.15** + **Flink 2.2.1**（`FlinkDeployment`，`flinkVersion: v2_2`）。K8s 最小栈不含 Session Flink / Dolphin；SQL 走 Operator + `gido-flink-runtime` 镜像，或 Compose 全栈 / 遗留 `k8s/legacy/flink.yaml`。
 
 **S3 制品库（EKS 生产）**：配置 `FLINK_OPERATOR_JAR_S3_PREFIX`（如 `s3://<bucket>/gido-artifacts`），Backend 上传 JAR/SQL，Operator Pod 以 `s3://` 拉取；需 Backend + Flink 双 IRSA，见 [k8s/eks/](k8s/eks/)。
 

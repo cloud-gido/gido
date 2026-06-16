@@ -1,34 +1,33 @@
 # GIDO Flink 运行时（sql-runner + Paimon + CDC + S3 插件）
-# 基座：apache/flink:2.0.1-java11
+# 基座：apache/flink:2.2.1-java11
 # sql-runner：/opt/flink/usrlib/sql-runner.jar
 # 连接器：/opt/flink/lib/
 # S3：/opt/flink/plugins/s3-fs-hadoop/（Paimon warehouse / checkpoint 走 s3://）
 
 paimon:
-  artifact: org.apache.paimon:paimon-flink-2.0
-  version: "1.3.2"
-  path: /opt/flink/lib/paimon-flink-2.0-1.3.2.jar
+  artifact: org.apache.paimon:paimon-flink-2.2
+  version: "1.4.1"
+  path: /opt/flink/lib/paimon-flink-2.2-1.4.1.jar
 
 flink_cdc:
   note: >
     Flink CDC 3.6+ 在 Maven 上为 3.6.0-1.20 / 3.6.0-2.2（无裸 3.6.0）。
-    GIDO Flink 2.0.1 基座预置 3.5.0；生产 CDC→Paimon 请充分验证，
-    或升级 Flink 至 2.2.x 后改用 3.6.0-2.2。
+    GIDO Flink 2.2.1 基座预置 3.6.0-2.2；CDC→Paimon 请在目标环境验证。
   mysql:
     artifact: org.apache.flink:flink-sql-connector-mysql-cdc
-    version: "3.5.0"
+    version: "3.6.0-2.2"
   postgres:
     artifact: org.apache.flink:flink-sql-connector-postgres-cdc
-    version: "3.5.0"
+    version: "3.6.0-2.2"
 
 s3_filesystem:
   artifact: org.apache.flink:flink-s3-fs-hadoop
-  version: "2.0.1"
-  path: /opt/flink/plugins/s3-fs-hadoop/flink-s3-fs-hadoop-2.0.1.jar
+  version: "2.2.1"
+  path: /opt/flink/plugins/s3-fs-hadoop/flink-s3-fs-hadoop-2.2.1.jar
   note: >
     生产 Paimon warehouse 与 Flink checkpoint 走 s3:// 时须启用。
     通过 Flink S3 插件访问对象存储；勿再添加 paimon-s3 JAR（会与插件冲突）。
-    Paimon catalog 另须 /opt/flink/lib/ 含 hadoop-common（CatalogContext 依赖 Configuration）。
+    Paimon catalog 另须 /opt/flink/lib/ 含 hadoop 白名单（CatalogContext 依赖 Configuration）。
 
 hadoop_client_minimal:
   version: "3.3.4"
@@ -54,7 +53,7 @@ hadoop_client_minimal:
       version: "4.2.1"
       path: /opt/flink/lib/stax2-api-4.2.1.jar
   note: >
-    Paimon CatalogContext 须 Configuration + HdfsConfiguration；写 Parquet 统计还须 hadoop-mapreduce-client-core（FileInputFormat）。
+    Paimon CatalogContext 须 Configuration + HdfsConfiguration；写 Parquet 统计还须 hadoop-mapreduce-client-core。
     仅 dependency:copy 单 jar，勿 copy-dependencies 拉传递树（commons-cli-1.2 与 Flink 冲突）。S3 读写仍走 flink-s3-fs-hadoop 插件。
 
 sql_runner:

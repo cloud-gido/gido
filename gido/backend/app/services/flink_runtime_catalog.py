@@ -12,30 +12,30 @@ BUNDLED_CONNECTORS: List[dict] = [
     {
         "id": "paimon",
         "name": "Apache Paimon",
-        "artifact": "org.apache.paimon:paimon-flink-2.0",
-        "version": "1.3.2",
-        "path": "/opt/flink/lib/paimon-flink-2.0-1.3.2.jar",
+        "artifact": "org.apache.paimon:paimon-flink-2.2",
+        "version": "1.4.1",
+        "path": "/opt/flink/lib/paimon-flink-2.2-1.4.1.jar",
     },
     {
         "id": "mysql-cdc",
         "name": "Flink CDC MySQL",
         "artifact": "org.apache.flink:flink-sql-connector-mysql-cdc",
-        "version": "3.5.0",
+        "version": "3.6.0-2.2",
         "connector": "mysql-cdc",
     },
     {
         "id": "postgres-cdc",
         "name": "Flink CDC PostgreSQL",
         "artifact": "org.apache.flink:flink-sql-connector-postgres-cdc",
-        "version": "3.5.0",
+        "version": "3.6.0-2.2",
         "connector": "postgres-cdc",
     },
     {
         "id": "s3-fs-hadoop",
         "name": "Flink S3 Filesystem (Hadoop)",
         "artifact": "org.apache.flink:flink-s3-fs-hadoop",
-        "version": "2.0.1",
-        "path": "/opt/flink/plugins/s3-fs-hadoop/flink-s3-fs-hadoop-2.0.1.jar",
+        "version": "2.2.1",
+        "path": "/opt/flink/plugins/s3-fs-hadoop/flink-s3-fs-hadoop-2.2.1.jar",
         "scheme": "s3://",
     },
     {
@@ -97,8 +97,8 @@ BUNDLED_CONNECTORS: List[dict] = [
 ]
 
 CDC_FLINK_COMPATIBILITY_NOTE = (
-    "Flink CDC 3.6+ 在 Maven 为 3.6.0-1.20 / 3.6.0-2.2；GIDO Flink 2.0.1 预置 3.5.0。"
-    "CDC→Paimon 链路请在目标环境验证，或升级 Flink 至 2.2.x 后改用 3.6.0-2.2。"
+    "Flink CDC 3.6+ 在 Maven 为 3.6.0-1.20 / 3.6.0-2.2（无裸 3.6.0）。"
+    "GIDO Flink 2.2.1 预置 3.6.0-2.2；CDC→Paimon 链路请在目标环境验证。"
 )
 
 SQL_RUNNER_INFO = {
@@ -114,8 +114,8 @@ def flink_runtime_api_payload() -> dict:
     return {
         "submit_mode": (settings.GIDO_FLINK_SUBMIT_MODE or "operator").strip().lower(),
         "legacy_flink_submit_enabled": bool(settings.GIDO_LEGACY_FLINK_SUBMIT),
-        "flink_version": "2.0.1",
-        "flink_operator_version": (settings.FLINK_OPERATOR_FLINK_VERSION or "v2_0").strip(),
+        "flink_version": "2.2.1",
+        "flink_operator_version": (settings.FLINK_OPERATOR_FLINK_VERSION or "v2_2").strip(),
         "operator_namespace": op_ns,
         "runtime_image": img or "gido-flink-runtime",
         "runtime_image_aliases": ["gido-flink-runtime"],

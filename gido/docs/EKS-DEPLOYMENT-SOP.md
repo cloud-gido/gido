@@ -159,7 +159,7 @@ k8s/
 
 ### 7.1 Stream 生产路径（Flink Operator + CDC→Paimon）
 
-GIDO **默认**不走 Session/Gateway，而走 **Flink Kubernetes Operator 1.15** + 自建运行时镜像 `gido-flink-runtime`（Flink 2.0.1，`flinkVersion: v2_0`）。
+GIDO **默认**不走 Session/Gateway，而走 **Flink Kubernetes Operator 1.15** + 自建运行时镜像 `gido-flink-runtime`（Flink 2.2.1，`flinkVersion: v2_2`）。
 
 | 步骤 | 说明 |
 |------|------|

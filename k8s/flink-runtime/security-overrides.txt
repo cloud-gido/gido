@@ -1,0 +1,19 @@
+# CVE 覆盖清单（构建副本，源文件 k8s/flink-sql-runner/security-overrides.txt）
+io.netty:netty-common:4.2.13.Final
+io.netty:netty-buffer:4.2.13.Final
+io.netty:netty-codec:4.2.13.Final
+io.netty:netty-codec-dns:4.2.13.Final
+io.netty:netty-codec-http:4.2.13.Final
+io.netty:netty-codec-http2:4.2.13.Final
+io.netty:netty-codec-redis:4.2.13.Final
+io.netty:netty-codec-smtp:4.2.13.Final
+io.netty:netty-handler:4.2.13.Final
+io.netty:netty-handler-proxy:4.2.13.Final
+io.netty:netty-resolver:4.2.13.Final
+io.netty:netty-transport:4.2.13.Final
+io.netty:netty-transport-native-unix-common:4.2.13.Final
+io.netty:netty-transport-native-epoll:4.2.13.Final
+org.xerial.snappy:snappy-java:1.1.10.7
+com.fasterxml.jackson.core:jackson-core:2.18.6
+com.fasterxml.jackson.core:jackson-databind:2.18.6
+com.fasterxml.jackson.core:jackson-annotations:2.18.6

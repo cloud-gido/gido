@@ -1,26 +1,27 @@
-
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
 #
-# dev 分支 CI；dev-1 分支见 ci-dev-1.yml（GHCR 路径 dev-1/gido-*，tag dev-1）
+# dev-1 分支专用 CI：构建/推送镜像到 GHCR 的 dev-1/ 子路径，与 dev 分支包名隔离。
+# 例：ghcr.io/<owner>/<repo>/dev-1/gido-flink-runtime:dev-1
 
-name: CI
+name: CI (dev-1)
 
 on:
   push:
-    branches: [dev]
+    branches: [dev-1]
   pull_request:
-    branches: [dev]
+    branches: [dev-1]
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-dev-1-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   REGISTRY: ghcr.io
-  # org 仓库 push 包须用 owner 作用户名，不能用 github.actor
   REGISTRY_USER: ${{ github.repository_owner }}
+  # 与 dev 分支 ghcr.io/<repo>/gido-* 区分
+  IMAGE_NAMESPACE: dev-1
 
 jobs:
   frontend:
@@ -38,24 +39,6 @@ jobs:
           cache-dependency-path: gido/frontend/package-lock.json
       - run: npm ci
       - run: npm run build
-
-#  backend:
-#    name: Backend tests
-#    runs-on: ubuntu-latest
-#    defaults:
-#      run:
-#        working-directory: gido/backend
-#    steps:
-#      - uses: actions/checkout@v4
-#      - uses: actions/setup-python@v5
-#        with:
-#          python-version: "3.11"
-#          cache: pip
-#          cache-dependency-path: gido/backend/requirements.txt
-#      - run: |
-#          python -m pip install --upgrade pip
-#          pip install -r requirements.txt pytest
-#      - run: pytest -q
 
   compliance:
     name: Open-source compliance
@@ -110,10 +93,10 @@ jobs:
           fi
 
   docker-images:
-    name: Build and push images to GHCR
+    name: Build and push dev-1 images to GHCR
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev-1'
     permissions:
       contents: read
       packages: write
@@ -173,11 +156,10 @@ jobs:
         id: meta_backend
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}/gido-backend
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAMESPACE }}/gido-backend
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
-            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
-            type=sha,prefix=${{ github.ref_name }}-
+            type=raw,value=dev-1
+            type=sha,prefix=dev-1-
 
       - name: Build and push backend image
         uses: docker/build-push-action@v5
@@ -191,11 +173,10 @@ jobs:
         id: meta_frontend
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}/gido-frontend
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAMESPACE }}/gido-frontend
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
-            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
-            type=sha,prefix=${{ github.ref_name }}-
+            type=raw,value=dev-1
+            type=sha,prefix=dev-1-
 
       - name: Build and push frontend image
         uses: docker/build-push-action@v5
@@ -209,11 +190,10 @@ jobs:
         id: meta_flink
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}/gido-flink-runtime
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAMESPACE }}/gido-flink-runtime
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
-            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
-            type=sha,prefix=${{ github.ref_name }}-,enable=${{ github.ref == 'refs/heads/dev' }}
+            type=raw,value=dev-1
+            type=sha,prefix=dev-1-
             type=raw,value=${{ steps.extract_flink_version.outputs.FLINK_VERSION }}
 
       - name: Build and push flink-runtime image
@@ -233,8 +213,7 @@ jobs:
         run: |
           echo "verify script sha: $(sha256sum k8s/flink-sql-runner/verify-image.sh | awk '{print $1}')"
           chmod +x k8s/flink-sql-runner/verify-image.sh
-          head -3 k8s/flink-sql-runner/verify-image.sh
-          IMAGE="${{ env.REGISTRY }}/${{ github.repository }}/gido-flink-runtime:${{ steps.extract_flink_version.outputs.FLINK_VERSION }}"
+          IMAGE="${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAMESPACE }}/gido-flink-runtime:${{ steps.extract_flink_version.outputs.FLINK_VERSION }}"
           for attempt in $(seq 1 5); do
             if docker pull "${IMAGE}"; then
               bash k8s/flink-sql-runner/verify-image.sh "${IMAGE}"

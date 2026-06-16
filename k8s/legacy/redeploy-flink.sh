@@ -19,7 +19,7 @@ kubectl rollout restart deployment/flink-jobmanager deployment/flink-taskmanager
 kubectl rollout status deployment/flink-jobmanager -n flink --timeout=300s
 kubectl rollout status deployment/flink-taskmanager -n flink --timeout=300s
 kubectl rollout status deployment/flink-sql-gateway -n flink --timeout=300s
-echo ">>> 当前 Pod 镜像（应为 apache/flink:2.0.1-java11）："
+echo ">>> 当前 Pod 镜像（应为 apache/flink:2.2.1-java11）："
 kubectl get pods -n flink -o custom-columns=NAME:.metadata.name,IMAGE:.spec.containers[0].image
 echo ">>> 完成。Session JM Web/REST：K8s 默认同 http://localhost:8081（LoadBalancer，见 k8s/legacy/flink.yaml）；"
 echo ">>>       若用 docker-compose 起本地 JM，默认亦为宿主 8081。SQL Gateway：集群内 8083；宿主见 Ingress 或 NodePort 32483。"
