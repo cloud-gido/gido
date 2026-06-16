@@ -16,18 +16,18 @@ ARG MAVEN_SETTINGS=settings.xml
 WORKDIR /conn
 COPY connectors-pom.xml pom.xml
 COPY settings.xml settings.aliyun.xml ./
-RUN cp "${MAVEN_SETTINGS}" settings.xml
+RUN cp "${MAVEN_SETTINGS:-settings.xml}" settings-active.xml
 COPY hadoop-libs.txt hadoop-libs.txt
 COPY security-overrides.txt security-overrides.txt
 COPY dedupe-lib-jars.sh dedupe-lib-jars.sh
-RUN mvn -B -q package -DskipTests -s settings.xml -gs settings.xml \
+RUN mvn -B -q package -DskipTests -s settings-active.xml -gs settings-active.xml \
     && grep -v '^#' hadoop-libs.txt | grep -v '^[[:space:]]*$' | while IFS= read -r artifact; do \
         mvn -B -q dependency:copy -Dartifact="${artifact}" \
-            -DoutputDirectory=target/connectors -s settings.xml -gs settings.xml; \
+            -DoutputDirectory=target/connectors -s settings-active.xml -gs settings-active.xml; \
     done \
     && grep -v '^#' security-overrides.txt | grep -v '^[[:space:]]*$' | while IFS= read -r artifact; do \
         mvn -B -q dependency:copy -Dartifact="${artifact}" \
-            -DoutputDirectory=target/connectors -s settings.xml -gs settings.xml; \
+            -DoutputDirectory=target/connectors -s settings-active.xml -gs settings-active.xml; \
     done \
     && chmod +x dedupe-lib-jars.sh \
     && ./dedupe-lib-jars.sh target/connectors security-overrides.txt \
@@ -44,9 +44,9 @@ ARG MAVEN_SETTINGS=settings.xml
 WORKDIR /build
 COPY pom.xml ./
 COPY settings.xml settings.aliyun.xml ./
-RUN cp "${MAVEN_SETTINGS}" settings.xml
+RUN cp "${MAVEN_SETTINGS:-settings.xml}" settings-active.xml
 COPY src ./src
-RUN mvn -B -q package -DskipTests -s settings.xml -gs settings.xml
+RUN mvn -B -q package -DskipTests -s settings-active.xml -gs settings-active.xml
 
 FROM --platform=$TARGETPLATFORM ${FLINK_BASE_IMAGE}
 USER root
