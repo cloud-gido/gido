@@ -5,7 +5,7 @@ set -euo pipefail
 
 IMAGE="${1:?用法: verify-image.sh <镜像名:tag>}"
 
-echo "==> 校验镜像 ${IMAGE} (verify-image v9)"
+echo "==> 校验镜像 ${IMAGE} (verify-image v10)"
 
 docker run --rm "${IMAGE}" bash -c '
 set -euo pipefail
@@ -39,8 +39,8 @@ for sec in \
   netty-codec-4.2.13.Final.jar \
   netty-codec-http-4.2.13.Final.jar \
   snappy-java-1.1.10.7.jar \
-  jackson-core-2.18.6.jar \
-  jackson-databind-2.18.6.jar; do
+  jackson-core-2.21.1.jar \
+  jackson-databind-2.13.4.1.jar; do
   test -f "/opt/flink/lib/${sec}" || { echo "缺少安全升级 jar: ${sec}"; exit 1; }
   echo "OK /opt/flink/lib/${sec}"
 done

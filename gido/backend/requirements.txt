@@ -1,15 +1,15 @@
 fastapi==0.115.12
-starlette==0.46.2
+starlette==0.49.1
 uvicorn==0.34.0
 sqlalchemy==2.0.25
 pydantic[email]==2.5.3
 pydantic-settings==2.1.0
 alembic==1.13.1
-python-multipart==0.0.6
-python-jose[cryptography]==3.3.0
+python-multipart==0.0.22
+python-jose[cryptography]==3.4.0
 passlib[bcrypt]==1.7.4
 bcrypt==3.2.2
-python-dotenv==1.0.0
+python-dotenv==1.2.2
 # 可选：登记 MySQL 数据源时需 pymysql；元数据库为 PostgreSQL（DATABASE_URL）
 pymysql==1.1.0
 redis==5.0.1

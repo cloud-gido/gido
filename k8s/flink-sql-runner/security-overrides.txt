@@ -1,5 +1,5 @@
 # CVE 修复：dependency:copy 后写入 connectors/，dedupe-lib-jars.sh 移除同 artifact 旧版本
-# 与 Flink 2.2.1 基座对齐：Netty 4.2.13、Jackson 2.18.6、Snappy 1.1.10.7
+# 与 Flink 2.2.1 基座对齐：Netty 4.2.13、Jackson core 2.21.1 / databind 2.13.4.1、Snappy 1.1.10.7
 io.netty:netty-common:4.2.13.Final
 io.netty:netty-buffer:4.2.13.Final
 io.netty:netty-codec:4.2.13.Final
@@ -15,6 +15,6 @@ io.netty:netty-transport:4.2.13.Final
 io.netty:netty-transport-native-unix-common:4.2.13.Final
 io.netty:netty-transport-native-epoll:4.2.13.Final
 org.xerial.snappy:snappy-java:1.1.10.7
-com.fasterxml.jackson.core:jackson-core:2.18.6
-com.fasterxml.jackson.core:jackson-databind:2.18.6
-com.fasterxml.jackson.core:jackson-annotations:2.18.6
+com.fasterxml.jackson.core:jackson-core:2.21.1
+com.fasterxml.jackson.core:jackson-databind:2.13.4.1
+com.fasterxml.jackson.core:jackson-annotations:2.13.4
