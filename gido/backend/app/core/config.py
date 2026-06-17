@@ -113,6 +113,8 @@ class Settings(BaseSettings):
     # 生产：GIDO Backend 与 Flink 同集群时，用集群 DNS 访问 JM REST；浏览器用 Ingress 模板。
     FLINK_OPERATOR_NAMESPACE: Optional[str] = None
     FLINK_OPERATOR_IMAGE: Optional[str] = None
+    # 逗号分隔的 Secret 名（须存在于 FLINK_OPERATOR_NAMESPACE），写入 FlinkDeployment podTemplate.imagePullSecrets
+    FLINK_OPERATOR_IMAGE_PULL_SECRETS: Optional[str] = None
     FLINK_OPERATOR_FLINK_VERSION: str = "v2_2"
     FLINK_OPERATOR_SERVICE_ACCOUNT: str = "flink"
     FLINK_OPERATOR_UPGRADE_MODE: str = "stateless"

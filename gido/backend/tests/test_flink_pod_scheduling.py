@@ -89,6 +89,23 @@ def test_sql_pod_template_includes_paimon_pvc(monkeypatch):
     assert "gido-sql-script" in vol_names
 
 
+def test_sql_pod_template_includes_image_pull_secrets(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_IMAGE_PULL_SECRETS", "ghcr-pull,reg2")
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_SQL_RUNNER_JAR_URI", "local:///opt/flink/usrlib/sql-runner.jar")
+    body = build_flink_deployment_body_for_sql(
+        deployment_name="gido-sql-0-3",
+        namespace="flink",
+        sql_script_path="/opt/flink/gido-scripts/artifact.sql",
+        parallelism=1,
+        configmap_name="gido-sql-script-0-3",
+    )
+    secrets = body["spec"]["podTemplate"]["spec"]["imagePullSecrets"]
+    assert secrets == [{"name": "ghcr-pull"}, {"name": "reg2"}]
+    assert body["spec"]["podTemplate"]["spec"]["containers"][0]["imagePullPolicy"] == "Always"
+
+
 def test_merge_pod_templates_preserves_both():
     scheduling = {
         "spec": {

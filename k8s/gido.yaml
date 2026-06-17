@@ -65,6 +65,8 @@ data:
   FLINK_OPERATOR_AUTO_UI_TUNNEL: "false"
   FLINK_OPERATOR_JAR_HTTP_BASE: "http://backend.gido.svc.cluster.local:8001"
   FLINK_OPERATOR_IMAGE: "__FLINK_OPERATOR_IMAGE__"
+  # 私有仓库拉 gido-flink-runtime：Secret 须在 FLINK_OPERATOR_NAMESPACE（默认 flink）
+  # FLINK_OPERATOR_IMAGE_PULL_SECRETS: "ghcr-pull"
   FLINK_OPERATOR_FLINK_VERSION: "v2_2"
   FLINK_OPERATOR_SERVICE_ACCOUNT: "flink"
   FLINK_OPERATOR_UPGRADE_MODE: "stateless"

@@ -11,6 +11,24 @@ from typing import Any, Dict, List, Optional
 from app.core.config import settings
 
 
+def _parse_image_pull_secret_names(raw: Optional[str]) -> List[str]:
+    if not raw or not str(raw).strip():
+        return []
+    return [s.strip() for s in str(raw).replace(";", ",").split(",") if s.strip()]
+
+
+def operator_image_pull_secrets_pod_template() -> Optional[Dict[str, Any]]:
+    """私有仓库 gido-flink-runtime 拉取凭据（podTemplate.spec.imagePullSecrets）。"""
+    names = _parse_image_pull_secret_names(settings.FLINK_OPERATOR_IMAGE_PULL_SECRETS)
+    if not names:
+        return None
+    return {
+        "spec": {
+            "imagePullSecrets": [{"name": n} for n in names],
+        }
+    }
+
+
 def operator_runtime_pod_template() -> Dict[str, Any]:
     """GHCR 可变 tag（dev）须 Always 拉取，避免节点缓存旧 gido-flink-runtime。"""
     return {
@@ -125,6 +143,16 @@ def _deep_merge_pod_template(dst: Dict[str, Any], src: Dict[str, Any]) -> None:
                     spec_dst["containers"] = _merge_containers(spec_dst.get("containers") or [], sv)
                 elif sk == "volumes" and isinstance(sv, list):
                     spec_dst["volumes"] = _merge_volumes(spec_dst.get("volumes") or [], sv)
+                elif sk == "imagePullSecrets" and isinstance(sv, list):
+                    by_name = {
+                        item.get("name"): copy.deepcopy(item)
+                        for item in (spec_dst.get("imagePullSecrets") or [])
+                        if isinstance(item, dict) and item.get("name")
+                    }
+                    for item in sv:
+                        if isinstance(item, dict) and item.get("name"):
+                            by_name[item["name"]] = copy.deepcopy(item)
+                    spec_dst["imagePullSecrets"] = list(by_name.values())
                 elif isinstance(sv, dict) and isinstance(spec_dst.get(sk), dict):
                     nested = copy.deepcopy(spec_dst[sk])
                     nested.update(copy.deepcopy(sv))
