@@ -17,9 +17,14 @@ def _parse_image_pull_secret_names(raw: Optional[str]) -> List[str]:
     return [s.strip() for s in str(raw).replace(";", ",").split(",") if s.strip()]
 
 
-def operator_image_pull_secrets_pod_template() -> Optional[Dict[str, Any]]:
+def operator_image_pull_secrets_pod_template(
+    image_pull_secrets: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     """私有仓库 gido-flink-runtime 拉取凭据（podTemplate.spec.imagePullSecrets）。"""
-    names = _parse_image_pull_secret_names(settings.FLINK_OPERATOR_IMAGE_PULL_SECRETS)
+    raw = image_pull_secrets
+    if raw is None:
+        raw = settings.FLINK_OPERATOR_IMAGE_PULL_SECRETS
+    names = _parse_image_pull_secret_names(raw)
     if not names:
         return None
     return {

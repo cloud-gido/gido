@@ -152,7 +152,8 @@ def split_streaming_properties_for_operator(
     tier = extra.get("resource_tier")
     rest: Dict[str, Any] = {}
     for k, v in extra.items():
-        if k in ("operator_resources", "k8s_application", "resource_tier", "sql_source"):
+        if k in ("operator_resources", "k8s_application", "resource_tier", "sql_source",
+                 "operator_runtime_image", "runtime_image", "operator_flink_version", "flink_version"):
             continue
         if v is not None:
             rest[k] = v

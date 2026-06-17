@@ -123,5 +123,7 @@ def flink_runtime_api_payload() -> dict:
         "checkpoint_dir_default": (settings.FLINK_OPERATOR_CHECKPOINT_DIR or "").strip() or None,
         "sql_runner": SQL_RUNNER_INFO,
         "connectors": BUNDLED_CONNECTORS,
+        "operator_profiles_supported": True,
+        "runtime_image_job_override_keys": ["operator_runtime_image", "runtime_image"],
         "cdc_flink_compatibility_note": CDC_FLINK_COMPATIBILITY_NOTE,
     }

@@ -689,6 +689,131 @@ def migrate_dw_streaming_jobs_flink_session_profile(engine: Engine) -> None:
             conn.execute(text("ALTER TABLE dw_streaming_jobs ADD COLUMN flink_session_profile_id INTEGER"))
 
 
+def migrate_dw_flink_operator_profiles(engine: Engine) -> None:
+    """工作空间下多套 Flink Operator 集群配置。"""
+    insp = inspect(engine)
+    if insp.has_table("dw_flink_operator_profiles"):
+        return
+    with engine.begin() as conn:
+        if engine.dialect.name == "mysql":
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE dw_flink_operator_profiles (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        workspace_id INT NOT NULL,
+                        name VARCHAR(128) NOT NULL,
+                        description TEXT NULL,
+                        is_default TINYINT(1) NOT NULL DEFAULT 0,
+                        is_enabled TINYINT(1) NOT NULL DEFAULT 1,
+                        flink_operator_namespace VARCHAR(256) NULL,
+                        flink_operator_image VARCHAR(512) NULL,
+                        flink_operator_flink_version VARCHAR(32) NULL,
+                        flink_operator_service_account VARCHAR(128) NULL,
+                        flink_k8s_context VARCHAR(256) NULL,
+                        flink_k8s_kubeconfig_path VARCHAR(512) NULL,
+                        flink_operator_jm_rest_template VARCHAR(1024) NULL,
+                        flink_k8s_cluster_domain VARCHAR(256) NULL,
+                        flink_operator_checkpoint_dir VARCHAR(1024) NULL,
+                        flink_operator_image_pull_secrets VARCHAR(512) NULL,
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL,
+                        created_by INT NULL,
+                        INDEX idx_fop_workspace (workspace_id),
+                        CONSTRAINT fk_fop_workspace FOREIGN KEY (workspace_id) REFERENCES dw_workspaces(id),
+                        CONSTRAINT fk_fop_user FOREIGN KEY (created_by) REFERENCES dw_users(id)
+                    )
+                    """
+                )
+            )
+        elif engine.dialect.name == "postgresql":
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE dw_flink_operator_profiles (
+                        id SERIAL PRIMARY KEY,
+                        workspace_id INTEGER NOT NULL REFERENCES dw_workspaces(id),
+                        name VARCHAR(128) NOT NULL,
+                        description TEXT,
+                        is_default BOOLEAN NOT NULL DEFAULT FALSE,
+                        is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                        flink_operator_namespace VARCHAR(256),
+                        flink_operator_image VARCHAR(512),
+                        flink_operator_flink_version VARCHAR(32),
+                        flink_operator_service_account VARCHAR(128),
+                        flink_k8s_context VARCHAR(256),
+                        flink_k8s_kubeconfig_path VARCHAR(512),
+                        flink_operator_jm_rest_template VARCHAR(1024),
+                        flink_k8s_cluster_domain VARCHAR(256),
+                        flink_operator_checkpoint_dir VARCHAR(1024),
+                        flink_operator_image_pull_secrets VARCHAR(512),
+                        created_at TIMESTAMP NOT NULL,
+                        updated_at TIMESTAMP NOT NULL,
+                        created_by INTEGER REFERENCES dw_users(id)
+                    )
+                    """
+                )
+            )
+            conn.execute(text("CREATE INDEX idx_fop_workspace ON dw_flink_operator_profiles (workspace_id)"))
+        else:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE dw_flink_operator_profiles (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        workspace_id INTEGER NOT NULL,
+                        name VARCHAR(128) NOT NULL,
+                        description TEXT,
+                        is_default BOOLEAN NOT NULL DEFAULT 0,
+                        is_enabled BOOLEAN NOT NULL DEFAULT 1,
+                        flink_operator_namespace VARCHAR(256),
+                        flink_operator_image VARCHAR(512),
+                        flink_operator_flink_version VARCHAR(32),
+                        flink_operator_service_account VARCHAR(128),
+                        flink_k8s_context VARCHAR(256),
+                        flink_k8s_kubeconfig_path VARCHAR(512),
+                        flink_operator_jm_rest_template VARCHAR(1024),
+                        flink_k8s_cluster_domain VARCHAR(256),
+                        flink_operator_checkpoint_dir VARCHAR(1024),
+                        flink_operator_image_pull_secrets VARCHAR(512),
+                        created_at TIMESTAMP NOT NULL,
+                        updated_at TIMESTAMP NOT NULL,
+                        created_by INTEGER,
+                        FOREIGN KEY (workspace_id) REFERENCES dw_workspaces(id),
+                        FOREIGN KEY (created_by) REFERENCES dw_users(id)
+                    )
+                    """
+                )
+            )
+
+
+def migrate_dw_streaming_jobs_flink_operator_profile(engine: Engine) -> None:
+    """实时作业可选绑定 Flink Operator 集群；提交后持久化目标 namespace / 镜像。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_streaming_jobs"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_streaming_jobs")}
+    stmts: list[str] = []
+    if "flink_operator_profile_id" not in cols:
+        if engine.dialect.name == "mysql":
+            stmts.append("ALTER TABLE dw_streaming_jobs ADD COLUMN flink_operator_profile_id INT NULL")
+        else:
+            stmts.append("ALTER TABLE dw_streaming_jobs ADD COLUMN flink_operator_profile_id INTEGER")
+    if "flink_operator_submit_namespace" not in cols:
+        stmts.append(
+            "ALTER TABLE dw_streaming_jobs ADD COLUMN flink_operator_submit_namespace VARCHAR(256) NULL"
+        )
+    if "flink_operator_runtime_image" not in cols:
+        stmts.append(
+            "ALTER TABLE dw_streaming_jobs ADD COLUMN flink_operator_runtime_image VARCHAR(512) NULL"
+        )
+    if not stmts:
+        return
+    with engine.begin() as conn:
+        for stmt in stmts:
+            conn.execute(text(stmt))
+
+
 def migrate_dw_sync_tasks_enhance(engine: Engine) -> None:
     """数据集成：任务描述、最近状态、运行记录触发方式与耗时。"""
     insp = inspect(engine)

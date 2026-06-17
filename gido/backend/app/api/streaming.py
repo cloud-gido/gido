@@ -19,7 +19,7 @@ from datetime import datetime
 from app.core.database import get_db, Base
 from app.core.security import get_current_user
 from app.core.config import settings
-from app.models.workspace import User, FlinkSessionProfile
+from app.models.workspace import User, FlinkSessionProfile, FlinkOperatorProfile
 from app.services.flink_runtime import (
     FlinkRuntimeConfig,
     apply_flink_row_overrides,
@@ -459,6 +459,15 @@ def _streaming_job_public_dict(
             lsub_name = u2.username if u2 else None
     cfg = runtime_cfg if runtime_cfg is not None else _flink_runtime_cfg_for_job(db, job)
     pid = getattr(job, "flink_session_profile_id", None)
+    op_pid = getattr(job, "flink_operator_profile_id", None)
+    op_ctx = None
+    if op_pid is not None or getattr(job, "flink_operator_submit_namespace", None):
+        try:
+            from app.services.operator_runtime import resolve_operator_runtime_for_job
+
+            op_ctx = resolve_operator_runtime_for_job(db, job)
+        except ValueError:
+            op_ctx = None
     op_dep = _operator_deployment_name_for_job(job)
     pf_hint = None
     browser_jm = getattr(job, "flink_application_jm_rest", None)
@@ -478,7 +487,14 @@ def _streaming_job_public_dict(
             operator_ui_port_forward_hint,
         )
 
-        ns = (settings.FLINK_OPERATOR_NAMESPACE or settings.FLINK_K8S_NAMESPACE or "flink").strip()
+        ns = (
+            op_ctx.namespace
+            if op_ctx
+            else (
+                (getattr(job, "flink_operator_submit_namespace", None) or "").strip()
+                or (settings.FLINK_OPERATOR_NAMESPACE or settings.FLINK_K8S_NAMESPACE or "flink").strip()
+            )
+        )
         browser_jm = browser_jm_base_for_deployment(
             op_dep, ns, getattr(job, "flink_application_jm_rest", None), job_id=int(job.id)
         ) or browser_jm
@@ -493,7 +509,14 @@ def _streaming_job_public_dict(
     if is_op_any and op_dep:
         from app.services.flink_operator_submit import resolve_live_flink_job_id
 
-        ns = (settings.FLINK_OPERATOR_NAMESPACE or settings.FLINK_K8S_NAMESPACE or "flink").strip()
+        ns = (
+            op_ctx.namespace
+            if op_ctx
+            else (
+                (getattr(job, "flink_operator_submit_namespace", None) or "").strip()
+                or (settings.FLINK_OPERATOR_NAMESPACE or settings.FLINK_K8S_NAMESPACE or "flink").strip()
+            )
+        )
         live = resolve_live_flink_job_id(op_dep, ns, stored=fjid, job_id=int(job.id))
         if live and live != (fjid or ""):
             console_fjid = live
@@ -519,6 +542,14 @@ def _streaming_job_public_dict(
         "flink_application_jm_rest": getattr(job, "flink_application_jm_rest", None),
         "flink_session_profile_id": int(pid) if pid is not None else None,
         "flink_session_profile_name": profile_name,
+        "flink_operator_profile_id": int(op_pid) if op_pid is not None else None,
+        "flink_operator_submit_namespace": getattr(job, "flink_operator_submit_namespace", None),
+        "flink_operator_runtime_image": getattr(job, "flink_operator_runtime_image", None)
+        or (op_ctx.image if op_ctx else None),
+        "operator_runtime_effective": op_ctx.public_dict() if op_ctx else None,
+        "flink_operator_profile_name": (
+            (op_ctx.profile_name if op_ctx and op_ctx.profile_name else None)
+        ),
         "flink_console_url": flink_job_console_url(
             console_fjid,
             application_jm_rest=browser_jm if is_op_any else getattr(job, "flink_application_jm_rest", None),
@@ -573,6 +604,10 @@ class StreamingJob(Base):
     flink_application_jm_rest = Column(String(512), nullable=True)
     # 选用工作空间下某套 Flink Session 配置；NULL 表示沿用「环境 + 平台集成」默认
     flink_session_profile_id = Column(Integer, ForeignKey("dw_flink_session_profiles.id"), nullable=True)
+    # Flink Operator 多集群：NULL=平台默认；提交后持久化 namespace/镜像供停止与状态同步
+    flink_operator_profile_id = Column(Integer, ForeignKey("dw_flink_operator_profiles.id"), nullable=True)
+    flink_operator_submit_namespace = Column(String(256), nullable=True)
+    flink_operator_runtime_image = Column(String(512), nullable=True)
     flink_job_id = Column(String(64))               # Flink 返回的 jobId
     last_submit_error = Column(Text, nullable=True)  # 最近一次提交到 Flink 失败时的栈/错误原文
     last_submitted_at = Column(DateTime, nullable=True)
@@ -1404,6 +1439,7 @@ class JobCreate(BaseModel):
     flink_sql_submit_mode: str = "flink_operator"
     flink_jar_submit_mode: str = "flink_operator"
     flink_session_profile_id: Optional[int] = None
+    flink_operator_profile_id: Optional[int] = None
 
     @field_validator("flink_sql_submit_mode")
     @classmethod
@@ -1433,6 +1469,7 @@ class JobUpdate(BaseModel):
     flink_sql_submit_mode: Optional[str] = None
     flink_jar_submit_mode: Optional[str] = None
     flink_session_profile_id: Optional[int] = None
+    flink_operator_profile_id: Optional[int] = None
 
     @field_validator("flink_sql_submit_mode")
     @classmethod
@@ -1927,6 +1964,216 @@ def delete_flink_session_profile(
     return {"message": "已删除"}
 
 
+_FLINK_OPERATOR_PROFILE_FIELDS = (
+    "description",
+    "is_default",
+    "is_enabled",
+    "flink_operator_namespace",
+    "flink_operator_image",
+    "flink_operator_flink_version",
+    "flink_operator_service_account",
+    "flink_k8s_context",
+    "flink_k8s_kubeconfig_path",
+    "flink_operator_jm_rest_template",
+    "flink_k8s_cluster_domain",
+    "flink_operator_checkpoint_dir",
+    "flink_operator_image_pull_secrets",
+)
+
+
+class FlinkOperatorProfileCreate(BaseModel):
+    workspace_id: int
+    name: str
+    description: Optional[str] = None
+    is_default: bool = False
+    is_enabled: bool = True
+    flink_operator_namespace: Optional[str] = None
+    flink_operator_image: Optional[str] = None
+    flink_operator_flink_version: Optional[str] = None
+    flink_operator_service_account: Optional[str] = None
+    flink_k8s_context: Optional[str] = None
+    flink_k8s_kubeconfig_path: Optional[str] = None
+    flink_operator_jm_rest_template: Optional[str] = None
+    flink_k8s_cluster_domain: Optional[str] = None
+    flink_operator_checkpoint_dir: Optional[str] = None
+    flink_operator_image_pull_secrets: Optional[str] = None
+
+
+class FlinkOperatorProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    is_default: Optional[bool] = None
+    is_enabled: Optional[bool] = None
+    flink_operator_namespace: Optional[str] = None
+    flink_operator_image: Optional[str] = None
+    flink_operator_flink_version: Optional[str] = None
+    flink_operator_service_account: Optional[str] = None
+    flink_k8s_context: Optional[str] = None
+    flink_k8s_kubeconfig_path: Optional[str] = None
+    flink_operator_jm_rest_template: Optional[str] = None
+    flink_k8s_cluster_domain: Optional[str] = None
+    flink_operator_checkpoint_dir: Optional[str] = None
+    flink_operator_image_pull_secrets: Optional[str] = None
+
+
+def _flink_operator_profile_public(p: FlinkOperatorProfile) -> dict:
+    return {
+        "id": p.id,
+        "workspace_id": p.workspace_id,
+        "name": p.name,
+        "description": p.description,
+        "is_default": bool(p.is_default),
+        "is_enabled": bool(p.is_enabled),
+        "flink_operator_namespace": p.flink_operator_namespace,
+        "flink_operator_image": p.flink_operator_image,
+        "flink_operator_flink_version": p.flink_operator_flink_version,
+        "flink_operator_service_account": p.flink_operator_service_account,
+        "flink_k8s_context": p.flink_k8s_context,
+        "flink_k8s_kubeconfig_path": p.flink_k8s_kubeconfig_path,
+        "flink_operator_jm_rest_template": p.flink_operator_jm_rest_template,
+        "flink_k8s_cluster_domain": p.flink_k8s_cluster_domain,
+        "flink_operator_checkpoint_dir": p.flink_operator_checkpoint_dir,
+        "flink_operator_image_pull_secrets": p.flink_operator_image_pull_secrets,
+        "created_at": p.created_at,
+        "updated_at": p.updated_at,
+    }
+
+
+def _flink_operator_profile_effective(db: Session, p: FlinkOperatorProfile) -> dict:
+    from app.services.operator_runtime import resolve_operator_runtime
+
+    ctx = resolve_operator_runtime(db, int(p.workspace_id), int(p.id), None)
+    out = _flink_operator_profile_public(p)
+    out["effective"] = ctx.public_dict()
+    return out
+
+
+def _require_flink_operator_profile_in_workspace(
+    db: Session, workspace_id: int, profile_id: Optional[int]
+) -> None:
+    if profile_id is None:
+        return
+    p = (
+        db.query(FlinkOperatorProfile)
+        .filter(
+            FlinkOperatorProfile.id == int(profile_id),
+            FlinkOperatorProfile.workspace_id == int(workspace_id),
+            FlinkOperatorProfile.is_enabled.is_(True),
+        )
+        .first()
+    )
+    if not p:
+        raise HTTPException(status_code=400, detail="Flink Operator 集群配置不存在或未启用")
+
+
+def _operator_runtime_ctx_for_job(db: Session, job: StreamingJob):
+    from app.services.operator_runtime import OperatorRuntimeContext, resolve_operator_runtime_for_job
+
+    try:
+        return resolve_operator_runtime_for_job(db, job)
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex))
+
+
+@router.get("/flink-operator-profiles")
+def list_flink_operator_profiles(
+    workspace_id: int = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    assert_workspace_data_capability(db, current_user, workspace_id, "viewer", PC.GIDO_STREAM_READ)
+    rows = (
+        db.query(FlinkOperatorProfile)
+        .filter(FlinkOperatorProfile.workspace_id == workspace_id)
+        .order_by(FlinkOperatorProfile.id.asc())
+        .all()
+    )
+    return [_flink_operator_profile_effective(db, p) for p in rows]
+
+
+@router.get("/operator-runtime-images")
+def list_operator_runtime_images(
+    workspace_id: int = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.services.operator_runtime import list_runtime_images_for_workspace
+
+    assert_workspace_data_capability(db, current_user, workspace_id, "viewer", PC.GIDO_STREAM_READ)
+    return {"items": list_runtime_images_for_workspace(db, workspace_id)}
+
+
+@router.post("/flink-operator-profiles")
+def create_flink_operator_profile(
+    body: FlinkOperatorProfileCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    assert_workspace_data_capability(db, current_user, body.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
+    nm = (body.name or "").strip()
+    if not nm:
+        raise HTTPException(status_code=400, detail="名称不能为空")
+    if not (body.flink_operator_namespace or body.flink_operator_image):
+        raise HTTPException(status_code=400, detail="至少填写 flink_operator_namespace 或 flink_operator_image")
+    data = {k: getattr(body, k) for k in _FLINK_OPERATOR_PROFILE_FIELDS}
+    if body.is_default:
+        db.query(FlinkOperatorProfile).filter(
+            FlinkOperatorProfile.workspace_id == body.workspace_id,
+            FlinkOperatorProfile.is_default.is_(True),
+        ).update({"is_default": False})
+    p = FlinkOperatorProfile(workspace_id=body.workspace_id, name=nm, created_by=current_user.id, **data)
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    return _flink_operator_profile_effective(db, p)
+
+
+@router.put("/flink-operator-profiles/{profile_id}")
+def update_flink_operator_profile(
+    profile_id: int,
+    body: FlinkOperatorProfileUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    p = db.query(FlinkOperatorProfile).filter(FlinkOperatorProfile.id == profile_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="配置不存在")
+    assert_workspace_data_capability(db, current_user, p.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
+    patch = body.model_dump(exclude_unset=True)
+    if "name" in patch and patch["name"] is not None:
+        patch["name"] = str(patch["name"]).strip()
+        if not patch["name"]:
+            raise HTTPException(status_code=400, detail="名称不能为空")
+    if patch.get("is_default"):
+        db.query(FlinkOperatorProfile).filter(
+            FlinkOperatorProfile.workspace_id == p.workspace_id,
+            FlinkOperatorProfile.is_default.is_(True),
+            FlinkOperatorProfile.id != p.id,
+        ).update({"is_default": False})
+    for k, v in patch.items():
+        setattr(p, k, v)
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(p)
+    return _flink_operator_profile_effective(db, p)
+
+
+@router.delete("/flink-operator-profiles/{profile_id}")
+def delete_flink_operator_profile(
+    profile_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+):
+    p = db.query(FlinkOperatorProfile).filter(FlinkOperatorProfile.id == profile_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="配置不存在")
+    assert_workspace_data_capability(db, current_user, p.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
+    n = db.query(StreamingJob).filter(StreamingJob.flink_operator_profile_id == profile_id).count()
+    if n:
+        raise HTTPException(status_code=409, detail=f"仍有 {n} 个实时作业绑定该 Operator 集群，请先解除绑定")
+    db.delete(p)
+    db.commit()
+    return {"message": "已删除"}
+
+
 def _operator_deployment_name_for_job(job: StreamingJob) -> Optional[str]:
     from app.services.flink_operator_submit import deployment_name_for_job, sql_deployment_name_for_job
 
@@ -1985,18 +2232,20 @@ def _build_operator_deployment_meta(
     )
 
 
-def _jm_base_for_job(job: StreamingJob) -> Optional[str]:
+def _jm_base_for_job(db: Session, job: StreamingJob) -> Optional[str]:
     """Flink JM REST 基址；Operator 本机开发时运行时解析隧道/NodePort，不用 DB 内集群 DNS。"""
     stored = (getattr(job, "flink_application_jm_rest", None) or "").strip() or None
     dep = _operator_deployment_name_for_job(job)
     if dep:
-        from app.services.flink_operator_submit import _operator_namespace, effective_operator_jm_rest
+        from app.services.flink_operator_submit import effective_operator_jm_rest
 
+        ctx = _operator_runtime_ctx_for_job(db, job)
         resolved = effective_operator_jm_rest(
             job.id,
             dep,
-            _operator_namespace(),
+            ctx.namespace,
             stored,
+            runtime_ctx=ctx,
         )
         if resolved:
             return resolved
@@ -2111,6 +2360,7 @@ def list_jobs(workspace_id: int, db: Session = Depends(get_db), current_user: Us
 def create_job(job_in: JobCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     assert_workspace_data_capability(db, current_user, job_in.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
     _require_flink_profile_in_workspace(db, job_in.workspace_id, job_in.flink_session_profile_id)
+    _require_flink_operator_profile_in_workspace(db, job_in.workspace_id, job_in.flink_operator_profile_id)
     job = StreamingJob(**job_in.model_dump(), created_by=current_user.id, owner_id=current_user.id, is_locked=False)
     db.add(job)
     db.commit()
@@ -2169,6 +2419,7 @@ def copy_streaming_job(
         flink_sql_submit_mode=_normalize_sql_submit_mode(getattr(src, "flink_sql_submit_mode", None)),
         flink_jar_submit_mode=_normalize_jar_submit_mode(getattr(src, "flink_jar_submit_mode", None)),
         flink_session_profile_id=getattr(src, "flink_session_profile_id", None),
+        flink_operator_profile_id=getattr(src, "flink_operator_profile_id", None),
         folder_id=getattr(src, "folder_id", None),
         status="draft",
         is_locked=False,
@@ -2192,6 +2443,8 @@ def update_job(job_id: int, job_in: JobUpdate, db: Session = Depends(get_db), cu
         patch["streaming_properties"] = sp or None
     if "flink_session_profile_id" in patch:
         _require_flink_profile_in_workspace(db, job.workspace_id, patch.get("flink_session_profile_id"))
+    if "flink_operator_profile_id" in patch:
+        _require_flink_operator_profile_in_workspace(db, job.workspace_id, patch.get("flink_operator_profile_id"))
     watch = {
         "script_content",
         "main_class",
@@ -2201,6 +2454,7 @@ def update_job(job_id: int, job_in: JobUpdate, db: Session = Depends(get_db), cu
         "flink_sql_submit_mode",
         "flink_jar_submit_mode",
         "flink_session_profile_id",
+        "flink_operator_profile_id",
     }
     if watch & set(patch.keys()):
         _append_streaming_job_history_snapshot(db, job, current_user.id)
@@ -2393,6 +2647,12 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
         job.flink_application_jm_rest = None
         job.flink_operator_deployment_name = None
         sql_to_run = _sql_script_for_submit(db, job) if job.job_type == "SQL" else None
+        op_runtime_ctx = None
+        if (job.job_type == "SQL" and mode == "flink_operator") or (
+            job.job_type == "JAR"
+            and _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None)) == "flink_operator"
+        ):
+            op_runtime_ctx = _operator_runtime_ctx_for_job(db, job)
         if job.job_type == "SQL":
             extra = _parse_job_streaming_properties(getattr(job, "streaming_properties", None))
             props_only, k8s_ov = _split_streaming_properties_for_sql(extra or None)
@@ -2416,9 +2676,13 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                     extra_flink_props=flink_extra or None,
                     deployment_meta=dep_meta,
                     sql_source=sql_source,
+                    runtime_ctx=op_runtime_ctx,
                 )
                 job.flink_operator_deployment_name = out.get("deployment_name")
                 job.flink_application_jm_rest = out.get("application_jm_rest")
+                if op_runtime_ctx:
+                    job.flink_operator_submit_namespace = op_runtime_ctx.namespace
+                    job.flink_operator_runtime_image = op_runtime_ctx.image
                 fjid = (out.get("flink_job_id") or "").strip() or None
                 job.flink_job_id = fjid
                 submit_warning = out.get("warning")
@@ -2464,9 +2728,13 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                     operator_resources=op_resources,
                     extra_flink_props=flink_extra or None,
                     deployment_meta=dep_meta,
+                    runtime_ctx=op_runtime_ctx,
                 )
                 job.flink_operator_deployment_name = out.get("deployment_name")
                 job.flink_application_jm_rest = out.get("application_jm_rest")
+                if op_runtime_ctx:
+                    job.flink_operator_submit_namespace = op_runtime_ctx.namespace
+                    job.flink_operator_runtime_image = op_runtime_ctx.image
                 fjid = (out.get("flink_job_id") or "").strip() or None
                 job.flink_job_id = fjid
                 submit_warning = out.get("warning")
@@ -2552,18 +2820,20 @@ def delete_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
     should_stop_flink = bool(job.flink_job_id or op_dep_del)
     if should_stop_flink:
         try:
-            jm_ov = _jm_base_for_job(job)
+            jm_ov = _jm_base_for_job(db, job)
             if op_dep_del:
                 from app.services.flink_operator_submit import delete_flink_deployment
 
-                delete_flink_deployment(op_dep_del)
+                op_ctx = _operator_runtime_ctx_for_job(db, job)
+                delete_flink_deployment(
+                    op_dep_del, namespace=op_ctx.namespace, runtime_ctx=op_ctx
+                )
                 _release_operator_ui_tunnel(job)
                 if job.job_type == "SQL" and _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None)) == "flink_operator":
-                    from app.services.flink_operator_submit import _operator_namespace
                     from app.services.sql_artifact import delete_sql_script_configmap
 
                     delete_sql_script_configmap(
-                        job.id, int(job.workspace_id or 0), _operator_namespace()
+                        job.id, int(job.workspace_id or 0), op_ctx.namespace
                     )
             elif job.flink_job_id:
                 _flink_client_for_job(db, job).cancel_job(job.flink_job_id, jm_base=jm_ov)
@@ -2584,13 +2854,14 @@ def delete_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
 def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: User = Depends(get_current_user)):
     """停止 Flink 任务"""
     job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_RUN)
-    jm_ov = _jm_base_for_job(job)
+    jm_ov = _jm_base_for_job(db, job)
     dep_name = _operator_deployment_name_for_job(job)
     if dep_name:
         try:
             from app.services.flink_operator_submit import suspend_flink_deployment
 
-            suspend_flink_deployment(dep_name)
+            op_ctx = _operator_runtime_ctx_for_job(db, job)
+            suspend_flink_deployment(dep_name, namespace=op_ctx.namespace, runtime_ctx=op_ctx)
             _release_operator_ui_tunnel(job)
             if job.job_type == "SQL" and _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None)) == "flink_operator":
                 from app.services.flink_operator_submit import _operator_namespace
@@ -2638,15 +2909,16 @@ def get_job_status(job_id: int, db: Session = Depends(get_db_flink), current_use
         out.update(extra)
         return out
 
-    jm_ov = _jm_base_for_job(job)
+    jm_ov = _jm_base_for_job(db, job)
     if jm_ov and jm_ov != (getattr(job, "flink_application_jm_rest", None) or "").strip().rstrip("/"):
         job.flink_application_jm_rest = jm_ov
     dep_name = _operator_deployment_name_for_job(job)
-    if dep_name:
+    op_ctx = _operator_runtime_ctx_for_job(db, job) if dep_name else None
+    if dep_name and op_ctx:
         try:
             from app.services.flink_operator_submit import read_flink_deployment
 
-            cr = read_flink_deployment(dep_name)
+            cr = read_flink_deployment(dep_name, namespace=op_ctx.namespace, runtime_ctx=op_ctx)
             spec_state = (cr.get("spec", {}).get("job", {}).get("state") or "").strip().lower()
             if spec_state == "suspended":
                 if job.status != "cancelled":
@@ -2661,11 +2933,11 @@ def get_job_status(job_id: int, db: Session = Depends(get_db_flink), current_use
         except Exception:
             logger.debug("读取 FlinkDeployment 状态失败 job_id=%s dep=%s", job.id, dep_name, exc_info=True)
 
-    if dep_name and not job.flink_job_id:
+    if dep_name and not job.flink_job_id and op_ctx:
         try:
             from app.services.flink_operator_submit import extract_status_from_cr, read_flink_deployment
 
-            cr = read_flink_deployment(dep_name)
+            cr = read_flink_deployment(dep_name, namespace=op_ctx.namespace, runtime_ctx=op_ctx)
             jid, lifecycle, err = extract_status_from_cr(cr)
             if jid:
                 job.flink_job_id = jid
@@ -2746,7 +3018,7 @@ def get_job_exceptions(job_id: int, db: Session = Depends(get_db_flink), current
     job = require_streaming_job(db, current_user, job_id)
     if not job.flink_job_id:
         return {"exceptions": []}
-    jm_ov = _jm_base_for_job(job)
+    jm_ov = _jm_base_for_job(db, job)
     fc = _flink_client_for_job(db, job)
     try:
         return fc.job_exceptions(job.flink_job_id, jm_base=jm_ov)

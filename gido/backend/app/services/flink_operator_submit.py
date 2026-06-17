@@ -31,6 +31,7 @@ from app.services.operator_resources import (
     merge_flink_configuration,
     resolve_operator_resources,
 )
+from app.services.operator_runtime import OperatorRuntimeContext
 
 logger = logging.getLogger(__name__)
 
@@ -91,25 +92,36 @@ def operator_submit_ready() -> Tuple[bool, str]:
     return True, ""
 
 
-def _load_k8s_config() -> None:
+def _load_k8s_config(runtime_ctx: Optional[OperatorRuntimeContext] = None) -> None:
     from kubernetes import config  # type: ignore
 
-    kc = (settings.FLINK_K8S_KUBECONFIG_PATH or "").strip()
-    ctx = (settings.FLINK_K8S_CONTEXT or "").strip() or None
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
+    kc = (ctx.kubeconfig_path or settings.FLINK_K8S_KUBECONFIG_PATH or "").strip()
+    k8s_ctx = (ctx.k8s_context or settings.FLINK_K8S_CONTEXT or "").strip() or None
     if kc:
-        config.load_kube_config(config_file=kc, context=ctx)
+        config.load_kube_config(config_file=kc, context=k8s_ctx)
         return
     try:
         config.load_incluster_config()
     except Exception:
-        config.load_kube_config(context=ctx)
+        config.load_kube_config(context=k8s_ctx)
 
 
-def _custom_objects_api():
-    from kubernetes import client  # type: ignore
+def _custom_objects_api(runtime_ctx: Optional[OperatorRuntimeContext] = None):
+    from kubernetes import client, config  # type: ignore
 
-    _load_k8s_config()
-    return client.CustomObjectsApi()
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
+    kc = (ctx.kubeconfig_path or settings.FLINK_K8S_KUBECONFIG_PATH or "").strip()
+    k8s_ctx = (ctx.k8s_context or settings.FLINK_K8S_CONTEXT or "").strip() or None
+    configuration = client.Configuration()
+    if kc:
+        config.load_kube_config(config_file=kc, context=k8s_ctx, client_configuration=configuration)
+    else:
+        try:
+            config.load_incluster_config(client_configuration=configuration)
+        except Exception:
+            config.load_kube_config(context=k8s_ctx, client_configuration=configuration)
+    return client.CustomObjectsApi(client.ApiClient(configuration))
 
 
 def _parse_program_args(program_args: Optional[str]) -> List[str]:
@@ -152,11 +164,16 @@ def _apply_s3_irsa_flink_conf(flink_conf: Dict[str, str]) -> None:
         flink_conf["fs.s3a.aws.credentials.provider"] = provider
 
 
-def _base_flink_conf(*, enable_http_artifacts: bool = False) -> Dict[str, str]:
+def _base_flink_conf(
+    *,
+    enable_http_artifacts: bool = False,
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
+) -> Dict[str, str]:
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
     flink_conf: Dict[str, str] = {}
     if enable_http_artifacts:
         flink_conf["user.artifacts.raw-http-enabled"] = "true"
-    ckpt = (settings.FLINK_OPERATOR_CHECKPOINT_DIR or "").strip()
+    ckpt = (ctx.checkpoint_dir or settings.FLINK_OPERATOR_CHECKPOINT_DIR or "").strip()
     if ckpt:
         flink_conf["state.checkpoints.dir"] = ckpt
         flink_conf["execution.checkpointing.interval"] = (
@@ -170,12 +187,9 @@ def _base_flink_conf(*, enable_http_artifacts: bool = False) -> Dict[str, str]:
     return flink_conf
 
 
-def _operator_image() -> str:
-    return (
-        settings.FLINK_OPERATOR_IMAGE
-        or settings.FLINK_K8S_APPLICATION_IMAGE
-        or "apache/flink:2.2.1-java11"
-    ).strip()
+def _operator_image(runtime_ctx: Optional[OperatorRuntimeContext] = None) -> str:
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
+    return ctx.image
 
 
 def _build_pod_template_for_sql_configmap(configmap_name: str) -> Dict[str, Any]:
@@ -218,14 +232,16 @@ def build_flink_deployment_body(
     pod_template: Optional[Dict[str, Any]] = None,
     extra_flink_props: Optional[Dict[str, Any]] = None,
     deployment_meta: Optional[GidoDeploymentMeta] = None,
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
 ) -> Dict[str, Any]:
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
     resources = operator_resources or resolve_operator_resources(None)
-    image = _operator_image()
-    flink_version = (settings.FLINK_OPERATOR_FLINK_VERSION or "v2_2").strip()
-    sa = (settings.FLINK_OPERATOR_SERVICE_ACCOUNT or "flink").strip() or "flink"
+    image = _operator_image(ctx)
+    flink_version = ctx.flink_version
+    sa = ctx.service_account
 
     flink_conf = merge_flink_configuration(
-        _base_flink_conf(enable_http_artifacts=jar_uri.startswith(("http://", "https://"))),
+        _base_flink_conf(enable_http_artifacts=jar_uri.startswith(("http://", "https://")), runtime_ctx=ctx),
         resources,
         extra_flink_props,
     )
@@ -261,7 +277,7 @@ def build_flink_deployment_body(
     }
     merged_pod_template = merge_pod_templates(
         operator_runtime_pod_template(),
-        operator_image_pull_secrets_pod_template(),
+        operator_image_pull_secrets_pod_template(ctx.image_pull_secrets),
         operator_paimon_warehouse_pod_template(),
         operator_scheduling_pod_template(),
         pod_template,
@@ -301,7 +317,9 @@ def build_flink_deployment_body_for_sql(
     deployment_meta: Optional[GidoDeploymentMeta] = None,
     pod_template: Optional[Dict[str, Any]] = None,
     enable_http_artifacts: bool = False,
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
 ) -> Dict[str, Any]:
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
     jar_uri = (settings.FLINK_OPERATOR_SQL_RUNNER_JAR_URI or "").strip()
     if not jar_uri:
         raise RuntimeError(
@@ -313,7 +331,7 @@ def build_flink_deployment_body_for_sql(
         pod_template = _build_pod_template_for_sql_configmap(configmap_name)
     resources = operator_resources or resolve_operator_resources(None)
     flink_conf = merge_flink_configuration(
-        _base_flink_conf(enable_http_artifacts=enable_http_artifacts),
+        _base_flink_conf(enable_http_artifacts=enable_http_artifacts, runtime_ctx=ctx),
         resources,
         extra_flink_props,
     )
@@ -328,6 +346,7 @@ def build_flink_deployment_body_for_sql(
         job_type_label="sql",
         pod_template=pod_template,
         deployment_meta=deployment_meta,
+        runtime_ctx=ctx,
     )
     body["spec"]["job"]["args"] = [sql_script_path]
     body["spec"]["flinkConfiguration"] = flink_conf
@@ -359,8 +378,11 @@ def effective_sql_source(sql_source: Optional[str]) -> str:
     return source
 
 
-def apply_flink_deployment(body: Dict[str, Any]) -> Dict[str, Any]:
-    api = _custom_objects_api()
+def apply_flink_deployment(
+    body: Dict[str, Any],
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
+) -> Dict[str, Any]:
+    api = _custom_objects_api(runtime_ctx)
     meta = body.get("metadata") or {}
     name = meta["name"]
     namespace = meta["namespace"]
@@ -400,9 +422,14 @@ def apply_flink_deployment(body: Dict[str, Any]) -> Dict[str, Any]:
         )
 
 
-def read_flink_deployment(deployment_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
-    api = _custom_objects_api()
-    ns = namespace or _operator_namespace()
+def read_flink_deployment(
+    deployment_name: str,
+    namespace: Optional[str] = None,
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
+) -> Dict[str, Any]:
+    api = _custom_objects_api(runtime_ctx)
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
+    ns = namespace or ctx.namespace
     return api.get_namespaced_custom_object(
         group=FLINK_DEPLOYMENT_GROUP,
         version=FLINK_DEPLOYMENT_VERSION,
@@ -416,10 +443,12 @@ def list_flink_deployments(
     *,
     namespace: Optional[str] = None,
     workspace_id: Optional[int] = None,
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
 ) -> List[Dict[str, Any]]:
     """列出命名空间内 FlinkDeployment CR；可选按 gido.io/workspace-id 标签过滤。"""
-    api = _custom_objects_api()
-    ns = namespace or _operator_namespace()
+    api = _custom_objects_api(runtime_ctx)
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
+    ns = namespace or ctx.namespace
     kwargs: Dict[str, Any] = {}
     if workspace_id is not None:
         kwargs["label_selector"] = f"gido.io/workspace-id={int(workspace_id)}"
@@ -517,9 +546,14 @@ def operator_overview_payload(*, workspace_id: Optional[int] = None) -> Dict[str
     }
 
 
-def suspend_flink_deployment(deployment_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
-    api = _custom_objects_api()
-    ns = namespace or _operator_namespace()
+def suspend_flink_deployment(
+    deployment_name: str,
+    namespace: Optional[str] = None,
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
+) -> Dict[str, Any]:
+    api = _custom_objects_api(runtime_ctx)
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
+    ns = namespace or ctx.namespace
     patch = {"spec": {"job": {"state": "suspended"}}}
     return api.patch_namespaced_custom_object(
         group=FLINK_DEPLOYMENT_GROUP,
@@ -531,10 +565,15 @@ def suspend_flink_deployment(deployment_name: str, namespace: Optional[str] = No
     )
 
 
-def delete_flink_deployment(deployment_name: str, namespace: Optional[str] = None) -> None:
+def delete_flink_deployment(
+    deployment_name: str,
+    namespace: Optional[str] = None,
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
+) -> None:
     """删除 FlinkDeployment CR；Operator 会回收 JM/TM Pod 与 REST Service。CR 已不存在时忽略 404。"""
-    api = _custom_objects_api()
-    ns = namespace or _operator_namespace()
+    api = _custom_objects_api(runtime_ctx)
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
+    ns = namespace or ctx.namespace
     try:
         api.delete_namespaced_custom_object(
             group=FLINK_DEPLOYMENT_GROUP,
@@ -578,8 +617,14 @@ def _format_operator_template(tpl: str, deployment_name: str, namespace: str) ->
     )
 
 
-def _jm_rest_template() -> str:
-    return (settings.FLINK_OPERATOR_JM_REST_TEMPLATE or settings.FLINK_K8S_APPLICATION_JM_REST_TEMPLATE or "").strip()
+def _jm_rest_template(runtime_ctx: Optional[OperatorRuntimeContext] = None) -> str:
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
+    return (
+        ctx.jm_rest_template
+        or settings.FLINK_OPERATOR_JM_REST_TEMPLATE
+        or settings.FLINK_K8S_APPLICATION_JM_REST_TEMPLATE
+        or ""
+    ).strip()
 
 
 def _is_in_cluster_jm_template(tpl: str) -> bool:
@@ -634,17 +679,19 @@ def resolve_operator_jm_rest(
     *,
     job_id: Optional[int] = None,
     deadline_seconds: float = 25.0,
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
 ) -> Optional[str]:
     """
     解析 Operator JM REST（后端 API 用）。
     生产（集群内 Backend）：JM_REST 模板（*.svc.cluster.local）→ LB → NodePort。
     本机 Kind 覆盖（DEV_LOCAL=true）：自动隧道 → NodePort → LB。
     """
-    ns = namespace or _operator_namespace()
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
+    ns = namespace or ctx.namespace
     dev_local = bool(getattr(settings, "FLINK_OPERATOR_DEV_LOCAL", False))
 
     if not dev_local:
-        tpl = _jm_rest_template()
+        tpl = _jm_rest_template(ctx)
         if tpl:
             return _format_operator_template(tpl, deployment_name, ns)
         return _resolve_jm_rest_via_k8s_expose(
@@ -666,7 +713,7 @@ def resolve_operator_jm_rest(
     )
     if exposed:
         return exposed
-    tpl = _jm_rest_template()
+    tpl = _jm_rest_template(ctx)
     if tpl and not _is_in_cluster_jm_template(tpl):
         return _format_operator_template(tpl, deployment_name, ns)
     return None
@@ -679,6 +726,7 @@ def effective_operator_jm_rest(
     stored: Optional[str] = None,
     *,
     deadline_seconds: float = 12.0,
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
 ) -> Optional[str]:
     """运行时解析 JM REST；忽略 DB 中不可达的集群内 DNS（本机 Docker Backend）。"""
     resolved = resolve_operator_jm_rest(
@@ -686,6 +734,7 @@ def effective_operator_jm_rest(
         namespace,
         job_id=job_id,
         deadline_seconds=deadline_seconds,
+        runtime_ctx=runtime_ctx,
     )
     if resolved:
         return resolved
@@ -874,15 +923,17 @@ def wait_for_operator_job_id(
     deployment_name: str,
     namespace: Optional[str] = None,
     deadline_seconds: float = 45.0,
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """轮询 FlinkDeployment.status 直至出现 jobId 或超时。"""
-    ns = namespace or _operator_namespace()
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
+    ns = namespace or ctx.namespace
     deadline = time.monotonic() + deadline_seconds
     last_lifecycle: Optional[str] = None
     last_err: Optional[str] = None
     while time.monotonic() < deadline:
         try:
-            cr = read_flink_deployment(deployment_name, ns)
+            cr = read_flink_deployment(deployment_name, ns, runtime_ctx=ctx)
             jid, lifecycle, err = extract_status_from_cr(cr)
             last_lifecycle = lifecycle or last_lifecycle
             last_err = err or last_err
@@ -906,12 +957,14 @@ def submit_jar_via_operator(
     operator_resources: Optional[OperatorResources] = None,
     extra_flink_props: Optional[Dict[str, Any]] = None,
     deployment_meta: Optional[GidoDeploymentMeta] = None,
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
 ) -> Dict[str, Any]:
     if not (entry_class or "").strip():
         raise RuntimeError("Flink Operator 提交 JAR 须填写入口类（Main Class）。")
 
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
     deployment_name = deployment_name_for_job(job_id, workspace_id)
-    namespace = _operator_namespace()
+    namespace = ctx.namespace
     jar_uri = resolve_jar_uri_for_job(job_id)
     meta = deployment_meta or GidoDeploymentMeta(
         workspace_id=int(workspace_id),
@@ -928,13 +981,15 @@ def submit_jar_via_operator(
         operator_resources=operator_resources,
         extra_flink_props=extra_flink_props,
         deployment_meta=meta,
+        runtime_ctx=ctx,
     )
-    apply_flink_deployment(body)
+    apply_flink_deployment(body, runtime_ctx=ctx)
     return _submit_flink_deployment_and_wait(
         job_id=job_id,
         deployment_name=deployment_name,
         namespace=namespace,
         artifact_uri=jar_uri,
+        runtime_ctx=ctx,
     )
 
 
@@ -948,6 +1003,7 @@ def submit_sql_via_operator(
     extra_flink_props: Optional[Dict[str, Any]] = None,
     deployment_meta: Optional[GidoDeploymentMeta] = None,
     sql_source: str = "mount",
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
 ) -> Dict[str, Any]:
     if not (sql_content or "").strip():
         raise RuntimeError("SQL 内容为空")
@@ -959,8 +1015,9 @@ def submit_sql_via_operator(
         save_sql_script,
     )
 
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
     deployment_name = sql_deployment_name_for_job(job_id, workspace_id)
-    namespace = _operator_namespace()
+    namespace = ctx.namespace
     save_sql_script(job_id, sql_content)
 
     source = effective_sql_source(sql_source)
@@ -1005,13 +1062,15 @@ def submit_sql_via_operator(
         deployment_meta=meta,
         pod_template=pod_template,
         enable_http_artifacts=http_artifacts,
+        runtime_ctx=ctx,
     )
-    apply_flink_deployment(body)
+    apply_flink_deployment(body, runtime_ctx=ctx)
     return _submit_flink_deployment_and_wait(
         job_id=job_id,
         deployment_name=deployment_name,
         namespace=namespace,
         artifact_uri=script_location,
+        runtime_ctx=ctx,
     )
 
 
@@ -1021,12 +1080,18 @@ def _submit_flink_deployment_and_wait(
     deployment_name: str,
     namespace: str,
     artifact_uri: str,
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
 ) -> Dict[str, Any]:
-    flink_job_id, lifecycle, err = wait_for_operator_job_id(deployment_name, namespace)
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
+    flink_job_id, lifecycle, err = wait_for_operator_job_id(
+        deployment_name, namespace, runtime_ctx=ctx
+    )
 
     jm_rest: Optional[str] = None
     warning: Optional[str] = None
-    jm_rest = resolve_operator_jm_rest(deployment_name, namespace, job_id=job_id)
+    jm_rest = resolve_operator_jm_rest(
+        deployment_name, namespace, job_id=job_id, runtime_ctx=ctx
+    )
     if not jm_rest:
         warning = (
             f"已创建 FlinkDeployment `{deployment_name}`（namespace={namespace}）。"

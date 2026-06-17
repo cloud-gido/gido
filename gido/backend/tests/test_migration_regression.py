@@ -182,6 +182,29 @@ def test_migrate_flink_session_profiles_and_job_fk_idempotent():
     assert "flink_session_profile_id" in jcols
 
 
+def test_migrate_flink_operator_profiles_and_job_fk_idempotent():
+    from sqlalchemy import create_engine, inspect
+
+    from app.services.rbac_seed import (
+        migrate_dw_flink_operator_profiles,
+        migrate_dw_streaming_jobs,
+        migrate_dw_streaming_jobs_flink_operator_profile,
+    )
+
+    import app.api.streaming  # noqa: F401
+
+    eng = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    migrate_dw_streaming_jobs(eng)
+    migrate_dw_flink_operator_profiles(eng)
+    migrate_dw_flink_operator_profiles(eng)
+    migrate_dw_streaming_jobs_flink_operator_profile(eng)
+    migrate_dw_streaming_jobs_flink_operator_profile(eng)
+    assert inspect(eng).has_table("dw_flink_operator_profiles")
+    jcols = {c["name"] for c in inspect(eng).get_columns("dw_streaming_jobs")}
+    assert "flink_operator_profile_id" in jcols
+    assert "flink_operator_submit_namespace" in jcols
+
+
 def test_dolphin_trigger_prefix_from_command_type():
     from app.services.dolphin_instance_sync import _trigger_prefix_from_ds_command_type
 

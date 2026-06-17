@@ -304,6 +304,37 @@ class FlinkSessionProfile(Base):
     created_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
 
 
+# ==================== Flink Operator 集群（按工作空间多套，对标 Session Profile） ====================
+
+
+class FlinkOperatorProfile(Base):
+    """
+    工作空间下多套 Flink Kubernetes Operator 目标集群。
+    各列 NULL 表示沿用平台环境变量（Settings）默认值。
+    """
+
+    __tablename__ = "dw_flink_operator_profiles"
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("dw_workspaces.id"), nullable=False, index=True)
+    name = Column(String(128), nullable=False)
+    description = Column(Text, nullable=True)
+    is_default = Column(Boolean, default=False, nullable=False)
+    is_enabled = Column(Boolean, default=True, nullable=False)
+    flink_operator_namespace = Column(String(256), nullable=True)
+    flink_operator_image = Column(String(512), nullable=True)
+    flink_operator_flink_version = Column(String(32), nullable=True)
+    flink_operator_service_account = Column(String(128), nullable=True)
+    flink_k8s_context = Column(String(256), nullable=True)
+    flink_k8s_kubeconfig_path = Column(String(512), nullable=True)
+    flink_operator_jm_rest_template = Column(String(1024), nullable=True)
+    flink_k8s_cluster_domain = Column(String(256), nullable=True)
+    flink_operator_checkpoint_dir = Column(String(1024), nullable=True)
+    flink_operator_image_pull_secrets = Column(String(512), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+
+
 # ==================== 工作空间平台集成（按空间区分测试/生产 DS、Flink） ====================
 
 

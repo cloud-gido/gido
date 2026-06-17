@@ -123,6 +123,35 @@ function buildStreamingPropertiesJson(
   return JSON.stringify(base)
 }
 
+function parseRuntimeImageFromProps(raw: string | null | undefined): string {
+  if (!raw || !String(raw).trim()) return ''
+  try {
+    const o = JSON.parse(String(raw))
+    return String(o?.operator_runtime_image || o?.runtime_image || '').trim()
+  } catch {
+    return ''
+  }
+}
+
+function mergeRuntimeImageIntoPropsJson(rawJson: string, runtimeImage: string): string {
+  let base: Record<string, unknown> = {}
+  const trimmed = rawJson.trim()
+  if (trimmed && trimmed !== '{}') {
+    base = JSON.parse(trimmed)
+    if (typeof base !== 'object' || base === null || Array.isArray(base)) {
+      throw new Error('invalid')
+    }
+  }
+  const img = (runtimeImage || '').trim()
+  if (img) base.operator_runtime_image = img
+  else {
+    delete base.operator_runtime_image
+    delete base.runtime_image
+  }
+  if (!Object.keys(base).length) return ''
+  return JSON.stringify(base)
+}
+
 function sqlModeLabel(mode: string | undefined) {
   const m = (mode || 'flink_operator').toLowerCase()
   if (m === 'kubernetes_application') return 'K8s Application'
@@ -198,6 +227,10 @@ export default function StreamStudioPage() {
   /** Flink SQL Gateway Open Session 合并用 JSON（对标阿里云实时计算「参数调优」的轻量版） */
   const [streamingPropsJson, setStreamingPropsJson] = useState('{}')
   const [flinkRuntime, setFlinkRuntime] = useState<any | null>(null)
+  const [operatorProfiles, setOperatorProfiles] = useState<any[]>([])
+  const [runtimeImages, setRuntimeImages] = useState<any[]>([])
+  const [operatorProfileId, setOperatorProfileId] = useState<number | undefined>(undefined)
+  const [runtimeImageOverride, setRuntimeImageOverride] = useState<string>('')
   /** 终态产品：仅 Flink Operator；提交模式不再在 UI 暴露 */
   const [sqlSubmitMode] = useState<SqlSubmitMode>('flink_operator')
   const [operatorResForm, setOperatorResForm] = useState<OperatorResForm>({ ...EMPTY_OPERATOR_RES })
@@ -233,6 +266,12 @@ export default function StreamStudioPage() {
   }, [wsId])
 
   useEffect(() => { load(true) }, [load])
+
+  useEffect(() => {
+    if (!wsId) return
+    streamingApi.listOperatorProfiles(wsId).then(setOperatorProfiles).catch(() => setOperatorProfiles([]))
+    streamingApi.listOperatorRuntimeImages(wsId).then((r: any) => setRuntimeImages(r?.items || [])).catch(() => setRuntimeImages([]))
+  }, [wsId])
 
   useEffect(() => {
     streamingApi.flinkRuntime().then(setFlinkRuntime).catch(() => setFlinkRuntime(null))
@@ -286,8 +325,10 @@ export default function StreamStudioPage() {
       }
       setOperatorResForm(parseOperatorResForm(sp))
       setResourceTier(parseResourceTier(sp))
+      setOperatorProfileId(selected.flink_operator_profile_id ?? undefined)
+      setRuntimeImageOverride(parseRuntimeImageFromProps(sp))
     }
-  }, [selected?.id, selected?.script_content, selected?.job_type, selected?.parallelism, selected?.streaming_properties])
+  }, [selected?.id, selected?.job_type, selected?.parallelism, selected?.streaming_properties, selected?.flink_operator_profile_id])
 
   useEffect(() => {
     if (selected?.job_type === 'JAR') {
@@ -344,14 +385,20 @@ export default function StreamStudioPage() {
       || (selected.job_type === 'JAR' && effectiveJarMode === 'flink_operator')
     if (selected.job_type === 'SQL') {
       try {
-        streaming_properties = buildStreamingPropertiesJson(streamingPropsJson, operatorResForm, includeOperatorRes, resourceTier)
+        streaming_properties = mergeRuntimeImageIntoPropsJson(
+          buildStreamingPropertiesJson(streamingPropsJson, operatorResForm, includeOperatorRes, resourceTier),
+          runtimeImageOverride,
+        )
       } catch {
         message.error('参数调优 JSON 格式无效，请检查')
         return
       }
     } else if (selected.job_type === 'JAR' && effectiveJarMode === 'flink_operator') {
       try {
-        streaming_properties = buildStreamingPropertiesJson(jarStreamingPropsJson, operatorResForm, true, resourceTier)
+        streaming_properties = mergeRuntimeImageIntoPropsJson(
+          buildStreamingPropertiesJson(jarStreamingPropsJson, operatorResForm, true, resourceTier),
+          runtimeImageOverride,
+        )
       } catch {
         message.error('高级配置 JSON 格式无效，请检查')
         return
@@ -362,6 +409,7 @@ export default function StreamStudioPage() {
       main_class: selected.job_type === 'JAR' ? (jarForm.main_class || undefined) : undefined,
       program_args: selected.job_type === 'JAR' ? (jarForm.program_args || undefined) : undefined,
       parallelism: selected.job_type === 'JAR' ? jarForm.parallelism : sqlParallelism,
+      flink_operator_profile_id: operatorProfileId ?? null,
       ...(selected.job_type === 'SQL' ? { streaming_properties, flink_sql_submit_mode: effectiveSqlMode } : {}),
       ...(selected.job_type === 'JAR' ? { flink_jar_submit_mode: effectiveJarMode, streaming_properties } : {}),
     })
@@ -746,6 +794,35 @@ export default function StreamStudioPage() {
                     )}
                   />
                   <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
+                    <Space wrap>
+                      <span>Operator 集群</span>
+                      <Select
+                        allowClear
+                        placeholder="平台默认"
+                        style={{ minWidth: 200 }}
+                        disabled={selected.is_locked}
+                        value={operatorProfileId}
+                        onChange={v => setOperatorProfileId(v ?? undefined)}
+                        options={operatorProfiles.map((p: any) => ({
+                          value: p.id,
+                          label: `${p.name}${p.effective?.namespace ? ` (${p.effective.namespace})` : ''}`,
+                        }))}
+                      />
+                      <span>运行时镜像</span>
+                      <Select
+                        allowClear
+                        showSearch
+                        placeholder="沿用集群配置"
+                        style={{ minWidth: 280 }}
+                        disabled={selected.is_locked}
+                        value={runtimeImageOverride || undefined}
+                        onChange={v => setRuntimeImageOverride(v || '')}
+                        options={runtimeImages.map((r: any) => ({
+                          value: r.image,
+                          label: `${r.label}: ${r.image}`,
+                        }))}
+                      />
+                    </Space>
                     <Space>
                       <span style={{ marginRight: 8 }}>并行度</span>
                       <InputNumber min={1} value={sqlParallelism} onChange={v => setSqlParallelism(Number(v) || 1)} disabled={selected.is_locked} />

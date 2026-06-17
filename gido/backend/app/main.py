@@ -25,7 +25,7 @@ from app.api import admin_rbac, admin_integration
 from app.api import data_service, data_service_open
 from app.api import approval
 from app.models import rbac_models  # noqa: F401  — 注册 RBAC 表
-from app.models.workspace import PlatformIntegration, FlinkSessionProfile, WorkspacePlatformIntegration, PublishApproval, WorkspaceVariable  # noqa: F401
+from app.models.workspace import PlatformIntegration, FlinkSessionProfile, WorkspacePlatformIntegration, PublishApproval, WorkspaceVariable, FlinkOperatorProfile  # noqa: F401
 from app.models import data_service as data_service_models  # noqa: F401
 
 Base.metadata.create_all(bind=engine)
@@ -86,6 +86,8 @@ async def lifespan(app: FastAPI):
         migrate_dw_streaming_jobs_submit_audit_and_history_submit_mode,
         migrate_dw_flink_session_profiles,
         migrate_dw_streaming_jobs_flink_session_profile,
+        migrate_dw_flink_operator_profiles,
+        migrate_dw_streaming_jobs_flink_operator_profile,
         migrate_dw_sync_tasks_enhance,
         migrate_dw_data_service,
         migrate_workspace_space_settings,
@@ -119,6 +121,8 @@ async def lifespan(app: FastAPI):
     migrate_dw_streaming_jobs_submit_audit_and_history_submit_mode(engine)
     migrate_dw_flink_session_profiles(engine)
     migrate_dw_streaming_jobs_flink_session_profile(engine)
+    migrate_dw_flink_operator_profiles(engine)
+    migrate_dw_streaming_jobs_flink_operator_profile(engine)
     migrate_dw_sync_tasks_enhance(engine)
     migrate_dw_data_service(engine)
     migrate_workspace_space_settings(engine)
