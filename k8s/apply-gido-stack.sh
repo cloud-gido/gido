@@ -9,6 +9,8 @@
 # 环境变量（可选）：
 #   GIDO_BACKEND_IMAGE   默认 gido-backend:latest
 #   GIDO_FRONTEND_IMAGE  默认 gido-frontend:latest
+#   GIDO_FLINK_OPERATOR_IMAGE  默认 gido-flink-sql-runner:latest；Kind 本地可用 GHCR dev-1 镜像
+#   GIDO_SKIP_FLINK_BUILD=1  不本地构建 Flink 运行时（配合 GIDO_FLINK_OPERATOR_IMAGE 使用）
 #   GIDO_APPLY_FLINK=1   可选：额外 apply k8s/legacy/flink.yaml（Session Flink，一般不需要）
 #   GIDO_KIND_LOAD=0     强制不导入 Kind（非 Kind 集群时用）
 #   GIDO_APPLY_INGRESS=1 再 kubectl apply k8s/gido-ingress.yaml
@@ -48,7 +50,15 @@ if [[ "${GIDO_SKIP_BUILD:-}" != "1" ]]; then
   kind_image_build "${BUILD_PLATFORM}" "${FRONTEND_IMAGE}" "${ROOT}/gido/frontend" \
     --build-arg "NODE_IMAGE=${NODE_IMAGE:-docker.m.daocloud.io/library/node:18-alpine}" \
     --build-arg "NGINX_IMAGE=${NGINX_IMAGE:-docker.m.daocloud.io/library/nginx:alpine}"
-  gido_flink_sql_runner_build "${BUILD_PLATFORM}" "${FLINK_OPERATOR_IMAGE}" "${ROOT}"
+  if [[ "${GIDO_SKIP_FLINK_BUILD:-}" == "1" ]]; then
+    echo "==> 跳过 Flink 运行时构建（GIDO_SKIP_FLINK_BUILD=1，使用 ${FLINK_OPERATOR_IMAGE}）"
+    if [[ "${FLINK_OPERATOR_IMAGE}" == */*/* ]]; then
+      echo "==> docker pull ${FLINK_OPERATOR_IMAGE}"
+      docker pull "${FLINK_OPERATOR_IMAGE}"
+    fi
+  else
+    gido_flink_sql_runner_build "${BUILD_PLATFORM}" "${FLINK_OPERATOR_IMAGE}" "${ROOT}"
+  fi
 else
   echo "==> 跳过构建（GIDO_SKIP_BUILD=1，使用已有镜像 ${BACKEND_IMAGE} / ${FRONTEND_IMAGE} / ${FLINK_OPERATOR_IMAGE}）"
 fi

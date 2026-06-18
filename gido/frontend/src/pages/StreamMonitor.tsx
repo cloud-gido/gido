@@ -131,13 +131,12 @@ export default function StreamMonitorPage() {
     }
   }
 
-  const canRemove = can(user, P.GIDO_STREAM_WRITE, currentWorkspace)
   const canRun = can(user, P.GIDO_STREAM_RUN, currentWorkspace)
 
-  const handleRemove = async (row: any) => {
+  const handleOffline = async (row: any) => {
     try {
-      await streamingApi.deleteJob(row.id)
-      message.success('已从平台删除该任务记录')
+      const res: any = await streamingApi.offlineJob(row.id)
+      message.success(res?.message || '已下线，作业定义仍保留在作业开发')
       setFlinkMap(prev => {
         const n = { ...prev }
         delete n[row.id]
@@ -145,7 +144,7 @@ export default function StreamMonitorPage() {
       })
       await loadJobs()
     } catch (e: any) {
-      message.error(e?.response?.data?.detail || '删除失败')
+      message.error(e?.response?.data?.detail || '下线失败')
     }
   }
 
@@ -339,20 +338,20 @@ export default function StreamMonitorPage() {
           },
         }]
       : []),
-    ...(canRemove
+    ...(canRun
       ? [{
-          title: '删除',
-          key: 'del',
+          title: '下线',
+          key: 'offline',
           width: 76,
           render: (_: unknown, row: any) => (
             <Popconfirm
-              title="删除此作业记录？"
-              description="将尝试停止 Flink 并删除本平台记录。"
-              onConfirm={() => handleRemove(row)}
-              okText="删除"
+              title="下线此作业？"
+              description="将清理 Flink 运行实例并重置为 draft；作业开发中的 SQL/JAR 定义不会删除。"
+              onConfirm={() => handleOffline(row)}
+              okText="下线"
               okButtonProps={{ danger: true }}
             >
-              <Button type="link" size="small" danger icon={<DeleteOutlined />}>删除</Button>
+              <Button type="link" size="small" danger icon={<DeleteOutlined />}>下线</Button>
             </Popconfirm>
           ),
         }]

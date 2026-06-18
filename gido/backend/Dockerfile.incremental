@@ -1,0 +1,3 @@
+# 增量构建：基于已有 gido-backend 镜像，仅复制 app/（本地网络差时用）
+FROM gido-backend:latest
+COPY app /app/app

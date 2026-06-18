@@ -268,6 +268,7 @@ export const streamingApi = {
   rollbackJobHistory: (jobId: number, historyId: number) =>
     request.post(`/streaming/jobs/${jobId}/history/${historyId}/rollback`),
   deleteJob: (id: number) => request.delete(`/streaming/jobs/${id}`),
+  offlineJob: (id: number) => request.post(`/streaming/jobs/${id}/offline`),
   submitJob: (id: number, scriptContent?: string) =>
     request.post(
       `/streaming/jobs/${id}/submit`,

@@ -2837,43 +2837,75 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
         raise HTTPException(status_code=500, detail=f"提交失败: {e}")
 
 
+def _stop_flink_runtime_for_job(db: Session, job: StreamingJob) -> None:
+    """停止/删除 Flink 运行时（FlinkDeployment 或 JM job），不删平台作业定义。"""
+    op_dep = _operator_deployment_name_for_job(job)
+    if not (job.flink_job_id or op_dep):
+        return
+    jm_ov = _jm_base_for_job(db, job)
+    if op_dep:
+        from app.services.flink_operator_submit import delete_flink_deployment
+
+        op_ctx = _operator_runtime_ctx_for_job(db, job)
+        delete_flink_deployment(op_dep, namespace=op_ctx.namespace, runtime_ctx=op_ctx)
+        _release_operator_ui_tunnel(job)
+        if job.job_type == "SQL" and _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None)) == "flink_operator":
+            from app.services.sql_artifact import delete_sql_script_configmap
+
+            delete_sql_script_configmap(job.id, int(job.workspace_id or 0), op_ctx.namespace)
+    elif job.flink_job_id:
+        _flink_client_for_job(db, job).cancel_job(job.flink_job_id, jm_base=jm_ov)
+
+
+def _clear_job_runtime_fields(job: StreamingJob) -> None:
+    """清空运行态字段，保留脚本/JAR 等开发定义。"""
+    job.flink_job_id = None
+    job.flink_operator_deployment_name = None
+    job.flink_application_cluster_id = None
+    job.flink_application_jm_rest = None
+    job.flink_operator_submit_namespace = None
+    job.last_submit_error = None
+    job.status = "draft"
+    job.updated_at = datetime.utcnow()
+
+
 @router.delete("/jobs/{job_id}")
 def delete_job(job_id: int, db: Session = Depends(get_db_flink), current_user: User = Depends(get_current_user)):
     job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_WRITE)
     if getattr(job, "is_locked", False) and not workspace_data_full_control(db, current_user, job.workspace_id):
         raise HTTPException(status_code=403, detail="作业已锁定，仅空间管理员或平台管理员可删除")
-    op_dep_del = _operator_deployment_name_for_job(job)
-    should_stop_flink = bool(job.flink_job_id or op_dep_del)
-    if should_stop_flink:
-        try:
-            jm_ov = _jm_base_for_job(db, job)
-            if op_dep_del:
-                from app.services.flink_operator_submit import delete_flink_deployment
-
-                op_ctx = _operator_runtime_ctx_for_job(db, job)
-                delete_flink_deployment(
-                    op_dep_del, namespace=op_ctx.namespace, runtime_ctx=op_ctx
-                )
-                _release_operator_ui_tunnel(job)
-                if job.job_type == "SQL" and _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None)) == "flink_operator":
-                    from app.services.sql_artifact import delete_sql_script_configmap
-
-                    delete_sql_script_configmap(
-                        job.id, int(job.workspace_id or 0), op_ctx.namespace
-                    )
-            elif job.flink_job_id:
-                _flink_client_for_job(db, job).cancel_job(job.flink_job_id, jm_base=jm_ov)
-        except Exception:
-            logger.warning(
-                "删除前停止 Flink 任务失败 job_id=%s flink_job_id=%s deployment=%s",
-                job.id,
-                job.flink_job_id,
-                getattr(job, "flink_operator_deployment_name", None),
-                exc_info=True,
-            )
+    try:
+        _stop_flink_runtime_for_job(db, job)
+    except Exception:
+        logger.warning(
+            "删除前停止 Flink 任务失败 job_id=%s flink_job_id=%s deployment=%s",
+            job.id,
+            job.flink_job_id,
+            getattr(job, "flink_operator_deployment_name", None),
+            exc_info=True,
+        )
     db.delete(job)
     db.commit()
     return {"message": "已删除"}
+
+
+@router.post("/jobs/{job_id}/offline")
+def offline_job(job_id: int, db: Session = Depends(get_db_flink), current_user: User = Depends(get_current_user)):
+    """作业运维「下线」：清理 Flink 运行时，保留作业开发中的定义。"""
+    job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_RUN)
+    had_runtime = bool(
+        job.flink_job_id
+        or _operator_deployment_name_for_job(job)
+        or getattr(job, "flink_application_cluster_id", None)
+    )
+    if had_runtime:
+        try:
+            _stop_flink_runtime_for_job(db, job)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"下线失败: {e}") from e
+    _clear_job_runtime_fields(job)
+    db.commit()
+    return {"message": "已下线（作业定义仍保留，可在作业开发中重新提交）"}
 
 
 @router.post("/jobs/{job_id}/cancel")
