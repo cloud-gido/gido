@@ -154,3 +154,33 @@ def test_resolve_operator_jm_rest_dev_local_skips_cluster_dns(monkeypatch):
     url = fos.resolve_operator_jm_rest("gido-jar-3", "flink", job_id=3)
     assert url is None
 
+
+def test_build_flink_deployment_static_s3_credentials(monkeypatch):
+    from app.core.config import settings
+    from app.services import s3_auth
+
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_S3_AUTH_MODE", "static")
+    monkeypatch.setattr(settings, "GIDO_S3_ACCESS_KEY_ID", "AKIA_TEST")
+    monkeypatch.setattr(settings, "GIDO_S3_SECRET_ACCESS_KEY", "secret")
+    monkeypatch.setattr(settings, "PAIMON_WAREHOUSE_DEFAULT", "s3a://bucket/paimon")
+
+    body = build_flink_deployment_body(
+        deployment_name="gido-jar-s3",
+        namespace="flink",
+        jar_uri="http://host/artifact.jar",
+        entry_class="com.example.Job",
+        parallelism=2,
+    )
+    fc = body["spec"]["flinkConfiguration"]
+    assert "com.amazonaws.auth.WebIdentityTokenCredentialsProvider" not in fc.get(
+        "fs.s3a.aws.credentials.provider", ""
+    )
+    assert "EnvironmentVariableCredentialsProvider" in fc["fs.s3a.aws.credentials.provider"]
+
+    pod_tpl = body["spec"]["podTemplate"]["spec"]["containers"][0]
+    env = {e["name"]: e["value"] for e in pod_tpl["env"]}
+    assert env["AWS_ACCESS_KEY_ID"] == "AKIA_TEST"
+    assert env["AWS_SECRET_ACCESS_KEY"] == "secret"
+
+    assert s3_auth.validate_s3_auth_for_submit() is None
+

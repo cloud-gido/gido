@@ -113,7 +113,13 @@ eksctl create iamserviceaccount \
   --approve --override-existing-serviceaccounts
 ```
 
-使用 **静态 AK/SK** 时，可在 Paimon catalog 增加 `s3.access-key` / `s3.secret-key`（不推荐生产）。
+使用 **静态 AK/SK** 时（非 EKS 或临时环境）：
+
+1. 设置 `FLINK_OPERATOR_S3_AUTH_MODE=static`（或 legacy `FLINK_OPERATOR_S3_USE_IRSA=false`）
+2. 在 **gido-secrets** 或独立 Secret 中配置 `GIDO_S3_ACCESS_KEY_ID` / `GIDO_S3_SECRET_ACCESS_KEY`（Backend envFrom）
+3. GIDO 提交作业时自动向 Flink Pod 注入 `AWS_*` 环境变量，并设置 Hadoop `EnvironmentVariableCredentialsProvider`
+
+示例见 [k8s/s3-credentials-secret.example.yaml](../k8s/s3-credentials-secret.example.yaml)。生产仍推荐 IRSA。
 
 ### 3.4 GIDO Backend
 

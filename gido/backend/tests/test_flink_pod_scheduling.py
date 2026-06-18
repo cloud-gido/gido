@@ -106,6 +106,33 @@ def test_sql_pod_template_includes_image_pull_secrets(monkeypatch):
     assert body["spec"]["podTemplate"]["spec"]["containers"][0]["imagePullPolicy"] == "Always"
 
 
+def test_merge_pod_templates_merges_container_env():
+    base = {
+        "spec": {
+            "containers": [
+                {"name": "flink-main-container", "env": [{"name": "FOO", "value": "1"}]},
+            ],
+        }
+    }
+    extra = {
+        "spec": {
+            "containers": [
+                {
+                    "name": "flink-main-container",
+                    "env": [
+                        {"name": "AWS_ACCESS_KEY_ID", "value": "AKIA"},
+                        {"name": "FOO", "value": "2"},
+                    ],
+                },
+            ],
+        }
+    }
+    merged = merge_pod_templates(base, extra)
+    env = {e["name"]: e["value"] for e in merged["spec"]["containers"][0]["env"]}
+    assert env["FOO"] == "2"
+    assert env["AWS_ACCESS_KEY_ID"] == "AKIA"
+
+
 def test_merge_pod_templates_preserves_both():
     scheduling = {
         "spec": {

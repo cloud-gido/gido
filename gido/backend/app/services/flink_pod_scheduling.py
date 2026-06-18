@@ -123,6 +123,16 @@ def _merge_containers(base: List[Dict[str, Any]], extra: List[Dict[str, Any]]) -
                         if m.get("name"):
                             mounts[m["name"]] = m
                     existing["volumeMounts"] = list(mounts.values())
+                elif mk == "env" and isinstance(mv, list):
+                    env_map = {
+                        item.get("name"): copy.deepcopy(item)
+                        for item in (existing.get("env") or [])
+                        if isinstance(item, dict) and item.get("name")
+                    }
+                    for item in mv:
+                        if isinstance(item, dict) and item.get("name"):
+                            env_map[item["name"]] = copy.deepcopy(item)
+                    existing["env"] = list(env_map.values())
                 else:
                     existing[mk] = copy.deepcopy(mv)
         else:

@@ -67,14 +67,9 @@ def build_s3_artifact_uri(job_id: int, filename: str) -> Optional[str]:
 def _s3_client():
     import boto3
 
-    kwargs = {}
-    region = (getattr(settings, "GIDO_ARTIFACT_S3_REGION", None) or "").strip()
-    if region:
-        kwargs["region_name"] = region
-    endpoint = (getattr(settings, "GIDO_ARTIFACT_S3_ENDPOINT_URL", None) or "").strip()
-    if endpoint:
-        kwargs["endpoint_url"] = endpoint
-    return boto3.client("s3", **kwargs)
+    from app.services.s3_auth import boto3_client_kwargs
+
+    return boto3.client("s3", **boto3_client_kwargs())
 
 
 def upload_artifact_bytes(

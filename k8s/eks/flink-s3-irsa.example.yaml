@@ -2,7 +2,8 @@
 #
 # 常见失败：NoAuthWithAWSException — Flink Pod 未挂 IRSA 或 flinkConfiguration 未含
 #   fs.s3a.aws.credentials.provider: com.amazonaws.auth.WebIdentityTokenCredentialsProvider
-# GIDO backend 在 FLINK_OPERATOR_S3_USE_IRSA=true 且配置了 S3 路径时会自动注入。
+# GIDO backend 在 FLINK_OPERATOR_S3_AUTH_MODE=irsa 且配置了 S3 路径时会自动注入 IRSA Provider。
+# static 模式见 k8s/s3-credentials-secret.example.yaml（AK/SK 注入 Flink Pod env + Backend Secret）。
 #
 # 验证（JobManager Pod 启动后）：
 #   kubectl -n flink get sa flink -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}{"\n"}'

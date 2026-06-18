@@ -89,7 +89,8 @@ data:
   PAIMON_WAREHOUSE_DEFAULT: "s3a://CHANGE_ME_S3_BUCKET/paimon-warehouse"
   FLINK_OPERATOR_CHECKPOINT_DIR: "s3a://CHANGE_ME_S3_BUCKET/flink/checkpoints"
   FLINK_OPERATOR_SAVEPOINT_DIR: "s3a://CHANGE_ME_S3_BUCKET/flink/savepoints"
-  # EKS IRSA：Flink 作业读 S3 制品/SQL/checkpoint（须 flink SA 绑 IAM Role）
+  # S3 认证：irsa（EKS 默认）| static（AK/SK，见 k8s/s3-credentials-secret.example.yaml）
+  FLINK_OPERATOR_S3_AUTH_MODE: "irsa"
   FLINK_OPERATOR_S3_USE_IRSA: "true"
   FLINK_OPERATOR_S3_CREDENTIALS_PROVIDER: "com.amazonaws.auth.WebIdentityTokenCredentialsProvider"
   GIDO_ARTIFACT_S3_REGION: "CHANGE_ME_AWS_REGION"

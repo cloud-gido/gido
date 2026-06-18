@@ -116,6 +116,8 @@ SQL_RUNNER_INFO = {
 
 
 def flink_runtime_api_payload() -> dict:
+    from app.services.s3_auth import s3_auth_public_summary
+
     op_ns = (settings.FLINK_OPERATOR_NAMESPACE or settings.FLINK_K8S_NAMESPACE or "flink").strip()
     img = (settings.FLINK_OPERATOR_IMAGE or settings.FLINK_K8S_APPLICATION_IMAGE or "").strip()
     op_ver = (settings.FLINK_OPERATOR_FLINK_VERSION or "v2_2").strip()
@@ -140,4 +142,5 @@ def flink_runtime_api_payload() -> dict:
         "runtime_image_job_override_keys": ["operator_runtime_image", "runtime_image"],
         "operator_flink_version_job_override_keys": ["operator_flink_version", "flink_version"],
         "cdc_flink_compatibility_note": CDC_FLINK_COMPATIBILITY_NOTE,
+        **s3_auth_public_summary(),
     }

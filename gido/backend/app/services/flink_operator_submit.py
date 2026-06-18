@@ -31,6 +31,11 @@ from app.services.operator_resources import (
     merge_flink_configuration,
     resolve_operator_resources,
 )
+from app.services.s3_auth import (
+    apply_flink_s3_flink_conf,
+    operator_s3_credentials_pod_template,
+    validate_s3_auth_for_submit,
+)
 from app.services.operator_runtime import OperatorRuntimeContext
 
 logger = logging.getLogger(__name__)
@@ -83,6 +88,9 @@ def operator_submit_ready() -> Tuple[bool, str]:
         return False, "请配置 FLINK_OPERATOR_NAMESPACE（或 FLINK_K8S_NAMESPACE）。"
     if not (settings.FLINK_OPERATOR_ARTIFACT_TOKEN or "").strip():
         return False, "请配置 FLINK_OPERATOR_ARTIFACT_TOKEN（Operator Pod 拉取 JAR 制品校验）。"
+    ok, s3_msg = validate_s3_auth_for_submit()
+    if not ok:
+        return False, s3_msg
     jar_base = (settings.FLINK_OPERATOR_JAR_HTTP_BASE or "").strip()
     if not jar_base and not (settings.FLINK_OPERATOR_JAR_S3_PREFIX or "").strip():
         return False, (
@@ -141,29 +149,6 @@ def _resolve_savepoint_dir(checkpoint_dir: str) -> str:
     return f"{ckpt}/savepoints"
 
 
-def _s3_paths_configured() -> bool:
-    from app.services.artifact_s3 import artifact_s3_enabled
-
-    if artifact_s3_enabled():
-        return True
-    ckpt = (settings.FLINK_OPERATOR_CHECKPOINT_DIR or "").strip().lower()
-    if ckpt.startswith("s3://") or ckpt.startswith("s3a://"):
-        return True
-    wh = (settings.PAIMON_WAREHOUSE_DEFAULT or "").strip().lower()
-    return wh.startswith("s3://") or wh.startswith("s3a://")
-
-
-def _apply_s3_irsa_flink_conf(flink_conf: Dict[str, str]) -> None:
-    """EKS 上读 s3/s3a 制品与 checkpoint 须 IRSA；注入 fs.s3a.aws.credentials.provider。"""
-    if not getattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True):
-        return
-    if not _s3_paths_configured():
-        return
-    provider = (settings.FLINK_OPERATOR_S3_CREDENTIALS_PROVIDER or "").strip()
-    if provider:
-        flink_conf["fs.s3a.aws.credentials.provider"] = provider
-
-
 def _base_flink_conf(
     *,
     enable_http_artifacts: bool = False,
@@ -180,7 +165,7 @@ def _base_flink_conf(
             settings.FLINK_OPERATOR_CHECKPOINT_INTERVAL or "60s"
         )
         flink_conf["execution.checkpointing.savepoint-dir"] = _resolve_savepoint_dir(ckpt)
-    _apply_s3_irsa_flink_conf(flink_conf)
+    apply_flink_s3_flink_conf(flink_conf)
     rest_ex = (settings.FLINK_K8S_REST_EXPOSED_TYPE or "LoadBalancer").strip()
     if rest_ex:
         flink_conf["kubernetes.rest-service.exposed.type"] = rest_ex
@@ -279,6 +264,7 @@ def build_flink_deployment_body(
         operator_runtime_pod_template(),
         operator_image_pull_secrets_pod_template(ctx.image_pull_secrets),
         operator_paimon_warehouse_pod_template(),
+        operator_s3_credentials_pod_template(),
         operator_scheduling_pod_template(),
         pod_template,
     )
