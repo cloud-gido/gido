@@ -101,3 +101,4 @@ def test_flink_runtime_api_payload(monkeypatch):
     assert len(payload["connectors"]) == len(BUNDLED_CONNECTORS)
     assert any(c["id"] == "paimon" for c in payload["connectors"])
     assert any(c["id"] == "s3-fs-hadoop" for c in payload["connectors"])
+    assert any(v["value"] == "v1_17" for v in payload["supported_operator_flink_versions"])

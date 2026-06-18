@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.services.flink_version import infer_operator_flink_version_from_image
 
 
 def _strip_or_none(value: Optional[str]) -> Optional[str]:
@@ -176,10 +177,19 @@ def resolve_operator_runtime(
             image_pull_secrets=profile.flink_operator_image_pull_secrets,
         )
     overrides = _job_runtime_overrides(streaming_properties)
-    return base.with_overrides(
+    explicit_version = bool(
+        (profile is not None and _strip_or_none(getattr(profile, "flink_operator_flink_version", None)))
+        or _strip_or_none(overrides.get("flink_version"))
+    )
+    ctx = base.with_overrides(
         image=overrides.get("image"),
         flink_version=overrides.get("flink_version"),
     )
+    if not explicit_version:
+        inferred = infer_operator_flink_version_from_image(ctx.image)
+        if inferred:
+            ctx = ctx.with_overrides(flink_version=inferred)
+    return ctx
 
 
 def resolve_operator_runtime_for_job(db: Session, job: Any) -> OperatorRuntimeContext:
@@ -236,13 +246,16 @@ def list_runtime_images_for_workspace(db: Session, workspace_id: int) -> List[Di
         if not img or img in seen:
             continue
         seen.add(img)
+        prof_ver = _strip_or_none(p.flink_operator_flink_version)
+        if not prof_ver:
+            prof_ver = infer_operator_flink_version_from_image(img)
         images.append(
             {
                 "source": "profile",
                 "profile_id": p.id,
                 "label": (p.name or "").strip() or f"#{p.id}",
                 "image": img,
-                "flink_version": _strip_or_none(p.flink_operator_flink_version) or default.flink_version,
+                "flink_version": prof_ver or default.flink_version,
             }
         )
     return images

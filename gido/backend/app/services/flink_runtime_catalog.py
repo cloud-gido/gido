@@ -7,6 +7,11 @@
 from typing import List
 
 from app.core.config import settings
+from app.services.flink_version import (
+    display_flink_version_from_runtime,
+    infer_operator_flink_version_from_image,
+    supported_operator_flink_versions_public,
+)
 
 BUNDLED_CONNECTORS: List[dict] = [
     {
@@ -98,7 +103,8 @@ BUNDLED_CONNECTORS: List[dict] = [
 
 CDC_FLINK_COMPATIBILITY_NOTE = (
     "Flink CDC 3.6+ 在 Maven 为 3.6.0-1.20 / 3.6.0-2.2（无裸 3.6.0）。"
-    "GIDO Flink 2.2.1 预置 3.6.0-2.2；CDC→Paimon 链路请在目标环境验证。"
+    "平台默认 gido-flink-runtime 2.2.1 预置 3.6.0-2.2；"
+    "若使用 Flink 1.17.2 等其它运行时镜像，CDC/Paimon 以该镜像内实际 connector 为准。"
 )
 
 SQL_RUNNER_INFO = {
@@ -111,11 +117,16 @@ SQL_RUNNER_INFO = {
 def flink_runtime_api_payload() -> dict:
     op_ns = (settings.FLINK_OPERATOR_NAMESPACE or settings.FLINK_K8S_NAMESPACE or "flink").strip()
     img = (settings.FLINK_OPERATOR_IMAGE or settings.FLINK_K8S_APPLICATION_IMAGE or "").strip()
+    op_ver = (settings.FLINK_OPERATOR_FLINK_VERSION or "v2_2").strip()
+    inferred = infer_operator_flink_version_from_image(img)
+    effective_op_ver = op_ver if op_ver else (inferred or "v2_2")
+    display_ver = display_flink_version_from_runtime(effective_op_ver, img)
     return {
         "submit_mode": (settings.GIDO_FLINK_SUBMIT_MODE or "operator").strip().lower(),
         "legacy_flink_submit_enabled": bool(settings.GIDO_LEGACY_FLINK_SUBMIT),
-        "flink_version": "2.2.1",
-        "flink_operator_version": (settings.FLINK_OPERATOR_FLINK_VERSION or "v2_2").strip(),
+        "flink_version": display_ver,
+        "flink_operator_version": effective_op_ver,
+        "supported_operator_flink_versions": supported_operator_flink_versions_public(),
         "operator_namespace": op_ns,
         "runtime_image": img or "gido-flink-runtime",
         "runtime_image_aliases": ["gido-flink-runtime"],
@@ -123,7 +134,9 @@ def flink_runtime_api_payload() -> dict:
         "checkpoint_dir_default": (settings.FLINK_OPERATOR_CHECKPOINT_DIR or "").strip() or None,
         "sql_runner": SQL_RUNNER_INFO,
         "connectors": BUNDLED_CONNECTORS,
+        "connectors_scope": "platform_default_runtime_2_2",
         "operator_profiles_supported": True,
         "runtime_image_job_override_keys": ["operator_runtime_image", "runtime_image"],
+        "operator_flink_version_job_override_keys": ["operator_flink_version", "flink_version"],
         "cdc_flink_compatibility_note": CDC_FLINK_COMPATIBILITY_NOTE,
     }

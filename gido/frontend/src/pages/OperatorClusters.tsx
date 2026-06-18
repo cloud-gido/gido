@@ -32,10 +32,11 @@ type OperatorProfile = {
   effective?: Record<string, unknown>
 }
 
-const FLINK_VERSION_OPTIONS = [
+const DEFAULT_FLINK_VERSION_OPTIONS = [
   { label: 'v2_2（Flink 2.2.x）', value: 'v2_2' },
   { label: 'v2_0（Flink 2.0.x）', value: 'v2_0' },
   { label: 'v1_20（Flink 1.20.x）', value: 'v1_20' },
+  { label: 'v1_17（Flink 1.17.x）', value: 'v1_17' },
 ]
 
 function apiErrorMessage(e: any, fallback: string): string {
@@ -86,7 +87,22 @@ export default function OperatorClustersPage() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [submitLoading, setSubmitLoading] = useState(false)
+  const [versionOptions, setVersionOptions] = useState(DEFAULT_FLINK_VERSION_OPTIONS)
   const [form] = Form.useForm()
+
+  useEffect(() => {
+    streamingApi.flinkRuntime().then((r: any) => {
+      const opts = r?.supported_operator_flink_versions
+      if (Array.isArray(opts) && opts.length) {
+        setVersionOptions(
+          opts.map((o: { value: string; label: string }) => ({
+            value: o.value,
+            label: `${o.value}（${o.label}）`,
+          })),
+        )
+      }
+    }).catch(() => { /* 使用 DEFAULT_FLINK_VERSION_OPTIONS */ })
+  }, [])
 
   const load = useCallback(async () => {
     if (!wsId) {
@@ -128,7 +144,7 @@ export default function OperatorClustersPage() {
       is_enabled: row.is_enabled,
       flink_operator_namespace: row.flink_operator_namespace ?? '',
       flink_operator_image: row.flink_operator_image ?? '',
-      flink_operator_flink_version: row.flink_operator_flink_version ?? '',
+      flink_operator_flink_version: row.flink_operator_flink_version ?? row.effective?.flink_version ?? '',
       flink_operator_service_account: row.flink_operator_service_account ?? '',
       flink_k8s_context: row.flink_k8s_context ?? '',
       flink_k8s_kubeconfig_path: row.flink_k8s_kubeconfig_path ?? '',
@@ -400,14 +416,14 @@ export default function OperatorClustersPage() {
             label="运行时镜像"
             extra="FlinkDeployment.spec.image；生产常用 gido-flink-runtime。留空继承 GIDO_FLINK_OPERATOR_IMAGE。作业级「运行时镜像」可再覆盖。"
           >
-            <Input placeholder="apache/flink:2.2.1-java11 或私有 gido-flink-runtime" />
+            <Input placeholder="apache/flink:2.2.1-java11、1.17.2-java11 或私有运行时镜像" />
           </Form.Item>
           <Form.Item
             name="flink_operator_flink_version"
             label="Operator CRD 版本"
-            extra="须与集群 FlinkDeployment CRD 一致；Flink 2.2.x 用 v2_2。留空继承平台默认。"
+            extra="须与集群 FlinkDeployment CRD 一致；1.17.2 镜像用 v1_17，2.2.x 用 v2_2。仅填镜像时可自动推断。"
           >
-            <Select allowClear placeholder="留空则继承平台默认" options={FLINK_VERSION_OPTIONS} />
+            <Select allowClear placeholder="留空则继承平台默认或按镜像推断" options={versionOptions} />
           </Form.Item>
           <Form.Item
             name="flink_operator_service_account"

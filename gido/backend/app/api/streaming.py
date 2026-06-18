@@ -1499,15 +1499,15 @@ class SubmitJobBody(BaseModel):
 
 def _jar_session_blocked_reason() -> Optional[str]:
     """Operator 与 Session Flink 主版本不一致时，阻止 Session JAR 误提交。"""
+    from app.services.flink_version import operator_version_major_line, session_image_major_line
+
     op_ver = (settings.FLINK_OPERATOR_FLINK_VERSION or "").strip().lower()
     app_img = (settings.FLINK_K8S_APPLICATION_IMAGE or "").strip().lower()
     if not op_ver or not app_img:
         return None
-    op_major = op_ver.replace("v", "").split("_")[0] if "_" in op_ver else ""
-    session_major = "2" if "2.0" in app_img or "2.1" in app_img or "2.2" in app_img else "1"
-    if op_ver.startswith("v2_") and session_major == "2":
-        return None
-    if op_ver.startswith("v1_") and session_major == "1":
+    op_line = operator_version_major_line(op_ver)
+    session_line = session_image_major_line(app_img)
+    if op_line and session_line and op_line == session_line:
         return None
     if not (settings.FLINK_URL or "").strip():
         return None
@@ -2103,6 +2103,20 @@ def list_operator_runtime_images(
     return {"items": list_runtime_images_for_workspace(db, workspace_id)}
 
 
+def _normalize_operator_profile_patch(data: dict) -> dict:
+    from app.services.flink_version import infer_operator_flink_version_from_image, normalize_operator_flink_version
+
+    out = dict(data)
+    raw_fv = out.get("flink_operator_flink_version")
+    if raw_fv is not None and str(raw_fv).strip():
+        out["flink_operator_flink_version"] = normalize_operator_flink_version(str(raw_fv))
+    elif out.get("flink_operator_image"):
+        inferred = infer_operator_flink_version_from_image(out.get("flink_operator_image"))
+        if inferred:
+            out["flink_operator_flink_version"] = inferred
+    return out
+
+
 @router.post("/flink-operator-profiles")
 def create_flink_operator_profile(
     body: FlinkOperatorProfileCreate,
@@ -2115,7 +2129,7 @@ def create_flink_operator_profile(
         raise HTTPException(status_code=400, detail="名称不能为空")
     if not (body.flink_operator_namespace or body.flink_operator_image):
         raise HTTPException(status_code=400, detail="至少填写 flink_operator_namespace 或 flink_operator_image")
-    data = {k: getattr(body, k) for k in _FLINK_OPERATOR_PROFILE_FIELDS}
+    data = _normalize_operator_profile_patch({k: getattr(body, k) for k in _FLINK_OPERATOR_PROFILE_FIELDS})
     if body.is_default:
         db.query(FlinkOperatorProfile).filter(
             FlinkOperatorProfile.workspace_id == body.workspace_id,
@@ -2150,6 +2164,18 @@ def update_flink_operator_profile(
             FlinkOperatorProfile.is_default.is_(True),
             FlinkOperatorProfile.id != p.id,
         ).update({"is_default": False})
+    if patch.get("flink_operator_flink_version"):
+        from app.services.flink_version import normalize_operator_flink_version
+
+        patch["flink_operator_flink_version"] = normalize_operator_flink_version(
+            str(patch["flink_operator_flink_version"])
+        )
+    elif patch.get("flink_operator_image"):
+        from app.services.flink_version import infer_operator_flink_version_from_image
+
+        inferred = infer_operator_flink_version_from_image(patch.get("flink_operator_image"))
+        if inferred:
+            patch["flink_operator_flink_version"] = inferred
     for k, v in patch.items():
         setattr(p, k, v)
     p.updated_at = datetime.utcnow()
@@ -2799,8 +2825,8 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
             pass
         if job.job_type == "JAR" and "ParameterTool" in err_full:
             err_full = (
-                f"{err_full}\n\n提示：JAR 编译用的 Flink 版本与运行时（Session/Operator 镜像）不一致。"
-                "请用 Flink 2.2.1 重新打包 JAR，或改用与 JAR 匹配的镜像与 flinkVersion。"
+                f"{err_full}\n\n提示：JAR 编译用的 Flink 版本与运行时（Operator 镜像 / flinkVersion）不一致。"
+                "请用与运行时镜像一致的 Flink 版本重新打包 JAR，或在 Operator 集群/作业中配置匹配的镜像与 flinkVersion（如 1.17.2 + v1_17）。"
             )
         if len(err_full) > 32000:
             err_full = err_full[:32000] + "\n…(truncated)"

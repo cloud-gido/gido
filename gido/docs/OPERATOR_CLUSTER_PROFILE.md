@@ -122,7 +122,9 @@
 | **含义** | 写入 `FlinkDeployment.spec.flinkVersion`，须与集群已安装的 **FlinkDeployment CRD API 版本**一致。 |
 | **继承默认** | 空 → `FLINK_OPERATOR_FLINK_VERSION` → `v2_2` |
 | **对应 .env** | `GIDO_FLINK_OPERATOR_FLINK_VERSION` |
-| **常用值** | `v2_2`（Flink **2.2.x**，GIDO 默认）；`v2_0`（2.0.x）；`v1_20`（1.20.x 遗留） |
+| **常用值** | `v2_2`（Flink **2.2.x**，GIDO 默认）；`v2_0`（2.0.x）；`v1_20`（1.20.x）；**`v1_17`（1.17.x，如 1.17.2）** |
+| **自动推断** | Profile 只填镜像 `…:1.17.2-java11` 且未填本字段时，Backend 自动设为 `v1_17` |
+| **示例配置** | 见 [../config/flink-operator.flink-1.17.env.example](../config/flink-operator.flink-1.17.env.example) |
 | **注意** | Operator Pod 已是 1.15 但 CRD 未升级时，提交会 **422**；需 `kubectl apply` Operator 包内 `crds/`。CRD 版本与 Flink 小版本必须匹配文档。 |
 
 ### `flink_operator_service_account`（ServiceAccount）
