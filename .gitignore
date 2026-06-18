@@ -25,6 +25,7 @@ k8s/.flink-runtime-content-hash
 k8s/flink-sql-runner/.build/
 k8s/gido-deploy.env
 k8s/kind-local.env
+k8s/gido-production.env
 
 # Node / frontend
 node_modules/
