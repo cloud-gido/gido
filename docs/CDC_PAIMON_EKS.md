@@ -274,7 +274,7 @@ Flink CDC **3.6.0-2.2** 与 Flink **2.2.1** 为 GIDO 当前锁定组合（见 `/
 |------|------|
 | `k8s/flink-sql-runner/connectors-pom.xml` | 连接器与 S3 依赖 |
 | `k8s/flink-sql-runner/Dockerfile` | S3 插件安装到 `plugins/s3-fs-hadoop` |
-| `k8s/flink-runtime/connectors.manifest` | 镜像内组件清单 |
+| `k8s/flink-runtime/<flink_version>/` | 各 Flink 基座版本运行时配置与 connector 清单 |
 | `k8s/eks/*.example.yaml` | IRSA、Secret、ConfigMap 示例 |
 | `gido/backend/app/services/artifact_s3.py` | JAR/SQL 制品 S3 上传 |
 | `gido/backend/app/services/jar_artifact.py` | 本地 + S3 制品、`resolve_jar_uri_for_operator` |

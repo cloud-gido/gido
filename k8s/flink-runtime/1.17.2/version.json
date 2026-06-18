@@ -1,0 +1,39 @@
+{
+  "description": "Flink 1.17.2 运行时（Paimon 0.9.0 + CDC 3.2.1 + S3 + sql-runner）",
+  "flink_version": "1.17.2",
+  "java_version": "11",
+  "operator_flink_version": "v1_17",
+  "base_image": "apache/flink:1.17.2-java11",
+  "paimon": {
+    "artifact_id": "paimon-flink-1.17",
+    "version": "0.9.0"
+  },
+  "flink_cdc_version": "3.2.1",
+  "flink_s3_fs_version": "1.17.2",
+  "sql_runner_compile": {
+    "paimon_artifact_id": "paimon-flink-1.17",
+    "paimon_version": "0.9.0"
+  },
+  "verify": {
+    "required_globs": [
+      "/opt/flink/lib/paimon-flink-1.17-*.jar",
+      "/opt/flink/lib/hadoop-common-*.jar",
+      "/opt/flink/lib/hadoop-hdfs-client-*.jar",
+      "/opt/flink/lib/hadoop-mapreduce-client-core-*.jar",
+      "/opt/flink/lib/hadoop-auth-*.jar",
+      "/opt/flink/lib/commons-configuration2-*.jar",
+      "/opt/flink/lib/hadoop-shaded-guava-*.jar",
+      "/opt/flink/lib/woodstox-core-*.jar",
+      "/opt/flink/lib/stax2-api-*.jar",
+      "/opt/flink/usrlib/sql-runner.jar",
+      "/opt/flink/plugins/s3-fs-hadoop/flink-s3-fs-hadoop-*.jar"
+    ],
+    "forbidden_files": [
+      "commons-cli-1.2.jar",
+      "log4j-1.2.17.jar"
+    ],
+    "forbidden_globs": [
+      "/opt/flink/lib/paimon-s3*.jar"
+    ]
+  }
+}

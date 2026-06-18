@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 校验 gido-flink-runtime 镜像（按 runtime-versions.json 中的 verify 规则）
+# 校验 gido-flink-runtime 镜像（按 k8s/flink-runtime/<flink_version>/version.json 中的 verify 规则）
 # 用法：
 #   bash k8s/flink-runtime/scripts/verify-image.sh <镜像:tag> [runtime_key]
 #   RUNTIME_VERSION=2.2.1 bash k8s/flink-runtime/scripts/verify-image.sh <镜像:tag>

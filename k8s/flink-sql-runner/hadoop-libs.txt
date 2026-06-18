@@ -1,5 +1,5 @@
 # Paimon S3 catalog 主 classpath 白名单（group:artifact:version）
-# 权威副本：k8s/flink-runtime/profiles/<version>/hadoop-libs.txt（构建由 render 复制到 .build/）
+# 权威副本：k8s/flink-runtime/<flink_version>/hadoop-libs.txt（构建由 render 复制到 .build/）
 org.apache.hadoop:hadoop-common:3.3.4
 org.apache.hadoop:hadoop-hdfs-client:3.3.4
 org.apache.hadoop:hadoop-mapreduce-client-core:3.3.4

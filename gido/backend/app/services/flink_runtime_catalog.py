@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # @author felixzhu
 # @date 2026-06-10
-"""统一 Flink 运行时镜像内预置连接器清单（与 k8s/flink-runtime/connectors.manifest 对齐）。"""
+"""统一 Flink 运行时镜像内预置连接器清单（与 k8s/flink-runtime/2.2.1/connectors.manifest 对齐）。"""
 
 from typing import List
 
@@ -102,9 +102,10 @@ BUNDLED_CONNECTORS: List[dict] = [
 ]
 
 CDC_FLINK_COMPATIBILITY_NOTE = (
-    "Flink CDC 3.6+ 在 Maven 为 3.6.0-1.20 / 3.6.0-2.2（无裸 3.6.0）。"
+    "Flink CDC 3.6+ 在 Maven 为 3.6.0-1.20 / 3.6.0-2.2（无 3.6.0-1.17）。"
+    "Flink 1.17.x 运行时镜像预置 CDC 3.2.1；Flink 2.0.x 预置 CDC 3.5.0；"
     "平台默认 gido-flink-runtime 2.2.1 预置 3.6.0-2.2；"
-    "若使用 Flink 1.17.2 等其它运行时镜像，CDC/Paimon 以该镜像内实际 connector 为准。"
+    "若使用其它运行时镜像，CDC/Paimon 以该镜像内实际 connector 为准。"
 )
 
 SQL_RUNNER_INFO = {

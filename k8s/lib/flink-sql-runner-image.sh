@@ -2,7 +2,7 @@
 
 # GIDO 统一 Flink 运行时镜像（sql-runner + Paimon + CDC，Operator 唯一提交路径）
 # 镜像名：gido-flink-sql-runner（主）/ gido-flink-runtime（别名）
-# 版本配置：k8s/flink-runtime/runtime-versions.json
+# 版本配置：k8s/flink-runtime/runtime-versions.json（索引）+ k8s/flink-runtime/<flink_version>/
 # 须先 source k8s/lib/kind-image.sh（平台由 gido_detect_build_platform 自动判断）
 
 gido_python() {

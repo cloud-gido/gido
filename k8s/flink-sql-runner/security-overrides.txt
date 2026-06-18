@@ -1,5 +1,5 @@
 # CVE 覆盖清单
-# 权威副本：k8s/flink-runtime/profiles/<version>/security-overrides.txt
+# 权威副本：k8s/flink-runtime/<flink_version>/security-overrides.txt
 io.netty:netty-common:4.2.13.Final
 io.netty:netty-buffer:4.2.13.Final
 io.netty:netty-codec:4.2.13.Final

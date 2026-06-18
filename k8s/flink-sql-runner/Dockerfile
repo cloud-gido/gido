@@ -1,8 +1,8 @@
 
 
 # GIDO 统一 Flink 运行时（gido-flink-runtime）
-# 版本与 connector 坐标由 k8s/flink-runtime/runtime-versions.json 定义；
-# 构建前须 render：python3 k8s/flink-runtime/scripts/render_build_context.py <version>
+# 版本与 connector 坐标由 k8s/flink-runtime/<flink_version>/version.json 定义；
+# 构建前须 render：python3 k8s/flink-runtime/scripts/render_build_context.py <flink_version>
 #
 # 平台由构建脚本自动检测，见 k8s/build-flink-runtime.sh
 # 构建后校验：bash k8s/flink-runtime/scripts/verify-image.sh <tag> [runtime_key]
@@ -56,11 +56,17 @@ RUN mkdir -p /opt/flink/lib /opt/flink/usrlib /opt/flink/gido-scripts /opt/flink
     && chown -R flink:flink /opt/flink/lib /opt/flink/usrlib /opt/flink/gido-scripts /opt/flink/plugins
 COPY --from=connectors /conn/target/connectors/ /tmp/connectors/
 COPY .build/${RUNTIME_PROFILE}/verify-layout.sh /tmp/verify-layout.sh
-RUN mv /tmp/connectors/flink-s3-fs-hadoop-*.jar /opt/flink/plugins/s3-fs-hadoop/ \
-    && mv /tmp/connectors/*.jar /opt/flink/lib/ \
-    && chmod +x /tmp/verify-layout.sh \
-    && /tmp/verify-layout.sh \
-    && rm -f /tmp/verify-layout.sh \
-    && rm -rf /tmp/connectors
+RUN bash -ec '\
+    shopt -s nullglob; \
+    s3=(/tmp/connectors/flink-s3-fs-hadoop-*.jar); \
+    if ((${#s3[@]} == 0)); then echo "缺少 flink-s3-fs-hadoop plugin jar"; ls -la /tmp/connectors/ || true; exit 1; fi; \
+    mv "${s3[@]}" /opt/flink/plugins/s3-fs-hadoop/; \
+    lib=(/tmp/connectors/*.jar); \
+    if ((${#lib[@]})); then mv "${lib[@]}" /opt/flink/lib/; fi; \
+    rm -rf /tmp/connectors \
+    '
 COPY --from=builder /build/target/flink-sql-runner-${SQL_RUNNER_ARTIFACT_VERSION}.jar /opt/flink/usrlib/sql-runner.jar
+RUN chmod +x /tmp/verify-layout.sh \
+    && /tmp/verify-layout.sh \
+    && rm -f /tmp/verify-layout.sh
 USER flink
