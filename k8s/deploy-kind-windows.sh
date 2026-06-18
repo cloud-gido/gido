@@ -17,7 +17,7 @@ if [[ -f "${ROOT}/k8s/kind-local.env" ]]; then
   source "${ROOT}/k8s/kind-local.env"
 fi
 
-export GIDO_FLINK_OPERATOR_IMAGE="${GIDO_FLINK_OPERATOR_IMAGE:-ghcr.io/cloud-gido/gido/dev-1/gido-flink-runtime:dev-1-5b99f2d}"
+export GIDO_FLINK_OPERATOR_IMAGE="${GIDO_FLINK_OPERATOR_IMAGE:-ghcr.io/cloud-gido/gido/dev-1/flink-runtime/2.2.1:dev-1}"
 export GIDO_SKIP_FLINK_BUILD="${GIDO_SKIP_FLINK_BUILD:-1}"
 
 # Kind 节点往往无法直连 ghcr.io；部署前先导入运行时镜像

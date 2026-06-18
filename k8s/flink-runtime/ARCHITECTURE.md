@@ -124,4 +124,13 @@ bash k8s/flink-runtime/scripts/verify-image.sh gido-flink-runtime:orbstack 2.2.1
 
 1. `prepare-flink-matrix` 从 `ci_matrix` 读取并行构建版本（当前 `["2.2.1", "1.17.2", "2.0.1"]`）
 2. `flink-runtime` job 按 matrix render、build、verify
-3. **默认版本**额外打浮动 tag；非默认版本打 Flink 版本号 tag（如 `1.17.2`、`2.0.1`）
+3. **main/dev**（`ci.yml`）：单仓库 `gido-flink-runtime`，非默认版本打 Flink 版本号 tag
+4. **dev-1**（`ci-dev-1.yml`）：各版本独立 GHCR 路径 `dev-1/flink-runtime/<flink_version>`，tag 为 `dev-1` / `dev-1-<sha>`
+
+dev-1 镜像路径示例：
+
+| 版本 | GHCR |
+|------|------|
+| 2.2.1（default） | `ghcr.io/<repo>/dev-1/flink-runtime/2.2.1:dev-1` |
+| 1.17.2 | `ghcr.io/<repo>/dev-1/flink-runtime/1.17.2:dev-1` |
+| 2.0.1 | `ghcr.io/<repo>/dev-1/flink-runtime/2.0.1:dev-1` |

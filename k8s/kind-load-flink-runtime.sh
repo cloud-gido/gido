@@ -2,7 +2,7 @@
 # 将 GHCR / 远程 Flink 运行时预拉并导入 Kind（避免节点直连 ghcr.io TLS 超时）
 #
 #   bash k8s/kind-load-flink-runtime.sh
-#   bash k8s/kind-load-flink-runtime.sh ghcr.io/cloud-gido/gido/dev-1/gido-flink-runtime:dev-1-5b99f2d
+#   bash k8s/kind-load-flink-runtime.sh ghcr.io/cloud-gido/gido/dev-1/flink-runtime/2.2.1:dev-1
 #
 set -euo pipefail
 
@@ -16,7 +16,7 @@ if [[ -f "${ROOT}/k8s/kind-local.env" ]]; then
   source "${ROOT}/k8s/kind-local.env"
 fi
 
-IMAGE="${1:-${GIDO_FLINK_OPERATOR_IMAGE:-ghcr.io/cloud-gido/gido/dev-1/gido-flink-runtime:dev-1-5b99f2d}}"
+IMAGE="${1:-${GIDO_FLINK_OPERATOR_IMAGE:-ghcr.io/cloud-gido/gido/dev-1/flink-runtime/2.2.1:dev-1}}"
 
 echo "==> docker pull ${IMAGE}"
 docker pull "${IMAGE}"

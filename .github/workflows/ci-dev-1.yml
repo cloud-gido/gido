@@ -2,7 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # dev-1 分支专用 CI：构建/推送镜像到 GHCR 的 dev-1/ 子路径，与 dev 分支包名隔离。
-# 例：ghcr.io/<owner>/<repo>/dev-1/gido-flink-runtime:dev-1
+# Flink 运行时按基座版本分仓库：
+#   ghcr.io/<owner>/<repo>/dev-1/flink-runtime/2.2.1:dev-1
+#   ghcr.io/<owner>/<repo>/dev-1/flink-runtime/1.17.2:dev-1
+#   ghcr.io/<owner>/<repo>/dev-1/flink-runtime/2.0.1:dev-1
 
 name: CI (dev-1)
 
@@ -179,8 +182,7 @@ jobs:
           tags: ${{ steps.meta_frontend.outputs.tags }}
           labels: ${{ steps.meta_frontend.outputs.labels }}
 
-  # Flink 运行时：按 k8s/flink-runtime/runtime-versions.json ci_matrix 并行构建
-  # 当前矩阵：2.2.1（default）、1.17.2、2.0.1 → ghcr.io/<repo>/dev-1/gido-flink-runtime:<tag>
+  # Flink 运行时：ci_matrix 并行构建，各版本独立 GHCR 仓库路径 dev-1/flink-runtime/<flink_version>
   validate-flink-runtimes:
     name: Validate Flink runtime configs
     runs-on: ubuntu-latest
@@ -236,13 +238,14 @@ jobs:
           FLINK_VERSION=$(python3 k8s/flink-runtime/scripts/render_build_context.py --print-flink-version "${RUNTIME_KEY}")
           FLINK_BASE_IMAGE=$(python3 k8s/flink-runtime/scripts/render_build_context.py --print-base-image "${RUNTIME_KEY}")
           SQL_RUNNER_VERSION=$(python3 k8s/flink-runtime/scripts/render_build_context.py --print-sql-runner-version)
-          DEFAULT_KEY=$(python3 -c "import json; print(json.load(open('k8s/flink-runtime/runtime-versions.json'))['default'])")
+          IMAGE_REPOSITORY="${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAMESPACE }}/flink-runtime/${FLINK_VERSION}"
           echo "RUNTIME_KEY=${RUNTIME_KEY}" >> "$GITHUB_OUTPUT"
           echo "FLINK_VERSION=${FLINK_VERSION}" >> "$GITHUB_OUTPUT"
           echo "FLINK_BASE_IMAGE=${FLINK_BASE_IMAGE}" >> "$GITHUB_OUTPUT"
           echo "SQL_RUNNER_VERSION=${SQL_RUNNER_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "IS_DEFAULT=$([[ \"${RUNTIME_KEY}\" == \"${DEFAULT_KEY}\" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "IMAGE_REPOSITORY=${IMAGE_REPOSITORY}" >> "$GITHUB_OUTPUT"
           echo "Flink runtime ${RUNTIME_KEY} -> ${FLINK_BASE_IMAGE}"
+          echo "GHCR image: ${IMAGE_REPOSITORY}:dev-1"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -288,12 +291,10 @@ jobs:
         id: meta_flink
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAMESPACE }}/gido-flink-runtime
+          images: ${{ steps.runtime.outputs.IMAGE_REPOSITORY }}
           tags: |
-            type=raw,value=dev-1,enable=${{ steps.runtime.outputs.IS_DEFAULT == 'true' }}
-            type=sha,prefix=dev-1-,enable=${{ steps.runtime.outputs.IS_DEFAULT == 'true' }}
-            type=raw,value=dev-1-${{ steps.runtime.outputs.FLINK_VERSION }}
-            type=raw,value=${{ steps.runtime.outputs.FLINK_VERSION }}
+            type=raw,value=dev-1
+            type=sha,prefix=dev-1-
 
       - name: Build and push flink-runtime image
         uses: docker/build-push-action@v5
@@ -314,7 +315,7 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x k8s/flink-runtime/scripts/verify-image.sh
-          IMAGE="${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAMESPACE }}/gido-flink-runtime:${{ steps.runtime.outputs.FLINK_VERSION }}"
+          IMAGE="${{ steps.runtime.outputs.IMAGE_REPOSITORY }}:dev-1"
           for attempt in $(seq 1 5); do
             if docker pull "${IMAGE}"; then
               bash k8s/flink-runtime/scripts/verify-image.sh "${IMAGE}" "${{ steps.runtime.outputs.RUNTIME_KEY }}"
