@@ -10,6 +10,8 @@
 #   GIDO_BACKEND_IMAGE   默认 gido-backend:latest
 #   GIDO_FRONTEND_IMAGE  默认 gido-frontend:latest
 #   GIDO_FLINK_OPERATOR_IMAGE  默认 gido-flink-sql-runner:latest；Kind 本地可用 GHCR dev-1 镜像
+#   GIDO_FLINK_OPERATOR_FLINK_VERSION  Operator CRD flinkVersion（1.17.2 镜像用 v1_17，2.2.x 用 v2_2）
+#   GIDO_SKIP_BUILD=1  不本地构建 backend/frontend，从 GIDO_*_IMAGE 拉取
 #   GIDO_SKIP_FLINK_BUILD=1  不本地构建 Flink 运行时（配合 GIDO_FLINK_OPERATOR_IMAGE 使用）
 #   GIDO_APPLY_FLINK=1   可选：额外 apply k8s/legacy/flink.yaml（Session Flink，一般不需要）
 #   GIDO_KIND_LOAD=0     强制不导入 Kind（非 Kind 集群时用）
@@ -18,6 +20,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -f "${ROOT}/k8s/kind-local.env" ]]; then
+  # shellcheck disable=SC1091
+  source "${ROOT}/k8s/kind-local.env"
+fi
 # shellcheck source=lib/kind-image.sh
 source "${ROOT}/k8s/lib/kind-image.sh"
 # shellcheck source=lib/flink-sql-runner-image.sh
@@ -28,6 +34,7 @@ source "${ROOT}/k8s/lib/gido-port-forward.sh"
 BACKEND_IMAGE="${GIDO_BACKEND_IMAGE:-gido-backend:latest}"
 FRONTEND_IMAGE="${GIDO_FRONTEND_IMAGE:-gido-frontend:latest}"
 FLINK_OPERATOR_IMAGE="${GIDO_FLINK_OPERATOR_IMAGE:-$(gido_flink_sql_runner_default_tag)}"
+FLINK_OPERATOR_FLINK_VERSION="${GIDO_FLINK_OPERATOR_FLINK_VERSION:-v2_2}"
 KIND_NAME="${KIND_CLUSTER_NAME:-$(kind get clusters 2>/dev/null | head -1 || echo "")}"
 BUILD_PLATFORM="${GIDO_BUILD_PLATFORM:-$(gido_detect_build_platform)}"
 KUBECTL="${KUBECTL:-kubectl}"
@@ -61,6 +68,12 @@ if [[ "${GIDO_SKIP_BUILD:-}" != "1" ]]; then
   fi
 else
   echo "==> 跳过构建（GIDO_SKIP_BUILD=1，使用已有镜像 ${BACKEND_IMAGE} / ${FRONTEND_IMAGE} / ${FLINK_OPERATOR_IMAGE}）"
+  for img in "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" "${FLINK_OPERATOR_IMAGE}"; do
+    if [[ "${img}" == */*/* ]]; then
+      echo "==> docker pull ${img}"
+      docker pull "${img}"
+    fi
+  done
 fi
 
 if _use_kind_load; then
@@ -81,6 +94,7 @@ sed \
   -e "s#__BACKEND_IMAGE__#${BACKEND_IMAGE}#g" \
   -e "s#__FRONTEND_IMAGE__#${FRONTEND_IMAGE}#g" \
   -e "s#__FLINK_OPERATOR_IMAGE__#${FLINK_OPERATOR_IMAGE}#g" \
+  -e "s#__FLINK_OPERATOR_FLINK_VERSION__#${FLINK_OPERATOR_FLINK_VERSION}#g" \
   "${ROOT}/k8s/gido.yaml" | ${KUBECTL} apply -f -
 
 # Secret/ConfigMap 变更不会自动重启 Pod；显式 rollout 以加载 FLINK_OPERATOR_ARTIFACT_TOKEN 等 env

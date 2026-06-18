@@ -20,7 +20,12 @@ fi
 export GIDO_FLINK_OPERATOR_IMAGE="${GIDO_FLINK_OPERATOR_IMAGE:-ghcr.io/cloud-gido/gido/dev-1/flink-runtime/2.2.1:dev-1}"
 export GIDO_SKIP_FLINK_BUILD="${GIDO_SKIP_FLINK_BUILD:-1}"
 
-# Kind 节点往往无法直连 ghcr.io；部署前先导入运行时镜像
-bash "${ROOT}/k8s/kind-load-flink-runtime.sh" "${GIDO_FLINK_OPERATOR_IMAGE}"
+GIT_BASH="${GIT_BASH:-/c/Program Files/Git/bin/bash.exe}"
+if [[ ! -x "${GIT_BASH}" ]]; then
+  GIT_BASH="$(command -v bash || true)"
+fi
 
-exec bash "${ROOT}/k8s/apply-gido-stack.sh"
+# Kind 节点往往无法直连 ghcr.io；部署前先导入运行时镜像
+"${GIT_BASH}" "${ROOT}/k8s/kind-load-flink-runtime.sh" "${GIDO_FLINK_OPERATOR_IMAGE}"
+
+exec "${GIT_BASH}" "${ROOT}/k8s/apply-gido-stack.sh"
