@@ -179,6 +179,9 @@ jobs:
           push: true
           tags: ${{ steps.meta_backend.outputs.tags }}
           labels: ${{ steps.meta_backend.outputs.labels }}
+          build-args: |
+            PY_IMAGE=python:3.11-slim
+            PIP_INDEX=https://pypi.org/simple
 
       - name: Extract metadata (tags, labels) for frontend
         id: meta_frontend
