@@ -155,6 +155,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("version", nargs="?", help="runtime key, e.g. 2.2.1")
     parser.add_argument("--all", action="store_true", help="render all configured versions")
+    parser.add_argument("--list", action="store_true", help="list runtime keys")
     parser.add_argument("--list-ci-matrix", action="store_true", help="print ci_matrix keys as JSON array")
     parser.add_argument("--default", action="store_true", help="render default version only")
     parser.add_argument("--print-flink-version", metavar="KEY", help="print flink_version for KEY")
