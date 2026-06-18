@@ -152,6 +152,59 @@ function mergeRuntimeImageIntoPropsJson(rawJson: string, runtimeImage: string): 
   return JSON.stringify(base)
 }
 
+function OperatorClusterControls({
+  operatorProfiles,
+  operatorProfileId,
+  onOperatorProfileChange,
+  runtimeImages,
+  runtimeImageOverride,
+  onRuntimeImageChange,
+  disabled,
+}: {
+  operatorProfiles: any[]
+  operatorProfileId?: number
+  onOperatorProfileChange: (id: number | undefined) => void
+  runtimeImages: any[]
+  runtimeImageOverride: string
+  onRuntimeImageChange: (image: string) => void
+  disabled?: boolean
+}) {
+  return (
+    <Space wrap>
+      <span>
+        Operator 集群{' '}
+        <Link to={R.stream.operatorClusters} style={{ fontSize: 12 }}>管理</Link>
+      </span>
+      <Select
+        allowClear
+        placeholder="平台默认"
+        style={{ minWidth: 200 }}
+        disabled={disabled}
+        value={operatorProfileId}
+        onChange={v => onOperatorProfileChange(v ?? undefined)}
+        options={operatorProfiles.map((p: any) => ({
+          value: p.id,
+          label: `${p.name}${p.effective?.namespace ? ` (${p.effective.namespace})` : ''}`,
+        }))}
+      />
+      <span>运行时镜像</span>
+      <Select
+        allowClear
+        showSearch
+        placeholder="沿用集群配置"
+        style={{ minWidth: 280 }}
+        disabled={disabled}
+        value={runtimeImageOverride || undefined}
+        onChange={v => onRuntimeImageChange(v || '')}
+        options={runtimeImages.map((r: any) => ({
+          value: r.image,
+          label: `${r.label}: ${r.image}`,
+        }))}
+      />
+    </Space>
+  )
+}
+
 function sqlModeLabel(mode: string | undefined) {
   const m = (mode || 'flink_operator').toLowerCase()
   if (m === 'kubernetes_application') return 'K8s Application'
@@ -344,8 +397,10 @@ export default function StreamStudioPage() {
       }
       setOperatorResForm(parseOperatorResForm(sp))
       setResourceTier(parseResourceTier(sp))
+      setOperatorProfileId(selected.flink_operator_profile_id ?? undefined)
+      setRuntimeImageOverride(parseRuntimeImageFromProps(sp))
     }
-  }, [selected?.id, selected?.job_type, selected?.flink_jar_submit_mode, selected?.streaming_properties])
+  }, [selected?.id, selected?.job_type, selected?.flink_jar_submit_mode, selected?.streaming_properties, selected?.flink_operator_profile_id])
 
   const handleCreate = async () => {
     const v = await createForm.validateFields()
@@ -794,38 +849,15 @@ export default function StreamStudioPage() {
                     )}
                   />
                   <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
-                    <Space wrap>
-                      <span>
-                        Operator 集群{' '}
-                        <Link to={R.stream.operatorClusters} style={{ fontSize: 12 }}>管理</Link>
-                      </span>
-                      <Select
-                        allowClear
-                        placeholder="平台默认"
-                        style={{ minWidth: 200 }}
-                        disabled={selected.is_locked}
-                        value={operatorProfileId}
-                        onChange={v => setOperatorProfileId(v ?? undefined)}
-                        options={operatorProfiles.map((p: any) => ({
-                          value: p.id,
-                          label: `${p.name}${p.effective?.namespace ? ` (${p.effective.namespace})` : ''}`,
-                        }))}
-                      />
-                      <span>运行时镜像</span>
-                      <Select
-                        allowClear
-                        showSearch
-                        placeholder="沿用集群配置"
-                        style={{ minWidth: 280 }}
-                        disabled={selected.is_locked}
-                        value={runtimeImageOverride || undefined}
-                        onChange={v => setRuntimeImageOverride(v || '')}
-                        options={runtimeImages.map((r: any) => ({
-                          value: r.image,
-                          label: `${r.label}: ${r.image}`,
-                        }))}
-                      />
-                    </Space>
+                    <OperatorClusterControls
+                      operatorProfiles={operatorProfiles}
+                      operatorProfileId={operatorProfileId}
+                      onOperatorProfileChange={setOperatorProfileId}
+                      runtimeImages={runtimeImages}
+                      runtimeImageOverride={runtimeImageOverride}
+                      onRuntimeImageChange={setRuntimeImageOverride}
+                      disabled={Boolean(selected.is_locked)}
+                    />
                     <Space>
                       <span style={{ marginRight: 8 }}>并行度</span>
                       <InputNumber min={1} value={sqlParallelism} onChange={v => setSqlParallelism(Number(v) || 1)} disabled={selected.is_locked} />
@@ -961,6 +993,19 @@ export default function StreamStudioPage() {
                     description="JAR 作业通过 FlinkDeployment Application 提交；制品由 GIDO backend 提供 HTTP 拉取。"
                   />
                   <Tag color="purple">Flink Operator</Tag>
+                  {effectiveJarMode === 'flink_operator' && (
+                    <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
+                      <OperatorClusterControls
+                        operatorProfiles={operatorProfiles}
+                        operatorProfileId={operatorProfileId}
+                        onOperatorProfileChange={setOperatorProfileId}
+                        runtimeImages={runtimeImages}
+                        runtimeImageOverride={runtimeImageOverride}
+                        onRuntimeImageChange={setRuntimeImageOverride}
+                        disabled={Boolean(selected.is_locked)}
+                      />
+                    </div>
+                  )}
                   {effectiveJarMode === 'flink_operator' && (
                     <>
                     <Alert
