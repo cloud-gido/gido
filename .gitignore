@@ -22,6 +22,7 @@ pip-wheel-metadata/
 # Deploy metadata (local only)
 k8s/.last-deploy-image-tag
 k8s/.flink-runtime-content-hash
+k8s/flink-sql-runner/.build/
 k8s/gido-deploy.env
 
 # Node / frontend

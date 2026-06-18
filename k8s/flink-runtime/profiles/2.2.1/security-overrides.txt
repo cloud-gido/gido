@@ -1,5 +1,5 @@
-# CVE 覆盖清单（文档副本）
-# 权威副本：k8s/flink-runtime/profiles/<version>/security-overrides.txt
+# CVE 修复：dependency:copy 后写入 connectors/，dedupe-lib-jars.sh 移除同 artifact 旧版本
+# 与 Flink 2.2.1 基座对齐：Netty 4.2.13、Jackson core 2.21.1 / databind 2.13.4.1、Snappy 1.1.10.7
 io.netty:netty-common:4.2.13.Final
 io.netty:netty-buffer:4.2.13.Final
 io.netty:netty-codec:4.2.13.Final

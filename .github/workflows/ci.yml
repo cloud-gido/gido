@@ -122,13 +122,6 @@ jobs:
         with:
           fetch-depth: 2
 
-      - name: Extract Flink version from pom.xml
-        id: extract_flink_version
-        run: |
-          FLINK_VERSION=$(grep -oP '<flink\.version>\K[^<]+' k8s/flink-sql-runner/pom.xml)
-          echo "FLINK_VERSION=${FLINK_VERSION}" >> $GITHUB_OUTPUT
-          echo "Flink version: ${FLINK_VERSION}"
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
@@ -205,16 +198,102 @@ jobs:
           tags: ${{ steps.meta_frontend.outputs.tags }}
           labels: ${{ steps.meta_frontend.outputs.labels }}
 
+  prepare-flink-matrix:
+    name: Prepare Flink runtime matrix
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev')
+    outputs:
+      runtime_keys: ${{ steps.matrix.outputs.runtime_keys }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: matrix
+        run: |
+          KEYS=$(python3 k8s/flink-runtime/scripts/render_build_context.py --list-ci-matrix)
+          echo "runtime_keys=${KEYS}" >> "$GITHUB_OUTPUT"
+          echo "CI Flink runtime matrix: ${KEYS}"
+
+  flink-runtime:
+    name: Flink runtime (${{ matrix.runtime_key }})
+    runs-on: ubuntu-latest
+    needs: prepare-flink-matrix
+    timeout-minutes: 90
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev')
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime_key: ${{ fromJson(needs.prepare-flink-matrix.outputs.runtime_keys) }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Render Flink runtime build context
+        run: python3 k8s/flink-runtime/scripts/render_build_context.py "${{ matrix.runtime_key }}"
+
+      - name: Resolve runtime profile
+        id: runtime
+        run: |
+          RUNTIME_KEY="${{ matrix.runtime_key }}"
+          FLINK_VERSION=$(python3 k8s/flink-runtime/scripts/render_build_context.py --print-flink-version "${RUNTIME_KEY}")
+          SQL_RUNNER_VERSION=$(python3 -c "import json; print(json.load(open('k8s/flink-runtime/runtime-versions.json'))['sql_runner_artifact_version'])")
+          DEFAULT_KEY=$(python3 -c "import json; print(json.load(open('k8s/flink-runtime/runtime-versions.json'))['default'])")
+          echo "RUNTIME_KEY=${RUNTIME_KEY}" >> "$GITHUB_OUTPUT"
+          echo "FLINK_VERSION=${FLINK_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "SQL_RUNNER_VERSION=${SQL_RUNNER_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "IS_DEFAULT=$([[ \"${RUNTIME_KEY}\" == \"${DEFAULT_KEY}\" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "Flink runtime ${RUNTIME_KEY} -> ${FLINK_VERSION}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+
+      - name: Wait for GHCR and log in
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          wait_ghcr() {
+            local attempt code
+            for attempt in $(seq 1 8); do
+              code=$(curl -s -o /dev/null -w "%{http_code}" \
+                --connect-timeout 20 --max-time 45 \
+                "https://ghcr.io/v2/" || true)
+              if [ "${code}" = "401" ] || [ "${code}" = "200" ]; then
+                echo "GHCR reachable (HTTP ${code}) on attempt ${attempt}"
+                return 0
+              fi
+              echo "GHCR unreachable (HTTP ${code:-000}) attempt ${attempt}/8, sleep 25s..."
+              sleep 25
+            done
+            return 1
+          }
+          login_ghcr() {
+            echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${REGISTRY_USER}" --password-stdin
+          }
+          for attempt in $(seq 1 5); do
+            wait_ghcr || true
+            if login_ghcr; then
+              echo "GHCR login succeeded on attempt ${attempt}"
+              exit 0
+            fi
+            echo "GHCR login attempt ${attempt}/5 failed, retry in 30s..."
+            sleep 30
+          done
+          echo "::error::GHCR login failed after 5 attempts"
+          exit 1
+
       - name: Extract metadata (tags, labels) for flink-runtime
         id: meta_flink
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository }}/gido-flink-runtime
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
-            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
-            type=sha,prefix=${{ github.ref_name }}-,enable=${{ github.ref == 'refs/heads/dev' }}
-            type=raw,value=${{ steps.extract_flink_version.outputs.FLINK_VERSION }}
+            type=raw,value=latest,enable=${{ steps.runtime.outputs.IS_DEFAULT == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+            type=raw,value=dev,enable=${{ steps.runtime.outputs.IS_DEFAULT == 'true' && github.ref == 'refs/heads/dev' }}
+            type=sha,prefix=${{ github.ref_name }}-,enable=${{ steps.runtime.outputs.IS_DEFAULT == 'true' && github.ref == 'refs/heads/dev' }}
+            type=raw,value=${{ steps.runtime.outputs.FLINK_VERSION }}
 
       - name: Build and push flink-runtime image
         uses: docker/build-push-action@v5
@@ -226,18 +305,18 @@ jobs:
           labels: ${{ steps.meta_flink.outputs.labels }}
           build-args: |
             TARGETPLATFORM=linux/amd64
-            FLINK_BASE_IMAGE=apache/flink:${{ steps.extract_flink_version.outputs.FLINK_VERSION }}-java11
+            RUNTIME_PROFILE=${{ steps.runtime.outputs.RUNTIME_KEY }}
+            FLINK_BASE_IMAGE=apache/flink:${{ steps.runtime.outputs.FLINK_VERSION }}-java11
+            SQL_RUNNER_ARTIFACT_VERSION=${{ steps.runtime.outputs.SQL_RUNNER_VERSION }}
             MAVEN_IMAGE=maven:3.9-eclipse-temurin-11
 
       - name: Verify Flink runtime image (Paimon S3 deps)
         run: |
-          echo "verify script sha: $(sha256sum k8s/flink-sql-runner/verify-image.sh | awk '{print $1}')"
-          chmod +x k8s/flink-sql-runner/verify-image.sh
-          head -3 k8s/flink-sql-runner/verify-image.sh
-          IMAGE="${{ env.REGISTRY }}/${{ github.repository }}/gido-flink-runtime:${{ steps.extract_flink_version.outputs.FLINK_VERSION }}"
+          chmod +x k8s/flink-runtime/scripts/verify-image.sh
+          IMAGE="${{ env.REGISTRY }}/${{ github.repository }}/gido-flink-runtime:${{ steps.runtime.outputs.FLINK_VERSION }}"
           for attempt in $(seq 1 5); do
             if docker pull "${IMAGE}"; then
-              bash k8s/flink-sql-runner/verify-image.sh "${IMAGE}"
+              bash k8s/flink-runtime/scripts/verify-image.sh "${IMAGE}" "${{ steps.runtime.outputs.RUNTIME_KEY }}"
               exit 0
             fi
             echo "docker pull attempt ${attempt}/5 failed, retry in 20s..."

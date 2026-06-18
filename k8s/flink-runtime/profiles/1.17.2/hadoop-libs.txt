@@ -1,5 +1,4 @@
-# Paimon S3 catalog 主 classpath 白名单
-# 权威副本：k8s/flink-runtime/profiles/<version>/hadoop-libs.txt
+# 与 2.2.1 相同 Hadoop 白名单（Paimon S3 catalog）
 org.apache.hadoop:hadoop-common:3.3.4
 org.apache.hadoop:hadoop-hdfs-client:3.3.4
 org.apache.hadoop:hadoop-mapreduce-client-core:3.3.4

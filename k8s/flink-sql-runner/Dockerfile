@@ -1,25 +1,30 @@
 
 
 # GIDO 统一 Flink 运行时（gido-flink-runtime）
-# Flink 2.2.1 + sql-runner.jar + Paimon + CDC + S3 插件 + Hadoop 白名单（Paimon catalog）
+# 版本与 connector 坐标由 k8s/flink-runtime/runtime-versions.json 定义；
+# 构建前须 render：python3 k8s/flink-runtime/scripts/render_build_context.py <version>
 #
 # 平台由构建脚本自动检测，见 k8s/build-flink-runtime.sh
-# 构建后校验：bash k8s/flink-sql-runner/verify-image.sh <tag>
+# 构建后校验：bash k8s/flink-runtime/scripts/verify-image.sh <tag> [runtime_key]
 
 ARG TARGETPLATFORM
+ARG RUNTIME_PROFILE=2.2.1
 ARG FLINK_BASE_IMAGE=apache/flink:2.2.1-java11
+ARG SQL_RUNNER_ARTIFACT_VERSION=1.0.0
 ARG MAVEN_IMAGE=maven:3.9-eclipse-temurin-11
 ARG MAVEN_SETTINGS=settings.xml
 
 FROM --platform=$TARGETPLATFORM ${MAVEN_IMAGE} AS connectors
+ARG RUNTIME_PROFILE
 ARG MAVEN_SETTINGS=settings.xml
 WORKDIR /conn
-COPY connectors-pom.xml pom.xml
+COPY .build/${RUNTIME_PROFILE}/connectors-pom.xml pom.xml
 COPY settings.xml settings.aliyun.xml ./
 RUN cp "${MAVEN_SETTINGS:-settings.xml}" settings-active.xml
-COPY hadoop-libs.txt hadoop-libs.txt
-COPY security-overrides.txt security-overrides.txt
+COPY .build/${RUNTIME_PROFILE}/hadoop-libs.txt hadoop-libs.txt
+COPY .build/${RUNTIME_PROFILE}/security-overrides.txt security-overrides.txt
 COPY dedupe-lib-jars.sh dedupe-lib-jars.sh
+COPY .build/${RUNTIME_PROFILE}/verify-connectors.sh verify-connectors.sh
 RUN mvn -B -q package -DskipTests -s settings-active.xml -gs settings-active.xml \
     && grep -v '^#' hadoop-libs.txt | grep -v '^[[:space:]]*$' | while IFS= read -r artifact; do \
         mvn -B -q dependency:copy -Dartifact="${artifact}" \
@@ -29,44 +34,33 @@ RUN mvn -B -q package -DskipTests -s settings-active.xml -gs settings-active.xml
         mvn -B -q dependency:copy -Dartifact="${artifact}" \
             -DoutputDirectory=target/connectors -s settings-active.xml -gs settings-active.xml; \
     done \
-    && chmod +x dedupe-lib-jars.sh \
+    && chmod +x dedupe-lib-jars.sh verify-connectors.sh \
     && ./dedupe-lib-jars.sh target/connectors security-overrides.txt \
-    && test -n "$(ls target/connectors/hadoop-common-*.jar)" \
-    && test -n "$(ls target/connectors/hadoop-hdfs-client-*.jar)" \
-    && test -n "$(ls target/connectors/hadoop-mapreduce-client-core-*.jar)" \
-    && test -n "$(ls target/connectors/commons-configuration2-*.jar)" \
-    && test -n "$(ls target/connectors/woodstox-core-*.jar)" \
-    && test -n "$(ls target/connectors/netty-codec-4.2.13.Final.jar)" \
-    && test -n "$(ls target/connectors/netty-codec-http-4.2.13.Final.jar)" \
-    && test -n "$(ls target/connectors/snappy-java-1.1.10.7.jar)"
+    && ./verify-connectors.sh
 
 FROM --platform=$TARGETPLATFORM ${MAVEN_IMAGE} AS builder
+ARG RUNTIME_PROFILE
 ARG MAVEN_SETTINGS=settings.xml
 WORKDIR /build
-COPY pom.xml ./
+COPY .build/${RUNTIME_PROFILE}/sql-runner-pom.xml pom.xml
 COPY settings.xml settings.aliyun.xml ./
 RUN cp "${MAVEN_SETTINGS:-settings.xml}" settings-active.xml
 COPY src ./src
 RUN mvn -B -q package -DskipTests -s settings-active.xml -gs settings-active.xml
 
 FROM --platform=$TARGETPLATFORM ${FLINK_BASE_IMAGE}
+ARG RUNTIME_PROFILE
+ARG SQL_RUNNER_ARTIFACT_VERSION
 USER root
 RUN mkdir -p /opt/flink/lib /opt/flink/usrlib /opt/flink/gido-scripts /opt/flink/plugins/s3-fs-hadoop \
     && chown -R flink:flink /opt/flink/lib /opt/flink/usrlib /opt/flink/gido-scripts /opt/flink/plugins
 COPY --from=connectors /conn/target/connectors/ /tmp/connectors/
+COPY .build/${RUNTIME_PROFILE}/verify-layout.sh /tmp/verify-layout.sh
 RUN mv /tmp/connectors/flink-s3-fs-hadoop-*.jar /opt/flink/plugins/s3-fs-hadoop/ \
     && mv /tmp/connectors/*.jar /opt/flink/lib/ \
-    && test -n "$(ls /opt/flink/lib/hadoop-common-*.jar)" \
-    && test -n "$(ls /opt/flink/lib/hadoop-hdfs-client-*.jar)" \
-    && test -n "$(ls /opt/flink/lib/hadoop-mapreduce-client-core-*.jar)" \
-    && test -n "$(ls /opt/flink/lib/commons-configuration2-*.jar)" \
-    && test -n "$(ls /opt/flink/lib/woodstox-core-*.jar)" \
-    && test -n "$(ls /opt/flink/lib/netty-codec-4.2.13.Final.jar)" \
-    && test -n "$(ls /opt/flink/lib/netty-codec-http-4.2.13.Final.jar)" \
-    && test -n "$(ls /opt/flink/lib/snappy-java-1.1.10.7.jar)" \
-    && test -n "$(ls /opt/flink/lib/paimon-flink-2.2-*.jar)" \
-    && test -n "$(ls /opt/flink/plugins/s3-fs-hadoop/flink-s3-fs-hadoop-*.jar)" \
-    && rm -f /opt/flink/lib/commons-cli-1.2.jar /opt/flink/lib/log4j-1.2.17.jar \
+    && chmod +x /tmp/verify-layout.sh \
+    && /tmp/verify-layout.sh \
+    && rm -f /tmp/verify-layout.sh \
     && rm -rf /tmp/connectors
-COPY --from=builder /build/target/flink-sql-runner-1.0.0.jar /opt/flink/usrlib/sql-runner.jar
+COPY --from=builder /build/target/flink-sql-runner-${SQL_RUNNER_ARTIFACT_VERSION}.jar /opt/flink/usrlib/sql-runner.jar
 USER flink

@@ -1,0 +1,2 @@
+# Flink 1.17.2 基座 CVE 覆盖（构建前请在目标环境验证与基座 Netty/Jackson 的兼容性）
+# 留空则 connectors 阶段不额外 copy 安全 jar

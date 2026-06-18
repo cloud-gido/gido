@@ -4,7 +4,7 @@
 
 GIDO Stream 中台默认采用 **单一 Flink 部署路径**：通过 **Flink Kubernetes Operator** 创建 `FlinkDeployment`，作业容器使用 **统一运行时镜像** `gido-flink-runtime`。
 
-GitHub Actions（`.github/workflows/ci.yml` → `docker-flink-runtime`）构建 `k8s/flink-sql-runner/Dockerfile` 并推送 **`gido-flink-runtime`** 至 GHCR（`FLINK_OPERATOR_IMAGE`）。`sql-runner` 指镜像内的 JAR（`local:///opt/flink/usrlib/sql-runner.jar`），不是独立容器镜像。详见 `k8s/flink-sql-runner/README.md`。
+GitHub Actions（`.github/workflows/ci.yml` → `docker-flink-runtime`）从 **`k8s/flink-runtime/runtime-versions.json`** 读取版本，render 构建上下文后构建 `k8s/flink-sql-runner/Dockerfile`，推送 **`gido-flink-runtime`** 至 GHCR。架构详见 `k8s/flink-runtime/ARCHITECTURE.md`。
 
 - Flink 版本：**2.2.1**（Operator `flinkVersion: v2_2`）
 - SQL / JAR 均提交为 Operator Application 模式
@@ -36,11 +36,13 @@ GitHub Actions（`.github/workflows/ci.yml` → `docker-flink-runtime`）构建 
 
 完整清单见 `k8s/flink-runtime/connectors.manifest`。
 
-构建：
+构建（默认 2.2.1；多版本见 `runtime-versions.json`）：
 
 ```bash
+bash k8s/build-flink-runtime.sh
+GIDO_FLINK_RUNTIME_VERSION=1.17.2 bash k8s/build-flink-runtime.sh
 source k8s/lib/flink-sql-runner-image.sh
-gido_flink_sql_runner_build linux/amd64 gido-flink-sql-runner:latest /path/to/gido
+gido_flink_sql_runner_build linux/amd64 gido-flink-sql-runner:latest /path/to/gido 2.2.1
 ```
 
 ## 后端配置

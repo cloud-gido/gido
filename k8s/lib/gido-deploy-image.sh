@@ -68,11 +68,17 @@ gido_resolve_flink_tag() {
 
 gido_flink_runtime_source_hash() {
   local root="$1"
-  local dir="${root}/k8s/flink-sql-runner"
-  [[ -d "${dir}" ]] || return 1
-  find "${dir}" -type f \( \
-    -name '*.java' -o -name '*.xml' -o -name 'Dockerfile' -o -name 'settings.xml' -o -name '*.manifest' \
-  \) -print0 2>/dev/null | sort -z | xargs -0 sha256sum 2>/dev/null | sha256sum | awk '{print $1}'
+  local runner="${root}/k8s/flink-sql-runner"
+  local runtime="${root}/k8s/flink-runtime"
+  [[ -d "${runner}" && -d "${runtime}" ]] || return 1
+  {
+    find "${runner}" -type f \( \
+      -name '*.java' -o -name 'Dockerfile' -o -name 'settings.xml' -o -name 'dedupe-lib-jars.sh' \
+    \) -print0 2>/dev/null
+    find "${runtime}" -type f \( \
+      -name '*.json' -o -name '*.tpl' -o -name '*.txt' -o -name '*.py' -o -name '*.sh' \
+    \) -print0 2>/dev/null
+  } | sort -z | xargs -0 sha256sum 2>/dev/null | sha256sum | awk '{print $1}'
 }
 
 gido_flink_runtime_hash_file() {

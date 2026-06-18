@@ -1,33 +1,50 @@
 # GIDO Flink 统一运行时镜像
 
-单一 Dockerfile，CI 仅推送 **`gido-flink-runtime`** 至 GHCR（`.github/workflows/ci.yml` → `docker-flink-runtime`）。
+版本与 connector 坐标由 **`k8s/flink-runtime/runtime-versions.json`** 统一定义；构建前自动 render 到 `.build/<version>/`。架构说明见 [`../flink-runtime/ARCHITECTURE.md`](../flink-runtime/ARCHITECTURE.md)。
 
-本地 `k8s/build-flink-runtime.sh` 仍会打 `gido-flink-sql-runner:<tag>` 标签并 `docker tag` 为 `gido-flink-runtime:<tag>` 别名，便于与历史脚本兼容。
+CI 推送 **`gido-flink-runtime`** 至 GHCR（`.github/workflows/ci.yml`）。本地 `k8s/build-flink-runtime.sh` 打 `gido-flink-sql-runner:<tag>` 并 alias 为 `gido-flink-runtime:<tag>`。
 
-## 镜像内容
+## 构建
+
+```bash
+# 默认版本（runtime-versions.json → default，当前 2.2.1）
+bash k8s/build-flink-runtime.sh
+
+# 指定 Flink 版本 profile
+GIDO_FLINK_RUNTIME_VERSION=1.17.2 bash k8s/build-flink-runtime.sh
+
+# 仅渲染 POM / verify 脚本
+python3 k8s/flink-runtime/scripts/render_build_context.py --list
+python3 k8s/flink-runtime/scripts/render_build_context.py 2.2.1
+```
+
+## 校验
+
+```bash
+bash k8s/flink-runtime/scripts/verify-image.sh gido-flink-runtime:orbstack
+bash k8s/flink-runtime/scripts/verify-image.sh gido-flink-runtime:orbstack 2.2.1
+```
+
+## 镜像内容（默认 2.2.1）
 
 - 基座：`apache/flink:2.2.1-java11`
-- `/opt/flink/usrlib/sql-runner.jar`（GIDO SQL 入口，`FLINK_OPERATOR_SQL_RUNNER_JAR_URI`）
-- Paimon、MySQL/Postgres CDC、hadoop-common/hdfs-client/auth、woodstox → `/opt/flink/lib/`
+- `/opt/flink/usrlib/sql-runner.jar`
+- Paimon、MySQL/Postgres CDC、Hadoop 白名单 → `/opt/flink/lib/`
 - S3 插件 → `/opt/flink/plugins/s3-fs-hadoop/`
 
-构建后自检：
+Hadoop / CVE 清单见 `k8s/flink-runtime/profiles/<version>/`。
+
+Maven 默认 **Maven Central**（`settings.xml`）。国内：
 
 ```bash
-bash k8s/flink-sql-runner/verify-image.sh ghcr.io/cloud-gido/gido/gido-flink-runtime:dev
+python3 k8s/flink-runtime/scripts/render_build_context.py --default
+docker build \
+  --build-arg MAVEN_SETTINGS=settings.aliyun.xml \
+  --build-arg RUNTIME_PROFILE=2.2.1 \
+  -f k8s/flink-sql-runner/Dockerfile k8s/flink-sql-runner
 ```
 
-本地构建：
+## 遗留文件
 
-```bash
-bash k8s/build-flink-runtime.sh
-bash k8s/flink-sql-runner/verify-image.sh gido-flink-runtime:orbstack
-```
-
-Hadoop 白名单见 `hadoop-libs.txt`；CVE 覆盖见 `security-overrides.txt`（构建时 dedupe 移除同 artifact 旧版本）。
-
-Maven 默认直连 **Maven Central**（`settings.xml`）。国内若需阿里云镜像：
-
-```bash
-docker build --build-arg MAVEN_SETTINGS=settings.aliyun.xml -f k8s/flink-sql-runner/Dockerfile k8s/flink-sql-runner
-```
+- `pom.xml`、`connectors-pom.xml`：IDE 参考；Docker 构建使用 `.build/<version>/` 下 render 结果。
+- `hadoop-libs.txt`、`security-overrides.txt`：指向 `profiles/` 的副本说明；勿与 profile 分叉维护。

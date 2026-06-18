@@ -1,6 +1,5 @@
 # Paimon S3 catalog 主 classpath 白名单（group:artifact:version）
-# 源文件：k8s/flink-runtime/hadoop-libs.txt（两处须同步）
-# 仅 dependency:copy 单 jar；勿 copy-dependencies（会拉 commons-cli-1.2 与 Flink 冲突）
+# 权威副本：k8s/flink-runtime/profiles/<version>/hadoop-libs.txt（构建由 render 复制到 .build/）
 org.apache.hadoop:hadoop-common:3.3.4
 org.apache.hadoop:hadoop-hdfs-client:3.3.4
 org.apache.hadoop:hadoop-mapreduce-client-core:3.3.4
