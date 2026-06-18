@@ -3274,14 +3274,13 @@ async def upload_jar(
     job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_WRITE)
     if getattr(job, "is_locked", False):
         raise HTTPException(status_code=403, detail="作业已锁定，请先解锁后再上传 JAR")
-    if not file.filename.endswith(".jar"):
+    if not file.filename or not str(file.filename).lower().endswith(".jar"):
         raise HTTPException(status_code=400, detail="只支持 .jar 文件")
     try:
         content = await file.read()
-        save_jar_bytes(job.id, content)
-        from app.services.jar_artifact import build_jar_s3_uri_for_operator
-
-        s3_uri = build_jar_s3_uri_for_operator(job.id)
+        if not content:
+            raise HTTPException(status_code=400, detail="JAR 文件为空")
+        saved = save_jar_bytes(job.id, content)
         jar_name = file.filename
         jar_mode = _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None))
         session_jar_id = None
@@ -3293,13 +3292,30 @@ async def upload_jar(
                 logger.warning("Session JM 上传 JAR 失败（制品已保存）: %s", ex)
         job.jar_path = jar_name
         db.commit()
+        s3_warning = None
+        from app.services.artifact_s3 import artifact_s3_enabled
+
+        if saved.s3_sync_error:
+            s3_warning = f"本地制品已保存，但同步 S3 失败：{saved.s3_sync_error}"
+        elif artifact_s3_enabled() and not saved.s3_synced:
+            s3_warning = "已配置 S3 制品前缀但未同步到 S3，Operator 将经 HTTP 拉取本地制品。"
         return {
             "message": "上传成功",
             "jar_id": jar_name,
             "filename": file.filename,
             "artifact_saved": True,
+            "artifact_local_path": str(saved.path),
             "session_uploaded": bool(session_jar_id),
-            "s3_uri": s3_uri,
+            "s3_uri": saved.s3_uri,
+            "s3_synced": saved.s3_synced,
+            "warning": s3_warning,
         }
+    except HTTPException:
+        raise
+    except OSError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"写入制品目录失败（请检查 JAR_ARTIFACT_DIR 与 PVC 挂载）: {e}",
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"上传失败: {e}")

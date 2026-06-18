@@ -280,7 +280,8 @@ export const streamingApi = {
   uploadJar: (id: number, file: File) => {
     const form = new FormData()
     form.append('file', file)
-    return request.post(`/streaming/jobs/${id}/upload-jar`, form, { headers: { 'Content-Type': 'multipart/form-data' } })
+    // 勿手动设 Content-Type，否则缺少 boundary 会导致后端收不到文件
+    return request.post(`/streaming/jobs/${id}/upload-jar`, form)
   },
 }
 

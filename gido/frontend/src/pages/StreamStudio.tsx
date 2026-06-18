@@ -290,6 +290,8 @@ export default function StreamStudioPage() {
   const [resourceTier, setResourceTier] = useState<string>('')
   const [jarStreamingPropsJson, setJarStreamingPropsJson] = useState('{}')
   const [jarSubmitMode] = useState<'session' | 'flink_operator'>('flink_operator')
+  const [jarUploading, setJarUploading] = useState(false)
+  const [jarArtifactHint, setJarArtifactHint] = useState<string | null>(null)
   const [historyModal, setHistoryModal] = useState(false)
   const [historyList, setHistoryList] = useState<any[]>([])
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set())
@@ -479,8 +481,9 @@ export default function StreamStudioPage() {
         program_args: selected.program_args ?? '',
         parallelism: selected.parallelism ?? 1,
       })
+      setJarArtifactHint(selected.jar_path ? `已上传：${selected.jar_path}` : null)
     }
-  }, [selected?.id, selected?.job_type])
+  }, [selected?.id, selected?.job_type, selected?.main_class, selected?.program_args, selected?.parallelism, selected?.jar_path])
 
   const handleSubmit = async () => {
     if (!selected) return
@@ -1030,26 +1033,48 @@ export default function StreamStudioPage() {
                     </>
                   )}
                   <Upload
-                    disabled={selected.is_locked}
+                    disabled={selected.is_locked || jarUploading}
                     maxCount={1}
                     beforeUpload={async file => {
-                      if (!file.name.endsWith('.jar')) {
-                        message.error('请上传 .jar')
+                      if (!file.name.toLowerCase().endsWith('.jar')) {
+                        message.error('请上传 .jar 文件')
                         return Upload.LIST_IGNORE
                       }
+                      setJarUploading(true)
                       try {
-                        await streamingApi.uploadJar(selected.id, file)
-                        message.success('JAR 已上传至 Flink')
+                        const res: any = await streamingApi.uploadJar(selected.id, file)
+                        const name = res?.filename || res?.jar_id || file.name
+                        setJarArtifactHint(`已上传：${name}${res?.s3_synced ? '（已同步 S3）' : ''}`)
+                        if (res?.warning) {
+                          message.warning(String(res.warning), 8)
+                        }
+                        message.success(res?.message || `JAR 已上传：${name}`)
                         await load()
                       } catch (e: any) {
-                        message.error(e?.response?.data?.detail || '上传失败')
+                        const detail = e?.response?.data?.detail
+                        const msg = typeof detail === 'string'
+                          ? detail
+                          : Array.isArray(detail)
+                            ? detail.map((x: any) => x?.msg || JSON.stringify(x)).join('；')
+                            : '上传失败'
+                        message.error(msg)
+                      } finally {
+                        setJarUploading(false)
                       }
                       return false
                     }}
                     showUploadList={false}
                   >
-                    <Button icon={<UploadOutlined />}>上传 JAR{effectiveJarMode === 'flink_operator' ? '（制品库）' : ' 到 Flink'}</Button>
+                    <Button icon={<UploadOutlined />} loading={jarUploading}>
+                      上传 JAR{effectiveJarMode === 'flink_operator' ? '（制品库）' : ' 到 Flink'}
+                    </Button>
                   </Upload>
+                  {jarArtifactHint && (
+                    <Alert type="success" showIcon message={jarArtifactHint} style={{ marginTop: 4 }} />
+                  )}
+                  {!jarArtifactHint && selected.jar_path && (
+                    <Text type="secondary" style={{ fontSize: 13 }}>制品库标识：{selected.jar_path}</Text>
+                  )}
                   {effectiveJarMode === 'flink_operator' && (
                     <Collapse
                       ghost

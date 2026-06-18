@@ -29,10 +29,20 @@ def test_build_s3_artifact_uri(monkeypatch):
     assert s3.build_s3_artifact_uri(42, "artifact.sql") == "s3://acme-data/gido-artifacts/42/artifact.sql"
 
 
-def test_resolve_jar_uri_prefers_s3(monkeypatch):
+def test_resolve_jar_uri_prefers_s3_when_object_exists(monkeypatch):
     monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://acme/gido-artifacts")
     monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_HTTP_BASE", "http://backend:8001")
-    assert resolve_jar_uri_for_job(7) == "s3://acme/gido-artifacts/7/artifact.jar"
+    with patch("app.services.jar_artifact.artifact_exists_in_s3", return_value=True):
+        assert resolve_jar_uri_for_job(7) == "s3://acme/gido-artifacts/7/artifact.jar"
+
+
+def test_resolve_jar_uri_http_when_s3_prefix_but_object_missing(monkeypatch):
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://acme/gido-artifacts")
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_HTTP_BASE", "http://backend:8001")
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_ARTIFACT_TOKEN", "tok")
+    with patch("app.services.jar_artifact.artifact_exists_in_s3", return_value=False):
+        uri = resolve_jar_uri_for_job(7)
+        assert uri.startswith("http://backend:8001/api/streaming/jobs/7/artifact.jar?token=")
 
 
 def test_resolve_jar_uri_http_fallback(monkeypatch):
@@ -80,9 +90,24 @@ def test_save_jar_bytes_uploads_to_s3(mock_client_fn, monkeypatch, tmp_path):
     mock_s3 = MagicMock()
     mock_client_fn.return_value = mock_s3
 
-    ja.save_jar_bytes(5, b"jar-content")
+    result = ja.save_jar_bytes(5, b"jar-content")
+    assert result.s3_synced
     assert ja.jar_artifact_exists(5)
     mock_s3.put_object.assert_called_once()
+
+
+@patch("app.services.artifact_s3._s3_client")
+def test_save_jar_bytes_keeps_local_when_s3_fails(mock_client_fn, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://test-bucket/jars")
+    monkeypatch.setattr(settings, "JAR_ARTIFACT_DIR", str(tmp_path))
+    mock_s3 = MagicMock()
+    mock_s3.put_object.side_effect = RuntimeError("AccessDenied")
+    mock_client_fn.return_value = mock_s3
+
+    result = ja.save_jar_bytes(6, b"jar-content")
+    assert result.path.is_file()
+    assert result.s3_sync_error
+    assert ja.jar_artifact_exists(6)
 
 
 @patch("app.services.artifact_s3._s3_client")

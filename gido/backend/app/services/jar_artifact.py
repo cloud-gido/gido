@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
@@ -22,6 +23,17 @@ from app.services.artifact_s3 import (
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class JarSaveResult:
+    path: Path
+    s3_uri: Optional[str] = None
+    s3_sync_error: Optional[str] = None
+
+    @property
+    def s3_synced(self) -> bool:
+        return self.s3_uri is not None
+
+
 def artifact_dir_for_job(job_id: int) -> Path:
     base = Path(settings.JAR_ARTIFACT_DIR).expanduser().resolve()
     d = base / str(int(job_id))
@@ -33,21 +45,24 @@ def artifact_file_path(job_id: int) -> Path:
     return artifact_dir_for_job(job_id) / JAR_ARTIFACT_FILENAME
 
 
-def save_jar_bytes(job_id: int, content: bytes) -> Path:
+def save_jar_bytes(job_id: int, content: bytes) -> JarSaveResult:
+    """写入本地制品库；若配置了 S3 前缀则尝试同步（失败不抛错，由调用方返回 warning）。"""
     path = artifact_file_path(job_id)
     path.write_bytes(content)
+    s3_uri: Optional[str] = None
+    s3_err: Optional[str] = None
     if artifact_s3_enabled():
         try:
-            upload_artifact_bytes(
+            s3_uri = upload_artifact_bytes(
                 job_id,
                 JAR_ARTIFACT_FILENAME,
                 content,
                 content_type="application/java-archive",
             )
         except Exception as ex:
+            s3_err = str(ex)
             logger.error("JAR 上传 S3 失败 job=%s: %s", job_id, ex)
-            raise RuntimeError(f"JAR 已写入本地但上传 S3 失败: {ex}") from ex
-    return path
+    return JarSaveResult(path=path, s3_uri=s3_uri, s3_sync_error=s3_err)
 
 
 def jar_artifact_exists(job_id: int) -> bool:
@@ -109,8 +124,8 @@ def future_s3_uri_hint(job_id: int) -> Optional[str]:
 
 
 def resolve_jar_uri_for_operator(job_id: int) -> str:
-    """S3 前缀已配置时优先 s3://；否则 HTTP。"""
+    """S3 对象已存在时用 s3://；否则 HTTP（避免前缀已配但上传 S3 失败时提交到空对象）。"""
     s3_uri = build_jar_s3_uri_for_operator(job_id)
-    if s3_uri:
+    if s3_uri and artifact_exists_in_s3(job_id, JAR_ARTIFACT_FILENAME):
         return s3_uri
     return build_jar_http_uri_for_operator(job_id)
