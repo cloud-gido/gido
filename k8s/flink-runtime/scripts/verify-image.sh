@@ -40,10 +40,21 @@ manifest_path = Path(sys.argv[1])
 image = sys.argv[2]
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
+def required_glob_checks(glob: str) -> list[str]:
+    # test -e does not expand globs; match verify-layout.sh (ls + test -n)
+    if "*" in glob:
+        return [
+            f'test -n "$(ls {glob} 2>/dev/null)" || {{ echo "缺少: {glob}"; exit 1; }}',
+            f'echo "OK {glob}"',
+        ]
+    return [
+        f'test -e "{glob}" || {{ echo "缺少: {glob}"; exit 1; }}',
+        f'echo "OK {glob}"',
+    ]
+
 checks = []
 for glob in manifest.get("required_globs", []):
-    checks.append(f'test -e "{glob}" || {{ echo "缺少: {glob}"; exit 1; }}')
-    checks.append(f'echo "OK {glob}"')
+    checks.extend(required_glob_checks(glob))
 for name in manifest.get("forbidden_files", []):
     checks.append(
         f'if test -f "/opt/flink/lib/{name}"; then echo "禁止存在: /opt/flink/lib/{name}"; exit 1; fi'
