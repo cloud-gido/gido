@@ -96,3 +96,65 @@ def test_legacy_use_irsa_false_maps_to_static(monkeypatch):
     monkeypatch.setattr(settings, "FLINK_OPERATOR_S3_AUTH_MODE", "irsa")
     monkeypatch.setattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", False)
     assert s3_auth.resolved_s3_auth_mode() == "static"
+
+
+def test_profile_static_credentials_override_platform(monkeypatch):
+    from app.services.operator_runtime import OperatorRuntimeContext
+
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_S3_AUTH_MODE", "irsa")
+    monkeypatch.setattr(settings, "PAIMON_WAREHOUSE_DEFAULT", "s3://b/wh")
+    ctx = OperatorRuntimeContext(
+        profile_id=2,
+        profile_name="eks-b",
+        namespace="flink",
+        image="img:1",
+        flink_version="v1_17",
+        service_account="flink",
+        k8s_context=None,
+        kubeconfig_path=None,
+        jm_rest_template="http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081",
+        cluster_domain="cluster.local",
+        checkpoint_dir="s3a://bucket-b/ckpt",
+        image_pull_secrets=None,
+        s3_auth_mode="static",
+        s3_access_key_id="AKIA_PROFILE",
+        s3_secret_access_key="profile-secret",
+        s3_session_token=None,
+    )
+    snap = s3_auth.build_s3_auth_snapshot(ctx)
+    assert snap.source == "profile"
+    assert snap.auth_mode == "static"
+    assert snap.access_key_id == "AKIA_PROFILE"
+    ok, _ = s3_auth.validate_s3_auth_for_submit(ctx)
+    assert ok
+    tpl = s3_auth.operator_s3_credentials_pod_template(ctx)
+    assert tpl is not None
+    env = {e["name"]: e["value"] for e in tpl["spec"]["containers"][0]["env"]}
+    assert env["AWS_ACCESS_KEY_ID"] == "AKIA_PROFILE"
+
+
+def test_profile_static_missing_keys_fails(monkeypatch):
+    from app.services.operator_runtime import OperatorRuntimeContext
+
+    monkeypatch.setattr(settings, "PAIMON_WAREHOUSE_DEFAULT", "s3://b/wh")
+    ctx = OperatorRuntimeContext(
+        profile_id=3,
+        profile_name="bad",
+        namespace="flink",
+        image="img:1",
+        flink_version="v1_17",
+        service_account="flink",
+        k8s_context=None,
+        kubeconfig_path=None,
+        jm_rest_template="http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081",
+        cluster_domain="cluster.local",
+        checkpoint_dir="s3a://bucket/ckpt",
+        image_pull_secrets=None,
+        s3_auth_mode="static",
+        s3_access_key_id=None,
+        s3_secret_access_key=None,
+        s3_session_token=None,
+    )
+    ok, msg = s3_auth.validate_s3_auth_for_submit(ctx)
+    assert not ok
+    assert "Operator 集群" in msg

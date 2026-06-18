@@ -35,6 +35,10 @@ def test_operator_runtime_with_overrides():
         cluster_domain="cluster.local",
         checkpoint_dir=None,
         image_pull_secrets="ghcr-pull",
+        s3_auth_mode=None,
+        s3_access_key_id=None,
+        s3_secret_access_key=None,
+        s3_session_token=None,
     )
     merged = base.with_overrides(image="img:override", namespace="flink-b")
     assert merged.image == "img:override"

@@ -29,6 +29,9 @@ type OperatorProfile = {
   flink_k8s_cluster_domain?: string | null
   flink_operator_checkpoint_dir?: string | null
   flink_operator_image_pull_secrets?: string | null
+  flink_operator_s3_auth_mode?: string | null
+  flink_operator_s3_access_key_id?: string | null
+  flink_operator_s3_secret_configured?: boolean
   effective?: Record<string, unknown>
 }
 
@@ -61,6 +64,8 @@ function EffectiveBlock({ effective }: { effective?: Record<string, unknown> }) 
     ['cluster_domain', '集群域名'],
     ['checkpoint_dir', 'Checkpoint'],
     ['image_pull_secrets', 'imagePullSecrets'],
+    ['s3_auth_mode', 'S3 认证'],
+    ['s3_credentials_configured', 'S3 AK/SK'],
   ] as const
   return (
     <Descriptions size="small" column={1} bordered style={{ maxWidth: 720 }}>
@@ -69,7 +74,9 @@ function EffectiveBlock({ effective }: { effective?: Record<string, unknown> }) 
         if (v == null || v === '') return null
         return (
           <Descriptions.Item key={key} label={label}>
-            <code style={{ wordBreak: 'break-all', fontSize: 12 }}>{String(v)}</code>
+            <code style={{ wordBreak: 'break-all', fontSize: 12 }}>
+              {typeof v === 'boolean' ? (v ? '已配置' : '未配置') : String(v)}
+            </code>
           </Descriptions.Item>
         )
       })}
@@ -131,6 +138,7 @@ export default function OperatorClustersPage() {
       is_enabled: true,
       flink_operator_flink_version: 'v2_2',
       flink_operator_service_account: 'flink',
+      flink_operator_s3_auth_mode: 'static',
     })
     setDrawerOpen(true)
   }
@@ -152,6 +160,8 @@ export default function OperatorClustersPage() {
       flink_k8s_cluster_domain: row.flink_k8s_cluster_domain ?? '',
       flink_operator_checkpoint_dir: row.flink_operator_checkpoint_dir ?? '',
       flink_operator_image_pull_secrets: row.flink_operator_image_pull_secrets ?? '',
+      flink_operator_s3_auth_mode: row.flink_operator_s3_auth_mode ?? row.effective?.s3_auth_mode ?? 'static',
+      flink_operator_s3_access_key_id: row.flink_operator_s3_access_key_id ?? '',
     })
     setDrawerOpen(true)
   }
@@ -184,6 +194,9 @@ export default function OperatorClustersPage() {
       }
       setSubmitLoading(true)
       const payload = normalizePayload(values)
+      if (editingId != null && !String(values.flink_operator_s3_secret_access_key || '').trim()) {
+        delete payload.flink_operator_s3_secret_access_key
+      }
       if (editingId == null) {
         await streamingApi.createOperatorProfile({ ...payload, workspace_id: wsId })
         message.success('Operator 集群已创建')
@@ -454,6 +467,62 @@ export default function OperatorClustersPage() {
             extra="写入 state.checkpoints.dir；EKS 常用 s3://…/flink-checkpoints，须 Pod 有 S3 权限。"
           >
             <Input placeholder="s3://bucket/flink-checkpoints 或 file:///..." />
+          </Form.Item>
+
+          <div style={{ fontWeight: 600, margin: '16px 0 12px' }}>S3 认证</div>
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message="各 Operator 集群使用独立 AK/SK 访问 S3（checkpoint / Paimon warehouse）。选 IRSA 时由集群 ServiceAccount 绑 IAM Role，无需填写密钥。"
+          />
+          <Form.Item
+            name="flink_operator_s3_auth_mode"
+            label="认证方式"
+            extra="static：本集群 AK/SK；irsa：Pod IRSA（EKS）。"
+          >
+            <Select
+              options={[
+                { label: 'static（AK/SK）', value: 'static' },
+                { label: 'irsa（IAM Role）', value: 'irsa' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item
+            noStyle
+            shouldUpdate={(prev, cur) => prev.flink_operator_s3_auth_mode !== cur.flink_operator_s3_auth_mode}
+          >
+            {({ getFieldValue }) =>
+              getFieldValue('flink_operator_s3_auth_mode') === 'static' ? (
+                <>
+                  <Form.Item
+                    name="flink_operator_s3_access_key_id"
+                    label="Access Key ID"
+                    rules={[{ required: true, message: '请填写 Access Key ID' }]}
+                  >
+                    <Input placeholder="AKIA..." autoComplete="off" />
+                  </Form.Item>
+                  <Form.Item
+                    name="flink_operator_s3_secret_access_key"
+                    label="Secret Access Key"
+                    extra={
+                      editingId != null
+                        ? '留空则保留原 Secret，不会清空。'
+                        : '提交后不在列表中回显，请妥善保管。'
+                    }
+                    rules={editingId == null ? [{ required: true, message: '请填写 Secret Access Key' }] : []}
+                  >
+                    <Input.Password placeholder="Secret Key" autoComplete="new-password" />
+                  </Form.Item>
+                  <Form.Item
+                    name="flink_operator_s3_session_token"
+                    label="Session Token（可选）"
+                  >
+                    <Input.Password placeholder="临时凭证 Token" autoComplete="new-password" />
+                  </Form.Item>
+                </>
+              ) : null
+            }
           </Form.Item>
         </Form>
       </Drawer>

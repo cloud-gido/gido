@@ -1,12 +1,16 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
-"""S3 认证：平台级 IRSA 与静态 AK/SK（Flink Hadoop S3A + Backend boto3）。"""
+"""S3 认证：平台默认 + 各 Operator 集群 Profile 独立 IRSA / AK/SK。"""
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from app.core.config import settings
+
+if TYPE_CHECKING:
+    from app.services.operator_runtime import OperatorRuntimeContext
 
 S3_AUTH_IRSA = "irsa"
 S3_AUTH_STATIC = "static"
@@ -28,6 +32,18 @@ _STATIC_TOKEN_FIELDS = (
 )
 
 
+def _strip_or_none(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s or None
+
+
+def _is_s3_uri(value: Optional[str]) -> bool:
+    v = (value or "").strip().lower()
+    return v.startswith("s3://") or v.startswith("s3a://")
+
+
 def _first_non_empty_from_settings_or_env(names: Tuple[str, ...]) -> Optional[str]:
     for name in names:
         val = getattr(settings, name, None)
@@ -39,9 +55,27 @@ def _first_non_empty_from_settings_or_env(names: Tuple[str, ...]) -> Optional[st
     return None
 
 
-def s3_paths_configured() -> bool:
+@dataclass(frozen=True)
+class S3AuthSnapshot:
+    """单次提交/上传解析后的 S3 认证快照。"""
+
+    auth_mode: Optional[str]
+    access_key_id: Optional[str] = None
+    secret_access_key: Optional[str] = None
+    session_token: Optional[str] = None
+    region: Optional[str] = None
+    endpoint_url: Optional[str] = None
+    source: str = "platform"
+
+    def static_credentials_ready(self) -> bool:
+        return bool(self.access_key_id and self.secret_access_key)
+
+
+def s3_paths_configured(runtime_ctx: Optional["OperatorRuntimeContext"] = None) -> bool:
     from app.services.artifact_s3 import artifact_s3_enabled
 
+    if runtime_ctx and _is_s3_uri(runtime_ctx.checkpoint_dir):
+        return True
     if artifact_s3_enabled():
         return True
     ckpt = (settings.FLINK_OPERATOR_CHECKPOINT_DIR or "").strip().lower()
@@ -51,54 +85,116 @@ def s3_paths_configured() -> bool:
     return wh.startswith("s3://") or wh.startswith("s3a://")
 
 
-def static_credentials_configured() -> bool:
-    return bool(
-        _first_non_empty_from_settings_or_env(_STATIC_KEY_FIELDS)
-        and _first_non_empty_from_settings_or_env(_STATIC_SECRET_FIELDS)
-    )
+def static_credentials_configured(runtime_ctx: Optional["OperatorRuntimeContext"] = None) -> bool:
+    snap = build_s3_auth_snapshot(runtime_ctx)
+    return snap.static_credentials_ready()
 
 
-def resolved_static_credentials() -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """(access_key_id, secret_access_key, session_token)"""
-    return (
-        _first_non_empty_from_settings_or_env(_STATIC_KEY_FIELDS),
-        _first_non_empty_from_settings_or_env(_STATIC_SECRET_FIELDS),
-        _first_non_empty_from_settings_or_env(_STATIC_TOKEN_FIELDS),
-    )
+def resolved_static_credentials(
+    runtime_ctx: Optional["OperatorRuntimeContext"] = None,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    snap = build_s3_auth_snapshot(runtime_ctx)
+    return snap.access_key_id, snap.secret_access_key, snap.session_token
 
 
-def resolved_s3_auth_mode() -> Optional[str]:
-    """
-    返回 irsa / static；未配置 S3 路径时返回 None。
-    FLINK_OPERATOR_S3_AUTH_MODE=irsa|static；未设时兼容 FLINK_OPERATOR_S3_USE_IRSA。
-    """
-    if not s3_paths_configured():
-        return None
-
+def _platform_s3_auth_mode() -> Optional[str]:
     explicit = (getattr(settings, "FLINK_OPERATOR_S3_AUTH_MODE", None) or "").strip().lower()
     if explicit in (S3_AUTH_IRSA, S3_AUTH_STATIC):
         return explicit
-
     if static_credentials_configured() and not getattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True):
         return S3_AUTH_STATIC
-
     if getattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True):
         return S3_AUTH_IRSA
-
-    if static_credentials_configured():
+    if _first_non_empty_from_settings_or_env(_STATIC_KEY_FIELDS) and _first_non_empty_from_settings_or_env(
+        _STATIC_SECRET_FIELDS
+    ):
         return S3_AUTH_STATIC
-
     return S3_AUTH_IRSA
 
 
-def validate_s3_auth_for_submit() -> Tuple[bool, str]:
-    """提交前校验：static 模式须 AK/SK 齐全。"""
-    mode = resolved_s3_auth_mode()
-    if mode != S3_AUTH_STATIC:
+def _profile_explicit_mode(runtime_ctx: "OperatorRuntimeContext") -> Optional[str]:
+    mode = _strip_or_none(getattr(runtime_ctx, "s3_auth_mode", None))
+    if mode in (S3_AUTH_IRSA, S3_AUTH_STATIC):
+        return mode
+    return None
+
+
+def build_s3_auth_snapshot(runtime_ctx: Optional["OperatorRuntimeContext"] = None) -> S3AuthSnapshot:
+    region = _strip_or_none(getattr(settings, "GIDO_ARTIFACT_S3_REGION", None))
+    endpoint = _strip_or_none(getattr(settings, "GIDO_ARTIFACT_S3_ENDPOINT_URL", None))
+
+    if runtime_ctx is not None and runtime_ctx.profile_id is not None:
+        ak = _strip_or_none(getattr(runtime_ctx, "s3_access_key_id", None))
+        sk = _strip_or_none(getattr(runtime_ctx, "s3_secret_access_key", None))
+        token = _strip_or_none(getattr(runtime_ctx, "s3_session_token", None))
+        explicit_mode = _profile_explicit_mode(runtime_ctx)
+
+        if ak and sk:
+            return S3AuthSnapshot(
+                auth_mode=S3_AUTH_STATIC,
+                access_key_id=ak,
+                secret_access_key=sk,
+                session_token=token,
+                region=region,
+                endpoint_url=endpoint,
+                source="profile",
+            )
+        if explicit_mode == S3_AUTH_STATIC:
+            return S3AuthSnapshot(
+                auth_mode=S3_AUTH_STATIC,
+                access_key_id=ak,
+                secret_access_key=sk,
+                session_token=token,
+                region=region,
+                endpoint_url=endpoint,
+                source="profile",
+            )
+        if explicit_mode == S3_AUTH_IRSA:
+            return S3AuthSnapshot(
+                auth_mode=S3_AUTH_IRSA,
+                region=region,
+                endpoint_url=endpoint,
+                source="profile",
+            )
+
+    ak = _first_non_empty_from_settings_or_env(_STATIC_KEY_FIELDS)
+    sk = _first_non_empty_from_settings_or_env(_STATIC_SECRET_FIELDS)
+    token = _first_non_empty_from_settings_or_env(_STATIC_TOKEN_FIELDS)
+    mode = _platform_s3_auth_mode()
+    return S3AuthSnapshot(
+        auth_mode=mode,
+        access_key_id=ak,
+        secret_access_key=sk,
+        session_token=token,
+        region=region,
+        endpoint_url=endpoint,
+        source="platform",
+    )
+
+
+def resolved_s3_auth_mode(runtime_ctx: Optional["OperatorRuntimeContext"] = None) -> Optional[str]:
+    if not s3_paths_configured(runtime_ctx):
+        return None
+    return build_s3_auth_snapshot(runtime_ctx).auth_mode
+
+
+def validate_s3_auth_for_submit(
+    runtime_ctx: Optional["OperatorRuntimeContext"] = None,
+) -> Tuple[bool, str]:
+    """提交前校验：static 模式须 AK/SK 齐全（优先 Profile，其次平台）。"""
+    if not s3_paths_configured(runtime_ctx):
         return True, ""
-    ak, sk, _ = resolved_static_credentials()
-    if ak and sk:
+    snap = build_s3_auth_snapshot(runtime_ctx)
+    if snap.auth_mode != S3_AUTH_STATIC:
         return True, ""
+    if snap.static_credentials_ready():
+        return True, ""
+    if snap.source == "profile":
+        return (
+            False,
+            "该 Operator 集群 S3 认证为 static，但未配置 Access Key / Secret Key。"
+            "请在「Operator 集群」编辑页填写 S3 AK/SK。",
+        )
     return (
         False,
         "FLINK_OPERATOR_S3_AUTH_MODE=static 但未配置 GIDO_S3_ACCESS_KEY_ID / "
@@ -106,53 +202,55 @@ def validate_s3_auth_for_submit() -> Tuple[bool, str]:
     )
 
 
-def apply_flink_s3_flink_conf(flink_conf: Dict[str, str]) -> None:
+def apply_flink_s3_flink_conf(
+    flink_conf: Dict[str, str],
+    runtime_ctx: Optional["OperatorRuntimeContext"] = None,
+) -> None:
     """向 FlinkDeployment flinkConfiguration 注入 S3A 凭证 Provider 与 endpoint。"""
-    mode = resolved_s3_auth_mode()
-    if not mode:
+    if not s3_paths_configured(runtime_ctx):
         return
-
-    if mode == S3_AUTH_IRSA:
+    snap = build_s3_auth_snapshot(runtime_ctx)
+    if snap.auth_mode == S3_AUTH_IRSA:
         provider = (settings.FLINK_OPERATOR_S3_CREDENTIALS_PROVIDER or IRSA_CREDENTIALS_PROVIDER).strip()
-    else:
+    elif snap.auth_mode == S3_AUTH_STATIC:
         provider = STATIC_CREDENTIALS_PROVIDER
+    else:
+        return
 
     if provider:
         flink_conf["fs.s3a.aws.credentials.provider"] = provider
 
-    _apply_flink_s3_endpoint_conf(flink_conf)
+    endpoint = snap.endpoint_url or _strip_or_none(getattr(settings, "GIDO_ARTIFACT_S3_ENDPOINT_URL", None))
+    if endpoint:
+        flink_conf["fs.s3a.endpoint"] = endpoint
+        flink_conf["fs.s3a.path.style.access"] = "true"
+        flink_conf["fs.s3a.connection.ssl.enabled"] = (
+            "false" if endpoint.lower().startswith("http://") else "true"
+        )
 
 
-def _apply_flink_s3_endpoint_conf(flink_conf: Dict[str, str]) -> None:
-    endpoint = (getattr(settings, "GIDO_ARTIFACT_S3_ENDPOINT_URL", None) or "").strip()
-    if not endpoint:
-        return
-    flink_conf["fs.s3a.endpoint"] = endpoint
-    flink_conf["fs.s3a.path.style.access"] = "true"
-    flink_conf["fs.s3a.connection.ssl.enabled"] = "false" if endpoint.lower().startswith("http://") else "true"
-
-
-def flink_s3_credentials_env() -> List[Dict[str, str]]:
-    """Flink Pod 环境变量（static 模式注入 AWS_*，供 EnvironmentVariableCredentialsProvider）。"""
-    if resolved_s3_auth_mode() != S3_AUTH_STATIC:
-        return []
-    ak, sk, token = resolved_static_credentials()
-    if not ak or not sk:
+def flink_s3_credentials_env(
+    runtime_ctx: Optional["OperatorRuntimeContext"] = None,
+) -> List[Dict[str, str]]:
+    """Flink Pod 环境变量（static 模式注入 AWS_*）。"""
+    snap = build_s3_auth_snapshot(runtime_ctx)
+    if snap.auth_mode != S3_AUTH_STATIC or not snap.static_credentials_ready():
         return []
     env: List[Dict[str, str]] = [
-        {"name": "AWS_ACCESS_KEY_ID", "value": ak},
-        {"name": "AWS_SECRET_ACCESS_KEY", "value": sk},
+        {"name": "AWS_ACCESS_KEY_ID", "value": snap.access_key_id or ""},
+        {"name": "AWS_SECRET_ACCESS_KEY", "value": snap.secret_access_key or ""},
     ]
-    if token:
-        env.append({"name": "AWS_SESSION_TOKEN", "value": token})
-    region = (getattr(settings, "GIDO_ARTIFACT_S3_REGION", None) or "").strip()
-    if region:
-        env.append({"name": "AWS_DEFAULT_REGION", "value": region})
+    if snap.session_token:
+        env.append({"name": "AWS_SESSION_TOKEN", "value": snap.session_token})
+    if snap.region:
+        env.append({"name": "AWS_DEFAULT_REGION", "value": snap.region})
     return env
 
 
-def operator_s3_credentials_pod_template() -> Optional[Dict[str, Any]]:
-    env = flink_s3_credentials_env()
+def operator_s3_credentials_pod_template(
+    runtime_ctx: Optional["OperatorRuntimeContext"] = None,
+) -> Optional[Dict[str, Any]]:
+    env = flink_s3_credentials_env(runtime_ctx)
     if not env:
         return None
     return {
@@ -167,31 +265,29 @@ def operator_s3_credentials_pod_template() -> Optional[Dict[str, Any]]:
     }
 
 
-def boto3_client_kwargs() -> Dict[str, Any]:
-    """Backend 上传制品：static 显式传 AK/SK；irsa 或未指定时走默认凭证链。"""
+def boto3_client_kwargs(
+    runtime_ctx: Optional["OperatorRuntimeContext"] = None,
+) -> Dict[str, Any]:
+    """Backend 上传制品：Profile / 平台 static 显式传 AK/SK；irsa 走默认凭证链。"""
+    snap = build_s3_auth_snapshot(runtime_ctx)
     kwargs: Dict[str, Any] = {}
-    region = (getattr(settings, "GIDO_ARTIFACT_S3_REGION", None) or "").strip()
-    if region:
-        kwargs["region_name"] = region
-    endpoint = (getattr(settings, "GIDO_ARTIFACT_S3_ENDPOINT_URL", None) or "").strip()
-    if endpoint:
-        kwargs["endpoint_url"] = endpoint
-
-    mode = resolved_s3_auth_mode()
-    if mode == S3_AUTH_STATIC:
-        ak, sk, token = resolved_static_credentials()
-        if ak and sk:
-            kwargs["aws_access_key_id"] = ak
-            kwargs["aws_secret_access_key"] = sk
-            if token:
-                kwargs["aws_session_token"] = token
+    if snap.region:
+        kwargs["region_name"] = snap.region
+    if snap.endpoint_url:
+        kwargs["endpoint_url"] = snap.endpoint_url
+    if snap.auth_mode == S3_AUTH_STATIC and snap.static_credentials_ready():
+        kwargs["aws_access_key_id"] = snap.access_key_id
+        kwargs["aws_secret_access_key"] = snap.secret_access_key
+        if snap.session_token:
+            kwargs["aws_session_token"] = snap.session_token
     return kwargs
 
 
-def s3_auth_public_summary() -> Dict[str, Any]:
-    mode = resolved_s3_auth_mode()
+def s3_auth_public_summary(runtime_ctx: Optional["OperatorRuntimeContext"] = None) -> Dict[str, Any]:
+    snap = build_s3_auth_snapshot(runtime_ctx)
     return {
-        "s3_auth_mode": mode,
-        "s3_paths_configured": s3_paths_configured(),
-        "static_credentials_configured": static_credentials_configured(),
+        "s3_auth_mode": snap.auth_mode,
+        "s3_auth_source": snap.source,
+        "s3_paths_configured": s3_paths_configured(runtime_ctx),
+        "static_credentials_configured": snap.static_credentials_ready(),
     }

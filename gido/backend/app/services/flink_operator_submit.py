@@ -165,7 +165,7 @@ def _base_flink_conf(
             settings.FLINK_OPERATOR_CHECKPOINT_INTERVAL or "60s"
         )
         flink_conf["execution.checkpointing.savepoint-dir"] = _resolve_savepoint_dir(ckpt)
-    apply_flink_s3_flink_conf(flink_conf)
+    apply_flink_s3_flink_conf(flink_conf, runtime_ctx=ctx)
     rest_ex = (settings.FLINK_K8S_REST_EXPOSED_TYPE or "LoadBalancer").strip()
     if rest_ex:
         flink_conf["kubernetes.rest-service.exposed.type"] = rest_ex
@@ -264,7 +264,7 @@ def build_flink_deployment_body(
         operator_runtime_pod_template(),
         operator_image_pull_secrets_pod_template(ctx.image_pull_secrets),
         operator_paimon_warehouse_pod_template(),
-        operator_s3_credentials_pod_template(),
+        operator_s3_credentials_pod_template(ctx),
         operator_scheduling_pod_template(),
         pod_template,
     )

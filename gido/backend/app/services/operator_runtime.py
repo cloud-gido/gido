@@ -43,6 +43,10 @@ class OperatorRuntimeContext:
     cluster_domain: str
     checkpoint_dir: Optional[str]
     image_pull_secrets: Optional[str]
+    s3_auth_mode: Optional[str]
+    s3_access_key_id: Optional[str]
+    s3_secret_access_key: Optional[str]
+    s3_session_token: Optional[str]
 
     @classmethod
     def from_settings(cls) -> "OperatorRuntimeContext":
@@ -74,6 +78,10 @@ class OperatorRuntimeContext:
             cluster_domain=domain,
             checkpoint_dir=_strip_or_none(settings.FLINK_OPERATOR_CHECKPOINT_DIR),
             image_pull_secrets=_strip_or_none(settings.FLINK_OPERATOR_IMAGE_PULL_SECRETS),
+            s3_auth_mode=None,
+            s3_access_key_id=None,
+            s3_secret_access_key=None,
+            s3_session_token=None,
         )
 
     def with_overrides(
@@ -89,6 +97,10 @@ class OperatorRuntimeContext:
         cluster_domain: Optional[str] = None,
         checkpoint_dir: Optional[str] = None,
         image_pull_secrets: Optional[str] = None,
+        s3_auth_mode: Optional[str] = None,
+        s3_access_key_id: Optional[str] = None,
+        s3_secret_access_key: Optional[str] = None,
+        s3_session_token: Optional[str] = None,
         profile_id: Optional[int] = None,
         profile_name: Optional[str] = None,
     ) -> "OperatorRuntimeContext":
@@ -105,6 +117,10 @@ class OperatorRuntimeContext:
             cluster_domain=_first_non_empty(cluster_domain, self.cluster_domain) or self.cluster_domain,
             checkpoint_dir=_first_non_empty(checkpoint_dir, self.checkpoint_dir),
             image_pull_secrets=_first_non_empty(image_pull_secrets, self.image_pull_secrets),
+            s3_auth_mode=_first_non_empty(s3_auth_mode, self.s3_auth_mode),
+            s3_access_key_id=_first_non_empty(s3_access_key_id, self.s3_access_key_id),
+            s3_secret_access_key=_first_non_empty(s3_secret_access_key, self.s3_secret_access_key),
+            s3_session_token=_first_non_empty(s3_session_token, self.s3_session_token),
         )
 
     def public_dict(self) -> Dict[str, Any]:
@@ -121,6 +137,8 @@ class OperatorRuntimeContext:
             "cluster_domain": self.cluster_domain,
             "checkpoint_dir": self.checkpoint_dir,
             "image_pull_secrets": self.image_pull_secrets,
+            "s3_auth_mode": self.s3_auth_mode,
+            "s3_credentials_configured": bool(self.s3_access_key_id and self.s3_secret_access_key),
         }
 
 
@@ -175,6 +193,10 @@ def resolve_operator_runtime(
             cluster_domain=profile.flink_k8s_cluster_domain,
             checkpoint_dir=profile.flink_operator_checkpoint_dir,
             image_pull_secrets=profile.flink_operator_image_pull_secrets,
+            s3_auth_mode=profile.flink_operator_s3_auth_mode,
+            s3_access_key_id=profile.flink_operator_s3_access_key_id,
+            s3_secret_access_key=profile.flink_operator_s3_secret_access_key,
+            s3_session_token=profile.flink_operator_s3_session_token,
         )
     overrides = _job_runtime_overrides(streaming_properties)
     explicit_version = bool(

@@ -169,7 +169,17 @@
 | **继承默认** | 空 → `FLINK_OPERATOR_CHECKPOINT_DIR`（平台级） |
 | **对应 .env** | `GIDO_FLINK_OPERATOR_CHECKPOINT_DIR` |
 | **示例** | `s3://my-bucket/flink-checkpoints`（EKS + IRSA）；`file:///opt/flink/checkpoints`（本地 PVC） |
-| **注意** | S3 路径需 Flink Pod IRSA/凭证可读写的 Provider（平台 `FLINK_OPERATOR_S3_*`）；未配置时作业可能为无 checkpoint 的 stateless 模式（受 `FLINK_OPERATOR_UPGRADE_MODE` 等平台设置影响）。 |
+| **注意** | S3 路径需 Flink Pod 可读写的凭证；**各 Operator 集群 Profile 可配置独立 AK/SK**（`flink_operator_s3_*`），未填时继承平台 `FLINK_OPERATOR_S3_*`。 |
+
+### `flink_operator_s3_auth_mode` / AK/SK（S3 认证）
+
+| 项 | 说明 |
+|----|------|
+| **含义** | 该 Operator 集群访问 S3（checkpoint / warehouse）的认证方式。 |
+| **取值** | `static`（本集群 AK/SK，注入 Flink Pod `AWS_*` env）\| `irsa`（EKS Pod IRSA） |
+| **继承默认** | 空 → 平台 `FLINK_OPERATOR_S3_AUTH_MODE` |
+| **密钥** | `flink_operator_s3_access_key_id` / `flink_operator_s3_secret_access_key` / 可选 `session_token`；API 不回显 Secret |
+| **示例** | static + `s3a://my-bucket/flink/checkpoints` + 集群专属 IAM User AK/SK |
 
 ---
 
@@ -229,6 +239,8 @@
   "flink_operator_service_account": "flink",
   "flink_operator_jm_rest_template": "http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081",
   "flink_operator_checkpoint_dir": "s3://my-bucket/flink-checkpoints",
+  "flink_operator_s3_auth_mode": "static",
+  "flink_operator_s3_access_key_id": "AKIA...",
   "flink_operator_image_pull_secrets": "ecr-pull"
 }
 ```

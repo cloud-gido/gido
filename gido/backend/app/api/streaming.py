@@ -1978,6 +1978,10 @@ _FLINK_OPERATOR_PROFILE_FIELDS = (
     "flink_k8s_cluster_domain",
     "flink_operator_checkpoint_dir",
     "flink_operator_image_pull_secrets",
+    "flink_operator_s3_auth_mode",
+    "flink_operator_s3_access_key_id",
+    "flink_operator_s3_secret_access_key",
+    "flink_operator_s3_session_token",
 )
 
 
@@ -1997,6 +2001,10 @@ class FlinkOperatorProfileCreate(BaseModel):
     flink_k8s_cluster_domain: Optional[str] = None
     flink_operator_checkpoint_dir: Optional[str] = None
     flink_operator_image_pull_secrets: Optional[str] = None
+    flink_operator_s3_auth_mode: Optional[str] = None
+    flink_operator_s3_access_key_id: Optional[str] = None
+    flink_operator_s3_secret_access_key: Optional[str] = None
+    flink_operator_s3_session_token: Optional[str] = None
 
 
 class FlinkOperatorProfileUpdate(BaseModel):
@@ -2014,6 +2022,19 @@ class FlinkOperatorProfileUpdate(BaseModel):
     flink_k8s_cluster_domain: Optional[str] = None
     flink_operator_checkpoint_dir: Optional[str] = None
     flink_operator_image_pull_secrets: Optional[str] = None
+    flink_operator_s3_auth_mode: Optional[str] = None
+    flink_operator_s3_access_key_id: Optional[str] = None
+    flink_operator_s3_secret_access_key: Optional[str] = None
+    flink_operator_s3_session_token: Optional[str] = None
+
+
+def _normalize_s3_auth_mode(value: Optional[str]) -> Optional[str]:
+    mode = (value or "").strip().lower()
+    if not mode:
+        return None
+    if mode not in ("irsa", "static"):
+        raise HTTPException(status_code=400, detail="flink_operator_s3_auth_mode 须为 irsa 或 static")
+    return mode
 
 
 def _flink_operator_profile_public(p: FlinkOperatorProfile) -> dict:
@@ -2034,6 +2055,9 @@ def _flink_operator_profile_public(p: FlinkOperatorProfile) -> dict:
         "flink_k8s_cluster_domain": p.flink_k8s_cluster_domain,
         "flink_operator_checkpoint_dir": p.flink_operator_checkpoint_dir,
         "flink_operator_image_pull_secrets": p.flink_operator_image_pull_secrets,
+        "flink_operator_s3_auth_mode": p.flink_operator_s3_auth_mode,
+        "flink_operator_s3_access_key_id": p.flink_operator_s3_access_key_id,
+        "flink_operator_s3_secret_configured": bool(p.flink_operator_s3_secret_access_key),
         "created_at": p.created_at,
         "updated_at": p.updated_at,
     }
@@ -2045,6 +2069,31 @@ def _flink_operator_profile_effective(db: Session, p: FlinkOperatorProfile) -> d
     ctx = resolve_operator_runtime(db, int(p.workspace_id), int(p.id), None)
     out = _flink_operator_profile_public(p)
     out["effective"] = ctx.public_dict()
+    return out
+
+
+def _apply_operator_profile_s3_patch(data: dict, *, existing: Optional[FlinkOperatorProfile] = None) -> dict:
+    out = dict(data)
+    if "flink_operator_s3_auth_mode" in out:
+        out["flink_operator_s3_auth_mode"] = _normalize_s3_auth_mode(out.get("flink_operator_s3_auth_mode"))
+    secret = out.pop("flink_operator_s3_secret_access_key", None)
+    if secret is not None:
+        s = str(secret).strip()
+        if s:
+            out["flink_operator_s3_secret_access_key"] = s
+        elif existing is not None:
+            pass
+        else:
+            out["flink_operator_s3_secret_access_key"] = None
+    mode = out.get("flink_operator_s3_auth_mode")
+    ak = (out.get("flink_operator_s3_access_key_id") or (existing.flink_operator_s3_access_key_id if existing else "") or "").strip()
+    sk = (
+        out.get("flink_operator_s3_secret_access_key")
+        or (existing.flink_operator_s3_secret_access_key if existing else "")
+        or ""
+    ).strip()
+    if mode == "static" and not (ak and sk):
+        raise HTTPException(status_code=400, detail="S3 认证为 static 时须填写 Access Key 与 Secret Key")
     return out
 
 
@@ -2130,6 +2179,7 @@ def create_flink_operator_profile(
     if not (body.flink_operator_namespace or body.flink_operator_image):
         raise HTTPException(status_code=400, detail="至少填写 flink_operator_namespace 或 flink_operator_image")
     data = _normalize_operator_profile_patch({k: getattr(body, k) for k in _FLINK_OPERATOR_PROFILE_FIELDS})
+    data = _apply_operator_profile_s3_patch(data)
     if body.is_default:
         db.query(FlinkOperatorProfile).filter(
             FlinkOperatorProfile.workspace_id == body.workspace_id,
@@ -2176,6 +2226,7 @@ def update_flink_operator_profile(
         inferred = infer_operator_flink_version_from_image(patch.get("flink_operator_image"))
         if inferred:
             patch["flink_operator_flink_version"] = inferred
+    patch = _apply_operator_profile_s3_patch(patch, existing=p)
     for k, v in patch.items():
         setattr(p, k, v)
     p.updated_at = datetime.utcnow()
@@ -2679,6 +2730,11 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
             and _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None)) == "flink_operator"
         ):
             op_runtime_ctx = _operator_runtime_ctx_for_job(db, job)
+            from app.services.s3_auth import validate_s3_auth_for_submit
+
+            ok_s3, s3_reason = validate_s3_auth_for_submit(op_runtime_ctx)
+            if not ok_s3:
+                raise HTTPException(status_code=400, detail=s3_reason)
         if job.job_type == "SQL":
             extra = _parse_job_streaming_properties(getattr(job, "streaming_properties", None))
             props_only, k8s_ov = _split_streaming_properties_for_sql(extra or None)

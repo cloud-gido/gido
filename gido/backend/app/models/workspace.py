@@ -330,6 +330,11 @@ class FlinkOperatorProfile(Base):
     flink_k8s_cluster_domain = Column(String(256), nullable=True)
     flink_operator_checkpoint_dir = Column(String(1024), nullable=True)
     flink_operator_image_pull_secrets = Column(String(512), nullable=True)
+    # S3 认证（各集群独立 AK/SK 或 IRSA；NULL 表示沿用平台 FLINK_OPERATOR_S3_*）
+    flink_operator_s3_auth_mode = Column(String(16), nullable=True)
+    flink_operator_s3_access_key_id = Column(String(256), nullable=True)
+    flink_operator_s3_secret_access_key = Column(String(512), nullable=True)
+    flink_operator_s3_session_token = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)

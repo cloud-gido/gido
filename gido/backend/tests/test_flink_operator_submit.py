@@ -158,11 +158,28 @@ def test_resolve_operator_jm_rest_dev_local_skips_cluster_dns(monkeypatch):
 def test_build_flink_deployment_static_s3_credentials(monkeypatch):
     from app.core.config import settings
     from app.services import s3_auth
+    from app.services.operator_runtime import OperatorRuntimeContext
 
-    monkeypatch.setattr(settings, "FLINK_OPERATOR_S3_AUTH_MODE", "static")
-    monkeypatch.setattr(settings, "GIDO_S3_ACCESS_KEY_ID", "AKIA_TEST")
-    monkeypatch.setattr(settings, "GIDO_S3_SECRET_ACCESS_KEY", "secret")
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_S3_AUTH_MODE", "irsa")
     monkeypatch.setattr(settings, "PAIMON_WAREHOUSE_DEFAULT", "s3a://bucket/paimon")
+    ctx = OperatorRuntimeContext(
+        profile_id=1,
+        profile_name="cluster-a",
+        namespace="flink",
+        image="img:1",
+        flink_version="v1_17",
+        service_account="flink",
+        k8s_context=None,
+        kubeconfig_path=None,
+        jm_rest_template="http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081",
+        cluster_domain="cluster.local",
+        checkpoint_dir="s3a://bucket-a/checkpoints",
+        image_pull_secrets=None,
+        s3_auth_mode="static",
+        s3_access_key_id="AKIA_CLUSTER",
+        s3_secret_access_key="cluster-secret",
+        s3_session_token=None,
+    )
 
     body = build_flink_deployment_body(
         deployment_name="gido-jar-s3",
@@ -170,17 +187,17 @@ def test_build_flink_deployment_static_s3_credentials(monkeypatch):
         jar_uri="http://host/artifact.jar",
         entry_class="com.example.Job",
         parallelism=2,
+        runtime_ctx=ctx,
     )
     fc = body["spec"]["flinkConfiguration"]
-    assert "com.amazonaws.auth.WebIdentityTokenCredentialsProvider" not in fc.get(
-        "fs.s3a.aws.credentials.provider", ""
-    )
+    assert "WebIdentityTokenCredentialsProvider" not in fc.get("fs.s3a.aws.credentials.provider", "")
     assert "EnvironmentVariableCredentialsProvider" in fc["fs.s3a.aws.credentials.provider"]
 
     pod_tpl = body["spec"]["podTemplate"]["spec"]["containers"][0]
     env = {e["name"]: e["value"] for e in pod_tpl["env"]}
-    assert env["AWS_ACCESS_KEY_ID"] == "AKIA_TEST"
-    assert env["AWS_SECRET_ACCESS_KEY"] == "secret"
+    assert env["AWS_ACCESS_KEY_ID"] == "AKIA_CLUSTER"
+    assert env["AWS_SECRET_ACCESS_KEY"] == "cluster-secret"
 
-    assert s3_auth.validate_s3_auth_for_submit() is None
+    ok, _ = s3_auth.validate_s3_auth_for_submit(ctx)
+    assert ok
 
