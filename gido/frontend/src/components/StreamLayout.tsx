@@ -7,7 +7,7 @@
 import { Layout, Menu } from 'antd'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import {
-  CodeOutlined, MonitorOutlined, CloudServerOutlined, AuditOutlined,
+  CodeOutlined, MonitorOutlined, CloudServerOutlined, AuditOutlined, ClusterOutlined,
 } from '@ant-design/icons'
 import ProductBrandBlock from './ProductBrandBlock'
 import WorkspaceHeaderBar from './shell/WorkspaceHeaderBar'
@@ -20,6 +20,7 @@ const { Sider, Content, Header } = Layout
 const MENU_ITEMS = [
   { key: R.stream.studio, icon: <CodeOutlined />, label: '作业开发' },
   { key: R.stream.monitor, icon: <MonitorOutlined />, label: '作业运维' },
+  { key: R.stream.operatorClusters, icon: <ClusterOutlined />, label: 'Operator 集群' },
   { key: R.stream.approval, icon: <AuditOutlined />, label: '发布审批' },
   { key: R.stream.overview, icon: <CloudServerOutlined />, label: 'Flink 运行概览' },
 ]

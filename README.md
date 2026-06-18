@@ -49,7 +49,14 @@ SQL 开发、工作流 DAG、DolphinScheduler 调度、数据集成、运维中�
 
 ### GIDO Stream · 实时流计算
 
-Flink SQL / JAR 作业开发、运维监控、发布审批；**生产推荐 Flink Kubernetes Operator 1.15 + Flink 2.2.1**（`FlinkDeployment`）。内置 **CDC→Paimon** SQL 模板，EKS 上可对接 RDS MySQL + S3 仓库。本地全栈 Compose 仍含 Flink Session（8081）与 SQL Gateway（8083）。
+Flink SQL / JAR 作业开发、运维监控、发布审批；**生产推荐 Flink Kubernetes Operator 1.15 + Flink 2.2.1**（`FlinkDeployment`）。支持 **工作空间内多套 Operator 集群**（菜单 **Operator 集群**），作业级可选运行时镜像。内置 **CDC→Paimon** SQL 模板，EKS 上可对接 RDS MySQL + S3 仓库。本地全栈 Compose 仍含 Flink Session（8081）与 SQL Gateway（8083）。
+
+| Stream 菜单 | 路径 |
+|-------------|------|
+| 作业开发 | `/gido/stream/studio` |
+| 作业运维 | `/gido/stream/monitor` |
+| **Operator 集群** | `/gido/stream/operator-clusters` |
+| Flink 运行概览 | `/gido/stream/overview` |
 
 ![GIDO Stream](docs/screenshots/04-stream-studio.png)
 
@@ -81,7 +88,8 @@ Stream Studio 上传 JAR/SQL
         │
         ▼
   GIDO Backend ──► S3 制品库（可选 FLINK_OPERATOR_JAR_S3_PREFIX）
-        │
+        │              │
+        │              └── 工作空间 Operator Profile（多集群 / 多镜像）
         ▼
   Flink Kubernetes Operator ──► FlinkDeployment（gido-flink-runtime 镜像）
         │
@@ -119,6 +127,15 @@ chmod +x start-platform.sh
 ./start-platform.sh
 ```
 
+**仅 GIDO（backend + frontend，自备 PostgreSQL）**：见 [gido/README.md](gido/README.md#快速启动) 与 `gido/start.sh`。Windows 可在仓库根执行：
+
+```powershell
+Copy-Item .env.example .env
+docker compose -f gido/docker-compose.yml --env-file .env up -d --build
+```
+
+（需宿主机或容器内 **5432** 已有 PostgreSQL，库名 `gido`；详见 `gido/docs/DEPLOYMENT_SOP.md`。）
+
 ### 登录体验
 
 | 步骤 | 操作 |
@@ -134,6 +151,7 @@ chmod +x start-platform.sh
 |------|-----|
 | GIDO 前端 | http://127.0.0.1:3002 |
 | GIDO API | http://127.0.0.1:8001/docs |
+| Operator 集群（Stream） | http://127.0.0.1:3002/gido/stream/operator-clusters |
 | DolphinScheduler | http://127.0.0.1:12345/dolphinscheduler/ui |
 | Flink Web UI | http://127.0.0.1:8081 |
 | Flink SQL Gateway | http://127.0.0.1:8083 |

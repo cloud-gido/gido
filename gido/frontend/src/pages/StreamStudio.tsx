@@ -269,7 +269,7 @@ export default function StreamStudioPage() {
 
   useEffect(() => {
     if (!wsId) return
-    streamingApi.listOperatorProfiles(wsId).then(setOperatorProfiles).catch(() => setOperatorProfiles([]))
+    streamingApi.listOperatorProfiles(wsId).then((r: any) => setOperatorProfiles(Array.isArray(r) ? r : [])).catch(() => setOperatorProfiles([]))
     streamingApi.listOperatorRuntimeImages(wsId).then((r: any) => setRuntimeImages(r?.items || [])).catch(() => setRuntimeImages([]))
   }, [wsId])
 
@@ -795,7 +795,10 @@ export default function StreamStudioPage() {
                   />
                   <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
                     <Space wrap>
-                      <span>Operator 集群</span>
+                      <span>
+                        Operator 集群{' '}
+                        <Link to={R.stream.operatorClusters} style={{ fontSize: 12 }}>管理</Link>
+                      </span>
                       <Select
                         allowClear
                         placeholder="平台默认"

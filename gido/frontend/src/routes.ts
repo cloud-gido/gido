@@ -28,6 +28,7 @@ export const R = {
     root: '/gido/stream',
     studio: '/gido/stream/studio',
     monitor: '/gido/stream/monitor',
+    operatorClusters: '/gido/stream/operator-clusters',
     overview: '/gido/stream/overview',
     /** @deprecated Session 模式已移除；保留路径供旧链接重定向 */
     flinkSessions: '/gido/stream/flink-sessions',
