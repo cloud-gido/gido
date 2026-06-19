@@ -335,6 +335,10 @@ class FlinkOperatorProfile(Base):
     flink_operator_s3_access_key_id = Column(String(256), nullable=True)
     flink_operator_s3_secret_access_key = Column(String(512), nullable=True)
     flink_operator_s3_session_token = Column(Text, nullable=True)
+    # S3 区域（NULL 表示沿用平台 GIDO_ARTIFACT_S3_REGION）
+    flink_operator_s3_region = Column(String(64), nullable=True)
+    # S3 Endpoint（NULL 表示沿用平台 GIDO_ARTIFACT_S3_ENDPOINT_URL）
+    flink_operator_s3_endpoint_url = Column(String(1024), nullable=True)
     # JAR/SQL 制品 S3 前缀（NULL 表示沿用平台 FLINK_OPERATOR_JAR_S3_PREFIX）
     flink_operator_jar_s3_prefix = Column(String(1024), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

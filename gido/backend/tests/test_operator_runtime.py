@@ -40,6 +40,8 @@ def test_operator_runtime_with_overrides():
         s3_secret_access_key=None,
         s3_session_token=None,
         jar_s3_prefix=None,
+        s3_region=None,
+        s3_endpoint_url=None,
     )
     merged = base.with_overrides(image="img:override", namespace="flink-b")
     assert merged.image == "img:override"

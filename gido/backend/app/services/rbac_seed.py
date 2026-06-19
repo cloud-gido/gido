@@ -834,6 +834,56 @@ def migrate_dw_flink_operator_profiles_jar_s3_prefix(engine: Engine) -> None:
             )
 
 
+def migrate_dw_flink_operator_profiles_s3_region(engine: Engine) -> None:
+    """Operator 集群 Profile 独立 S3 区域。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_flink_operator_profiles"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_flink_operator_profiles")}
+    if "flink_operator_s3_region" in cols:
+        return
+    with engine.begin() as conn:
+        if engine.dialect.name == "mysql":
+            conn.execute(
+                text(
+                    "ALTER TABLE dw_flink_operator_profiles "
+                    "ADD COLUMN flink_operator_s3_region VARCHAR(64) NULL"
+                )
+            )
+        else:
+            conn.execute(
+                text(
+                    "ALTER TABLE dw_flink_operator_profiles "
+                    "ADD COLUMN flink_operator_s3_region VARCHAR(64)"
+                )
+            )
+
+
+def migrate_dw_flink_operator_profiles_s3_endpoint(engine: Engine) -> None:
+    """Operator 集群 Profile 独立 S3 Endpoint。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_flink_operator_profiles"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_flink_operator_profiles")}
+    if "flink_operator_s3_endpoint_url" in cols:
+        return
+    with engine.begin() as conn:
+        if engine.dialect.name == "mysql":
+            conn.execute(
+                text(
+                    "ALTER TABLE dw_flink_operator_profiles "
+                    "ADD COLUMN flink_operator_s3_endpoint_url VARCHAR(1024) NULL"
+                )
+            )
+        else:
+            conn.execute(
+                text(
+                    "ALTER TABLE dw_flink_operator_profiles "
+                    "ADD COLUMN flink_operator_s3_endpoint_url VARCHAR(1024)"
+                )
+            )
+
+
 def migrate_dw_streaming_jobs_flink_operator_profile(engine: Engine) -> None:
     """实时作业可选绑定 Flink Operator 集群；提交后持久化目标 namespace / 镜像。"""
     insp = inspect(engine)

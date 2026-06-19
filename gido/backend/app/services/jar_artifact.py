@@ -176,10 +176,13 @@ def jar_artifact_inventory(
         _parse_s3_prefix,
         artifact_s3_prefix,
         artifact_s3_prefix_source,
+        artifact_s3_region_source,
+        artifact_s3_endpoint_source,
         build_s3_artifact_uri,
         list_s3_job_folder_prefixes,
         list_s3_objects_under_key_prefix,
     )
+    from app.services.s3_auth import _resolved_s3_endpoint, _resolved_s3_region
 
     prefix = artifact_s3_prefix(runtime_ctx)
     local_path = artifact_file_path(job_id)
@@ -189,6 +192,10 @@ def jar_artifact_inventory(
         "operator_profile_name": getattr(runtime_ctx, "profile_name", None) if runtime_ctx else None,
         "s3_prefix": prefix,
         "s3_prefix_source": artifact_s3_prefix_source(runtime_ctx),
+        "s3_region": _resolved_s3_region(runtime_ctx),
+        "s3_region_source": artifact_s3_region_source(runtime_ctx),
+        "s3_endpoint_url": _resolved_s3_endpoint(runtime_ctx),
+        "s3_endpoint_source": artifact_s3_endpoint_source(runtime_ctx),
         "local_artifact": _local_file_info(local_path),
         "job_s3_prefix": None,
         "job_s3_objects": [],

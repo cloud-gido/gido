@@ -119,9 +119,33 @@ def _profile_explicit_mode(runtime_ctx: "OperatorRuntimeContext") -> Optional[st
     return None
 
 
+def _platform_s3_region() -> Optional[str]:
+    return _strip_or_none(getattr(settings, "GIDO_ARTIFACT_S3_REGION", None))
+
+
+def _platform_s3_endpoint() -> Optional[str]:
+    return _strip_or_none(getattr(settings, "GIDO_ARTIFACT_S3_ENDPOINT_URL", None))
+
+
+def _resolved_s3_region(runtime_ctx: Optional["OperatorRuntimeContext"] = None) -> Optional[str]:
+    if runtime_ctx is not None:
+        prof = _strip_or_none(getattr(runtime_ctx, "s3_region", None))
+        if prof:
+            return prof
+    return _platform_s3_region()
+
+
+def _resolved_s3_endpoint(runtime_ctx: Optional["OperatorRuntimeContext"] = None) -> Optional[str]:
+    if runtime_ctx is not None:
+        prof = _strip_or_none(getattr(runtime_ctx, "s3_endpoint_url", None))
+        if prof:
+            return prof
+    return _platform_s3_endpoint()
+
+
 def build_s3_auth_snapshot(runtime_ctx: Optional["OperatorRuntimeContext"] = None) -> S3AuthSnapshot:
-    region = _strip_or_none(getattr(settings, "GIDO_ARTIFACT_S3_REGION", None))
-    endpoint = _strip_or_none(getattr(settings, "GIDO_ARTIFACT_S3_ENDPOINT_URL", None))
+    region = _resolved_s3_region(runtime_ctx)
+    endpoint = _resolved_s3_endpoint(runtime_ctx)
 
     if runtime_ctx is not None and runtime_ctx.profile_id is not None:
         ak = _strip_or_none(getattr(runtime_ctx, "s3_access_key_id", None))
@@ -220,37 +244,49 @@ def apply_flink_s3_flink_conf(
     if provider:
         flink_conf["fs.s3a.aws.credentials.provider"] = provider
 
-    endpoint = snap.endpoint_url or _strip_or_none(getattr(settings, "GIDO_ARTIFACT_S3_ENDPOINT_URL", None))
+    endpoint = snap.endpoint_url
     if endpoint:
         flink_conf["fs.s3a.endpoint"] = endpoint
         flink_conf["fs.s3a.path.style.access"] = "true"
         flink_conf["fs.s3a.connection.ssl.enabled"] = (
             "false" if endpoint.lower().startswith("http://") else "true"
         )
+    if snap.region:
+        flink_conf["fs.s3a.endpoint.region"] = snap.region
 
 
-def flink_s3_credentials_env(
-    runtime_ctx: Optional["OperatorRuntimeContext"] = None,
-) -> List[Dict[str, str]]:
-    """Flink Pod 环境变量（static 模式注入 AWS_*）。"""
+def _flink_s3_pod_env(runtime_ctx: Optional["OperatorRuntimeContext"] = None) -> List[Dict[str, str]]:
+    """Flink Pod 环境变量：static 模式注入 AWS_*；任意模式在配置了 region 时注入 AWS_DEFAULT_REGION。"""
     snap = build_s3_auth_snapshot(runtime_ctx)
-    if snap.auth_mode != S3_AUTH_STATIC or not snap.static_credentials_ready():
-        return []
-    env: List[Dict[str, str]] = [
-        {"name": "AWS_ACCESS_KEY_ID", "value": snap.access_key_id or ""},
-        {"name": "AWS_SECRET_ACCESS_KEY", "value": snap.secret_access_key or ""},
-    ]
-    if snap.session_token:
-        env.append({"name": "AWS_SESSION_TOKEN", "value": snap.session_token})
+    env: List[Dict[str, str]] = []
+    if snap.auth_mode == S3_AUTH_STATIC and snap.static_credentials_ready():
+        env.extend(
+            [
+                {"name": "AWS_ACCESS_KEY_ID", "value": snap.access_key_id or ""},
+                {"name": "AWS_SECRET_ACCESS_KEY", "value": snap.secret_access_key or ""},
+            ]
+        )
+        if snap.session_token:
+            env.append({"name": "AWS_SESSION_TOKEN", "value": snap.session_token})
     if snap.region:
         env.append({"name": "AWS_DEFAULT_REGION", "value": snap.region})
     return env
 
 
+def flink_s3_credentials_env(
+    runtime_ctx: Optional["OperatorRuntimeContext"] = None,
+) -> List[Dict[str, str]]:
+    """Flink Pod 环境变量（static 模式 AK/SK + 可选 region）。"""
+    snap = build_s3_auth_snapshot(runtime_ctx)
+    if snap.auth_mode != S3_AUTH_STATIC or not snap.static_credentials_ready():
+        return [e for e in _flink_s3_pod_env(runtime_ctx) if e["name"] == "AWS_DEFAULT_REGION"]
+    return _flink_s3_pod_env(runtime_ctx)
+
+
 def operator_s3_credentials_pod_template(
     runtime_ctx: Optional["OperatorRuntimeContext"] = None,
 ) -> Optional[Dict[str, Any]]:
-    env = flink_s3_credentials_env(runtime_ctx)
+    env = _flink_s3_pod_env(runtime_ctx)
     if not env:
         return None
     return {

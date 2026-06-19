@@ -47,6 +47,8 @@ class OperatorRuntimeContext:
     s3_access_key_id: Optional[str]
     s3_secret_access_key: Optional[str]
     s3_session_token: Optional[str]
+    s3_region: Optional[str]
+    s3_endpoint_url: Optional[str]
     jar_s3_prefix: Optional[str]
 
     @classmethod
@@ -87,6 +89,8 @@ class OperatorRuntimeContext:
             s3_access_key_id=None,
             s3_secret_access_key=None,
             s3_session_token=None,
+            s3_region=_strip_or_none(getattr(settings, "GIDO_ARTIFACT_S3_REGION", None)),
+            s3_endpoint_url=_strip_or_none(getattr(settings, "GIDO_ARTIFACT_S3_ENDPOINT_URL", None)),
             jar_s3_prefix=jar_prefix,
         )
 
@@ -107,6 +111,8 @@ class OperatorRuntimeContext:
         s3_access_key_id: Optional[str] = None,
         s3_secret_access_key: Optional[str] = None,
         s3_session_token: Optional[str] = None,
+        s3_region: Optional[str] = None,
+        s3_endpoint_url: Optional[str] = None,
         jar_s3_prefix: Optional[str] = None,
         profile_id: Optional[int] = None,
         profile_name: Optional[str] = None,
@@ -128,6 +134,8 @@ class OperatorRuntimeContext:
             s3_access_key_id=_first_non_empty(s3_access_key_id, self.s3_access_key_id),
             s3_secret_access_key=_first_non_empty(s3_secret_access_key, self.s3_secret_access_key),
             s3_session_token=_first_non_empty(s3_session_token, self.s3_session_token),
+            s3_region=_first_non_empty(s3_region, self.s3_region),
+            s3_endpoint_url=_first_non_empty(s3_endpoint_url, self.s3_endpoint_url),
             jar_s3_prefix=_first_non_empty(jar_s3_prefix, self.jar_s3_prefix),
         )
 
@@ -147,6 +155,8 @@ class OperatorRuntimeContext:
             "image_pull_secrets": self.image_pull_secrets,
             "s3_auth_mode": self.s3_auth_mode,
             "s3_credentials_configured": bool(self.s3_access_key_id and self.s3_secret_access_key),
+            "s3_region": self.s3_region,
+            "s3_endpoint_url": self.s3_endpoint_url,
             "jar_s3_prefix": self.jar_s3_prefix,
         }
 
@@ -206,6 +216,8 @@ def resolve_operator_runtime(
             s3_access_key_id=profile.flink_operator_s3_access_key_id,
             s3_secret_access_key=profile.flink_operator_s3_secret_access_key,
             s3_session_token=profile.flink_operator_s3_session_token,
+            s3_region=profile.flink_operator_s3_region,
+            s3_endpoint_url=profile.flink_operator_s3_endpoint_url,
             jar_s3_prefix=profile.flink_operator_jar_s3_prefix,
         )
     overrides = _job_runtime_overrides(streaming_properties)

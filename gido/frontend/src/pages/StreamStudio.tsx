@@ -1154,6 +1154,28 @@ export default function StreamStudioPage() {
                                         <Tag style={{ marginLeft: 8 }}>平台默认</Tag>
                                       )}
                                     </Descriptions.Item>
+                                    {jarInventory.s3_region && (
+                                      <Descriptions.Item label="S3 区域">
+                                        {jarInventory.s3_region}
+                                        {jarInventory.s3_region_source === 'profile' && (
+                                          <Tag color="blue" style={{ marginLeft: 8 }}>集群配置</Tag>
+                                        )}
+                                        {jarInventory.s3_region_source === 'platform' && (
+                                          <Tag style={{ marginLeft: 8 }}>平台默认</Tag>
+                                        )}
+                                      </Descriptions.Item>
+                                    )}
+                                    {jarInventory.s3_endpoint_url && (
+                                      <Descriptions.Item label="S3 Endpoint">
+                                        {jarInventory.s3_endpoint_url}
+                                        {jarInventory.s3_endpoint_source === 'profile' && (
+                                          <Tag color="blue" style={{ marginLeft: 8 }}>集群配置</Tag>
+                                        )}
+                                        {jarInventory.s3_endpoint_source === 'platform' && (
+                                          <Tag style={{ marginLeft: 8 }}>平台默认</Tag>
+                                        )}
+                                      </Descriptions.Item>
+                                    )}
                                     {jarInventory.job_s3_prefix && (
                                       <Descriptions.Item label="本作业 S3 目录">{jarInventory.job_s3_prefix}</Descriptions.Item>
                                     )}

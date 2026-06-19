@@ -181,6 +181,22 @@
 | **密钥** | `flink_operator_s3_access_key_id` / `flink_operator_s3_secret_access_key` / 可选 `session_token`；API 不回显 Secret |
 | **示例** | static + `s3a://my-bucket/flink/checkpoints` + 集群专属 IAM User AK/SK |
 
+### `flink_operator_s3_region`（S3 区域）
+
+| 项 | 说明 |
+|----|------|
+| **含义** | 该 Operator 集群访问 S3 的 AWS 区域（Backend 上传制品、Flink Pod 读 checkpoint/JAR）。 |
+| **继承默认** | 空 → 平台 `GIDO_ARTIFACT_S3_REGION` |
+| **示例** | `ap-southeast-1`（新加坡）、`ap-northeast-1`（东京） |
+
+### `flink_operator_s3_endpoint_url`（S3 Endpoint）
+
+| 项 | 说明 |
+|----|------|
+| **含义** | S3 API 地址；Backend boto3 与 Flink `fs.s3a.endpoint` 均使用。 |
+| **继承默认** | 空 → 平台 `GIDO_ARTIFACT_S3_ENDPOINT_URL` |
+| **示例** | `https://s3.ap-southeast-1.amazonaws.com`；MinIO 如 `https://minio.example.com` |
+
 ### `flink_operator_jar_s3_prefix`（JAR/SQL 制品 S3 前缀）
 
 | 项 | 说明 |

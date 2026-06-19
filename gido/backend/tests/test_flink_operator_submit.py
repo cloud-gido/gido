@@ -179,6 +179,9 @@ def test_build_flink_deployment_static_s3_credentials(monkeypatch):
         s3_access_key_id="AKIA_CLUSTER",
         s3_secret_access_key="cluster-secret",
         s3_session_token=None,
+        jar_s3_prefix=None,
+        s3_region=None,
+        s3_endpoint_url=None,
     )
 
     body = build_flink_deployment_body(

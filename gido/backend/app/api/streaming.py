@@ -1982,6 +1982,8 @@ _FLINK_OPERATOR_PROFILE_FIELDS = (
     "flink_operator_s3_access_key_id",
     "flink_operator_s3_secret_access_key",
     "flink_operator_s3_session_token",
+    "flink_operator_s3_region",
+    "flink_operator_s3_endpoint_url",
     "flink_operator_jar_s3_prefix",
 )
 
@@ -2006,6 +2008,8 @@ class FlinkOperatorProfileCreate(BaseModel):
     flink_operator_s3_access_key_id: Optional[str] = None
     flink_operator_s3_secret_access_key: Optional[str] = None
     flink_operator_s3_session_token: Optional[str] = None
+    flink_operator_s3_region: Optional[str] = None
+    flink_operator_s3_endpoint_url: Optional[str] = None
     flink_operator_jar_s3_prefix: Optional[str] = None
 
 
@@ -2028,6 +2032,8 @@ class FlinkOperatorProfileUpdate(BaseModel):
     flink_operator_s3_access_key_id: Optional[str] = None
     flink_operator_s3_secret_access_key: Optional[str] = None
     flink_operator_s3_session_token: Optional[str] = None
+    flink_operator_s3_region: Optional[str] = None
+    flink_operator_s3_endpoint_url: Optional[str] = None
     flink_operator_jar_s3_prefix: Optional[str] = None
 
 
@@ -2061,6 +2067,8 @@ def _flink_operator_profile_public(p: FlinkOperatorProfile) -> dict:
         "flink_operator_s3_auth_mode": p.flink_operator_s3_auth_mode,
         "flink_operator_s3_access_key_id": p.flink_operator_s3_access_key_id,
         "flink_operator_s3_secret_configured": bool(p.flink_operator_s3_secret_access_key),
+        "flink_operator_s3_region": p.flink_operator_s3_region,
+        "flink_operator_s3_endpoint_url": p.flink_operator_s3_endpoint_url,
         "flink_operator_jar_s3_prefix": p.flink_operator_jar_s3_prefix,
         "created_at": p.created_at,
         "updated_at": p.updated_at,
@@ -2090,10 +2098,35 @@ def _normalize_jar_s3_prefix(value: Optional[str]) -> Optional[str]:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 
 
+def _normalize_s3_region(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s or None
+
+
+def _normalize_s3_endpoint_url(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    low = s.lower()
+    if not (low.startswith("http://") or low.startswith("https://")):
+        raise HTTPException(status_code=400, detail="flink_operator_s3_endpoint_url 须以 http:// 或 https:// 开头")
+    return s.rstrip("/")
+
+
 def _apply_operator_profile_s3_patch(data: dict, *, existing: Optional[FlinkOperatorProfile] = None) -> dict:
     out = dict(data)
     if "flink_operator_jar_s3_prefix" in out:
         out["flink_operator_jar_s3_prefix"] = _normalize_jar_s3_prefix(out.get("flink_operator_jar_s3_prefix"))
+    if "flink_operator_s3_region" in out:
+        out["flink_operator_s3_region"] = _normalize_s3_region(out.get("flink_operator_s3_region"))
+    if "flink_operator_s3_endpoint_url" in out:
+        out["flink_operator_s3_endpoint_url"] = _normalize_s3_endpoint_url(
+            out.get("flink_operator_s3_endpoint_url")
+        )
     if "flink_operator_s3_auth_mode" in out:
         out["flink_operator_s3_auth_mode"] = _normalize_s3_auth_mode(out.get("flink_operator_s3_auth_mode"))
     secret = out.pop("flink_operator_s3_secret_access_key", None)

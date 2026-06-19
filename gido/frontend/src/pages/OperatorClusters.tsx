@@ -32,6 +32,8 @@ type OperatorProfile = {
   flink_operator_s3_auth_mode?: string | null
   flink_operator_s3_access_key_id?: string | null
   flink_operator_s3_secret_configured?: boolean
+  flink_operator_s3_region?: string | null
+  flink_operator_s3_endpoint_url?: string | null
   flink_operator_jar_s3_prefix?: string | null
   effective?: Record<string, unknown>
 }
@@ -67,6 +69,8 @@ function EffectiveBlock({ effective }: { effective?: Record<string, unknown> }) 
     ['image_pull_secrets', 'imagePullSecrets'],
     ['s3_auth_mode', 'S3 认证'],
     ['s3_credentials_configured', 'S3 AK/SK'],
+    ['s3_region', 'S3 区域'],
+    ['s3_endpoint_url', 'S3 Endpoint'],
     ['jar_s3_prefix', 'JAR 制品 S3'],
   ] as const
   return (
@@ -164,6 +168,8 @@ export default function OperatorClustersPage() {
       flink_operator_image_pull_secrets: row.flink_operator_image_pull_secrets ?? '',
       flink_operator_s3_auth_mode: row.flink_operator_s3_auth_mode ?? row.effective?.s3_auth_mode ?? 'static',
       flink_operator_s3_access_key_id: row.flink_operator_s3_access_key_id ?? '',
+      flink_operator_s3_region: row.flink_operator_s3_region ?? row.effective?.s3_region ?? '',
+      flink_operator_s3_endpoint_url: row.flink_operator_s3_endpoint_url ?? row.effective?.s3_endpoint_url ?? '',
       flink_operator_jar_s3_prefix: row.flink_operator_jar_s3_prefix ?? row.effective?.jar_s3_prefix ?? '',
     })
     setDrawerOpen(true)
@@ -485,6 +491,20 @@ export default function OperatorClustersPage() {
             extra="本集群 JAR/SQL 制品目录，如 s3://bucket/cluster-a/jars；留空沿用平台 FLINK_OPERATOR_JAR_S3_PREFIX。"
           >
             <Input placeholder="s3://your-bucket/cluster-a/jars" />
+          </Form.Item>
+          <Form.Item
+            name="flink_operator_s3_region"
+            label="S3 区域"
+            extra="AWS 区域，如 ap-southeast-1；留空沿用平台 GIDO_ARTIFACT_S3_REGION。"
+          >
+            <Input placeholder="ap-southeast-1" />
+          </Form.Item>
+          <Form.Item
+            name="flink_operator_s3_endpoint_url"
+            label="S3 Endpoint"
+            extra="如 https://s3.ap-southeast-1.amazonaws.com；MinIO/兼容存储必填；留空沿用平台 GIDO_ARTIFACT_S3_ENDPOINT_URL。"
+          >
+            <Input placeholder="https://s3.ap-southeast-1.amazonaws.com" />
           </Form.Item>
           <Form.Item
             name="flink_operator_s3_auth_mode"

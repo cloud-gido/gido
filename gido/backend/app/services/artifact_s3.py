@@ -273,3 +273,27 @@ def artifact_s3_prefix_source(runtime_ctx: Optional["OperatorRuntimeContext"] = 
     if _platform_artifact_s3_prefix():
         return "platform"
     return None
+
+
+def artifact_s3_region_source(runtime_ctx: Optional["OperatorRuntimeContext"] = None) -> Optional[str]:
+    from app.services.s3_auth import _platform_s3_region
+
+    if runtime_ctx is not None:
+        prof = (getattr(runtime_ctx, "s3_region", None) or "").strip()
+        if prof:
+            return "profile"
+    if _platform_s3_region():
+        return "platform"
+    return None
+
+
+def artifact_s3_endpoint_source(runtime_ctx: Optional["OperatorRuntimeContext"] = None) -> Optional[str]:
+    from app.services.s3_auth import _platform_s3_endpoint
+
+    if runtime_ctx is not None:
+        prof = (getattr(runtime_ctx, "s3_endpoint_url", None) or "").strip()
+        if prof:
+            return "profile"
+    if _platform_s3_endpoint():
+        return "platform"
+    return None

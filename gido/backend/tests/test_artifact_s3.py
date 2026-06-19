@@ -52,6 +52,8 @@ def test_resolve_jar_uri_prefers_s3_when_object_exists(monkeypatch):
         s3_secret_access_key="secret",
         s3_session_token=None,
         jar_s3_prefix="s3://cluster-a-bucket/jars",
+        s3_region=None,
+        s3_endpoint_url=None,
     )
     with patch("app.services.jar_artifact.artifact_exists_in_s3", return_value=True):
         assert resolve_jar_uri_for_job(7, runtime_ctx=ctx) == "s3://cluster-a-bucket/jars/7/artifact.jar"
@@ -79,6 +81,8 @@ def test_artifact_s3_prefix_from_profile_over_platform(monkeypatch):
         s3_secret_access_key=None,
         s3_session_token=None,
         jar_s3_prefix="s3://cluster-b/jars",
+        s3_region=None,
+        s3_endpoint_url=None,
     )
     assert s3.artifact_s3_prefix(ctx) == "s3://cluster-b/jars"
     assert s3.build_s3_artifact_uri(9, "artifact.jar", runtime_ctx=ctx) == (
