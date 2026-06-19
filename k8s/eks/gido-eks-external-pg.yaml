@@ -4,40 +4,70 @@
 #
 # 适用：EKS 上已有 RDS PostgreSQL（元库），不部署集群内 postgres。
 #
-# 替换占位符（全局搜索 CHANGE_ME）：
-#   CHANGE_ME_AWS_ACCOUNT     AWS 账号 ID
-#   CHANGE_ME_AWS_REGION      如 ap-northeast-1
-#   CHANGE_ME_ECR_TAG         镜像 tag（ECR）；用 GHCR 时见下方 Flink 镜像说明
-#   CHANGE_ME_S3_BUCKET       S3 bucket 名（无 s3:// 前缀）
-#   CHANGE_ME_RDS_HOST        RDS 端点，如 xxx.ap-northeast-1.rds.amazonaws.com
-#   CHANGE_ME_DB_USER         数据库用户
-#   CHANGE_ME_DB_PASSWORD     数据库密码（URL 特殊字符须编码，如 @ → %40）
-#   CHANGE_ME_DB_NAME         库名，默认 gido
-#   CHANGE_ME_SECRET_KEY      JWT 密钥（48+ 随机字符）
-#   CHANGE_ME_ARTIFACT_TOKEN  FLINK_OPERATOR_ARTIFACT_TOKEN（32+ 随机字符）
-#   CHANGE_ME_BACKEND_IRSA    gido-backend IRSA Role ARN
-#   CHANGE_ME_INGRESS_HOST    对外域名（可选 Ingress）
+# 替换占位符（全局搜索 CHANGE_ME）或使用：
+#   bash k8s/eks/apply-gido-eks.sh
 #
 # 前置：
-#   1. kubectl create namespace flink
+#   1. kubectl create namespace flink   # 本清单也会创建 gido / flink
 #   2. kubectl apply -f k8s/flink-operator-rbac.yaml
 #   3. kubectl apply -f k8s/eks/flink-s3-irsa.example.yaml   # 替换 ACCOUNT_ID
 #   4. Helm 安装 Flink Kubernetes Operator 1.15
-#   5. RDS 安全组：允许 EKS 节点/worker SG → TCP 5432
-#   6. 在 RDS 上 CREATE DATABASE gido; 并执行 backend init_db（首次部署见文末）
+#   5. RDS 安全组：允许 EKS worker → TCP 5432
+#   6. RDS 上 CREATE DATABASE gido; 首次部署后 init_db.py
 #
-# 应用：
-#   kubectl apply -f k8s/eks/gido-eks-external-pg.yaml
+# S3 示例（与 Flink 侧 resource.* 对齐）：
+#   bucket: flink-on-devtest
+#   prefix: gido-flink
+#   region: ap-southeast-1
+#   endpoint: https://s3.ap-southeast-1.amazonaws.com
+#   → FLINK_OPERATOR_JAR_S3_PREFIX=s3://flink-on-devtest/gido-flink
 #
-# 访问（无 Ingress 时）：
-#   kubectl -n gido port-forward svc/frontend 8080:80
+# 各 Operator 集群可在 UI「Operator 集群」覆盖 S3 region / endpoint / 前缀 / AK/SK。
 #
 # =============================================================================
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
+  name: flink
+---
+apiVersion: v1
+kind: Namespace
+metadata:
   name: gido
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flink
+  namespace: flink
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flink
+  namespace: flink
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "configmaps", "services", "secrets", "persistentvolumeclaims"]
+    verbs: ["*"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flink
+  namespace: flink
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flink
+subjects:
+  - kind: ServiceAccount
+    name: flink
+    namespace: flink
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -47,21 +77,26 @@ metadata:
 data:
   GIDO_FLINK_SUBMIT_MODE: "operator"
   GIDO_LEGACY_FLINK_SUBMIT: "false"
+  GIDO_FLINK_K8S_API_PATCH: "disable"
   DS_ENABLED: "false"
   DS_URL: ""
   DS_UI_URL: ""
   DS_PROJECT_NAME: "GIDO"
   INTERNAL_TOKEN: ""
-  GIDO_FLINK_K8S_API_PATCH: "disable"
-  # --- Flink Operator（生产）---
+  DEFAULT_TIMEZONE: "Asia/Shanghai"
+  STUDIO_LOCK_ON_PUBLISH: "true"
+  JAR_ARTIFACT_DIR: "/data/jar-artifacts"
+
   FLINK_K8S_NAMESPACE: "flink"
   FLINK_K8S_CLUSTER_DOMAIN: "cluster.local"
   FLINK_OPERATOR_NAMESPACE: "flink"
   FLINK_OPERATOR_SERVICE_ACCOUNT: "flink"
   FLINK_OPERATOR_IMAGE: "CHANGE_ME_FLINK_RUNTIME_IMAGE"
-  FLINK_OPERATOR_IMAGE_PULL_SECRETS: "ghcr-pull"
+  FLINK_K8S_APPLICATION_IMAGE: "CHANGE_ME_FLINK_RUNTIME_IMAGE"
   FLINK_OPERATOR_FLINK_VERSION: "v2_2"
+  FLINK_OPERATOR_IMAGE_PULL_SECRETS: "ghcr-pull"
   FLINK_OPERATOR_UPGRADE_MODE: "savepoint"
+  FLINK_OPERATOR_CHECKPOINT_INTERVAL: "60s"
   FLINK_OPERATOR_UI_PROXY_ENABLED: "true"
   FLINK_OPERATOR_DEV_LOCAL: "false"
   FLINK_OPERATOR_AUTO_UI_TUNNEL: "false"
@@ -74,27 +109,21 @@ data:
   FLINK_OPERATOR_JM_CPU: "1"
   FLINK_OPERATOR_TM_CPU: "1"
   FLINK_OPERATOR_TASK_SLOTS: "2"
-  # Flink JM/TM 调度到 bigdata 节点池（与 node.gamelinelab.com/pool taint 对齐）
   FLINK_OPERATOR_NODE_POOL: "bigdata"
   FLINK_OPERATOR_NODE_SELECTOR_KEY: "node.gamelinelab.com/pool"
   FLINK_OPERATOR_TAINT_EFFECT: "NoSchedule"
-  JAR_ARTIFACT_DIR: "/data/jar-artifacts"
-  # Flink 运行时（CI 推 GHCR gido-flink-runtime；ECR 自建同理）：
-  #   ghcr.io/cloud-gido/gido/gido-flink-runtime:<flink版本或dev-sha>
-  # ECR 示例：CHANGE_ME_AWS_ACCOUNT.dkr.ecr.CHANGE_ME_AWS_REGION.amazonaws.com/gido-flink-runtime:CHANGE_ME_ECR_TAG
-  FLINK_OPERATOR_IMAGE: "CHANGE_ME_FLINK_RUNTIME_IMAGE"
-  FLINK_K8S_APPLICATION_IMAGE: "CHANGE_ME_FLINK_RUNTIME_IMAGE"
-  # S3（须双 IRSA：gido-backend 写 + flink 读）
-  FLINK_OPERATOR_JAR_S3_PREFIX: "s3://CHANGE_ME_S3_BUCKET/flink/job-jar"
+
+  # S3（平台默认；双 IRSA：gido-backend 写 + flink 读）
+  FLINK_OPERATOR_JAR_S3_PREFIX: "s3://CHANGE_ME_S3_BUCKET/CHANGE_ME_S3_JAR_PREFIX"
   PAIMON_WAREHOUSE_DEFAULT: "s3a://CHANGE_ME_S3_BUCKET/paimon-warehouse"
   FLINK_OPERATOR_CHECKPOINT_DIR: "s3a://CHANGE_ME_S3_BUCKET/flink/checkpoints"
   FLINK_OPERATOR_SAVEPOINT_DIR: "s3a://CHANGE_ME_S3_BUCKET/flink/savepoints"
-  # S3 认证：irsa（EKS 默认）| static（AK/SK，见 k8s/s3-credentials-secret.example.yaml）
   FLINK_OPERATOR_S3_AUTH_MODE: "irsa"
   FLINK_OPERATOR_S3_USE_IRSA: "true"
   FLINK_OPERATOR_S3_CREDENTIALS_PROVIDER: "com.amazonaws.auth.WebIdentityTokenCredentialsProvider"
   GIDO_ARTIFACT_S3_REGION: "CHANGE_ME_AWS_REGION"
-  # Session / Gateway（不部署，留空）
+  GIDO_ARTIFACT_S3_ENDPOINT_URL: "CHANGE_ME_S3_ENDPOINT_URL"
+
   FLINK_URL: ""
   FLINK_SQL_GATEWAY_URL: ""
   FLINK_GATEWAY_JOBMANAGER_REST_URL: ""
@@ -107,16 +136,17 @@ metadata:
   namespace: gido
 type: Opaque
 stringData:
-  # 外置 RDS；密码含特殊字符须 URL 编码（# → %23, @ → %40）
-  DATABASE_URL: "postgresql+psycopg2://CHANGE_ME_DB_USER:CHANGE_ME_DB_PASSWORD@CHANGE_ME_RDS_HOST:5432/CHANGE_ME_DB_NAME"
-  # 可选：拆分变量（四项齐全时优先于 DATABASE_URL）
-  # INFRA_GIDO_DB_SERVICE_URL: "CHANGE_ME_RDS_HOST"
-  # INFRA_GIDO_DB_SERVICE_USER: "CHANGE_ME_DB_USER"
-  # INFRA_GIDO_DB_SERVICE_PASSWORD: "CHANGE_ME_DB_PASSWORD"
-  # INFRA_GIDO_DB_URL: "CHANGE_ME_DB_NAME"
+  # 生产推荐：拆分 PG（优先于 DATABASE_URL）
+  INFRA_GIDO_DB_SERVICE_URL: "CHANGE_ME_RDS_HOST:5432"
+  INFRA_GIDO_DB_SERVICE_USER: "CHANGE_ME_DB_USER"
+  INFRA_GIDO_DB_SERVICE_PASSWORD: "CHANGE_ME_DB_PASSWORD_PLAIN"
+  INFRA_GIDO_DB_URL: "CHANGE_ME_DB_NAME"
+  # 兼容：URL 编码密码版（apply-gido-eks.sh 会写 DATABASE_URL；手工部署可取消注释）
+  # DATABASE_URL: "postgresql+psycopg2://CHANGE_ME_DB_USER:CHANGE_ME_DB_PASSWORD@CHANGE_ME_RDS_HOST:5432/CHANGE_ME_DB_NAME"
   SECRET_KEY: "CHANGE_ME_SECRET_KEY"
   FLINK_OPERATOR_ARTIFACT_TOKEN: "CHANGE_ME_ARTIFACT_TOKEN"
   DS_TOKEN: ""
+  GIDO_BOOTSTRAP_ADMIN_PASSWORD: "CHANGE_ME_ADMIN_PASSWORD"
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -166,7 +196,7 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 10Gi
+      storage: 20Gi
   storageClassName: gp3
 ---
 apiVersion: apps/v1
@@ -192,6 +222,18 @@ spec:
         component: backend
     spec:
       serviceAccountName: gido-backend
+      imagePullSecrets:
+        - name: ghcr-pull
+      initContainers:
+        - name: wait-postgres
+          image: public.ecr.aws/docker/library/busybox:1.36
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until nc -z CHANGE_ME_RDS_HOST 5432; do
+                echo "waiting RDS CHANGE_ME_RDS_HOST:5432"; sleep 3
+              done
       containers:
         - name: backend
           image: CHANGE_ME_BACKEND_IMAGE
@@ -270,6 +312,8 @@ spec:
         app: gido
         component: frontend
     spec:
+      imagePullSecrets:
+        - name: ghcr-pull
       initContainers:
         - name: wait-backend
           image: public.ecr.aws/docker/library/busybox:1.36
@@ -316,7 +360,6 @@ spec:
     component: frontend
 ---
 # 可选：AWS Load Balancer Controller（集群须已安装）
-# 不用 Ingress 时可删除本段，改用 port-forward 或单独建 ALB Service
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

@@ -2,7 +2,7 @@
 # 生产 K8s：外置 PostgreSQL + GHCR CI 镜像 → 渲染并 apply gido-production-external-pg.yaml
 #
 #   cp k8s/gido-production.env.example k8s/gido-production.env
-#   # 编辑 PG / 密钥 / 镜像 tag
+#   # 编辑 PG / 密钥 / 镜像 / S3
 #   bash k8s/apply-gido-production.sh
 #
 set -euo pipefail
@@ -47,6 +47,25 @@ GIDO_STORAGE_CLASS="${GIDO_STORAGE_CLASS:-}"
 GIDO_IMAGE_PULL_SECRET="${GIDO_IMAGE_PULL_SECRET:-ghcr-pull}"
 GIDO_FLINK_IMAGE_PULL_SECRETS="${GIDO_FLINK_IMAGE_PULL_SECRETS:-${GIDO_IMAGE_PULL_SECRET}}"
 
+GIDO_S3_BUCKET="${GIDO_S3_BUCKET:-}"
+GIDO_S3_JAR_PREFIX="${GIDO_S3_JAR_PREFIX:-gido-flink}"
+GIDO_S3_REGION="${GIDO_S3_REGION:-}"
+GIDO_S3_ENDPOINT_URL="${GIDO_S3_ENDPOINT_URL:-}"
+GIDO_S3_AUTH_MODE="${GIDO_S3_AUTH_MODE:-static}"
+GIDO_S3_USE_IRSA="${GIDO_S3_USE_IRSA:-false}"
+
+if [[ -n "${GIDO_S3_BUCKET}" ]]; then
+  FLINK_OPERATOR_JAR_S3_PREFIX="s3://${GIDO_S3_BUCKET}/${GIDO_S3_JAR_PREFIX}"
+  PAIMON_WAREHOUSE_DEFAULT="s3a://${GIDO_S3_BUCKET}/paimon-warehouse"
+  FLINK_OPERATOR_CHECKPOINT_DIR="s3a://${GIDO_S3_BUCKET}/flink/checkpoints"
+  FLINK_OPERATOR_SAVEPOINT_DIR="s3a://${GIDO_S3_BUCKET}/flink/savepoints"
+else
+  FLINK_OPERATOR_JAR_S3_PREFIX=""
+  PAIMON_WAREHOUSE_DEFAULT="file:///opt/flink/paimon-warehouse"
+  FLINK_OPERATOR_CHECKPOINT_DIR=""
+  FLINK_OPERATOR_SAVEPOINT_DIR=""
+fi
+
 FLINK_TAG="${GIDO_FLINK_RUNTIME_TAG:-}"
 if [[ -z "${FLINK_TAG}" ]]; then
   case "${GIDO_CI_PROFILE}" in
@@ -83,6 +102,11 @@ echo "    backend:  ${BACKEND_IMAGE}"
 echo "    frontend: ${FRONTEND_IMAGE}"
 echo "    flink:    ${FLINK_OPERATOR_IMAGE} (${GIDO_FLINK_OPERATOR_FLINK_VERSION})"
 echo "    postgres: ${GIDO_PG_HOST}:${GIDO_PG_PORT}/${GIDO_PG_DB}"
+if [[ -n "${GIDO_S3_BUCKET}" ]]; then
+  echo "    s3 jar:   ${FLINK_OPERATOR_JAR_S3_PREFIX}"
+else
+  echo "    s3 jar:   (未配置，使用 PVC + HTTP)"
+fi
 
 sed \
   -e "s#__BACKEND_IMAGE__#${BACKEND_IMAGE}#g" \
@@ -100,15 +124,21 @@ sed \
   -e "s#__ADMIN_PASSWORD__#${GIDO_ADMIN_PASSWORD}#g" \
   -e "s#__GIDO_IMAGE_PULL_SECRET__#${GIDO_IMAGE_PULL_SECRET}#g" \
   -e "s#__STORAGE_CLASS__#${GIDO_STORAGE_CLASS}#g" \
+  -e "s#__FLINK_OPERATOR_JAR_S3_PREFIX__#${FLINK_OPERATOR_JAR_S3_PREFIX}#g" \
+  -e "s#__GIDO_ARTIFACT_S3_REGION__#${GIDO_S3_REGION}#g" \
+  -e "s#__GIDO_ARTIFACT_S3_ENDPOINT_URL__#${GIDO_S3_ENDPOINT_URL}#g" \
+  -e "s#__FLINK_OPERATOR_S3_AUTH_MODE__#${GIDO_S3_AUTH_MODE}#g" \
+  -e "s#__FLINK_OPERATOR_S3_USE_IRSA__#${GIDO_S3_USE_IRSA}#g" \
+  -e "s#__PAIMON_WAREHOUSE_DEFAULT__#${PAIMON_WAREHOUSE_DEFAULT}#g" \
+  -e "s#__FLINK_OPERATOR_CHECKPOINT_DIR__#${FLINK_OPERATOR_CHECKPOINT_DIR}#g" \
+  -e "s#__FLINK_OPERATOR_SAVEPOINT_DIR__#${FLINK_OPERATOR_SAVEPOINT_DIR}#g" \
   "${MANIFEST}" > "${RENDERED}"
 
-# 未指定 StorageClass 时去掉该行，使用集群默认
 if [[ -z "${GIDO_STORAGE_CLASS}" ]]; then
   sed -i '/storageClassName: ""/d' "${RENDERED}" 2>/dev/null || \
     sed -i '' '/storageClassName: ""/d' "${RENDERED}"
 fi
 
-# 未使用私有仓库时去掉 imagePullSecrets 与 FLINK_OPERATOR_IMAGE_PULL_SECRETS
 if [[ -z "${GIDO_IMAGE_PULL_SECRET}" || "${GIDO_IMAGE_PULL_SECRET}" == "none" ]]; then
   sed -i '/imagePullSecrets:/,+1d' "${RENDERED}" 2>/dev/null || \
     sed -i '' '/imagePullSecrets:/,+1d' "${RENDERED}"

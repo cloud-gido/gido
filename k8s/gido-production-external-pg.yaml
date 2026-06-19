@@ -1,39 +1,27 @@
 # =============================================================================
-# GIDO 生产 K8s — 外置 PostgreSQL + Flink Kubernetes Operator 1.15 + GHCR CI 镜像
+# GIDO 生产 K8s — 外置 PostgreSQL + Flink Kubernetes Operator 1.15
 # =============================================================================
 #
 # 本清单不含：集群内 PostgreSQL、Flink Operator 控制器（须 Helm 单独安装）。
 #
 # 前置（一次性）：
 #   1. 外置 PostgreSQL 已建库（如 gido），网络允许 GIDO Pod → PG:5432
-#   2. 安装 Flink Kubernetes Operator 1.15.0（非 0.15.x）：
+#   2. 安装 Flink Kubernetes Operator 1.15.0：
 #        bash k8s/upgrade-flink-operator-1.15.sh
-#      或 Helm：
-#        helm repo add flink-operator https://downloads.apache.org/flink/flink-kubernetes-operator-1.15.0/
-#        helm install flink-kubernetes-operator flink-operator/flink-kubernetes-operator \
-#          -n flink-operator --create-namespace \
-#          --set webhook.create=false --set jobServiceAccount.create=false \
-#          --set watchNamespaces={flink}
-#   3. GHCR 私有包：在 gido、flink 命名空间创建 imagePullSecret（见 k8s/flink-image-pull-secret.example.yaml）
-#   4. 推荐用脚本替换占位符后 apply：
-#        cp k8s/gido-production.env.example k8s/gido-production.env
-#        # 编辑 gido-production.env
-#        bash k8s/apply-gido-production.sh
+#   3. 私有镜像仓库：在 gido、flink 命名空间创建 imagePullSecret（见 flink-image-pull-secret.example.yaml）
+#   4. （推荐）S3 制品库：配置下方 S3 占位符；各 Operator 集群可在 UI 覆盖 region/endpoint/前缀
+#   5. static S3 认证：kubectl apply -f k8s/s3-credentials-secret.example.yaml 并在 backend 引用
 #
-# 手工 apply（须先 sed 替换 __PLACEHOLDER__）：
-#   kubectl apply -f k8s/gido-production-external-pg.yaml
+# 部署（推荐脚本渲染占位符）：
+#   cp k8s/gido-production.env.example k8s/gido-production.env
+#   # 编辑 PG / 密钥 / 镜像 / S3
+#   bash k8s/apply-gido-production.sh
 #
-# 首次部署后初始化元库表：
+# 首次部署后初始化元库（Backend 启动也会跑迁移，建议显式执行一次）：
 #   kubectl -n gido exec deploy/gido-backend -- python init_db.py
 #
 # 访问（无 Ingress）：
 #   kubectl -n gido port-forward svc/frontend 8080:80
-#
-# CI 镜像（GitHub Actions → GHCR，见 .github/workflows/ci.yml / ci-dev-1.yml）：
-#   main:  ghcr.io/<owner>/<repo>/gido-backend:latest
-#          ghcr.io/<owner>/<repo>/gido-flink-runtime:2.2.1
-#   dev-1: ghcr.io/<owner>/<repo>/dev-1/gido-backend:dev-1
-#          ghcr.io/<owner>/<repo>/dev-1/flink-runtime/2.2.1:dev-1
 #
 # =============================================================================
 ---
@@ -47,7 +35,6 @@ kind: Namespace
 metadata:
   name: gido
 ---
-# Flink 作业 Pod ServiceAccount（与 FLINK_OPERATOR_SERVICE_ACCOUNT=flink 对齐）
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -87,6 +74,7 @@ metadata:
   name: gido-backend-config
   namespace: gido
 data:
+  # --- GIDO 核心 ---
   GIDO_FLINK_SUBMIT_MODE: "operator"
   GIDO_LEGACY_FLINK_SUBMIT: "false"
   GIDO_FLINK_K8S_API_PATCH: "disable"
@@ -95,7 +83,12 @@ data:
   DS_UI_URL: ""
   DS_PROJECT_NAME: "GIDO"
   INTERNAL_TOKEN: ""
-  # --- Flink Kubernetes Operator 1.15（作业 CR flinkVersion 须与运行时镜像一致）---
+  DEFAULT_TIMEZONE: "Asia/Shanghai"
+  STUDIO_LOCK_ON_PUBLISH: "true"
+  JAR_ARTIFACT_DIR: "/data/jar-artifacts"
+  AVATAR_UPLOAD_DIR: "/data/user-avatars"
+
+  # --- Flink Kubernetes Operator 1.15（CRD flinkVersion 须与运行时镜像一致）---
   FLINK_K8S_NAMESPACE: "flink"
   FLINK_K8S_CLUSTER_DOMAIN: "cluster.local"
   FLINK_OPERATOR_NAMESPACE: "flink"
@@ -105,6 +98,7 @@ data:
   FLINK_OPERATOR_FLINK_VERSION: "__FLINK_OPERATOR_FLINK_VERSION__"
   FLINK_OPERATOR_IMAGE_PULL_SECRETS: "__FLINK_OPERATOR_IMAGE_PULL_SECRETS__"
   FLINK_OPERATOR_UPGRADE_MODE: "savepoint"
+  FLINK_OPERATOR_CHECKPOINT_INTERVAL: "60s"
   FLINK_OPERATOR_UI_PROXY_ENABLED: "true"
   FLINK_OPERATOR_DEV_LOCAL: "false"
   FLINK_OPERATOR_AUTO_UI_TUNNEL: "false"
@@ -117,9 +111,20 @@ data:
   FLINK_OPERATOR_JM_CPU: "1"
   FLINK_OPERATOR_TM_CPU: "1"
   FLINK_OPERATOR_TASK_SLOTS: "2"
-  JAR_ARTIFACT_DIR: "/data/jar-artifacts"
-  # 无对象存储时使用 PVC；有 S3/MinIO 时改为 s3a:// 并配置 IRSA/Secret（见 k8s/eks/）
-  PAIMON_WAREHOUSE_DEFAULT: "file:///opt/flink/paimon-warehouse"
+
+  # --- S3 / 对象存储（平台默认；各 Operator 集群 Profile 可覆盖 region/endpoint/前缀/AK/SK）---
+  # 示例：bucket=flink-on-devtest, prefix=gido-flink → s3://flink-on-devtest/gido-flink
+  FLINK_OPERATOR_JAR_S3_PREFIX: "__FLINK_OPERATOR_JAR_S3_PREFIX__"
+  GIDO_ARTIFACT_S3_REGION: "__GIDO_ARTIFACT_S3_REGION__"
+  GIDO_ARTIFACT_S3_ENDPOINT_URL: "__GIDO_ARTIFACT_S3_ENDPOINT_URL__"
+  FLINK_OPERATOR_S3_AUTH_MODE: "__FLINK_OPERATOR_S3_AUTH_MODE__"
+  FLINK_OPERATOR_S3_USE_IRSA: "__FLINK_OPERATOR_S3_USE_IRSA__"
+  FLINK_OPERATOR_S3_CREDENTIALS_PROVIDER: "com.amazonaws.auth.WebIdentityTokenCredentialsProvider"
+  PAIMON_WAREHOUSE_DEFAULT: "__PAIMON_WAREHOUSE_DEFAULT__"
+  FLINK_OPERATOR_CHECKPOINT_DIR: "__FLINK_OPERATOR_CHECKPOINT_DIR__"
+  FLINK_OPERATOR_SAVEPOINT_DIR: "__FLINK_OPERATOR_SAVEPOINT_DIR__"
+
+  # --- 未部署 Session / SQL Gateway ---
   FLINK_URL: ""
   FLINK_SQL_GATEWAY_URL: ""
   FLINK_GATEWAY_JOBMANAGER_REST_URL: ""
@@ -134,21 +139,29 @@ metadata:
   namespace: gido
 type: Opaque
 stringData:
-  # 推荐：拆分变量（四项齐全时优先于 DATABASE_URL）
+  # 生产推荐：拆分 PG 变量（四项齐全时优先于 DATABASE_URL）
   INFRA_GIDO_DB_SERVICE_URL: "__PG_HOST__:__PG_PORT__"
   INFRA_GIDO_DB_SERVICE_USER: "__PG_USER__"
   INFRA_GIDO_DB_SERVICE_PASSWORD: "__PG_PASSWORD__"
   INFRA_GIDO_DB_URL: "__PG_DB__"
+  # 兼容旧注入（可不填；与上四项二选一）
+  # DATABASE_URL: "postgresql+psycopg2://user:pass@host:5432/gido"
   SECRET_KEY: "__SECRET_KEY__"
   FLINK_OPERATOR_ARTIFACT_TOKEN: "__ARTIFACT_TOKEN__"
   DS_TOKEN: ""
   GIDO_BOOTSTRAP_ADMIN_PASSWORD: "__ADMIN_PASSWORD__"
+  # static S3 时也可写入（或单独 Secret gido-s3-credentials + envFrom）：
+  # GIDO_S3_ACCESS_KEY_ID: ""
+  # GIDO_S3_SECRET_ACCESS_KEY: ""
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: gido-backend
   namespace: gido
+  # EKS IRSA 示例（非 EKS 可删除 annotations 段）：
+  # annotations:
+  #   eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT:role/gido-backend-s3"
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -239,6 +252,10 @@ spec:
                 name: gido-backend-config
             - secretRef:
                 name: gido-secrets
+            # static S3 AK/SK（可选，与 gido-secrets 二选一）：
+            # - secretRef:
+            #     name: gido-s3-credentials
+            #     optional: true
           readinessProbe:
             httpGet:
               path: /health
