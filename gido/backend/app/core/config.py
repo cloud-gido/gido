@@ -174,6 +174,9 @@ class Settings(BaseSettings):
     FLINK_OPERATOR_KUBECTL_PATH: str = "kubectl"
     # 本地 JAR 制品目录（容器内持久卷）
     JAR_ARTIFACT_DIR: str = "/data/jar-artifacts"
+    # Flink 1.17 等 Application 模式仅支持 local:// jarURI：init 容器从 HTTP 下载到此目录
+    FLINK_OPERATOR_JAR_STAGING_MOUNT: str = "/opt/flink/usrlib/gido-artifacts"
+    FLINK_OPERATOR_JAR_STAGING_INIT_IMAGE: str = "curlimages/curl:8.5.0"
     # 用户自定义头像（容器内建议挂卷持久化）
     AVATAR_UPLOAD_DIR: str = "/data/user-avatars"
     AVATAR_MAX_BYTES: int = 2 * 1024 * 1024

@@ -323,6 +323,8 @@ class FlinkOperatorProfile(Base):
     flink_operator_namespace = Column(String(256), nullable=True)
     flink_operator_image = Column(String(512), nullable=True)
     flink_operator_flink_version = Column(String(32), nullable=True)
+    # [{label, image, flink_version, is_default}]；作业提交时从该列表选择运行时镜像
+    flink_operator_runtime_images = Column(JSON, nullable=True)
     flink_operator_service_account = Column(String(128), nullable=True)
     flink_k8s_context = Column(String(256), nullable=True)
     flink_k8s_kubeconfig_path = Column(String(512), nullable=True)

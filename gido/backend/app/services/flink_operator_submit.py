@@ -12,7 +12,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.config import settings
-from app.services.jar_artifact import resolve_jar_uri_for_operator
+from app.services.jar_artifact import resolve_jar_submit_artifacts, resolve_jar_uri_for_operator
 from app.services.artifact_s3 import artifact_s3_enabled
 from app.services.gido_deployment_meta import (
     GidoDeploymentMeta,
@@ -22,6 +22,7 @@ from app.services.gido_deployment_meta import (
 from app.services.flink_pod_scheduling import (
     merge_pod_templates,
     operator_image_pull_secrets_pod_template,
+    operator_jar_staging_pod_template,
     operator_paimon_warehouse_pod_template,
     operator_runtime_pod_template,
     operator_scheduling_pod_template,
@@ -218,6 +219,7 @@ def build_flink_deployment_body(
     extra_flink_props: Optional[Dict[str, Any]] = None,
     deployment_meta: Optional[GidoDeploymentMeta] = None,
     runtime_ctx: Optional[OperatorRuntimeContext] = None,
+    jar_http_fetch_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
     resources = operator_resources or resolve_operator_resources(None)
@@ -260,12 +262,16 @@ def build_flink_deployment_body(
         "taskManager": tm_spec,
         "job": job_spec,
     }
+    staging_tpl = None
+    if jar_http_fetch_url and (jar_uri or "").startswith("local://"):
+        staging_tpl = operator_jar_staging_pod_template(jar_http_fetch_url)
     merged_pod_template = merge_pod_templates(
         operator_runtime_pod_template(),
         operator_image_pull_secrets_pod_template(ctx.image_pull_secrets),
         operator_paimon_warehouse_pod_template(),
         operator_s3_credentials_pod_template(ctx),
         operator_scheduling_pod_template(),
+        staging_tpl,
         pod_template,
     )
     if merged_pod_template:
@@ -358,7 +364,9 @@ def resolve_jar_uri_for_job(
     *,
     jar_path: Optional[str] = None,
 ) -> str:
-    return resolve_jar_uri_for_operator(job_id, runtime_ctx=runtime_ctx, jar_path=jar_path)
+    return resolve_jar_submit_artifacts(
+        job_id, runtime_ctx=runtime_ctx, jar_path=jar_path
+    ).jar_uri
 
 
 def effective_sql_source(
@@ -960,7 +968,7 @@ def submit_jar_via_operator(
     ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
     deployment_name = deployment_name_for_job(job_id, workspace_id)
     namespace = ctx.namespace
-    jar_uri = resolve_jar_uri_for_job(job_id, runtime_ctx=ctx, jar_path=jar_path)
+    jar_artifacts = resolve_jar_submit_artifacts(job_id, runtime_ctx=ctx, jar_path=jar_path)
     meta = deployment_meta or GidoDeploymentMeta(
         workspace_id=int(workspace_id),
         job_id=int(job_id),
@@ -969,7 +977,7 @@ def submit_jar_via_operator(
     body = build_flink_deployment_body(
         deployment_name=deployment_name,
         namespace=namespace,
-        jar_uri=jar_uri,
+        jar_uri=jar_artifacts.jar_uri,
         entry_class=entry_class.strip(),
         parallelism=parallelism,
         program_args=program_args,
@@ -977,13 +985,16 @@ def submit_jar_via_operator(
         extra_flink_props=extra_flink_props,
         deployment_meta=meta,
         runtime_ctx=ctx,
+        jar_http_fetch_url=(
+            jar_artifacts.http_download_uri if jar_artifacts.uses_local_staging else None
+        ),
     )
     apply_flink_deployment(body, runtime_ctx=ctx)
     return _submit_flink_deployment_and_wait(
         job_id=job_id,
         deployment_name=deployment_name,
         namespace=namespace,
-        artifact_uri=jar_uri,
+        artifact_uri=jar_artifacts.jar_uri,
         runtime_ctx=ctx,
     )
 
@@ -1078,12 +1089,15 @@ def _submit_flink_deployment_and_wait(
     runtime_ctx: Optional[OperatorRuntimeContext] = None,
 ) -> Dict[str, Any]:
     ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
+    from app.services.flink_version import operator_image_flink_version_mismatch_warning
+
+    version_warning = operator_image_flink_version_mismatch_warning(ctx.image, ctx.flink_version)
     flink_job_id, lifecycle, err = wait_for_operator_job_id(
         deployment_name, namespace, runtime_ctx=ctx
     )
 
     jm_rest: Optional[str] = None
-    warning: Optional[str] = None
+    warning: Optional[str] = version_warning
     jm_rest = resolve_operator_jm_rest(
         deployment_name, namespace, job_id=job_id, runtime_ctx=ctx
     )

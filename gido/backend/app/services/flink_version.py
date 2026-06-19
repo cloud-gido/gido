@@ -127,3 +127,28 @@ def operator_version_major_line(operator_flink_version: Optional[str]) -> Option
     if v.startswith("v1_"):
         return "1"
     return None
+
+
+def operator_image_flink_version_mismatch_warning(
+    image: Optional[str],
+    flink_version: Optional[str],
+) -> Optional[str]:
+    """镜像 tag 与 spec.flinkVersion 不一致时给出可读警告（常见于 Profile 1.17 + 作业 2.2 镜像）。"""
+    inferred = infer_operator_flink_version_from_image(image)
+    normalized = normalize_operator_flink_version(flink_version)
+    if not inferred or not normalized or inferred == normalized:
+        img_line = session_image_major_line(image)
+        fv_line = operator_version_major_line(flink_version)
+        if img_line and fv_line and img_line != fv_line:
+            return (
+                f"运行时镜像 `{image}` 与 flinkVersion `{flink_version}` 主版本不一致，"
+                "Flink Operator 可能无法创建 JobManager Pod。"
+                "请在 Operator 集群 Profile 或作业 streaming_properties 中设置匹配的 "
+                "`operator_flink_version` / `flink_version`（Flink 2.2.x 为 v2_2）。"
+            )
+        return None
+    return (
+        f"运行时镜像 `{image}` 推断 flinkVersion 应为 `{inferred}`，"
+        f"当前为 `{normalized}`；Operator 可能无法创建 JobManager Pod。"
+        "请在 Profile 或 streaming_properties 中设置 `operator_flink_version` 与镜像一致。"
+    )

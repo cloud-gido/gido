@@ -243,8 +243,9 @@
 | 位置 | 字段 | 说明 |
 |------|------|------|
 | 作业开发 | Operator 集群下拉 | 对应 `flink_operator_profile_id` |
-| 作业开发 | 运行时镜像 | `streaming_properties.operator_runtime_image` 或 `runtime_image` |
-| 作业 JSON | `operator_flink_version` / `flink_version` | 覆盖 CRD 版本 |
+| 作业开发 | 运行时镜像 | 从所选集群 Profile 的 `flink_operator_runtime_images` 列表中选择；写入 `operator_runtime_image` / `operator_flink_version` |
+| Profile 表单 | `flink_operator_runtime_images` | `[{label, image, flink_version, is_default}]`；同一集群多 Flink 版本 |
+| 作业 JSON | `operator_flink_version` / `flink_version` | 一般由运行时镜像下拉自动写入，也可手动覆盖 |
 | 库字段 | `flink_operator_submit_namespace` | 提交成功后写入的实际 ns，一般无需手填 |
 
 ---

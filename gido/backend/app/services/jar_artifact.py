@@ -31,6 +31,57 @@ class JarSaveResult:
     storage_filename: str = JAR_ARTIFACT_FILENAME
 
 
+@dataclass(frozen=True)
+class JarSubmitArtifacts:
+    jar_uri: str
+    http_download_uri: str
+    uses_local_staging: bool = False
+    local_staged_path: Optional[str] = None
+
+
+def flink_jar_needs_local_staging(flink_version: Optional[str]) -> bool:
+    """Flink 1.17/1.18 Application 模式主 JAR 须 local://（远程 jarURI 自 1.19 起完善）。"""
+    v = (flink_version or "").strip().lower()
+    if not v:
+        return False
+    if v.startswith("v2_"):
+        return False
+    if v in ("v1_19", "v1_20", "v1_21", "v1_22"):
+        return False
+    if v.startswith("v1_"):
+        return True
+    return False
+
+
+def _jar_staging_local_uri() -> str:
+    mount = (settings.FLINK_OPERATOR_JAR_STAGING_MOUNT or "/opt/flink/usrlib/gido-artifacts").strip()
+    return f"local://{mount.rstrip('/')}/job.jar"
+
+
+def resolve_jar_submit_artifacts(
+    job_id: int,
+    runtime_ctx: Optional["OperatorRuntimeContext"] = None,
+    *,
+    jar_path: Optional[str] = None,
+) -> JarSubmitArtifacts:
+    _ = jar_path
+    http_uri = build_jar_http_uri_for_operator(job_id)
+    fv = (
+        getattr(runtime_ctx, "flink_version", None)
+        if runtime_ctx is not None
+        else getattr(settings, "FLINK_OPERATOR_FLINK_VERSION", None)
+    )
+    if flink_jar_needs_local_staging(fv):
+        local_path = _jar_staging_local_uri().removeprefix("local://")
+        return JarSubmitArtifacts(
+            jar_uri=_jar_staging_local_uri(),
+            http_download_uri=http_uri,
+            uses_local_staging=True,
+            local_staged_path=local_path,
+        )
+    return JarSubmitArtifacts(jar_uri=http_uri, http_download_uri=http_uri)
+
+
 def jar_storage_filename_from_jar_path(jar_path: Optional[str]) -> Optional[str]:
     """从 job.jar_path（上传原始名或 Session jar id）提取可安全用作存储文件名的 basename。"""
     if not jar_path:
@@ -162,10 +213,7 @@ def resolve_jar_uri_for_operator(
     *,
     jar_path: Optional[str] = None,
 ) -> str:
-    """JAR 制品仅本地存储，Operator 始终经 HTTP 拉取。"""
-    _ = runtime_ctx
-    _ = jar_path
-    return build_jar_http_uri_for_operator(job_id)
+    return resolve_jar_submit_artifacts(job_id, runtime_ctx=runtime_ctx, jar_path=jar_path).jar_uri
 
 
 def _local_file_info(path: Path) -> Dict[str, Any]:
@@ -224,9 +272,11 @@ def jar_artifact_inventory(
     except Exception as ex:
         logger.warning("探测制品就绪状态失败 job=%s: %s", job_id, ex)
     try:
-        out["operator_jar_uri"] = resolve_jar_uri_for_operator(
-            job_id, runtime_ctx=runtime_ctx, jar_path=jar_path
-        )
+        submit = resolve_jar_submit_artifacts(job_id, runtime_ctx=runtime_ctx, jar_path=jar_path)
+        out["http_download_uri"] = submit.http_download_uri
+        out["uses_local_staging"] = submit.uses_local_staging
+        out["local_staged_path"] = submit.local_staged_path
+        out["operator_jar_uri"] = submit.jar_uri
     except Exception as ex:
         out["operator_jar_uri_error"] = str(ex)
 

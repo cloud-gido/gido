@@ -10,6 +10,23 @@ def test_deployment_name_for_job():
     assert len(deployment_name_for_job(999999, 1)) <= 63
 
 
+def test_build_flink_deployment_body_jar_local_staging(monkeypatch):
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_HTTP_BASE", "http://backend:8001")
+    body = build_flink_deployment_body(
+        deployment_name="gido-jar-1",
+        namespace="flink",
+        jar_uri="local:///opt/flink/usrlib/gido-artifacts/job.jar",
+        jar_http_fetch_url="http://backend:8001/api/streaming/jobs/1/artifact.jar?token=t",
+        entry_class="com.example.Job",
+        parallelism=1,
+        runtime_ctx=None,
+    )
+    assert body["spec"]["job"]["jarURI"].startswith("local://")
+    init = body["spec"]["podTemplate"]["spec"]["initContainers"]
+    assert init[0]["name"] == "gido-jar-fetch"
+    assert init[0]["env"][0]["value"].startswith("http://backend:8001/")
+
+
 def test_build_flink_deployment_body_structure():
     body = build_flink_deployment_body(
         deployment_name="gido-jar-1",

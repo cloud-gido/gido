@@ -221,15 +221,29 @@ def resolve_operator_runtime(
             jar_s3_prefix=profile.flink_operator_jar_s3_prefix,
         )
     overrides = _job_runtime_overrides(streaming_properties)
-    explicit_version = bool(
-        (profile is not None and _strip_or_none(getattr(profile, "flink_operator_flink_version", None)))
-        or _strip_or_none(overrides.get("flink_version"))
-    )
+    job_image = overrides.get("image")
+    job_flink_version = overrides.get("flink_version")
     ctx = base.with_overrides(
-        image=overrides.get("image"),
-        flink_version=overrides.get("flink_version"),
+        image=job_image,
+        flink_version=job_flink_version,
     )
-    if not explicit_version:
+    if _strip_or_none(job_flink_version):
+        # 作业显式指定 flinkVersion 时不再覆盖
+        pass
+    elif _strip_or_none(job_image):
+        from app.services.operator_profile_runtime import flink_version_for_profile_image
+
+        fv_prof = flink_version_for_profile_image(profile, job_image)
+        if fv_prof:
+            ctx = ctx.with_overrides(flink_version=fv_prof)
+        else:
+            inferred = infer_operator_flink_version_from_image(ctx.image)
+            if inferred:
+                ctx = ctx.with_overrides(flink_version=inferred)
+    elif not (
+        profile is not None
+        and _strip_or_none(getattr(profile, "flink_operator_flink_version", None))
+    ):
         inferred = infer_operator_flink_version_from_image(ctx.image)
         if inferred:
             ctx = ctx.with_overrides(flink_version=inferred)
@@ -260,9 +274,38 @@ def resolve_operator_runtime_for_job(db: Session, job: Any) -> OperatorRuntimeCo
     return ctx
 
 
-def list_runtime_images_for_workspace(db: Session, workspace_id: int) -> List[Dict[str, Any]]:
-    """供 UI 下拉：全局默认 + 各 Profile 镜像。"""
+def list_runtime_images_for_workspace(
+    db: Session,
+    workspace_id: int,
+    profile_id: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """供 UI 下拉：指定 Profile 的运行时镜像列表，或全局默认 + 各 Profile 镜像。"""
     from app.models.workspace import FlinkOperatorProfile
+    from app.services.operator_profile_runtime import profile_runtime_images_public
+
+    if profile_id is not None:
+        p = (
+            db.query(FlinkOperatorProfile)
+            .filter(
+                FlinkOperatorProfile.id == int(profile_id),
+                FlinkOperatorProfile.workspace_id == int(workspace_id),
+                FlinkOperatorProfile.is_enabled.is_(True),
+            )
+            .first()
+        )
+        if p is None:
+            return []
+        return [
+            {
+                "source": "profile",
+                "profile_id": int(p.id),
+                "label": entry["label"],
+                "image": entry["image"],
+                "flink_version": entry.get("flink_version"),
+                "is_default": bool(entry.get("is_default")),
+            }
+            for entry in profile_runtime_images_public(p)
+        ]
 
     images: List[Dict[str, Any]] = []
     default = OperatorRuntimeContext.from_settings()
@@ -286,20 +329,19 @@ def list_runtime_images_for_workspace(db: Session, workspace_id: int) -> List[Di
     )
     seen = {default.image}
     for p in rows:
-        img = _strip_or_none(p.flink_operator_image)
-        if not img or img in seen:
-            continue
-        seen.add(img)
-        prof_ver = _strip_or_none(p.flink_operator_flink_version)
-        if not prof_ver:
-            prof_ver = infer_operator_flink_version_from_image(img)
-        images.append(
-            {
-                "source": "profile",
-                "profile_id": p.id,
-                "label": (p.name or "").strip() or f"#{p.id}",
-                "image": img,
-                "flink_version": prof_ver or default.flink_version,
-            }
-        )
+        for entry in profile_runtime_images_public(p):
+            img = _strip_or_none(entry.get("image"))
+            if not img or img in seen:
+                continue
+            seen.add(img)
+            images.append(
+                {
+                    "source": "profile",
+                    "profile_id": p.id,
+                    "label": (entry.get("label") or p.name or "").strip() or f"#{p.id}",
+                    "image": img,
+                    "flink_version": entry.get("flink_version"),
+                    "is_default": bool(entry.get("is_default")),
+                }
+            )
     return images

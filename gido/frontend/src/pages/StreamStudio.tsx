@@ -196,7 +196,11 @@ function parseRuntimeImageFromProps(raw: string | null | undefined): string {
   }
 }
 
-function mergeRuntimeImageIntoPropsJson(rawJson: string, runtimeImage: string): string {
+function mergeRuntimeImageIntoPropsJson(
+  rawJson: string,
+  runtimeImage: string,
+  runtimeImages?: Array<{ image: string; flink_version?: string }>,
+): string {
   let base: Record<string, unknown> = {}
   const trimmed = rawJson.trim()
   if (trimmed && trimmed !== '{}') {
@@ -206,10 +210,15 @@ function mergeRuntimeImageIntoPropsJson(rawJson: string, runtimeImage: string): 
     }
   }
   const img = (runtimeImage || '').trim()
-  if (img) base.operator_runtime_image = img
-  else {
+  if (img) {
+    base.operator_runtime_image = img
+    const match = runtimeImages?.find(r => r.image === img)
+    if (match?.flink_version) base.operator_flink_version = match.flink_version
+  } else {
     delete base.operator_runtime_image
     delete base.runtime_image
+    delete base.operator_flink_version
+    delete base.flink_version
   }
   if (!Object.keys(base).length) return ''
   return JSON.stringify(base)
@@ -254,14 +263,14 @@ function OperatorClusterControls({
       <Select
         allowClear
         showSearch
-        placeholder="沿用集群配置"
+        placeholder={runtimeImages.length ? '沿用集群默认镜像' : '请先在 Operator 集群中配置运行时镜像'}
         style={{ minWidth: 280 }}
-        disabled={disabled}
+        disabled={disabled || runtimeImages.length === 0}
         value={runtimeImageOverride || undefined}
         onChange={v => onRuntimeImageChange(v || '')}
         options={runtimeImages.map((r: any) => ({
           value: r.image,
-          label: `${r.label}: ${r.image}`,
+          label: `${r.label}${r.is_default ? '（默认）' : ''}: ${r.image}`,
         }))}
       />
     </Space>
@@ -390,8 +399,21 @@ export default function StreamStudioPage() {
   useEffect(() => {
     if (!wsId) return
     streamingApi.listOperatorProfiles(wsId).then((r: any) => setOperatorProfiles(Array.isArray(r) ? r : [])).catch(() => setOperatorProfiles([]))
-    streamingApi.listOperatorRuntimeImages(wsId).then((r: any) => setRuntimeImages(r?.items || [])).catch(() => setRuntimeImages([]))
   }, [wsId])
+
+  useEffect(() => {
+    if (!wsId) return
+    streamingApi.listOperatorRuntimeImages(wsId, operatorProfileId)
+      .then((r: any) => setRuntimeImages(r?.items || []))
+      .catch(() => setRuntimeImages([]))
+  }, [wsId, operatorProfileId])
+
+  useEffect(() => {
+    if (!runtimeImageOverride || !runtimeImages.length) return
+    if (!runtimeImages.some((r: any) => r.image === runtimeImageOverride)) {
+      setRuntimeImageOverride('')
+    }
+  }, [runtimeImages, runtimeImageOverride])
 
   useEffect(() => {
     streamingApi.flinkRuntime().then(setFlinkRuntime).catch(() => setFlinkRuntime(null))
@@ -516,6 +538,7 @@ export default function StreamStudioPage() {
         streaming_properties = mergeRuntimeImageIntoPropsJson(
           buildStreamingPropertiesJson(streamingPropsJson, operatorResForm, includeOperatorRes, resourceTier),
           runtimeImageOverride,
+          runtimeImages,
         )
       } catch (e) {
         message.error(formatJsonConfigError(e, '参数调优'), 8)
@@ -526,6 +549,7 @@ export default function StreamStudioPage() {
         streaming_properties = mergeRuntimeImageIntoPropsJson(
           buildStreamingPropertiesJson(jarStreamingPropsJson, operatorResForm, true, resourceTier),
           runtimeImageOverride,
+          runtimeImages,
         )
       } catch (e) {
         message.error(formatJsonConfigError(e, '高级 Flink 配置'), 8)
@@ -1201,7 +1225,15 @@ export default function StreamStudioPage() {
                                       <Descriptions.Item label="HTTP 基址">{jarInventory.http_base}</Descriptions.Item>
                                     )}
                                     {jarInventory.operator_jar_uri && (
-                                      <Descriptions.Item label="提交用 URI（HTTP）">{jarInventory.operator_jar_uri}</Descriptions.Item>
+                                      <Descriptions.Item label="提交用 jarURI">
+                                        {jarInventory.operator_jar_uri}
+                                        {jarInventory.uses_local_staging && (
+                                          <Tag color="orange" style={{ marginLeft: 8 }}>Flink 1.17 本地 staging</Tag>
+                                        )}
+                                      </Descriptions.Item>
+                                    )}
+                                    {jarInventory.http_download_uri && jarInventory.uses_local_staging && (
+                                      <Descriptions.Item label="init 容器下载源">{jarInventory.http_download_uri}</Descriptions.Item>
                                     )}
                                   </Descriptions>
                                   {jarInventory.operator_jar_uri_error && (

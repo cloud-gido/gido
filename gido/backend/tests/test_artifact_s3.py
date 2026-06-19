@@ -29,7 +29,39 @@ def test_build_s3_artifact_uri(monkeypatch):
     assert s3.build_s3_artifact_uri(42, "artifact.sql") == "s3://acme-data/gido-artifacts/42/artifact.sql"
 
 
-def test_resolve_jar_uri_always_http_even_with_profile_s3(monkeypatch):
+def test_resolve_jar_uri_local_staging_for_flink_117(monkeypatch):
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_HTTP_BASE", "http://backend:8001")
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_ARTIFACT_TOKEN", "tok")
+    from app.services.operator_runtime import OperatorRuntimeContext
+
+    ctx = OperatorRuntimeContext(
+        profile_id=1,
+        profile_name="cluster-a",
+        namespace="flink",
+        image="img:1",
+        flink_version="v1_17",
+        service_account="flink",
+        k8s_context=None,
+        kubeconfig_path=None,
+        jm_rest_template="http://x",
+        cluster_domain="cluster.local",
+        checkpoint_dir=None,
+        image_pull_secrets=None,
+        s3_auth_mode=None,
+        s3_access_key_id=None,
+        s3_secret_access_key=None,
+        s3_session_token=None,
+        jar_s3_prefix=None,
+        s3_region=None,
+        s3_endpoint_url=None,
+    )
+    arts = ja.resolve_jar_submit_artifacts(7, runtime_ctx=ctx)
+    assert arts.uses_local_staging is True
+    assert arts.jar_uri.startswith("local:///opt/flink/usrlib/gido-artifacts/job.jar")
+    assert arts.http_download_uri.startswith("http://backend:8001/api/streaming/jobs/7/artifact.jar")
+
+
+def test_resolve_jar_uri_v117_uses_local_staging(monkeypatch):
     monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_HTTP_BASE", "http://backend:8001")
     monkeypatch.setattr(settings, "FLINK_OPERATOR_ARTIFACT_TOKEN", "tok")
     from app.services.operator_runtime import OperatorRuntimeContext
@@ -50,6 +82,36 @@ def test_resolve_jar_uri_always_http_even_with_profile_s3(monkeypatch):
         s3_auth_mode="static",
         s3_access_key_id="AKIA",
         s3_secret_access_key="secret",
+        s3_session_token=None,
+        jar_s3_prefix="s3://cluster-a-bucket/jars",
+        s3_region=None,
+        s3_endpoint_url=None,
+    )
+    uri = resolve_jar_uri_for_job(7, runtime_ctx=ctx)
+    assert uri.startswith("local:///opt/flink/usrlib/gido-artifacts/job.jar")
+
+
+def test_resolve_jar_uri_v22_uses_http(monkeypatch):
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_HTTP_BASE", "http://backend:8001")
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_ARTIFACT_TOKEN", "tok")
+    from app.services.operator_runtime import OperatorRuntimeContext
+
+    ctx = OperatorRuntimeContext(
+        profile_id=1,
+        profile_name="cluster-a",
+        namespace="flink",
+        image="img:1",
+        flink_version="v2_2",
+        service_account="flink",
+        k8s_context=None,
+        kubeconfig_path=None,
+        jm_rest_template="http://x",
+        cluster_domain="cluster.local",
+        checkpoint_dir=None,
+        image_pull_secrets=None,
+        s3_auth_mode=None,
+        s3_access_key_id=None,
+        s3_secret_access_key=None,
         s3_session_token=None,
         jar_s3_prefix="s3://cluster-a-bucket/jars",
         s3_region=None,

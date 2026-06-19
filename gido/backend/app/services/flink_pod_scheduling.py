@@ -83,6 +83,40 @@ def operator_paimon_warehouse_pod_template() -> Optional[Dict[str, Any]]:
     }
 
 
+def operator_jar_staging_pod_template(http_jar_url: str) -> Dict[str, Any]:
+    """
+    Flink 1.17 Application 模式仅接受 local:// 主 JAR：init 容器从 GIDO HTTP 下载到 emptyDir，
+    JM/TM 以 local:///…/job.jar 启动。
+    """
+    mount = (settings.FLINK_OPERATOR_JAR_STAGING_MOUNT or "/opt/flink/usrlib/gido-artifacts").strip()
+    vol = "gido-job-artifact"
+    init_image = (settings.FLINK_OPERATOR_JAR_STAGING_INIT_IMAGE or "curlimages/curl:8.5.0").strip()
+    return {
+        "spec": {
+            "initContainers": [
+                {
+                    "name": "gido-jar-fetch",
+                    "image": init_image,
+                    "env": [{"name": "GIDO_JAR_URL", "value": http_jar_url}],
+                    "command": [
+                        "sh",
+                        "-c",
+                        f'mkdir -p "{mount}" && curl -fsSL "$GIDO_JAR_URL" -o "{mount}/job.jar"',
+                    ],
+                    "volumeMounts": [{"name": vol, "mountPath": mount}],
+                }
+            ],
+            "containers": [
+                {
+                    "name": "flink-main-container",
+                    "volumeMounts": [{"name": vol, "mountPath": mount, "readOnly": True}],
+                }
+            ],
+            "volumes": [{"name": vol, "emptyDir": {}}],
+        }
+    }
+
+
 def operator_scheduling_pod_template() -> Optional[Dict[str, Any]]:
     """
     当 FLINK_OPERATOR_NODE_POOL 配置时，生成 podTemplate.spec 调度片段。
@@ -156,6 +190,10 @@ def _deep_merge_pod_template(dst: Dict[str, Any], src: Dict[str, Any]) -> None:
             for sk, sv in value.items():
                 if sk == "containers" and isinstance(sv, list):
                     spec_dst["containers"] = _merge_containers(spec_dst.get("containers") or [], sv)
+                elif sk == "initContainers" and isinstance(sv, list):
+                    spec_dst["initContainers"] = _merge_containers(
+                        spec_dst.get("initContainers") or [], sv
+                    )
                 elif sk == "volumes" and isinstance(sv, list):
                     spec_dst["volumes"] = _merge_volumes(spec_dst.get("volumes") or [], sv)
                 elif sk == "imagePullSecrets" and isinstance(sv, list):

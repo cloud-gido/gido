@@ -1971,6 +1971,7 @@ _FLINK_OPERATOR_PROFILE_FIELDS = (
     "flink_operator_namespace",
     "flink_operator_image",
     "flink_operator_flink_version",
+    "flink_operator_runtime_images",
     "flink_operator_service_account",
     "flink_k8s_context",
     "flink_k8s_kubeconfig_path",
@@ -1988,6 +1989,13 @@ _FLINK_OPERATOR_PROFILE_FIELDS = (
 )
 
 
+class OperatorRuntimeImageEntry(BaseModel):
+    label: Optional[str] = None
+    image: str
+    flink_version: Optional[str] = None
+    is_default: bool = False
+
+
 class FlinkOperatorProfileCreate(BaseModel):
     workspace_id: int
     name: str
@@ -1997,6 +2005,7 @@ class FlinkOperatorProfileCreate(BaseModel):
     flink_operator_namespace: Optional[str] = None
     flink_operator_image: Optional[str] = None
     flink_operator_flink_version: Optional[str] = None
+    flink_operator_runtime_images: Optional[List[OperatorRuntimeImageEntry]] = None
     flink_operator_service_account: Optional[str] = None
     flink_k8s_context: Optional[str] = None
     flink_k8s_kubeconfig_path: Optional[str] = None
@@ -2021,6 +2030,7 @@ class FlinkOperatorProfileUpdate(BaseModel):
     flink_operator_namespace: Optional[str] = None
     flink_operator_image: Optional[str] = None
     flink_operator_flink_version: Optional[str] = None
+    flink_operator_runtime_images: Optional[List[OperatorRuntimeImageEntry]] = None
     flink_operator_service_account: Optional[str] = None
     flink_k8s_context: Optional[str] = None
     flink_k8s_kubeconfig_path: Optional[str] = None
@@ -2047,6 +2057,8 @@ def _normalize_s3_auth_mode(value: Optional[str]) -> Optional[str]:
 
 
 def _flink_operator_profile_public(p: FlinkOperatorProfile) -> dict:
+    from app.services.operator_profile_runtime import profile_runtime_images_public
+
     return {
         "id": p.id,
         "workspace_id": p.workspace_id,
@@ -2057,6 +2069,7 @@ def _flink_operator_profile_public(p: FlinkOperatorProfile) -> dict:
         "flink_operator_namespace": p.flink_operator_namespace,
         "flink_operator_image": p.flink_operator_image,
         "flink_operator_flink_version": p.flink_operator_flink_version,
+        "flink_operator_runtime_images": profile_runtime_images_public(p),
         "flink_operator_service_account": p.flink_operator_service_account,
         "flink_k8s_context": p.flink_k8s_context,
         "flink_k8s_kubeconfig_path": p.flink_k8s_kubeconfig_path,
@@ -2115,6 +2128,37 @@ def _normalize_s3_endpoint_url(value: Optional[str]) -> Optional[str]:
     if not (low.startswith("http://") or low.startswith("https://")):
         raise HTTPException(status_code=400, detail="flink_operator_s3_endpoint_url 须以 http:// 或 https:// 开头")
     return s.rstrip("/")
+
+
+def _apply_operator_profile_runtime_images_patch(data: dict) -> dict:
+    from app.services.operator_profile_runtime import (
+        default_runtime_image_entry,
+        normalize_runtime_images_payload,
+    )
+
+    out = dict(data)
+    if "flink_operator_runtime_images" not in out and "flink_operator_image" not in out:
+        return out
+    raw_list = out.get("flink_operator_runtime_images")
+    if raw_list is not None:
+        raw_list = [
+            x.model_dump() if hasattr(x, "model_dump") else dict(x)
+            for x in raw_list
+        ]
+    try:
+        items = normalize_runtime_images_payload(
+            raw_list,
+            legacy_image=out.get("flink_operator_image"),
+            legacy_flink_version=out.get("flink_operator_flink_version"),
+        )
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    out["flink_operator_runtime_images"] = items or None
+    default = default_runtime_image_entry(items)
+    if default:
+        out["flink_operator_image"] = default["image"]
+        out["flink_operator_flink_version"] = default.get("flink_version")
+    return out
 
 
 def _apply_operator_profile_s3_patch(data: dict, *, existing: Optional[FlinkOperatorProfile] = None) -> dict:
@@ -2196,13 +2240,20 @@ def list_flink_operator_profiles(
 @router.get("/operator-runtime-images")
 def list_operator_runtime_images(
     workspace_id: int = Query(...),
+    profile_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     from app.services.operator_runtime import list_runtime_images_for_workspace
 
     assert_workspace_data_capability(db, current_user, workspace_id, "viewer", PC.GIDO_STREAM_READ)
-    return {"items": list_runtime_images_for_workspace(db, workspace_id)}
+    if profile_id is not None:
+        _require_flink_operator_profile_in_workspace(db, workspace_id, int(profile_id))
+    return {
+        "items": list_runtime_images_for_workspace(
+            db, workspace_id, profile_id=int(profile_id) if profile_id is not None else None
+        )
+    }
 
 
 def _normalize_operator_profile_patch(data: dict) -> dict:
@@ -2229,9 +2280,17 @@ def create_flink_operator_profile(
     nm = (body.name or "").strip()
     if not nm:
         raise HTTPException(status_code=400, detail="名称不能为空")
-    if not (body.flink_operator_namespace or body.flink_operator_image):
-        raise HTTPException(status_code=400, detail="至少填写 flink_operator_namespace 或 flink_operator_image")
+    if not (
+        body.flink_operator_namespace
+        or body.flink_operator_image
+        or (body.flink_operator_runtime_images and len(body.flink_operator_runtime_images) > 0)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="至少填写 flink_operator_namespace 或配置一项运行时镜像",
+        )
     data = _normalize_operator_profile_patch({k: getattr(body, k) for k in _FLINK_OPERATOR_PROFILE_FIELDS})
+    data = _apply_operator_profile_runtime_images_patch(data)
     data = _apply_operator_profile_s3_patch(data)
     if body.is_default:
         db.query(FlinkOperatorProfile).filter(
@@ -2279,6 +2338,23 @@ def update_flink_operator_profile(
         inferred = infer_operator_flink_version_from_image(patch.get("flink_operator_image"))
         if inferred:
             patch["flink_operator_flink_version"] = inferred
+    if any(
+        k in patch
+        for k in ("flink_operator_runtime_images", "flink_operator_image", "flink_operator_flink_version")
+    ):
+        runtime_patch = {
+            "flink_operator_image": patch.get("flink_operator_image", p.flink_operator_image),
+            "flink_operator_flink_version": patch.get(
+                "flink_operator_flink_version", p.flink_operator_flink_version
+            ),
+            "flink_operator_runtime_images": patch.get(
+                "flink_operator_runtime_images", p.flink_operator_runtime_images
+            ),
+        }
+        runtime_patch = _apply_operator_profile_runtime_images_patch(runtime_patch)
+        patch["flink_operator_image"] = runtime_patch.get("flink_operator_image")
+        patch["flink_operator_flink_version"] = runtime_patch.get("flink_operator_flink_version")
+        patch["flink_operator_runtime_images"] = runtime_patch.get("flink_operator_runtime_images")
     patch = _apply_operator_profile_s3_patch(patch, existing=p)
     for k, v in patch.items():
         setattr(p, k, v)

@@ -82,3 +82,56 @@ def test_resolve_operator_runtime_infers_from_profile_image(monkeypatch):
     ctx = resolve_operator_runtime(_DB(), 1, profile_id=9)
     assert ctx.flink_version == "v1_17"
     assert "1.17.2" in ctx.image
+
+
+def test_resolve_operator_runtime_job_image_overrides_profile_flink_version(monkeypatch):
+    """Profile 固定 v1_17 时，作业覆盖 2.2 镜像应推断 v2_2。"""
+    from app.core.config import settings
+    from app.services.operator_runtime import resolve_operator_runtime
+
+    class _Prof:
+        id = 10
+        name = "legacy-117"
+        flink_operator_namespace = "flink"
+        flink_operator_image = "apache/flink:1.17.2-java11"
+        flink_operator_flink_version = "v1_17"
+        flink_operator_service_account = None
+        flink_k8s_context = None
+        flink_k8s_kubeconfig_path = None
+        flink_operator_jm_rest_template = None
+        flink_k8s_cluster_domain = None
+        flink_operator_checkpoint_dir = None
+        flink_operator_image_pull_secrets = None
+
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_FLINK_VERSION", "v2_2")
+
+    class _Q:
+        def filter(self, *a, **k):
+            return self
+
+        def first(self):
+            return _Prof()
+
+    class _DB:
+        def query(self, *a):
+            return _Q()
+
+    ctx = resolve_operator_runtime(
+        _DB(),
+        1,
+        profile_id=10,
+        streaming_properties={"operator_runtime_image": "apache/flink:2.2.1-java11"},
+    )
+    assert ctx.flink_version == "v2_2"
+    assert "2.2.1" in ctx.image
+
+
+def test_operator_image_flink_version_mismatch_warning():
+    from app.services.flink_version import operator_image_flink_version_mismatch_warning
+
+    msg = operator_image_flink_version_mismatch_warning(
+        "apache/flink:2.2.1-java11",
+        "v1_17",
+    )
+    assert msg is not None
+    assert "v2_2" in msg

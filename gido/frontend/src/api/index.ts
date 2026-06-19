@@ -254,8 +254,13 @@ export const streamingApi = {
   flinkRuntime: () => request.get('/streaming/flink-runtime'),
   listOperatorProfiles: (workspaceId: number) =>
     request.get('/streaming/flink-operator-profiles', { params: { workspace_id: workspaceId } }),
-  listOperatorRuntimeImages: (workspaceId: number) =>
-    request.get('/streaming/operator-runtime-images', { params: { workspace_id: workspaceId } }),
+  listOperatorRuntimeImages: (workspaceId: number, profileId?: number) =>
+    request.get('/streaming/operator-runtime-images', {
+      params: {
+        workspace_id: workspaceId,
+        ...(profileId != null ? { profile_id: profileId } : {}),
+      },
+    }),
   createOperatorProfile: (data: any) => request.post('/streaming/flink-operator-profiles', data),
   updateOperatorProfile: (id: number, data: any) => request.put(`/streaming/flink-operator-profiles/${id}`, data),
   deleteOperatorProfile: (id: number) => request.delete(`/streaming/flink-operator-profiles/${id}`),

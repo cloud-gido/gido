@@ -6,12 +6,19 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Alert, Button, Descriptions, Drawer, Form, Input, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, message,
 } from 'antd'
-import { ClusterOutlined, DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
+import { ClusterOutlined, DeleteOutlined, EditOutlined, MinusCircleOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
 import { streamingApi } from '../api'
 import { useAppStore } from '../store'
 import { can, P } from '../perm'
 import { R } from '../routes'
+
+type RuntimeImageEntry = {
+  label?: string | null
+  image: string
+  flink_version?: string | null
+  is_default?: boolean
+}
 
 type OperatorProfile = {
   id: number
@@ -22,6 +29,7 @@ type OperatorProfile = {
   flink_operator_namespace?: string | null
   flink_operator_image?: string | null
   flink_operator_flink_version?: string | null
+  flink_operator_runtime_images?: RuntimeImageEntry[]
   flink_operator_service_account?: string | null
   flink_k8s_context?: string | null
   flink_k8s_kubeconfig_path?: string | null
@@ -142,11 +150,26 @@ export default function OperatorClustersPage() {
     form.setFieldsValue({
       is_default: false,
       is_enabled: true,
-      flink_operator_flink_version: 'v2_2',
       flink_operator_service_account: 'flink',
       flink_operator_s3_auth_mode: 'static',
+      flink_operator_runtime_images: [
+        { label: 'Flink 2.2.1', image: '', flink_version: 'v2_2', is_default: true },
+      ],
     })
     setDrawerOpen(true)
+  }
+
+  const runtimeImagesForForm = (row: OperatorProfile): RuntimeImageEntry[] => {
+    const list = row.flink_operator_runtime_images
+    if (Array.isArray(list) && list.length) return list
+    const img = String(row.flink_operator_image || row.effective?.image || '').trim()
+    if (!img) return [{ label: '', image: '', flink_version: 'v2_2', is_default: true }]
+    return [{
+      label: '',
+      image: img,
+      flink_version: String(row.flink_operator_flink_version || row.effective?.flink_version || 'v2_2'),
+      is_default: true,
+    }]
   }
 
   const openEdit = (row: OperatorProfile) => {
@@ -157,8 +180,7 @@ export default function OperatorClustersPage() {
       is_default: row.is_default,
       is_enabled: row.is_enabled,
       flink_operator_namespace: row.flink_operator_namespace ?? '',
-      flink_operator_image: row.flink_operator_image ?? '',
-      flink_operator_flink_version: row.flink_operator_flink_version ?? row.effective?.flink_version ?? '',
+      flink_operator_runtime_images: runtimeImagesForForm(row),
       flink_operator_service_account: row.flink_operator_service_account ?? '',
       flink_k8s_context: row.flink_k8s_context ?? '',
       flink_k8s_kubeconfig_path: row.flink_k8s_kubeconfig_path ?? '',
@@ -192,9 +214,10 @@ export default function OperatorClustersPage() {
     try {
       const values = await form.validateFields()
       const ns = String(values.flink_operator_namespace || '').trim()
-      const img = String(values.flink_operator_image || '').trim()
-      if (!ns && !img) {
-        message.warning('至少填写「提交命名空间」或「运行时镜像」之一')
+      const runtimeRows = (values.flink_operator_runtime_images || []) as RuntimeImageEntry[]
+      const runtimeFilled = runtimeRows.filter(r => String(r?.image || '').trim())
+      if (!ns && runtimeFilled.length === 0) {
+        message.warning('至少填写「提交命名空间」或配置一项「运行时镜像」')
         return
       }
       if (!wsId) {
@@ -203,6 +226,14 @@ export default function OperatorClustersPage() {
       }
       setSubmitLoading(true)
       const payload = normalizePayload(values)
+      payload.flink_operator_runtime_images = runtimeFilled.map((r, idx) => ({
+        label: String(r.label || '').trim() || undefined,
+        image: String(r.image || '').trim(),
+        flink_version: String(r.flink_version || '').trim() || undefined,
+        is_default: Boolean(r.is_default) || (runtimeFilled.length === 1 && idx === 0),
+      }))
+      delete payload.flink_operator_image
+      delete payload.flink_operator_flink_version
       if (editingId != null && !String(values.flink_operator_s3_secret_access_key || '').trim()) {
         delete payload.flink_operator_s3_secret_access_key
       }
@@ -259,13 +290,20 @@ export default function OperatorClustersPage() {
     {
       title: '运行时镜像',
       ellipsis: true,
-      render: (_: unknown, row: OperatorProfile) => (
-        <Tooltip title={String(row.effective?.image ?? row.flink_operator_image ?? '')}>
-          <span style={{ fontSize: 12 }}>
-            {String(row.effective?.image ?? row.flink_operator_image ?? '—')}
-          </span>
-        </Tooltip>
-      ),
+      render: (_: unknown, row: OperatorProfile) => {
+        const imgs = row.flink_operator_runtime_images?.length
+          ? row.flink_operator_runtime_images
+          : (row.flink_operator_image || row.effective?.image
+            ? [{ image: String(row.effective?.image ?? row.flink_operator_image), label: '默认' }]
+            : [])
+        if (!imgs.length) return '—'
+        const preview = imgs.map(i => i.label || i.image).join(' · ')
+        return (
+          <Tooltip title={imgs.map(i => i.image).join('\n')}>
+            <span style={{ fontSize: 12 }}>{preview} ({imgs.length})</span>
+          </Tooltip>
+        )
+      },
     },
     {
       title: 'Kube Context',
@@ -304,8 +342,8 @@ export default function OperatorClustersPage() {
         <div>
           <h2 style={{ marginBottom: 8 }}>Operator 集群管理</h2>
           <div style={{ fontSize: 13, color: '#64748b', maxWidth: 720 }}>
-            为当前工作空间配置多套 Flink Kubernetes Operator 目标集群（命名空间、镜像、kube context 等）。
-            未填写的项将继承平台 <code>.env</code> 默认值；作业开发中可选择集群并覆盖运行时镜像。
+            为当前工作空间配置多套 Flink Kubernetes Operator 目标集群（命名空间、kube context 等）。
+            每个集群可配置<strong>多个运行时镜像</strong>；作业开发中选择集群后，从该集群已配置的镜像下拉选择。
             各字段说明见仓库文档 <code>gido/docs/OPERATOR_CLUSTER_PROFILE.md</code>。
           </div>
         </div>
@@ -432,24 +470,99 @@ export default function OperatorClustersPage() {
             <Input placeholder="cluster.local" />
           </Form.Item>
 
-          <div style={{ fontWeight: 600, margin: '16px 0 12px' }}>运行时</div>
-          <Form.Item
-            name="flink_operator_image"
-            label="运行时镜像"
-            extra="FlinkDeployment.spec.image；生产常用 gido-flink-runtime。留空继承 GIDO_FLINK_OPERATOR_IMAGE。作业级「运行时镜像」可再覆盖。"
-          >
-            <Input placeholder="apache/flink:2.2.1-java11、1.17.2-java11 或私有运行时镜像" />
-          </Form.Item>
-          <Form.Item
-            name="flink_operator_flink_version"
-            label="Operator CRD 版本"
-            extra="须与集群 FlinkDeployment CRD 一致；1.17.2 镜像用 v1_17，2.2.x 用 v2_2。仅填镜像时可自动推断。"
-          >
-            <Select allowClear placeholder="留空则继承平台默认或按镜像推断" options={versionOptions} />
-          </Form.Item>
+          <div style={{ fontWeight: 600, margin: '16px 0 12px' }}>运行时镜像（可配置多个）</div>
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message="同一 K8s 集群可挂多个 Flink 版本镜像；作业提交时从本列表选择。"
+          />
+          <Form.List name="flink_operator_runtime_images">
+            {(fields, { add, remove }) => (
+              <>
+                {fields.map(({ key, name, ...restField }) => (
+                  <div
+                    key={key}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '120px 1fr 140px auto auto',
+                      gap: 8,
+                      alignItems: 'start',
+                      marginBottom: 8,
+                    }}
+                  >
+                    <Form.Item
+                      {...restField}
+                      name={[name, 'label']}
+                      label={name === 0 ? '显示名' : undefined}
+                      style={{ marginBottom: 0 }}
+                    >
+                      <Input placeholder="Flink 2.2.1" />
+                    </Form.Item>
+                    <Form.Item
+                      {...restField}
+                      name={[name, 'image']}
+                      label={name === 0 ? '镜像' : undefined}
+                      rules={[{ required: true, message: '请填写镜像' }]}
+                      style={{ marginBottom: 0 }}
+                    >
+                      <Input placeholder="gido-flink-runtime:2.2.1" />
+                    </Form.Item>
+                    <Form.Item
+                      {...restField}
+                      name={[name, 'flink_version']}
+                      label={name === 0 ? 'CRD 版本' : undefined}
+                      style={{ marginBottom: 0 }}
+                    >
+                      <Select allowClear placeholder="自动推断" options={versionOptions} />
+                    </Form.Item>
+                    <Form.Item
+                      {...restField}
+                      name={[name, 'is_default']}
+                      label={name === 0 ? '默认' : undefined}
+                      valuePropName="checked"
+                      style={{ marginBottom: 0 }}
+                    >
+                      <Switch
+                        checkedChildren="默认"
+                        onChange={(checked) => {
+                          if (!checked) return
+                          const rows = form.getFieldValue('flink_operator_runtime_images') || []
+                          form.setFieldsValue({
+                            flink_operator_runtime_images: rows.map((r: RuntimeImageEntry, idx: number) => ({
+                              ...r,
+                              is_default: idx === name,
+                            })),
+                          })
+                        }}
+                      />
+                    </Form.Item>
+                    {fields.length > 1 ? (
+                      <Button
+                        type="text"
+                        danger
+                        icon={<MinusCircleOutlined />}
+                        onClick={() => remove(name)}
+                        style={{ marginTop: name === 0 ? 30 : 4 }}
+                      />
+                    ) : null}
+                  </div>
+                ))}
+                <Button
+                  type="dashed"
+                  onClick={() => add({ is_default: fields.length === 0, flink_version: 'v2_2' })}
+                  block
+                  icon={<PlusOutlined />}
+                >
+                  添加运行时镜像
+                </Button>
+              </>
+            )}
+          </Form.List>
           <Form.Item
             name="flink_operator_service_account"
             label="ServiceAccount"
+            style={{ marginTop: 16 }}
             extra="作业 Pod 使用的 SA，须在提交命名空间存在（RBAC / IRSA）。默认 flink。"
           >
             <Input placeholder="flink" />
