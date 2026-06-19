@@ -352,14 +352,20 @@ def sql_operator_submit_ready() -> Tuple[bool, str]:
     return True, ""
 
 
-def resolve_jar_uri_for_job(job_id: int) -> str:
-    return resolve_jar_uri_for_operator(job_id)
+def resolve_jar_uri_for_job(
+    job_id: int,
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
+) -> str:
+    return resolve_jar_uri_for_operator(job_id, runtime_ctx=runtime_ctx)
 
 
-def effective_sql_source(sql_source: Optional[str]) -> str:
+def effective_sql_source(
+    sql_source: Optional[str],
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
+) -> str:
     """S3 制品前缀已配置时，默认 sql_source=s3（EKS 生产，避免仅依赖 ConfigMap）。"""
     source = (sql_source or "mount").strip().lower()
-    if source == "mount" and artifact_s3_enabled():
+    if source == "mount" and artifact_s3_enabled(runtime_ctx):
         return "s3"
     return source
 
@@ -951,7 +957,7 @@ def submit_jar_via_operator(
     ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
     deployment_name = deployment_name_for_job(job_id, workspace_id)
     namespace = ctx.namespace
-    jar_uri = resolve_jar_uri_for_job(job_id)
+    jar_uri = resolve_jar_uri_for_job(job_id, runtime_ctx=ctx)
     meta = deployment_meta or GidoDeploymentMeta(
         workspace_id=int(workspace_id),
         job_id=int(job_id),
@@ -1004,9 +1010,9 @@ def submit_sql_via_operator(
     ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
     deployment_name = sql_deployment_name_for_job(job_id, workspace_id)
     namespace = ctx.namespace
-    save_sql_script(job_id, sql_content)
+    save_sql_script(job_id, sql_content, runtime_ctx=ctx)
 
-    source = effective_sql_source(sql_source)
+    source = effective_sql_source(sql_source, runtime_ctx=ctx)
     cm_name: Optional[str] = None
     script_location = SQL_MOUNT_PATH
     http_artifacts = False
@@ -1020,11 +1026,11 @@ def submit_sql_via_operator(
         if not s3_uri:
             from app.services.sql_artifact import build_sql_s3_uri_for_operator
 
-            script_location = build_sql_s3_uri_for_operator(job_id) or ""
+            script_location = build_sql_s3_uri_for_operator(job_id, runtime_ctx=ctx) or ""
             if not script_location:
                 raise RuntimeError(
-                    "sql_source=s3 须配置 FLINK_OPERATOR_JAR_S3_PREFIX / GIDO_ARTIFACT_S3_PREFIX"
-                    " 或 streaming_properties.sql_s3_uri"
+                    "sql_source=s3 须配置 Operator 集群或平台 JAR 制品 S3 前缀，"
+                    "或 streaming_properties.sql_s3_uri"
                 )
         else:
             script_location = str(s3_uri)

@@ -32,6 +32,7 @@ type OperatorProfile = {
   flink_operator_s3_auth_mode?: string | null
   flink_operator_s3_access_key_id?: string | null
   flink_operator_s3_secret_configured?: boolean
+  flink_operator_jar_s3_prefix?: string | null
   effective?: Record<string, unknown>
 }
 
@@ -66,6 +67,7 @@ function EffectiveBlock({ effective }: { effective?: Record<string, unknown> }) 
     ['image_pull_secrets', 'imagePullSecrets'],
     ['s3_auth_mode', 'S3 认证'],
     ['s3_credentials_configured', 'S3 AK/SK'],
+    ['jar_s3_prefix', 'JAR 制品 S3'],
   ] as const
   return (
     <Descriptions size="small" column={1} bordered style={{ maxWidth: 720 }}>
@@ -162,6 +164,7 @@ export default function OperatorClustersPage() {
       flink_operator_image_pull_secrets: row.flink_operator_image_pull_secrets ?? '',
       flink_operator_s3_auth_mode: row.flink_operator_s3_auth_mode ?? row.effective?.s3_auth_mode ?? 'static',
       flink_operator_s3_access_key_id: row.flink_operator_s3_access_key_id ?? '',
+      flink_operator_jar_s3_prefix: row.flink_operator_jar_s3_prefix ?? row.effective?.jar_s3_prefix ?? '',
     })
     setDrawerOpen(true)
   }
@@ -474,8 +477,15 @@ export default function OperatorClustersPage() {
             type="info"
             showIcon
             style={{ marginBottom: 12 }}
-            message="各 Operator 集群使用独立 AK/SK 访问 S3（checkpoint / Paimon warehouse）。选 IRSA 时由集群 ServiceAccount 绑 IAM Role，无需填写密钥。"
+            message="各 Operator 集群可配置独立 S3：JAR 制品库前缀、checkpoint 与 AK/SK。选 IRSA 时由 ServiceAccount 绑 IAM Role，无需填写密钥。"
           />
+          <Form.Item
+            name="flink_operator_jar_s3_prefix"
+            label="JAR 制品 S3 前缀"
+            extra="本集群 JAR/SQL 制品目录，如 s3://bucket/cluster-a/jars；留空沿用平台 FLINK_OPERATOR_JAR_S3_PREFIX。"
+          >
+            <Input placeholder="s3://your-bucket/cluster-a/jars" />
+          </Form.Item>
           <Form.Item
             name="flink_operator_s3_auth_mode"
             label="认证方式"

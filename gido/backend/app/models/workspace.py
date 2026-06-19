@@ -335,6 +335,8 @@ class FlinkOperatorProfile(Base):
     flink_operator_s3_access_key_id = Column(String(256), nullable=True)
     flink_operator_s3_secret_access_key = Column(String(512), nullable=True)
     flink_operator_s3_session_token = Column(Text, nullable=True)
+    # JAR/SQL 制品 S3 前缀（NULL 表示沿用平台 FLINK_OPERATOR_JAR_S3_PREFIX）
+    flink_operator_jar_s3_prefix = Column(String(1024), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)

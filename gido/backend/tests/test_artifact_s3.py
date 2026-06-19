@@ -30,10 +30,60 @@ def test_build_s3_artifact_uri(monkeypatch):
 
 
 def test_resolve_jar_uri_prefers_s3_when_object_exists(monkeypatch):
-    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://acme/gido-artifacts")
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", None)
     monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_HTTP_BASE", "http://backend:8001")
+    from app.services.operator_runtime import OperatorRuntimeContext
+
+    ctx = OperatorRuntimeContext(
+        profile_id=1,
+        profile_name="cluster-a",
+        namespace="flink",
+        image="img:1",
+        flink_version="v1_17",
+        service_account="flink",
+        k8s_context=None,
+        kubeconfig_path=None,
+        jm_rest_template="http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081",
+        cluster_domain="cluster.local",
+        checkpoint_dir=None,
+        image_pull_secrets=None,
+        s3_auth_mode="static",
+        s3_access_key_id="AKIA",
+        s3_secret_access_key="secret",
+        s3_session_token=None,
+        jar_s3_prefix="s3://cluster-a-bucket/jars",
+    )
     with patch("app.services.jar_artifact.artifact_exists_in_s3", return_value=True):
-        assert resolve_jar_uri_for_job(7) == "s3://acme/gido-artifacts/7/artifact.jar"
+        assert resolve_jar_uri_for_job(7, runtime_ctx=ctx) == "s3://cluster-a-bucket/jars/7/artifact.jar"
+
+
+def test_artifact_s3_prefix_from_profile_over_platform(monkeypatch):
+    from app.services.operator_runtime import OperatorRuntimeContext
+
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://platform/default")
+    ctx = OperatorRuntimeContext(
+        profile_id=2,
+        profile_name="b",
+        namespace="flink",
+        image="img",
+        flink_version="v1_17",
+        service_account="flink",
+        k8s_context=None,
+        kubeconfig_path=None,
+        jm_rest_template="http://x",
+        cluster_domain="cluster.local",
+        checkpoint_dir=None,
+        image_pull_secrets=None,
+        s3_auth_mode=None,
+        s3_access_key_id=None,
+        s3_secret_access_key=None,
+        s3_session_token=None,
+        jar_s3_prefix="s3://cluster-b/jars",
+    )
+    assert s3.artifact_s3_prefix(ctx) == "s3://cluster-b/jars"
+    assert s3.build_s3_artifact_uri(9, "artifact.jar", runtime_ctx=ctx) == (
+        "s3://cluster-b/jars/9/artifact.jar"
+    )
 
 
 def test_resolve_jar_uri_http_when_s3_prefix_but_object_missing(monkeypatch):
@@ -132,3 +182,68 @@ def test_save_sql_script_uploads_to_s3(mock_client_fn, monkeypatch, tmp_path):
     sql_a.save_sql_script(2, "SELECT 1;")
     assert sql_a.build_sql_s3_uri_for_operator(2) == "s3://test-bucket/artifacts/2/artifact.sql"
     mock_s3.put_object.assert_called_once()
+
+
+@patch("app.services.artifact_s3._s3_client")
+def test_list_s3_objects_under_key_prefix(mock_client_fn):
+    mock_s3 = MagicMock()
+    mock_client_fn.return_value = mock_s3
+    mock_s3.list_objects_v2.return_value = {
+        "Contents": [
+            {"Key": "jars/7/artifact.jar", "Size": 1024, "LastModified": None, "ETag": '"abc"'},
+            {"Key": "jars/7/", "Size": 0},
+        ],
+        "IsTruncated": False,
+    }
+    rows, err = s3.list_s3_objects_under_key_prefix("test-bucket", "jars/7")
+    assert err is None
+    assert len(rows) == 1
+    assert rows[0]["key"] == "jars/7/artifact.jar"
+    assert rows[0]["size_bytes"] == 1024
+
+
+@patch("app.services.artifact_s3._s3_client")
+def test_list_s3_job_folder_prefixes(mock_client_fn):
+    mock_s3 = MagicMock()
+    mock_client_fn.return_value = mock_s3
+    mock_s3.list_objects_v2.return_value = {
+        "CommonPrefixes": [
+            {"Prefix": "jars/7/"},
+            {"Prefix": "jars/42/"},
+        ],
+        "IsTruncated": False,
+    }
+    folders, err = s3.list_s3_job_folder_prefixes("test-bucket", "jars")
+    assert err is None
+    assert len(folders) == 2
+    assert folders[0]["job_id"] == "7"
+    assert folders[1]["uri"] == "s3://test-bucket/jars/42"
+
+
+@patch("app.services.artifact_s3.list_s3_job_folder_prefixes")
+@patch("app.services.artifact_s3.list_s3_objects_under_key_prefix")
+@patch("app.services.jar_artifact.jar_artifact_exists", return_value=True)
+@patch("app.services.jar_artifact.resolve_jar_uri_for_operator", return_value="s3://b/jars/9/artifact.jar")
+def test_jar_artifact_inventory(mock_resolve, mock_exists, mock_list_objs, mock_list_folders, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://test-bucket/jars")
+    monkeypatch.setattr(settings, "JAR_ARTIFACT_DIR", str(tmp_path))
+    (tmp_path / "9").mkdir()
+    (tmp_path / "9" / "artifact.jar").write_bytes(b"jar")
+
+    mock_list_objs.return_value = (
+        [{"key": "jars/9/artifact.jar", "uri": "s3://test-bucket/jars/9/artifact.jar", "size_bytes": 3, "last_modified": None}],
+        None,
+    )
+    mock_list_folders.return_value = (
+        [{"prefix": "jars/9/", "job_id": "9", "uri": "s3://test-bucket/jars/9"}],
+        None,
+    )
+
+    inv = ja.jar_artifact_inventory(9)
+    assert inv["job_id"] == 9
+    assert inv["s3_prefix"] == "s3://test-bucket/jars"
+    assert inv["job_s3_prefix"] == "s3://test-bucket/jars/9/"
+    assert len(inv["job_s3_objects"]) == 1
+    assert inv["local_artifact"]["exists"] is True
+    assert inv["artifact_ready"] is True
+    assert inv["operator_jar_uri"] == "s3://b/jars/9/artifact.jar"

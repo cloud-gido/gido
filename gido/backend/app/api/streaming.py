@@ -1982,6 +1982,7 @@ _FLINK_OPERATOR_PROFILE_FIELDS = (
     "flink_operator_s3_access_key_id",
     "flink_operator_s3_secret_access_key",
     "flink_operator_s3_session_token",
+    "flink_operator_jar_s3_prefix",
 )
 
 
@@ -2005,6 +2006,7 @@ class FlinkOperatorProfileCreate(BaseModel):
     flink_operator_s3_access_key_id: Optional[str] = None
     flink_operator_s3_secret_access_key: Optional[str] = None
     flink_operator_s3_session_token: Optional[str] = None
+    flink_operator_jar_s3_prefix: Optional[str] = None
 
 
 class FlinkOperatorProfileUpdate(BaseModel):
@@ -2026,6 +2028,7 @@ class FlinkOperatorProfileUpdate(BaseModel):
     flink_operator_s3_access_key_id: Optional[str] = None
     flink_operator_s3_secret_access_key: Optional[str] = None
     flink_operator_s3_session_token: Optional[str] = None
+    flink_operator_jar_s3_prefix: Optional[str] = None
 
 
 def _normalize_s3_auth_mode(value: Optional[str]) -> Optional[str]:
@@ -2058,6 +2061,7 @@ def _flink_operator_profile_public(p: FlinkOperatorProfile) -> dict:
         "flink_operator_s3_auth_mode": p.flink_operator_s3_auth_mode,
         "flink_operator_s3_access_key_id": p.flink_operator_s3_access_key_id,
         "flink_operator_s3_secret_configured": bool(p.flink_operator_s3_secret_access_key),
+        "flink_operator_jar_s3_prefix": p.flink_operator_jar_s3_prefix,
         "created_at": p.created_at,
         "updated_at": p.updated_at,
     }
@@ -2072,8 +2076,24 @@ def _flink_operator_profile_effective(db: Session, p: FlinkOperatorProfile) -> d
     return out
 
 
+def _normalize_jar_s3_prefix(value: Optional[str]) -> Optional[str]:
+    from app.services.artifact_s3 import _normalize_s3_prefix
+
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        return _normalize_s3_prefix(s)
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+
+
 def _apply_operator_profile_s3_patch(data: dict, *, existing: Optional[FlinkOperatorProfile] = None) -> dict:
     out = dict(data)
+    if "flink_operator_jar_s3_prefix" in out:
+        out["flink_operator_jar_s3_prefix"] = _normalize_jar_s3_prefix(out.get("flink_operator_jar_s3_prefix"))
     if "flink_operator_s3_auth_mode" in out:
         out["flink_operator_s3_auth_mode"] = _normalize_s3_auth_mode(out.get("flink_operator_s3_auth_mode"))
     secret = out.pop("flink_operator_s3_secret_access_key", None)
@@ -2677,10 +2697,16 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
             )
     elif job.job_type == "JAR":
         from app.services.jar_artifact import jar_artifact_exists
+        from app.services.operator_runtime import resolve_operator_runtime_for_job
 
         jar_mode = _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None))
+        jar_runtime_ctx = (
+            resolve_operator_runtime_for_job(db, job)
+            if jar_mode == "flink_operator"
+            else None
+        )
         if jar_mode == "flink_operator":
-            if not jar_artifact_exists(job.id):
+            if not jar_artifact_exists(job.id, runtime_ctx=jar_runtime_ctx):
                 from app.services.artifact_s3 import artifact_s3_enabled
 
                 hint = (
@@ -2688,7 +2714,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                     + (
                         " 已配置 S3 制品前缀时，Operator 从 s3:// 拉取；"
                         "否则经 HTTP 拉取，backend Pod 重启且未用 PVC 时会丢制品。"
-                        if artifact_s3_enabled()
+                        if artifact_s3_enabled(jar_runtime_ctx)
                         else " Operator 从 backend HTTP 拉取 artifact.jar；"
                         "若 backend Pod 曾重启且未用 PVC/S3，制品会丢失需重传。"
                     )
@@ -3234,6 +3260,28 @@ def proxy_operator_flink_ui(
     return Response(content=body, status_code=status_code, headers=headers)
 
 
+@router.get("/jobs/{job_id}/jar-artifacts")
+def get_jar_artifact_inventory(
+    job_id: int,
+    include_cluster_jobs: bool = Query(True, description="是否列出集群制品根目录下各 job 子目录"),
+    db: Session = Depends(get_db_flink),
+    current_user: User = Depends(get_current_user),
+):
+    """JAR 制品库清单：本地 PVC + 当前 Operator 集群 S3 目录对象列表。"""
+    from app.services.jar_artifact import jar_artifact_inventory
+    from app.services.operator_runtime import resolve_operator_runtime_for_job
+
+    job = require_streaming_job(db, current_user, job_id, "viewer", PC.GIDO_STREAM_READ)
+    if job.job_type != "JAR":
+        raise HTTPException(status_code=400, detail="仅 JAR 作业支持制品库清单")
+    runtime_ctx = resolve_operator_runtime_for_job(db, job)
+    return jar_artifact_inventory(
+        job.id,
+        runtime_ctx=runtime_ctx,
+        include_cluster_jobs=include_cluster_jobs,
+    )
+
+
 @router.get("/jobs/{job_id}/artifact.jar")
 def download_jar_artifact(job_id: int, token: str = Query(..., description="与 FLINK_OPERATOR_ARTIFACT_TOKEN 一致")):
     """供 Flink Operator Pod HTTP 拉取 JAR（无 JWT；校验 artifact token）。"""
@@ -3270,6 +3318,7 @@ async def upload_jar(
 ):
     """上传 JAR：写入制品库；若已配置 Session JM 则同步上传到 Flink（开发试跑）。"""
     from app.services.jar_artifact import save_jar_bytes
+    from app.services.operator_runtime import resolve_operator_runtime_for_job
 
     job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_WRITE)
     if getattr(job, "is_locked", False):
@@ -3280,7 +3329,8 @@ async def upload_jar(
         content = await file.read()
         if not content:
             raise HTTPException(status_code=400, detail="JAR 文件为空")
-        saved = save_jar_bytes(job.id, content)
+        runtime_ctx = resolve_operator_runtime_for_job(db, job)
+        saved = save_jar_bytes(job.id, content, runtime_ctx=runtime_ctx)
         jar_name = file.filename
         jar_mode = _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None))
         session_jar_id = None
@@ -3297,7 +3347,7 @@ async def upload_jar(
 
         if saved.s3_sync_error:
             s3_warning = f"本地制品已保存，但同步 S3 失败：{saved.s3_sync_error}"
-        elif artifact_s3_enabled() and not saved.s3_synced:
+        elif artifact_s3_enabled(runtime_ctx) and not saved.s3_synced:
             s3_warning = "已配置 S3 制品前缀但未同步到 S3，Operator 将经 HTTP 拉取本地制品。"
         return {
             "message": "上传成功",
@@ -3308,6 +3358,7 @@ async def upload_jar(
             "session_uploaded": bool(session_jar_id),
             "s3_uri": saved.s3_uri,
             "s3_synced": saved.s3_synced,
+            "s3_prefix": saved.s3_prefix,
             "warning": s3_warning,
         }
     except HTTPException:

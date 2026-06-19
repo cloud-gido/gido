@@ -25,6 +25,7 @@ from app.services.rbac_seed import (
     migrate_dw_streaming_jobs_flink_session_profile,
     migrate_dw_flink_operator_profiles,
     migrate_dw_flink_operator_profiles_s3_auth,
+    migrate_dw_flink_operator_profiles_jar_s3_prefix,
     migrate_dw_streaming_jobs_flink_operator_profile,
     migrate_dw_sync_tasks_enhance,
     migrate_dw_data_service,
@@ -65,6 +66,7 @@ migrate_dw_flink_session_profiles(engine)
 migrate_dw_streaming_jobs_flink_session_profile(engine)
 migrate_dw_flink_operator_profiles(engine)
 migrate_dw_flink_operator_profiles_s3_auth(engine)
+migrate_dw_flink_operator_profiles_jar_s3_prefix(engine)
 migrate_dw_streaming_jobs_flink_operator_profile(engine)
 migrate_dw_sync_tasks_enhance(engine)
 migrate_dw_data_service(engine)

@@ -181,6 +181,15 @@
 | **密钥** | `flink_operator_s3_access_key_id` / `flink_operator_s3_secret_access_key` / 可选 `session_token`；API 不回显 Secret |
 | **示例** | static + `s3a://my-bucket/flink/checkpoints` + 集群专属 IAM User AK/SK |
 
+### `flink_operator_jar_s3_prefix`（JAR/SQL 制品 S3 前缀）
+
+| 项 | 说明 |
+|----|------|
+| **含义** | 该 Operator 集群的 JAR/SQL 制品库根路径；上传与 Operator `jarURI` 均使用此前缀。 |
+| **继承默认** | 空 → 平台 `FLINK_OPERATOR_JAR_S3_PREFIX` / `GIDO_ARTIFACT_S3_PREFIX` |
+| **对象路径** | `{prefix}/{job_id}/artifact.jar`（SQL 为 `artifact.sql`） |
+| **示例** | `s3://prod-bucket/eks-a/jars` 与 `s3://test-bucket/kind-dev/jars` 分集群隔离 |
+
 ---
 
 ## 平台 .env 对照（Profile 未填时继承）

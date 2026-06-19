@@ -809,6 +809,31 @@ def migrate_dw_flink_operator_profiles_s3_auth(engine: Engine) -> None:
                 conn.execute(text(f"ALTER TABLE dw_flink_operator_profiles ADD COLUMN {name} {ddl}"))
 
 
+def migrate_dw_flink_operator_profiles_jar_s3_prefix(engine: Engine) -> None:
+    """Operator 集群 Profile 独立 JAR 制品 S3 前缀。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_flink_operator_profiles"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_flink_operator_profiles")}
+    if "flink_operator_jar_s3_prefix" in cols:
+        return
+    with engine.begin() as conn:
+        if engine.dialect.name == "mysql":
+            conn.execute(
+                text(
+                    "ALTER TABLE dw_flink_operator_profiles "
+                    "ADD COLUMN flink_operator_jar_s3_prefix VARCHAR(1024) NULL"
+                )
+            )
+        else:
+            conn.execute(
+                text(
+                    "ALTER TABLE dw_flink_operator_profiles "
+                    "ADD COLUMN flink_operator_jar_s3_prefix VARCHAR(1024)"
+                )
+            )
+
+
 def migrate_dw_streaming_jobs_flink_operator_profile(engine: Engine) -> None:
     """实时作业可选绑定 Flink Operator 集群；提交后持久化目标 namespace / 镜像。"""
     insp = inspect(engine)

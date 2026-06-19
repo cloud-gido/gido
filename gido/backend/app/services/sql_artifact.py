@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from app.services.gido_deployment_meta import sql_configmap_name
 from app.services.artifact_s3 import (
@@ -20,6 +20,9 @@ from app.services.artifact_s3 import (
 from app.services.jar_artifact import artifact_dir_for_job, resolved_artifact_download_token
 from app.services.flink_operator_submit import _load_k8s_config
 
+if TYPE_CHECKING:
+    from app.services.operator_runtime import OperatorRuntimeContext
+
 logger = logging.getLogger(__name__)
 
 SQL_SCRIPT_FILENAME = SQL_ARTIFACT_FILENAME
@@ -31,17 +34,22 @@ def sql_script_file_path(job_id: int) -> Path:
     return artifact_dir_for_job(job_id) / SQL_SCRIPT_FILENAME
 
 
-def save_sql_script(job_id: int, content: str) -> Path:
+def save_sql_script(
+    job_id: int,
+    content: str,
+    runtime_ctx: Optional["OperatorRuntimeContext"] = None,
+) -> Path:
     path = sql_script_file_path(job_id)
     text = content or ""
     path.write_text(text, encoding="utf-8")
-    if artifact_s3_enabled():
+    if artifact_s3_enabled(runtime_ctx):
         try:
             upload_artifact_bytes(
                 job_id,
                 SQL_ARTIFACT_FILENAME,
                 text.encode("utf-8"),
                 content_type="text/plain; charset=utf-8",
+                runtime_ctx=runtime_ctx,
             )
         except Exception as ex:
             logger.error("SQL 上传 S3 失败 job=%s: %s", job_id, ex)
@@ -49,17 +57,23 @@ def save_sql_script(job_id: int, content: str) -> Path:
     return path
 
 
-def sql_script_exists(job_id: int) -> bool:
+def sql_script_exists(
+    job_id: int,
+    runtime_ctx: Optional["OperatorRuntimeContext"] = None,
+) -> bool:
     p = sql_script_file_path(job_id)
     if p.is_file() and p.stat().st_size > 0:
         return True
-    if artifact_s3_enabled():
-        return artifact_exists_in_s3(job_id, SQL_ARTIFACT_FILENAME)
+    if artifact_s3_enabled(runtime_ctx):
+        return artifact_exists_in_s3(job_id, SQL_ARTIFACT_FILENAME, runtime_ctx=runtime_ctx)
     return False
 
 
-def build_sql_s3_uri_for_operator(job_id: int) -> Optional[str]:
-    return build_s3_artifact_uri(job_id, SQL_ARTIFACT_FILENAME)
+def build_sql_s3_uri_for_operator(
+    job_id: int,
+    runtime_ctx: Optional["OperatorRuntimeContext"] = None,
+) -> Optional[str]:
+    return build_s3_artifact_uri(job_id, SQL_ARTIFACT_FILENAME, runtime_ctx=runtime_ctx)
 
 
 def configmap_name_for_job(job_id: int, workspace_id: int) -> str:

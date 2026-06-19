@@ -34,6 +34,13 @@ import { openFlinkConsoleUrl } from '../utils/flinkConsole'
 
 const { Paragraph, Text } = Typography
 
+function formatBytes(n: number | null | undefined): string {
+  if (n == null || Number.isNaN(n)) return '—'
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`
+}
+
 const JOB_TYPES = [
   { label: 'Flink SQL', value: 'SQL' },
   { label: 'JAR 作业', value: 'JAR' },
@@ -292,6 +299,8 @@ export default function StreamStudioPage() {
   const [jarSubmitMode] = useState<'session' | 'flink_operator'>('flink_operator')
   const [jarUploading, setJarUploading] = useState(false)
   const [jarArtifactHint, setJarArtifactHint] = useState<string | null>(null)
+  const [jarInventory, setJarInventory] = useState<any | null>(null)
+  const [jarInventoryLoading, setJarInventoryLoading] = useState(false)
   const [historyModal, setHistoryModal] = useState(false)
   const [historyList, setHistoryList] = useState<any[]>([])
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set())
@@ -334,6 +343,25 @@ export default function StreamStudioPage() {
 
   const effectiveSqlMode: SqlSubmitMode = 'flink_operator'
   const effectiveJarMode = 'flink_operator' as const
+
+  const loadJarInventory = useCallback(async (jobId?: number) => {
+    const id = jobId ?? selected?.id
+    if (!id || selected?.job_type !== 'JAR') {
+      setJarInventory(null)
+      return
+    }
+    setJarInventoryLoading(true)
+    try {
+      const data: any = await streamingApi.jarArtifactInventory(id)
+      setJarInventory(data)
+    } catch (e: any) {
+      setJarInventory(null)
+      const detail = e?.response?.data?.detail
+      message.error(typeof detail === 'string' ? detail : '制品库清单加载失败')
+    } finally {
+      setJarInventoryLoading(false)
+    }
+  }, [selected?.id, selected?.job_type])
 
   /** Flink 控制台停止后 JM 已无作业时，单靠列表会卡在 running — 周期性拉 JM 回填平台状态（不打断编辑） */
   useEffect(() => {
@@ -401,8 +429,12 @@ export default function StreamStudioPage() {
       setResourceTier(parseResourceTier(sp))
       setOperatorProfileId(selected.flink_operator_profile_id ?? undefined)
       setRuntimeImageOverride(parseRuntimeImageFromProps(sp))
+      setJarArtifactHint(null)
+      loadJarInventory(selected.id)
+    } else {
+      setJarInventory(null)
     }
-  }, [selected?.id, selected?.job_type, selected?.flink_jar_submit_mode, selected?.streaming_properties, selected?.flink_operator_profile_id])
+  }, [selected?.id, selected?.job_type, selected?.flink_jar_submit_mode, selected?.streaming_properties, selected?.flink_operator_profile_id, loadJarInventory])
 
   const handleCreate = async () => {
     const v = await createForm.validateFields()
@@ -1024,7 +1056,7 @@ export default function StreamStudioPage() {
                       message="Operator 生产提交"
                       description={(
                         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                          <li>上传 JAR 写入 GIDO 制品库；未配 S3 时 Flink Pod HTTP 拉取，EKS 生产请设 <code>FLINK_OPERATOR_JAR_S3_PREFIX</code>。</li>
+                          <li>上传 JAR 写入该作业所选 Operator 集群的制品库（S3 前缀在集群配置；未配则 HTTP 拉取）。</li>
                           <li>须填写 <strong>Main Class</strong>；Backend 容器需挂载 kubeconfig。</li>
                           <li>默认 namespace：<code>flink</code>（Kind 集群 <code>kind-gido</code>），Flink 2.2.1 + Operator 1.15。</li>
                         </ul>
@@ -1044,12 +1076,17 @@ export default function StreamStudioPage() {
                       try {
                         const res: any = await streamingApi.uploadJar(selected.id, file)
                         const name = res?.filename || res?.jar_id || file.name
-                        setJarArtifactHint(`已上传：${name}${res?.s3_synced ? '（已同步 S3）' : ''}`)
+                        setJarArtifactHint(
+                          `已上传：${name}${res?.s3_synced ? '（已同步 S3）' : ''}${
+                            res?.s3_prefix ? ` · ${res.s3_prefix}` : ''
+                          }`,
+                        )
                         if (res?.warning) {
                           message.warning(String(res.warning), 8)
                         }
                         message.success(res?.message || `JAR 已上传：${name}`)
                         await load()
+                        await loadJarInventory(selected.id)
                       } catch (e: any) {
                         const detail = e?.response?.data?.detail
                         const msg = typeof detail === 'string'
@@ -1080,6 +1117,122 @@ export default function StreamStudioPage() {
                       ghost
                       style={{ marginBottom: 8 }}
                       items={[
+                        {
+                          key: 'jar-inventory',
+                          label: (
+                            <Space>
+                              <span>制品库目录（本地 + S3）</span>
+                              {jarInventory?.artifact_ready && <Tag color="green">制品就绪</Tag>}
+                            </Space>
+                          ),
+                          children: (
+                            <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                              <Space wrap>
+                                <Button
+                                  size="small"
+                                  icon={<ReloadOutlined />}
+                                  loading={jarInventoryLoading}
+                                  onClick={() => loadJarInventory(selected.id)}
+                                >
+                                  刷新清单
+                                </Button>
+                                {jarInventory?.operator_profile_name && (
+                                  <Text type="secondary">Operator 集群：{jarInventory.operator_profile_name}</Text>
+                                )}
+                              </Space>
+                              {jarInventoryLoading && !jarInventory ? (
+                                <Text type="secondary">加载中…</Text>
+                              ) : jarInventory ? (
+                                <>
+                                  <Descriptions size="small" column={1} bordered>
+                                    <Descriptions.Item label="S3 前缀">
+                                      {jarInventory.s3_prefix || '未配置（仅本地 / HTTP）'}
+                                      {jarInventory.s3_prefix_source === 'profile' && (
+                                        <Tag color="blue" style={{ marginLeft: 8 }}>集群配置</Tag>
+                                      )}
+                                      {jarInventory.s3_prefix_source === 'platform' && (
+                                        <Tag style={{ marginLeft: 8 }}>平台默认</Tag>
+                                      )}
+                                    </Descriptions.Item>
+                                    {jarInventory.job_s3_prefix && (
+                                      <Descriptions.Item label="本作业 S3 目录">{jarInventory.job_s3_prefix}</Descriptions.Item>
+                                    )}
+                                    <Descriptions.Item label="本地 PVC">
+                                      {jarInventory.local_artifact?.exists
+                                        ? `${jarInventory.local_artifact.path} · ${formatBytes(jarInventory.local_artifact.size_bytes)}`
+                                        : '无本地文件'}
+                                    </Descriptions.Item>
+                                    {jarInventory.expected_jar_uri && (
+                                      <Descriptions.Item label="期望 S3 URI">{jarInventory.expected_jar_uri}</Descriptions.Item>
+                                    )}
+                                    {jarInventory.operator_jar_uri && (
+                                      <Descriptions.Item label="提交用 URI">{jarInventory.operator_jar_uri}</Descriptions.Item>
+                                    )}
+                                  </Descriptions>
+                                  {jarInventory.s3_list_error && (
+                                    <Alert type="warning" showIcon message={`S3 列表失败：${jarInventory.s3_list_error}`} />
+                                  )}
+                                  {jarInventory.s3_prefix && (
+                                    <>
+                                      <div>
+                                        <Text strong>本作业 S3 对象</Text>
+                                        <Table
+                                          size="small"
+                                          style={{ marginTop: 8 }}
+                                          rowKey={(r: any) => r.key || r.uri}
+                                          pagination={false}
+                                          locale={{ emptyText: '目录为空' }}
+                                          dataSource={jarInventory.job_s3_objects || []}
+                                          columns={[
+                                            { title: '对象 Key', dataIndex: 'key', ellipsis: true },
+                                            {
+                                              title: '大小',
+                                              dataIndex: 'size_bytes',
+                                              width: 100,
+                                              render: (v: number) => formatBytes(v),
+                                            },
+                                            {
+                                              title: '更新时间',
+                                              dataIndex: 'last_modified',
+                                              width: 180,
+                                              render: (v: string) => (v ? formatInTimeZone(v, displayTz) : '—'),
+                                            },
+                                          ]}
+                                        />
+                                      </div>
+                                      <div>
+                                        <Text strong>集群制品根目录（job 子目录）</Text>
+                                        <Table
+                                          size="small"
+                                          style={{ marginTop: 8 }}
+                                          rowKey={(r: any) => r.prefix || r.uri}
+                                          pagination={{ pageSize: 10, hideOnSinglePage: true }}
+                                          locale={{ emptyText: '无子目录' }}
+                                          dataSource={jarInventory.cluster_job_folders || []}
+                                          columns={[
+                                            {
+                                              title: 'Job ID',
+                                              dataIndex: 'job_id',
+                                              width: 90,
+                                              render: (v: number | null, row: any) => (
+                                                v != null
+                                                  ? <Text type={v === selected.id ? undefined : 'secondary'}>{v}{v === selected.id ? '（当前）' : ''}</Text>
+                                                  : row.prefix
+                                              ),
+                                            },
+                                            { title: 'S3 URI', dataIndex: 'uri', ellipsis: true },
+                                          ]}
+                                        />
+                                      </div>
+                                    </>
+                                  )}
+                                </>
+                              ) : (
+                                <Text type="secondary">暂无清单数据</Text>
+                              )}
+                            </Space>
+                          ),
+                        },
                         {
                           key: 'operator-res',
                           label: 'Operator 资源配置（JM / TM / Slots，留空用平台默认）',

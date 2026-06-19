@@ -283,6 +283,10 @@ export const streamingApi = {
     // 勿手动设 Content-Type，否则缺少 boundary 会导致后端收不到文件
     return request.post(`/streaming/jobs/${id}/upload-jar`, form)
   },
+  jarArtifactInventory: (id: number, includeClusterJobs = true) =>
+    request.get(`/streaming/jobs/${id}/jar-artifacts`, {
+      params: { include_cluster_jobs: includeClusterJobs },
+    }),
 }
 
 // 数据服务

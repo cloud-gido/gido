@@ -47,6 +47,7 @@ class OperatorRuntimeContext:
     s3_access_key_id: Optional[str]
     s3_secret_access_key: Optional[str]
     s3_session_token: Optional[str]
+    jar_s3_prefix: Optional[str]
 
     @classmethod
     def from_settings(cls) -> "OperatorRuntimeContext":
@@ -65,6 +66,10 @@ class OperatorRuntimeContext:
             or "http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081"
         ).strip()
         domain = (settings.FLINK_K8S_CLUSTER_DOMAIN or "cluster.local").strip() or "cluster.local"
+        jar_prefix = _first_non_empty(
+            getattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", None),
+            getattr(settings, "GIDO_ARTIFACT_S3_PREFIX", None),
+        )
         return cls(
             profile_id=None,
             profile_name=None,
@@ -82,6 +87,7 @@ class OperatorRuntimeContext:
             s3_access_key_id=None,
             s3_secret_access_key=None,
             s3_session_token=None,
+            jar_s3_prefix=jar_prefix,
         )
 
     def with_overrides(
@@ -101,6 +107,7 @@ class OperatorRuntimeContext:
         s3_access_key_id: Optional[str] = None,
         s3_secret_access_key: Optional[str] = None,
         s3_session_token: Optional[str] = None,
+        jar_s3_prefix: Optional[str] = None,
         profile_id: Optional[int] = None,
         profile_name: Optional[str] = None,
     ) -> "OperatorRuntimeContext":
@@ -121,6 +128,7 @@ class OperatorRuntimeContext:
             s3_access_key_id=_first_non_empty(s3_access_key_id, self.s3_access_key_id),
             s3_secret_access_key=_first_non_empty(s3_secret_access_key, self.s3_secret_access_key),
             s3_session_token=_first_non_empty(s3_session_token, self.s3_session_token),
+            jar_s3_prefix=_first_non_empty(jar_s3_prefix, self.jar_s3_prefix),
         )
 
     def public_dict(self) -> Dict[str, Any]:
@@ -139,6 +147,7 @@ class OperatorRuntimeContext:
             "image_pull_secrets": self.image_pull_secrets,
             "s3_auth_mode": self.s3_auth_mode,
             "s3_credentials_configured": bool(self.s3_access_key_id and self.s3_secret_access_key),
+            "jar_s3_prefix": self.jar_s3_prefix,
         }
 
 
@@ -197,6 +206,7 @@ def resolve_operator_runtime(
             s3_access_key_id=profile.flink_operator_s3_access_key_id,
             s3_secret_access_key=profile.flink_operator_s3_secret_access_key,
             s3_session_token=profile.flink_operator_s3_session_token,
+            jar_s3_prefix=profile.flink_operator_jar_s3_prefix,
         )
     overrides = _job_runtime_overrides(streaming_properties)
     explicit_version = bool(
