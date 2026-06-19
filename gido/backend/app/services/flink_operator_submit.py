@@ -355,8 +355,10 @@ def sql_operator_submit_ready() -> Tuple[bool, str]:
 def resolve_jar_uri_for_job(
     job_id: int,
     runtime_ctx: Optional[OperatorRuntimeContext] = None,
+    *,
+    jar_path: Optional[str] = None,
 ) -> str:
-    return resolve_jar_uri_for_operator(job_id, runtime_ctx=runtime_ctx)
+    return resolve_jar_uri_for_operator(job_id, runtime_ctx=runtime_ctx, jar_path=jar_path)
 
 
 def effective_sql_source(
@@ -950,6 +952,7 @@ def submit_jar_via_operator(
     extra_flink_props: Optional[Dict[str, Any]] = None,
     deployment_meta: Optional[GidoDeploymentMeta] = None,
     runtime_ctx: Optional[OperatorRuntimeContext] = None,
+    jar_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not (entry_class or "").strip():
         raise RuntimeError("Flink Operator 提交 JAR 须填写入口类（Main Class）。")
@@ -957,7 +960,7 @@ def submit_jar_via_operator(
     ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
     deployment_name = deployment_name_for_job(job_id, workspace_id)
     namespace = ctx.namespace
-    jar_uri = resolve_jar_uri_for_job(job_id, runtime_ctx=ctx)
+    jar_uri = resolve_jar_uri_for_job(job_id, runtime_ctx=ctx, jar_path=jar_path)
     meta = deployment_meta or GidoDeploymentMeta(
         workspace_id=int(workspace_id),
         job_id=int(job_id),

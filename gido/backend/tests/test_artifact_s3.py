@@ -251,3 +251,62 @@ def test_jar_artifact_inventory(mock_resolve, mock_exists, mock_list_objs, mock_
     assert inv["local_artifact"]["exists"] is True
     assert inv["artifact_ready"] is True
     assert inv["operator_jar_uri"] == "s3://b/jars/9/artifact.jar"
+
+
+def test_artifact_s3_prefix_ignores_unresolved_placeholder(monkeypatch):
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "FLINK_OPERATOR_JAR_S3_PREFIX")
+    monkeypatch.setattr(settings, "GIDO_ARTIFACT_S3_PREFIX", None)
+    assert s3.artifact_s3_prefix() is None
+    hint = s3.s3_prefix_config_hint()
+    assert hint is not None
+    assert "FLINK_OPERATOR_JAR_S3_PREFIX" in hint
+
+
+def test_artifact_s3_prefix_profile_invalid_falls_back_to_platform(monkeypatch):
+    from app.services.operator_runtime import OperatorRuntimeContext
+
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://platform/jars")
+    ctx = OperatorRuntimeContext(
+        profile_id=1,
+        profile_name="bad-profile",
+        namespace="flink",
+        image="img",
+        flink_version="v1_17",
+        service_account="flink",
+        k8s_context=None,
+        kubeconfig_path=None,
+        jm_rest_template="http://x",
+        cluster_domain="cluster.local",
+        checkpoint_dir=None,
+        image_pull_secrets=None,
+        s3_auth_mode=None,
+        s3_access_key_id=None,
+        s3_secret_access_key=None,
+        s3_session_token=None,
+        jar_s3_prefix="FLINK_OPERATOR_JAR_S3_PREFIX",
+        s3_region=None,
+        s3_endpoint_url=None,
+    )
+    assert s3.artifact_s3_prefix(ctx) == "s3://platform/jars"
+
+
+def test_save_jar_bytes_preserves_original_filename(mock_client_fn, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://test-bucket/jars")
+    monkeypatch.setattr(settings, "JAR_ARTIFACT_DIR", str(tmp_path))
+    mock_client_fn.return_value.put_object.return_value = {}
+
+    result = ja.save_jar_bytes(8, b"jar-content", original_filename="my-flink-job-1.0.jar")
+    assert result.storage_filename == "my-flink-job-1.0.jar"
+    assert (tmp_path / "8" / "my-flink-job-1.0.jar").is_file()
+    assert not (tmp_path / "8" / "artifact.jar").exists()
+    assert ja.jar_artifact_exists(8, jar_path="my-flink-job-1.0.jar")
+    assert result.s3_uri == "s3://test-bucket/jars/8/my-flink-job-1.0.jar"
+
+
+def test_jar_artifact_inventory_invalid_prefix_returns_200_shape(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "FLINK_OPERATOR_JAR_S3_PREFIX")
+    monkeypatch.setattr(settings, "JAR_ARTIFACT_DIR", str(tmp_path))
+    inv = ja.jar_artifact_inventory(1)
+    assert inv["s3_prefix"] is None
+    assert inv["s3_list_error"] is not None
+    assert "s3://" in inv["s3_list_error"]

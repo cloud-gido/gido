@@ -20,6 +20,29 @@ logger = logging.getLogger(__name__)
 JAR_ARTIFACT_FILENAME = "artifact.jar"
 SQL_ARTIFACT_FILENAME = "artifact.sql"
 
+_UNRESOLVED_PREFIX_MARKERS = frozenset(
+    {
+        "FLINK_OPERATOR_JAR_S3_PREFIX",
+        "GIDO_ARTIFACT_S3_PREFIX",
+        "GIDO_S3_BUCKET",
+        "__FLINK_OPERATOR_JAR_S3_PREFIX__",
+        "__GIDO_ARTIFACT_S3_PREFIX__",
+    }
+)
+
+
+def _looks_like_unresolved_s3_prefix(raw: str) -> bool:
+    s = raw.strip()
+    if not s:
+        return False
+    if s in _UNRESOLVED_PREFIX_MARKERS:
+        return True
+    if s.startswith("__") and s.endswith("__"):
+        return True
+    if "CHANGE_ME" in s.upper():
+        return True
+    return False
+
 
 def _normalize_s3_prefix(raw: Optional[str]) -> Optional[str]:
     prefix = (raw or "").strip().rstrip("/")
@@ -35,19 +58,63 @@ def _platform_artifact_s3_prefix() -> Optional[str]:
         getattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", None),
         getattr(settings, "GIDO_ARTIFACT_S3_PREFIX", None),
     ):
-        try:
-            p = _normalize_s3_prefix(raw)
-        except ValueError:
-            raise
+        p = _try_normalize_s3_prefix(raw)
         if p:
             return p
     return None
 
 
-def artifact_s3_prefix(runtime_ctx: Optional["OperatorRuntimeContext"] = None) -> Optional[str]:
-    """Profile jar_s3_prefix 优先；否则平台 FLINK_OPERATOR_JAR_S3_PREFIX / GIDO_ARTIFACT_S3_PREFIX。"""
+def _try_normalize_s3_prefix(raw: Optional[str]) -> Optional[str]:
+    """无效或未替换占位符返回 None，不抛异常。"""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    if _looks_like_unresolved_s3_prefix(s):
+        logger.warning("忽略未解析的 S3 前缀占位符: %s", s)
+        return None
+    try:
+        return _normalize_s3_prefix(s)
+    except ValueError as ex:
+        logger.warning("忽略无效 S3 前缀: %s", ex)
+        return None
+
+
+def s3_prefix_config_hint(runtime_ctx: Optional["OperatorRuntimeContext"] = None) -> Optional[str]:
+    """前缀未配置或无效时返回面向运维/用户的说明。"""
+    raw: Optional[str] = None
+    source = ""
     if runtime_ctx is not None:
-        prof = _normalize_s3_prefix(getattr(runtime_ctx, "jar_s3_prefix", None))
+        prof_raw = getattr(runtime_ctx, "jar_s3_prefix", None)
+        if prof_raw and str(prof_raw).strip():
+            raw = str(prof_raw).strip()
+            name = getattr(runtime_ctx, "profile_name", None) or getattr(runtime_ctx, "profile_id", None)
+            source = f"Operator 集群「{name}」JAR 制品 S3 前缀" if name else "Operator 集群 JAR 制品 S3 前缀"
+    if raw is None:
+        for key in ("FLINK_OPERATOR_JAR_S3_PREFIX", "GIDO_ARTIFACT_S3_PREFIX"):
+            val = getattr(settings, key, None)
+            if val and str(val).strip():
+                raw = str(val).strip()
+                source = f"平台环境变量 {key}"
+                break
+    if raw is None:
+        return (
+            "未配置 JAR 制品 S3 前缀。请在 ConfigMap gido-backend-config 设置 "
+            "FLINK_OPERATOR_JAR_S3_PREFIX=s3://<bucket>/<prefix>，或在 Operator 集群 Profile 中配置。"
+        )
+    if _looks_like_unresolved_s3_prefix(raw) or not raw.lower().startswith("s3://"):
+        return (
+            f"{source} 无效（当前值: {raw!r}）。须为 s3://<bucket>/<prefix>，"
+            "例如 s3://flink-on-devtest/gido-flink；勿填写环境变量名或未替换的 YAML 占位符。"
+        )
+    return None
+
+
+def artifact_s3_prefix(runtime_ctx: Optional["OperatorRuntimeContext"] = None) -> Optional[str]:
+    """Profile jar_s3_prefix 优先；无效则回退平台 FLINK_OPERATOR_JAR_S3_PREFIX / GIDO_ARTIFACT_S3_PREFIX。"""
+    if runtime_ctx is not None:
+        prof = _try_normalize_s3_prefix(getattr(runtime_ctx, "jar_s3_prefix", None))
         if prof:
             return prof
     return _platform_artifact_s3_prefix()
@@ -267,8 +334,7 @@ def list_s3_job_folder_prefixes(
 
 def artifact_s3_prefix_source(runtime_ctx: Optional["OperatorRuntimeContext"] = None) -> Optional[str]:
     if runtime_ctx is not None and getattr(runtime_ctx, "jar_s3_prefix", None):
-        prof = _normalize_s3_prefix(getattr(runtime_ctx, "jar_s3_prefix", None))
-        if prof:
+        if _try_normalize_s3_prefix(getattr(runtime_ctx, "jar_s3_prefix", None)):
             return "profile"
     if _platform_artifact_s3_prefix():
         return "platform"

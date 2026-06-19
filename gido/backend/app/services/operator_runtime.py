@@ -216,8 +216,8 @@ def resolve_operator_runtime(
             s3_access_key_id=profile.flink_operator_s3_access_key_id,
             s3_secret_access_key=profile.flink_operator_s3_secret_access_key,
             s3_session_token=profile.flink_operator_s3_session_token,
-            s3_region=profile.flink_operator_s3_region,
-            s3_endpoint_url=profile.flink_operator_s3_endpoint_url,
+            s3_region=getattr(profile, "flink_operator_s3_region", None),
+            s3_endpoint_url=getattr(profile, "flink_operator_s3_endpoint_url", None),
             jar_s3_prefix=profile.flink_operator_jar_s3_prefix,
         )
     overrides = _job_runtime_overrides(streaming_properties)

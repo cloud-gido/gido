@@ -2739,7 +2739,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
             else None
         )
         if jar_mode == "flink_operator":
-            if not jar_artifact_exists(job.id, runtime_ctx=jar_runtime_ctx):
+            if not jar_artifact_exists(job.id, runtime_ctx=jar_runtime_ctx, jar_path=job.jar_path):
                 from app.services.artifact_s3 import artifact_s3_enabled
 
                 hint = (
@@ -2753,7 +2753,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                     )
                 )
                 raise HTTPException(status_code=400, detail=f"JAR 制品不存在。{hint}")
-        elif not job.jar_path and not jar_artifact_exists(job.id):
+        elif not job.jar_path and not jar_artifact_exists(job.id, jar_path=job.jar_path):
             raise HTTPException(status_code=400, detail="请先上传 JAR 文件")
         if jar_mode == "session":
             blocked = _jar_session_blocked_reason()
@@ -2870,6 +2870,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                     extra_flink_props=flink_extra or None,
                     deployment_meta=dep_meta,
                     runtime_ctx=op_runtime_ctx,
+                    jar_path=job.jar_path,
                 )
                 job.flink_operator_deployment_name = out.get("deployment_name")
                 job.flink_application_jm_rest = out.get("application_jm_rest")
@@ -3307,25 +3308,42 @@ def get_jar_artifact_inventory(
     job = require_streaming_job(db, current_user, job_id, "viewer", PC.GIDO_STREAM_READ)
     if job.job_type != "JAR":
         raise HTTPException(status_code=400, detail="仅 JAR 作业支持制品库清单")
-    runtime_ctx = resolve_operator_runtime_for_job(db, job)
-    return jar_artifact_inventory(
-        job.id,
-        runtime_ctx=runtime_ctx,
-        include_cluster_jobs=include_cluster_jobs,
-    )
+    try:
+        runtime_ctx = resolve_operator_runtime_for_job(db, job)
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:
+        logger.exception("解析 Operator 运行时失败 job=%s", job_id)
+        msg = str(ex).strip() or ex.__class__.__name__
+        if "flink_operator_s3" in msg or "does not exist" in msg.lower():
+            msg = (
+                f"{msg}。若刚升级 GIDO，请重启 backend 以执行元库迁移，"
+                "或执行：kubectl -n gido exec deploy/gido-backend -- python init_db.py"
+            )
+        raise HTTPException(status_code=500, detail=f"Operator 集群配置解析失败：{msg}") from ex
+    try:
+        return jar_artifact_inventory(
+            job.id,
+            runtime_ctx=runtime_ctx,
+            jar_path=job.jar_path,
+            include_cluster_jobs=include_cluster_jobs,
+        )
+    except Exception as ex:
+        logger.exception("制品库清单失败 job=%s", job_id)
+        raise HTTPException(status_code=500, detail=f"制品库清单失败：{ex}") from ex
 
 
 @router.get("/jobs/{job_id}/artifact.jar")
 def download_jar_artifact(job_id: int, token: str = Query(..., description="与 FLINK_OPERATOR_ARTIFACT_TOKEN 一致")):
     """供 Flink Operator Pod HTTP 拉取 JAR（无 JWT；校验 artifact token）。"""
-    from app.services.jar_artifact import artifact_file_path, artifact_download_token_is_valid
+    from app.services.jar_artifact import artifact_download_token_is_valid, resolve_artifact_file_path
 
     if not artifact_download_token_is_valid(token):
         raise HTTPException(status_code=403, detail="无效 artifact token")
-    path = artifact_file_path(job_id)
+    path = resolve_artifact_file_path(job_id)
     if not path.is_file():
         raise HTTPException(status_code=404, detail="JAR 制品不存在")
-    return FileResponse(path, media_type="application/java-archive", filename="artifact.jar")
+    return FileResponse(path, media_type="application/java-archive", filename=path.name)
 
 
 @router.get("/jobs/{job_id}/artifact.sql")
@@ -3363,7 +3381,7 @@ async def upload_jar(
         if not content:
             raise HTTPException(status_code=400, detail="JAR 文件为空")
         runtime_ctx = resolve_operator_runtime_for_job(db, job)
-        saved = save_jar_bytes(job.id, content, runtime_ctx=runtime_ctx)
+        saved = save_jar_bytes(job.id, content, runtime_ctx=runtime_ctx, original_filename=file.filename)
         jar_name = file.filename
         jar_mode = _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None))
         session_jar_id = None
@@ -3386,6 +3404,7 @@ async def upload_jar(
             "message": "上传成功",
             "jar_id": jar_name,
             "filename": file.filename,
+            "storage_filename": saved.storage_filename,
             "artifact_saved": True,
             "artifact_local_path": str(saved.path),
             "session_uploaded": bool(session_jar_id),

@@ -41,6 +41,18 @@ function formatBytes(n: number | null | undefined): string {
   return `${(n / (1024 * 1024)).toFixed(2)} MB`
 }
 
+function apiErrorDetail(e: any, fallback: string): string {
+  const st = e?.response?.status
+  const detail = e?.response?.data?.detail ?? e?.message
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (Array.isArray(detail)) {
+    return detail.map((x: any) => (x?.msg != null ? String(x.msg) : JSON.stringify(x))).join('；')
+  }
+  if (st === 404) return '接口不存在（404）：请确认 backend 已升级到含 jar-artifacts 的版本并已重启'
+  if (st === 401 || st === 403) return '无权限访问制品库清单'
+  return fallback
+}
+
 const JOB_TYPES = [
   { label: 'Flink SQL', value: 'SQL' },
   { label: 'JAR 作业', value: 'JAR' },
@@ -356,8 +368,7 @@ export default function StreamStudioPage() {
       setJarInventory(data)
     } catch (e: any) {
       setJarInventory(null)
-      const detail = e?.response?.data?.detail
-      message.error(typeof detail === 'string' ? detail : '制品库清单加载失败')
+      message.error(apiErrorDetail(e, '制品库清单加载失败'), 8)
     } finally {
       setJarInventoryLoading(false)
     }
@@ -1144,7 +1155,19 @@ export default function StreamStudioPage() {
                                 <Text type="secondary">加载中…</Text>
                               ) : jarInventory ? (
                                 <>
-                                  <Descriptions size="small" column={1} bordered>
+                                    <Descriptions size="small" column={1} bordered>
+                                    {(jarInventory.original_filename || jarInventory.storage_filename) && (
+                                      <Descriptions.Item label="制品文件名">
+                                        {jarInventory.storage_filename || jarInventory.original_filename}
+                                        {jarInventory.original_filename
+                                          && jarInventory.storage_filename
+                                          && jarInventory.original_filename !== jarInventory.storage_filename && (
+                                            <Text type="secondary" style={{ marginLeft: 8 }}>
+                                              （上传名：{jarInventory.original_filename}）
+                                            </Text>
+                                          )}
+                                      </Descriptions.Item>
+                                    )}
                                     <Descriptions.Item label="S3 前缀">
                                       {jarInventory.s3_prefix || '未配置（仅本地 / HTTP）'}
                                       {jarInventory.s3_prefix_source === 'profile' && (

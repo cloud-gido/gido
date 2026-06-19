@@ -4,6 +4,7 @@
 
 | 场景 | 入口 |
 |------|------|
+| **生产 K8s（外置 PG）** | 本文 §9 · 变量详解：[PRODUCTION-ENV.md](PRODUCTION-ENV.md) |
 | **本机 Kind 开发**（推荐） | 本文 §2 |
 | **局域网 K3s / OrbStack** | 本文 §5 |
 | Docker Compose 单机 | [gido/docs/DEPLOYMENT_SOP.md](../gido/docs/DEPLOYMENT_SOP.md) |
@@ -304,7 +305,10 @@ sudo k3s crictl pull registry.gido.svc.cluster.local:5000/gido-backend:orbstack
 | `kind-load-mirror-images.sh` | 导入 postgres/busybox/GIDO 镜像到 Kind |
 | `lib/kind-image.sh` | Kind 单架构构建与压平 |
 | `lib/k3s-image.sh` | K3s 构建与推送到集群 registry |
-| `gido.yaml` | GIDO 最小栈清单 |
+| `gido.yaml` | GIDO 最小栈清单（含集群内 PG，Kind 开发用） |
+| `gido-production-external-pg.yaml` | 生产栈（外置 PG，无集群内 postgres） |
+| `gido-production.env.example` | 生产 env 模板；详解见 [PRODUCTION-ENV.md](PRODUCTION-ENV.md) |
+| `apply-gido-production.sh` | 渲染并 apply 生产清单 |
 | `upgrade-flink-operator-1.15.sh` | Operator 升级到 1.15.0 |
 | `flink-operator-rbac.yaml` | Operator 跨命名空间 RBAC |
 | `legacy/` | 遗留 Session Flink、DS/Doris 示例（默认不部署，见 `legacy/README.md`） |
@@ -325,6 +329,7 @@ sudo k3s crictl pull registry.gido.svc.cluster.local:5000/gido-backend:orbstack
 | 运维就绪度 blocked：`FLINK_OPERATOR_ARTIFACT_TOKEN` | Secret 缺 key 或 backend Pod 未重启 | 确认 `gido-secrets` 含该 key；`kubectl -n gido rollout restart deployment/gido-backend`；刷新作业详情 |
 | OrbStack ImagePullBackOff | registry HTTP vs K3s HTTPS | `bash k8s/apply-gido-k3s-registry.sh`（含 restart k3s）；或 §5.4 手动 |
 | postgres 数据丢失 | `gido.yaml` 使用 emptyDir | 生产改 PVC |
+| `init_db` permission denied for schema public | PG 15+ 未 GRANT CREATE ON SCHEMA public | 执行 [postgres-external-init-grants.sql](postgres-external-init-grants.sql)，见 [PRODUCTION-ENV.md](PRODUCTION-ENV.md) |
 
 ---
 
@@ -334,3 +339,34 @@ sudo k3s crictl pull registry.gido.svc.cluster.local:5000/gido-backend:orbstack
 - postgres 改为 **PVC**（JAR 已用 `gido-jar-artifacts` PVC）
 - 配置 Ingress 与 TLS，设置 `FLINK_OPERATOR_UI_URL_TEMPLATE`
 - 元数据库说明见根目录 [DEPLOYMENT_GUIDE.md](../DEPLOYMENT_GUIDE.md)
+
+---
+
+## 9. 生产 K8s（外置 PostgreSQL）
+
+**不含集群内 postgres**；元库须为外置 RDS / 云 PG / 自建 PG。
+
+| 文件 | 用途 |
+|------|------|
+| [`gido-production-external-pg.yaml`](gido-production-external-pg.yaml) | 生产清单（backend + frontend + PVC + 外置 PG Secret） |
+| [`gido-production.env.example`](gido-production.env.example) | 渲染变量模板 |
+| [`apply-gido-production.sh`](apply-gido-production.sh) | 读取 env → 渲染占位符 → `kubectl apply` |
+| [**PRODUCTION-ENV.md**](PRODUCTION-ENV.md) | **各 env 变量详解**（镜像 / PG / 密钥 / S3） |
+
+```bash
+cp k8s/gido-production.env.example k8s/gido-production.env
+# 编辑 PG、密钥、S3（见 PRODUCTION-ENV.md）
+bash k8s/apply-gido-production.sh
+kubectl -n gido exec deploy/gido-backend -- python init_db.py
+```
+
+**EKS + RDS：** [`eks/gido-eks-external-pg.yaml`](eks/gido-eks-external-pg.yaml) + [`eks/apply-gido-eks.sh`](eks/apply-gido-eks.sh)，见 [EKS 部署 SOP](../gido/docs/EKS-DEPLOYMENT-SOP.md)。
+
+**与 `gido.yaml`（Kind 开发栈）的区别：**
+
+| 项 | `gido.yaml` | `gido-production-external-pg.yaml` |
+|----|-------------|-------------------------------------|
+| PostgreSQL | 集群内 emptyDir | **外置**，`INFRA_GIDO_DB_*` |
+| S3 制品 | 可选 / 本地 PVC | env 可配 bucket + region + endpoint |
+| 镜像 | 本地 build / Kind 导入 | GHCR CI tag |
+| Operator | 同集群 1.15 | 同，须 Helm 预装 |
