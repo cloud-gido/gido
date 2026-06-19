@@ -78,6 +78,47 @@ const EMPTY_OPERATOR_RES: OperatorResForm = {
   tm_replicas: '',
 }
 
+/** 由上方资源面板 / 集群选择维护，不应出现在「高级 Flink 配置」文本框内 */
+const STREAMING_PROPS_META_KEYS = [
+  'operator_resources',
+  'resource_tier',
+  'operator_runtime_image',
+  'runtime_image',
+  'operator_flink_version',
+  'flink_version',
+  'k8s_application',
+  'sql_source',
+] as const
+
+function flinkPropsJsonForEditor(sp: unknown): string {
+  if (sp == null || String(sp).trim() === '') return '{}'
+  try {
+    const obj = JSON.parse(String(sp))
+    if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return '{}'
+    const copy: Record<string, unknown> = { ...obj }
+    for (const k of STREAMING_PROPS_META_KEYS) {
+      delete copy[k]
+    }
+    if (!Object.keys(copy).length) return '{}'
+    return JSON.stringify(copy, null, 2)
+  } catch {
+    return String(sp)
+  }
+}
+
+function formatJsonConfigError(e: unknown, label: string): string {
+  if (e instanceof SyntaxError) {
+    return (
+      `${label} JSON 语法错误：${e.message}。`
+      + '须为标准 JSON（键与字符串用双引号、无尾随逗号、不要写 -D 前缀或 // 注释）'
+    )
+  }
+  if (e instanceof Error && e.message === 'invalid') {
+    return `${label} 须为 JSON 对象，例如 { "state.backend.type": "rocksdb" }，不能是数组`
+  }
+  return `${label} JSON 格式无效，请检查`
+}
+
 function parseResourceTier(sp: unknown): string {
   if (sp == null || String(sp).trim() === '') return ''
   try {
@@ -118,6 +159,9 @@ function buildStreamingPropertiesJson(
     base = JSON.parse(trimmed)
     if (typeof base !== 'object' || base === null || Array.isArray(base)) {
       throw new Error('invalid')
+    }
+    for (const k of STREAMING_PROPS_META_KEYS) {
+      delete base[k]
     }
   }
   if (includeOperatorRes) {
@@ -408,15 +452,7 @@ export default function StreamStudioPage() {
       setScriptDraft(selected.script_content ?? '')
       setSqlParallelism(selected.parallelism ?? 1)
       const sp = selected.streaming_properties
-      if (sp != null && String(sp).trim() !== '') {
-        try {
-          setStreamingPropsJson(JSON.stringify(JSON.parse(String(sp)), null, 2))
-        } catch {
-          setStreamingPropsJson(String(sp))
-        }
-      } else {
-        setStreamingPropsJson('{}')
-      }
+      setStreamingPropsJson(flinkPropsJsonForEditor(sp))
       setOperatorResForm(parseOperatorResForm(sp))
       setResourceTier(parseResourceTier(sp))
       setOperatorProfileId(selected.flink_operator_profile_id ?? undefined)
@@ -427,15 +463,7 @@ export default function StreamStudioPage() {
   useEffect(() => {
     if (selected?.job_type === 'JAR') {
       const sp = selected.streaming_properties
-      if (sp != null && String(sp).trim() !== '') {
-        try {
-          setJarStreamingPropsJson(JSON.stringify(JSON.parse(String(sp)), null, 2))
-        } catch {
-          setJarStreamingPropsJson(String(sp))
-        }
-      } else {
-        setJarStreamingPropsJson('{}')
-      }
+      setJarStreamingPropsJson(flinkPropsJsonForEditor(sp))
       setOperatorResForm(parseOperatorResForm(sp))
       setResourceTier(parseResourceTier(sp))
       setOperatorProfileId(selected.flink_operator_profile_id ?? undefined)
@@ -489,8 +517,8 @@ export default function StreamStudioPage() {
           buildStreamingPropertiesJson(streamingPropsJson, operatorResForm, includeOperatorRes, resourceTier),
           runtimeImageOverride,
         )
-      } catch {
-        message.error('参数调优 JSON 格式无效，请检查')
+      } catch (e) {
+        message.error(formatJsonConfigError(e, '参数调优'), 8)
         return
       }
     } else if (selected.job_type === 'JAR' && effectiveJarMode === 'flink_operator') {
@@ -499,8 +527,8 @@ export default function StreamStudioPage() {
           buildStreamingPropertiesJson(jarStreamingPropsJson, operatorResForm, true, resourceTier),
           runtimeImageOverride,
         )
-      } catch {
-        message.error('高级配置 JSON 格式无效，请检查')
+      } catch (e) {
+        message.error(formatJsonConfigError(e, '高级 Flink 配置'), 8)
         return
       }
     }
@@ -1067,7 +1095,7 @@ export default function StreamStudioPage() {
                       message="Operator 生产提交"
                       description={(
                         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                          <li>上传 JAR 写入该作业所选 Operator 集群的制品库（S3 前缀在集群配置；未配则 HTTP 拉取）。</li>
+                          <li>上传 JAR 写入 backend 本地制品库（PVC）；Operator 经 HTTP 拉取，须配置 FLINK_OPERATOR_JAR_HTTP_BASE。</li>
                           <li>须填写 <strong>Main Class</strong>；Backend 容器需挂载 kubeconfig。</li>
                           <li>默认 namespace：<code>flink</code>（Kind 集群 <code>kind-gido</code>），Flink 2.2.1 + Operator 1.15。</li>
                         </ul>
@@ -1088,8 +1116,8 @@ export default function StreamStudioPage() {
                         const res: any = await streamingApi.uploadJar(selected.id, file)
                         const name = res?.filename || res?.jar_id || file.name
                         setJarArtifactHint(
-                          `已上传：${name}${res?.s3_synced ? '（已同步 S3）' : ''}${
-                            res?.s3_prefix ? ` · ${res.s3_prefix}` : ''
+                          `已上传：${name}（backend 本地制品库）${
+                            res?.operator_jar_http_base ? '' : ' · 未配置 FLINK_OPERATOR_JAR_HTTP_BASE'
                           }`,
                         )
                         if (res?.warning) {
@@ -1132,7 +1160,7 @@ export default function StreamStudioPage() {
                           key: 'jar-inventory',
                           label: (
                             <Space>
-                              <span>制品库目录（本地 + S3）</span>
+                              <span>制品库（backend 本地）</span>
                               {jarInventory?.artifact_ready && <Tag color="green">制品就绪</Tag>}
                             </Space>
                           ),
@@ -1159,117 +1187,25 @@ export default function StreamStudioPage() {
                                     {(jarInventory.original_filename || jarInventory.storage_filename) && (
                                       <Descriptions.Item label="制品文件名">
                                         {jarInventory.storage_filename || jarInventory.original_filename}
-                                        {jarInventory.original_filename
-                                          && jarInventory.storage_filename
-                                          && jarInventory.original_filename !== jarInventory.storage_filename && (
-                                            <Text type="secondary" style={{ marginLeft: 8 }}>
-                                              （上传名：{jarInventory.original_filename}）
-                                            </Text>
-                                          )}
                                       </Descriptions.Item>
                                     )}
-                                    <Descriptions.Item label="S3 前缀">
-                                      {jarInventory.s3_prefix || '未配置（仅本地 / HTTP）'}
-                                      {jarInventory.s3_prefix_source === 'profile' && (
-                                        <Tag color="blue" style={{ marginLeft: 8 }}>集群配置</Tag>
-                                      )}
-                                      {jarInventory.s3_prefix_source === 'platform' && (
-                                        <Tag style={{ marginLeft: 8 }}>平台默认</Tag>
-                                      )}
-                                    </Descriptions.Item>
-                                    {jarInventory.s3_region && (
-                                      <Descriptions.Item label="S3 区域">
-                                        {jarInventory.s3_region}
-                                        {jarInventory.s3_region_source === 'profile' && (
-                                          <Tag color="blue" style={{ marginLeft: 8 }}>集群配置</Tag>
-                                        )}
-                                        {jarInventory.s3_region_source === 'platform' && (
-                                          <Tag style={{ marginLeft: 8 }}>平台默认</Tag>
-                                        )}
-                                      </Descriptions.Item>
+                                    {jarInventory.jar_artifact_dir && (
+                                      <Descriptions.Item label="制品根目录">{jarInventory.jar_artifact_dir}</Descriptions.Item>
                                     )}
-                                    {jarInventory.s3_endpoint_url && (
-                                      <Descriptions.Item label="S3 Endpoint">
-                                        {jarInventory.s3_endpoint_url}
-                                        {jarInventory.s3_endpoint_source === 'profile' && (
-                                          <Tag color="blue" style={{ marginLeft: 8 }}>集群配置</Tag>
-                                        )}
-                                        {jarInventory.s3_endpoint_source === 'platform' && (
-                                          <Tag style={{ marginLeft: 8 }}>平台默认</Tag>
-                                        )}
-                                      </Descriptions.Item>
-                                    )}
-                                    {jarInventory.job_s3_prefix && (
-                                      <Descriptions.Item label="本作业 S3 目录">{jarInventory.job_s3_prefix}</Descriptions.Item>
-                                    )}
-                                    <Descriptions.Item label="本地 PVC">
+                                    <Descriptions.Item label="本地文件">
                                       {jarInventory.local_artifact?.exists
                                         ? `${jarInventory.local_artifact.path} · ${formatBytes(jarInventory.local_artifact.size_bytes)}`
                                         : '无本地文件'}
                                     </Descriptions.Item>
-                                    {jarInventory.expected_jar_uri && (
-                                      <Descriptions.Item label="期望 S3 URI">{jarInventory.expected_jar_uri}</Descriptions.Item>
+                                    {jarInventory.http_base && (
+                                      <Descriptions.Item label="HTTP 基址">{jarInventory.http_base}</Descriptions.Item>
                                     )}
                                     {jarInventory.operator_jar_uri && (
-                                      <Descriptions.Item label="提交用 URI">{jarInventory.operator_jar_uri}</Descriptions.Item>
+                                      <Descriptions.Item label="提交用 URI（HTTP）">{jarInventory.operator_jar_uri}</Descriptions.Item>
                                     )}
                                   </Descriptions>
-                                  {jarInventory.s3_list_error && (
-                                    <Alert type="warning" showIcon message={`S3 列表失败：${jarInventory.s3_list_error}`} />
-                                  )}
-                                  {jarInventory.s3_prefix && (
-                                    <>
-                                      <div>
-                                        <Text strong>本作业 S3 对象</Text>
-                                        <Table
-                                          size="small"
-                                          style={{ marginTop: 8 }}
-                                          rowKey={(r: any) => r.key || r.uri}
-                                          pagination={false}
-                                          locale={{ emptyText: '目录为空' }}
-                                          dataSource={jarInventory.job_s3_objects || []}
-                                          columns={[
-                                            { title: '对象 Key', dataIndex: 'key', ellipsis: true },
-                                            {
-                                              title: '大小',
-                                              dataIndex: 'size_bytes',
-                                              width: 100,
-                                              render: (v: number) => formatBytes(v),
-                                            },
-                                            {
-                                              title: '更新时间',
-                                              dataIndex: 'last_modified',
-                                              width: 180,
-                                              render: (v: string) => (v ? formatInTimeZone(v, displayTz) : '—'),
-                                            },
-                                          ]}
-                                        />
-                                      </div>
-                                      <div>
-                                        <Text strong>集群制品根目录（job 子目录）</Text>
-                                        <Table
-                                          size="small"
-                                          style={{ marginTop: 8 }}
-                                          rowKey={(r: any) => r.prefix || r.uri}
-                                          pagination={{ pageSize: 10, hideOnSinglePage: true }}
-                                          locale={{ emptyText: '无子目录' }}
-                                          dataSource={jarInventory.cluster_job_folders || []}
-                                          columns={[
-                                            {
-                                              title: 'Job ID',
-                                              dataIndex: 'job_id',
-                                              width: 90,
-                                              render: (v: number | null, row: any) => (
-                                                v != null
-                                                  ? <Text type={v === selected.id ? undefined : 'secondary'}>{v}{v === selected.id ? '（当前）' : ''}</Text>
-                                                  : row.prefix
-                                              ),
-                                            },
-                                            { title: 'S3 URI', dataIndex: 'uri', ellipsis: true },
-                                          ]}
-                                        />
-                                      </div>
-                                    </>
+                                  {jarInventory.operator_jar_uri_error && (
+                                    <Alert type="warning" showIcon message={jarInventory.operator_jar_uri_error} />
                                   )}
                                 </>
                               ) : (
@@ -1338,14 +1274,19 @@ export default function StreamStudioPage() {
                           key: 'advanced',
                           label: '高级 Flink 配置（合并进 flinkConfiguration）',
                           children: (
+                            <>
+                            <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
+                              仅填写 Flink 配置键值（标准 JSON）。JM/TM/Slots 用上方面板；勿粘贴 StreamPark 的 -D 行或 operator_resources 块。
+                            </Paragraph>
                             <Input.TextArea
                               rows={6}
                               value={jarStreamingPropsJson}
                               onChange={e => setJarStreamingPropsJson(e.target.value)}
                               disabled={selected.is_locked}
                               style={{ fontFamily: 'monospace', fontSize: 12 }}
-                              placeholder={'{\n  "execution.checkpointing.interval": "60s"\n}'}
+                              placeholder={'{\n  "state.backend.type": "rocksdb",\n  "execution.checkpointing.interval": "60000"\n}'}
                             />
+                            </>
                           ),
                         },
                       ]}

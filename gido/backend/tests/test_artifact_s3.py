@@ -29,9 +29,9 @@ def test_build_s3_artifact_uri(monkeypatch):
     assert s3.build_s3_artifact_uri(42, "artifact.sql") == "s3://acme-data/gido-artifacts/42/artifact.sql"
 
 
-def test_resolve_jar_uri_prefers_s3_when_object_exists(monkeypatch):
-    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", None)
+def test_resolve_jar_uri_always_http_even_with_profile_s3(monkeypatch):
     monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_HTTP_BASE", "http://backend:8001")
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_ARTIFACT_TOKEN", "tok")
     from app.services.operator_runtime import OperatorRuntimeContext
 
     ctx = OperatorRuntimeContext(
@@ -55,8 +55,8 @@ def test_resolve_jar_uri_prefers_s3_when_object_exists(monkeypatch):
         s3_region=None,
         s3_endpoint_url=None,
     )
-    with patch("app.services.jar_artifact.artifact_exists_in_s3", return_value=True):
-        assert resolve_jar_uri_for_job(7, runtime_ctx=ctx) == "s3://cluster-a-bucket/jars/7/artifact.jar"
+    uri = resolve_jar_uri_for_job(7, runtime_ctx=ctx)
+    assert uri.startswith("http://backend:8001/api/streaming/jobs/7/artifact.jar?token=")
 
 
 def test_artifact_s3_prefix_from_profile_over_platform(monkeypatch):
@@ -94,9 +94,8 @@ def test_resolve_jar_uri_http_when_s3_prefix_but_object_missing(monkeypatch):
     monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://acme/gido-artifacts")
     monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_HTTP_BASE", "http://backend:8001")
     monkeypatch.setattr(settings, "FLINK_OPERATOR_ARTIFACT_TOKEN", "tok")
-    with patch("app.services.jar_artifact.artifact_exists_in_s3", return_value=False):
-        uri = resolve_jar_uri_for_job(7)
-        assert uri.startswith("http://backend:8001/api/streaming/jobs/7/artifact.jar?token=")
+    uri = resolve_jar_uri_for_job(7)
+    assert uri.startswith("http://backend:8001/api/streaming/jobs/7/artifact.jar?token=")
 
 
 def test_resolve_jar_uri_http_fallback(monkeypatch):
@@ -137,43 +136,23 @@ def test_upload_artifact_bytes(mock_client_fn, monkeypatch, tmp_path):
     assert kwargs["Body"] == b"PK\x03\x04"
 
 
-@patch("app.services.artifact_s3._s3_client")
-def test_save_jar_bytes_uploads_to_s3(mock_client_fn, monkeypatch, tmp_path):
+def test_save_jar_bytes_local_only(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://test-bucket/jars")
     monkeypatch.setattr(settings, "JAR_ARTIFACT_DIR", str(tmp_path))
-    mock_s3 = MagicMock()
-    mock_client_fn.return_value = mock_s3
 
     result = ja.save_jar_bytes(5, b"jar-content")
-    assert result.s3_synced
-    assert ja.jar_artifact_exists(5)
-    mock_s3.put_object.assert_called_once()
-
-
-@patch("app.services.artifact_s3._s3_client")
-def test_save_jar_bytes_keeps_local_when_s3_fails(mock_client_fn, monkeypatch, tmp_path):
-    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://test-bucket/jars")
-    monkeypatch.setattr(settings, "JAR_ARTIFACT_DIR", str(tmp_path))
-    mock_s3 = MagicMock()
-    mock_s3.put_object.side_effect = RuntimeError("AccessDenied")
-    mock_client_fn.return_value = mock_s3
-
-    result = ja.save_jar_bytes(6, b"jar-content")
     assert result.path.is_file()
-    assert result.s3_sync_error
-    assert ja.jar_artifact_exists(6)
+    assert ja.jar_artifact_exists(5)
+    assert result.path == tmp_path / "5" / "artifact.jar"
 
 
-@patch("app.services.artifact_s3._s3_client")
-def test_jar_artifact_exists_checks_s3_when_local_missing(mock_client_fn, monkeypatch, tmp_path):
-    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://test-bucket/jars")
+def test_jar_artifact_exists_local_only(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "JAR_ARTIFACT_DIR", str(tmp_path))
-    mock_s3 = MagicMock()
-    mock_client_fn.return_value = mock_s3
-    mock_s3.head_object.return_value = {}
-
+    assert not ja.jar_artifact_exists(11)
+    d = tmp_path / "11"
+    d.mkdir()
+    (d / "artifact.jar").write_bytes(b"x")
     assert ja.jar_artifact_exists(11)
-    mock_s3.head_object.assert_called_once_with(Bucket="test-bucket", Key="jars/11/artifact.jar")
 
 
 @patch("app.services.artifact_s3._s3_client")
@@ -224,33 +203,19 @@ def test_list_s3_job_folder_prefixes(mock_client_fn):
     assert folders[1]["uri"] == "s3://test-bucket/jars/42"
 
 
-@patch("app.services.artifact_s3.list_s3_job_folder_prefixes")
-@patch("app.services.artifact_s3.list_s3_objects_under_key_prefix")
-@patch("app.services.jar_artifact.jar_artifact_exists", return_value=True)
-@patch("app.services.jar_artifact.resolve_jar_uri_for_operator", return_value="s3://b/jars/9/artifact.jar")
-def test_jar_artifact_inventory(mock_resolve, mock_exists, mock_list_objs, mock_list_folders, monkeypatch, tmp_path):
-    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://test-bucket/jars")
+def test_jar_artifact_inventory(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_HTTP_BASE", "http://backend:8001")
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_ARTIFACT_TOKEN", "tok")
     monkeypatch.setattr(settings, "JAR_ARTIFACT_DIR", str(tmp_path))
     (tmp_path / "9").mkdir()
     (tmp_path / "9" / "artifact.jar").write_bytes(b"jar")
 
-    mock_list_objs.return_value = (
-        [{"key": "jars/9/artifact.jar", "uri": "s3://test-bucket/jars/9/artifact.jar", "size_bytes": 3, "last_modified": None}],
-        None,
-    )
-    mock_list_folders.return_value = (
-        [{"prefix": "jars/9/", "job_id": "9", "uri": "s3://test-bucket/jars/9"}],
-        None,
-    )
-
     inv = ja.jar_artifact_inventory(9)
     assert inv["job_id"] == 9
-    assert inv["s3_prefix"] == "s3://test-bucket/jars"
-    assert inv["job_s3_prefix"] == "s3://test-bucket/jars/9/"
-    assert len(inv["job_s3_objects"]) == 1
+    assert inv["storage_mode"] == "local"
     assert inv["local_artifact"]["exists"] is True
     assert inv["artifact_ready"] is True
-    assert inv["operator_jar_uri"] == "s3://b/jars/9/artifact.jar"
+    assert inv["operator_jar_uri"].startswith("http://backend:8001/api/streaming/jobs/9/artifact.jar?token=")
 
 
 def test_artifact_s3_prefix_ignores_unresolved_placeholder(monkeypatch):
@@ -290,23 +255,20 @@ def test_artifact_s3_prefix_profile_invalid_falls_back_to_platform(monkeypatch):
     assert s3.artifact_s3_prefix(ctx) == "s3://platform/jars"
 
 
-def test_save_jar_bytes_preserves_original_filename(mock_client_fn, monkeypatch, tmp_path):
-    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://test-bucket/jars")
+def test_save_jar_bytes_preserves_original_filename(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "JAR_ARTIFACT_DIR", str(tmp_path))
-    mock_client_fn.return_value.put_object.return_value = {}
 
     result = ja.save_jar_bytes(8, b"jar-content", original_filename="my-flink-job-1.0.jar")
     assert result.storage_filename == "my-flink-job-1.0.jar"
     assert (tmp_path / "8" / "my-flink-job-1.0.jar").is_file()
     assert not (tmp_path / "8" / "artifact.jar").exists()
     assert ja.jar_artifact_exists(8, jar_path="my-flink-job-1.0.jar")
-    assert result.s3_uri == "s3://test-bucket/jars/8/my-flink-job-1.0.jar"
 
 
-def test_jar_artifact_inventory_invalid_prefix_returns_200_shape(monkeypatch, tmp_path):
-    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "FLINK_OPERATOR_JAR_S3_PREFIX")
+def test_jar_artifact_inventory_reports_missing_http_base(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_HTTP_BASE", "")
     monkeypatch.setattr(settings, "JAR_ARTIFACT_DIR", str(tmp_path))
     inv = ja.jar_artifact_inventory(1)
-    assert inv["s3_prefix"] is None
-    assert inv["s3_list_error"] is not None
-    assert "s3://" in inv["s3_list_error"]
+    assert inv["storage_mode"] == "local"
+    assert inv["http_base"] is None
+    assert inv["operator_jar_uri_error"] is not None

@@ -483,12 +483,12 @@ export default function OperatorClustersPage() {
             type="info"
             showIcon
             style={{ marginBottom: 12 }}
-            message="各 Operator 集群可配置独立 S3：JAR 制品库前缀、checkpoint 与 AK/SK。选 IRSA 时由 ServiceAccount 绑 IAM Role，无需填写密钥。"
+            message="各 Operator 集群可配置独立 S3：SQL 制品 / checkpoint 与 AK/SK。JAR 仅存 backend 本地并经 HTTP 拉取，不再使用 JAR 制品 S3 前缀。"
           />
           <Form.Item
             name="flink_operator_jar_s3_prefix"
-            label="JAR 制品 S3 前缀"
-            extra="本集群 JAR/SQL 制品目录，如 s3://bucket/cluster-a/jars；留空沿用平台 FLINK_OPERATOR_JAR_S3_PREFIX。"
+            label="SQL 制品 S3 前缀（JAR 不使用）"
+            extra="仅 SQL 制品同步 S3；JAR 上传至 backend 本地 PVC，Operator 经 FLINK_OPERATOR_JAR_HTTP_BASE HTTP 拉取。留空沿用平台 FLINK_OPERATOR_JAR_S3_PREFIX（SQL）。"
           >
             <Input placeholder="s3://your-bucket/cluster-a/jars" />
           </Form.Item>

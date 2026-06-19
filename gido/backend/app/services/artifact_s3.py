@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # @author felixzhu
 # @date 2026-06-10
-"""Flink Operator JAR/SQL 制品 S3 持久化（平台默认 + 各 Operator 集群 Profile 前缀）。"""
+"""Flink Operator JAR/SQL 制品 S3 持久化（SQL 等；JAR 仅存 backend 本地，见 jar_artifact.py）。"""
 from __future__ import annotations
 
 import logging

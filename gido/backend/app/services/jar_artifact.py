@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # @author felixzhu
 # @date 2026-06-10
-"""JAR 制品本地存储 + 可选 S3 持久化（按 Operator 集群 Profile 前缀）；Operator 通过 HTTP 或 s3:// jarURI 拉取。"""
+"""JAR 制品：仅存 backend 本地 PVC；Flink Operator 经 HTTP 拉取（不用 S3 制品库）。"""
 from __future__ import annotations
 
 import logging
@@ -10,22 +10,17 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 from urllib.parse import quote
 
 from app.core.config import settings
-from app.services.artifact_s3 import (
-    JAR_ARTIFACT_FILENAME,
-    artifact_exists_in_s3,
-    artifact_s3_enabled,
-    build_s3_artifact_uri,
-    upload_artifact_bytes,
-)
 
 if TYPE_CHECKING:
     from app.services.operator_runtime import OperatorRuntimeContext
 
 logger = logging.getLogger(__name__)
+
+JAR_ARTIFACT_FILENAME = "artifact.jar"
 
 _SAFE_JAR_BASENAME = re.compile(r"^[A-Za-z0-9._-]+\.jar$", re.IGNORECASE)
 
@@ -34,13 +29,6 @@ _SAFE_JAR_BASENAME = re.compile(r"^[A-Za-z0-9._-]+\.jar$", re.IGNORECASE)
 class JarSaveResult:
     path: Path
     storage_filename: str = JAR_ARTIFACT_FILENAME
-    s3_uri: Optional[str] = None
-    s3_sync_error: Optional[str] = None
-    s3_prefix: Optional[str] = None
-
-    @property
-    def s3_synced(self) -> bool:
-        return self.s3_uri is not None
 
 
 def jar_storage_filename_from_jar_path(jar_path: Optional[str]) -> Optional[str]:
@@ -105,9 +93,8 @@ def save_jar_bytes(
     *,
     original_filename: Optional[str] = None,
 ) -> JarSaveResult:
-    """写入本地制品库；若该 Operator 集群（或平台）配置了 S3 前缀则尝试同步。"""
-    from app.services.artifact_s3 import artifact_s3_prefix
-
+    """写入 backend 本地制品库（JAR_ARTIFACT_DIR / PVC）。"""
+    _ = runtime_ctx
     storage_fn = jar_storage_filename_from_jar_path(original_filename) or JAR_ARTIFACT_FILENAME
     d = artifact_dir_for_job(job_id)
     for old in d.glob("*.jar"):
@@ -118,28 +105,7 @@ def save_jar_bytes(
                 logger.warning("清理旧 JAR 制品失败 job=%s path=%s: %s", job_id, old, ex)
     path = d / storage_fn
     path.write_bytes(content)
-    prefix = artifact_s3_prefix(runtime_ctx)
-    s3_uri: Optional[str] = None
-    s3_err: Optional[str] = None
-    if prefix:
-        try:
-            s3_uri = upload_artifact_bytes(
-                job_id,
-                storage_fn,
-                content,
-                content_type="application/java-archive",
-                runtime_ctx=runtime_ctx,
-            )
-        except Exception as ex:
-            s3_err = str(ex)
-            logger.error("JAR 上传 S3 失败 job=%s prefix=%s: %s", job_id, prefix, ex)
-    return JarSaveResult(
-        path=path,
-        storage_filename=storage_fn,
-        s3_uri=s3_uri,
-        s3_sync_error=s3_err,
-        s3_prefix=prefix,
-    )
+    return JarSaveResult(path=path, storage_filename=storage_fn)
 
 
 def jar_artifact_exists(
@@ -148,18 +114,9 @@ def jar_artifact_exists(
     *,
     jar_path: Optional[str] = None,
 ) -> bool:
+    _ = runtime_ctx
     p = resolve_artifact_file_path(job_id, jar_path=jar_path)
-    if p.is_file() and p.stat().st_size > 0:
-        return True
-    if artifact_s3_enabled(runtime_ctx):
-        storage_fn = resolve_jar_storage_filename(job_id, jar_path=jar_path)
-        if artifact_exists_in_s3(job_id, storage_fn, runtime_ctx=runtime_ctx):
-            return True
-        if storage_fn != JAR_ARTIFACT_FILENAME and artifact_exists_in_s3(
-            job_id, JAR_ARTIFACT_FILENAME, runtime_ctx=runtime_ctx
-        ):
-            return True
-    return False
+    return p.is_file() and p.stat().st_size > 0
 
 
 def resolved_artifact_download_token() -> str:
@@ -188,34 +145,15 @@ def artifact_download_token_is_valid(token: str) -> bool:
 
 
 def build_jar_http_uri_for_operator(job_id: int) -> str:
-    """Flink Operator job.jarURI：集群内 Pod 须能访问该 URL（Docker 默认可解析 host.docker.internal）。"""
+    """Flink Operator job.jarURI：Flink Pod 须能访问该 HTTP URL。"""
     base = (settings.FLINK_OPERATOR_JAR_HTTP_BASE or "").strip().rstrip("/")
     if not base:
         raise RuntimeError(
             "未配置 FLINK_OPERATOR_JAR_HTTP_BASE（Flink 集群拉取 JAR 的 GIDO API 基址，"
-            "Docker 示例：http://host.docker.internal:8001）。"
+            "K8s 示例：http://gido-backend.gido.svc.cluster.local:8001）。"
         )
     token = quote(resolved_artifact_download_token(), safe="")
     return f"{base}/api/streaming/jobs/{int(job_id)}/artifact.jar?token={token}"
-
-
-def build_jar_s3_uri_for_operator(
-    job_id: int,
-    runtime_ctx: Optional["OperatorRuntimeContext"] = None,
-    *,
-    jar_path: Optional[str] = None,
-) -> Optional[str]:
-    storage_fn = resolve_jar_storage_filename(job_id, jar_path=jar_path)
-    return build_s3_artifact_uri(job_id, storage_fn, runtime_ctx=runtime_ctx)
-
-
-def future_s3_uri_hint(
-    job_id: int,
-    runtime_ctx: Optional["OperatorRuntimeContext"] = None,
-    *,
-    jar_path: Optional[str] = None,
-) -> Optional[str]:
-    return build_jar_s3_uri_for_operator(job_id, runtime_ctx=runtime_ctx, jar_path=jar_path)
 
 
 def resolve_jar_uri_for_operator(
@@ -224,15 +162,9 @@ def resolve_jar_uri_for_operator(
     *,
     jar_path: Optional[str] = None,
 ) -> str:
-    """S3 对象已存在时用 s3://；否则 HTTP。"""
-    storage_fn = resolve_jar_storage_filename(job_id, jar_path=jar_path)
-    s3_uri = build_jar_s3_uri_for_operator(job_id, runtime_ctx=runtime_ctx, jar_path=jar_path)
-    if s3_uri:
-        for fn in (storage_fn, JAR_ARTIFACT_FILENAME):
-            if artifact_exists_in_s3(job_id, fn, runtime_ctx=runtime_ctx):
-                uri = build_s3_artifact_uri(job_id, fn, runtime_ctx=runtime_ctx)
-                if uri:
-                    return uri
+    """JAR 制品仅本地存储，Operator 始终经 HTTP 拉取。"""
+    _ = runtime_ctx
+    _ = jar_path
     return build_jar_http_uri_for_operator(job_id)
 
 
@@ -263,53 +195,30 @@ def jar_artifact_inventory(
     jar_path: Optional[str] = None,
     include_cluster_jobs: bool = True,
 ) -> Dict[str, Any]:
-    """本作业制品库清单：本地 PVC + S3 作业目录 +（可选）集群根目录下 job 子目录。"""
-    from app.services.artifact_s3 import (
-        _parse_s3_prefix,
-        artifact_s3_prefix,
-        artifact_s3_prefix_source,
-        artifact_s3_region_source,
-        artifact_s3_endpoint_source,
-        build_s3_artifact_uri,
-        list_s3_job_folder_prefixes,
-        list_s3_objects_under_key_prefix,
-        s3_prefix_config_hint,
-    )
-    from app.services.s3_auth import _resolved_s3_endpoint, _resolved_s3_region
-
+    """本作业 JAR 制品清单（backend 本地 PVC + 提交用 HTTP URI）。"""
+    _ = include_cluster_jobs
     storage_fn = resolve_jar_storage_filename(job_id, jar_path=jar_path)
-    prefix = artifact_s3_prefix(runtime_ctx)
-    prefix_error = s3_prefix_config_hint(runtime_ctx) if not prefix else None
-
     local_path = resolve_artifact_file_path(job_id, jar_path=jar_path)
+    http_base = (settings.FLINK_OPERATOR_JAR_HTTP_BASE or "").strip().rstrip("/") or None
+
     out: Dict[str, Any] = {
         "job_id": int(job_id),
+        "storage_mode": "local",
         "operator_profile_id": getattr(runtime_ctx, "profile_id", None) if runtime_ctx else None,
         "operator_profile_name": getattr(runtime_ctx, "profile_name", None) if runtime_ctx else None,
         "original_filename": jar_storage_filename_from_jar_path(jar_path) or jar_path,
         "storage_filename": storage_fn,
-        "s3_prefix": prefix,
-        "s3_prefix_source": artifact_s3_prefix_source(runtime_ctx) if not prefix_error else None,
-        "s3_region": _resolved_s3_region(runtime_ctx),
-        "s3_region_source": artifact_s3_region_source(runtime_ctx),
-        "s3_endpoint_url": _resolved_s3_endpoint(runtime_ctx),
-        "s3_endpoint_source": artifact_s3_endpoint_source(runtime_ctx),
+        "jar_artifact_dir": str(Path(settings.JAR_ARTIFACT_DIR).expanduser().resolve()),
+        "http_base": http_base,
         "local_artifact": _local_file_info(local_path),
-        "job_s3_prefix": None,
-        "job_s3_objects": [],
-        "cluster_job_folders": [],
-        "s3_list_error": prefix_error,
-        "expected_jar_uri": None,
         "operator_jar_uri": None,
+        "operator_jar_uri_error": None,
         "artifact_ready": False,
     }
-    if prefix and not prefix_error:
-        try:
-            out["expected_jar_uri"] = build_s3_artifact_uri(
-                job_id, storage_fn, runtime_ctx=runtime_ctx
-            )
-        except Exception as ex:
-            out["s3_list_error"] = str(ex)
+    if not http_base:
+        out["operator_jar_uri_error"] = (
+            "未配置 FLINK_OPERATOR_JAR_HTTP_BASE，Flink Operator 无法 HTTP 拉取 JAR。"
+        )
     try:
         out["artifact_ready"] = jar_artifact_exists(job_id, runtime_ctx=runtime_ctx, jar_path=jar_path)
     except Exception as ex:
@@ -319,32 +228,6 @@ def jar_artifact_inventory(
             job_id, runtime_ctx=runtime_ctx, jar_path=jar_path
         )
     except Exception as ex:
-        out["operator_jar_uri"] = None
         out["operator_jar_uri_error"] = str(ex)
-
-    if not prefix or prefix_error:
-        return out
-
-    try:
-        bucket, key_prefix = _parse_s3_prefix(prefix)
-    except ValueError as ex:
-        out["s3_list_error"] = str(ex)
-        return out
-
-    job_key_prefix = "/".join(p for p in (key_prefix, str(int(job_id))) if p)
-    out["job_s3_prefix"] = f"s3://{bucket}/{job_key_prefix}/"
-
-    job_objects, job_err = list_s3_objects_under_key_prefix(
-        bucket, job_key_prefix, runtime_ctx=runtime_ctx
-    )
-    out["job_s3_objects"] = job_objects
-    if job_err:
-        out["s3_list_error"] = job_err
-
-    if include_cluster_jobs:
-        folders, folder_err = list_s3_job_folder_prefixes(bucket, key_prefix, runtime_ctx=runtime_ctx)
-        out["cluster_job_folders"] = folders
-        if folder_err and not out["s3_list_error"]:
-            out["s3_list_error"] = folder_err
 
     return out

@@ -2740,17 +2740,10 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
         )
         if jar_mode == "flink_operator":
             if not jar_artifact_exists(job.id, runtime_ctx=jar_runtime_ctx, jar_path=job.jar_path):
-                from app.services.artifact_s3 import artifact_s3_enabled
-
                 hint = (
-                    "请重新上传 JAR。"
-                    + (
-                        " 已配置 S3 制品前缀时，Operator 从 s3:// 拉取；"
-                        "否则经 HTTP 拉取，backend Pod 重启且未用 PVC 时会丢制品。"
-                        if artifact_s3_enabled(jar_runtime_ctx)
-                        else " Operator 从 backend HTTP 拉取 artifact.jar；"
-                        "若 backend Pod 曾重启且未用 PVC/S3，制品会丢失需重传。"
-                    )
+                    "请重新上传 JAR。Operator 从 backend HTTP 拉取制品；"
+                    "须配置 FLINK_OPERATOR_JAR_HTTP_BASE 且 Flink Pod 能访问 backend；"
+                    "backend 未挂 PVC 时 Pod 重启会丢制品，需重传。"
                 )
                 raise HTTPException(status_code=400, detail=f"JAR 制品不存在。{hint}")
         elif not job.jar_path and not jar_artifact_exists(job.id, jar_path=job.jar_path):
@@ -3393,13 +3386,12 @@ async def upload_jar(
                 logger.warning("Session JM 上传 JAR 失败（制品已保存）: %s", ex)
         job.jar_path = jar_name
         db.commit()
-        s3_warning = None
-        from app.services.artifact_s3 import artifact_s3_enabled
-
-        if saved.s3_sync_error:
-            s3_warning = f"本地制品已保存，但同步 S3 失败：{saved.s3_sync_error}"
-        elif artifact_s3_enabled(runtime_ctx) and not saved.s3_synced:
-            s3_warning = "已配置 S3 制品前缀但未同步到 S3，Operator 将经 HTTP 拉取本地制品。"
+        http_warning = None
+        if not (settings.FLINK_OPERATOR_JAR_HTTP_BASE or "").strip():
+            http_warning = (
+                "JAR 已写入本地制品库，但未配置 FLINK_OPERATOR_JAR_HTTP_BASE，"
+                "Flink Operator 无法拉取制品。"
+            )
         return {
             "message": "上传成功",
             "jar_id": jar_name,
@@ -3407,11 +3399,10 @@ async def upload_jar(
             "storage_filename": saved.storage_filename,
             "artifact_saved": True,
             "artifact_local_path": str(saved.path),
+            "storage_mode": "local",
             "session_uploaded": bool(session_jar_id),
-            "s3_uri": saved.s3_uri,
-            "s3_synced": saved.s3_synced,
-            "s3_prefix": saved.s3_prefix,
-            "warning": s3_warning,
+            "operator_jar_http_base": (settings.FLINK_OPERATOR_JAR_HTTP_BASE or "").strip() or None,
+            "warning": http_warning,
         }
     except HTTPException:
         raise
