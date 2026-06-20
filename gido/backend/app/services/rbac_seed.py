@@ -1453,6 +1453,133 @@ def migrate_dw_workspace_variables(engine: Engine) -> None:
             conn.execute(text("CREATE INDEX idx_wv_workspace ON dw_workspace_variables (workspace_id)"))
 
 
+def migrate_dw_streaming_batch_tasks(engine: Engine) -> None:
+    """批量启停任务表。"""
+    insp = inspect(engine)
+    if insp.has_table("dw_streaming_batch_tasks"):
+        return
+    dialect = engine.dialect.name
+    with engine.begin() as conn:
+        if dialect == "postgresql":
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE dw_streaming_batch_tasks (
+                        id SERIAL PRIMARY KEY,
+                        workspace_id INTEGER NOT NULL REFERENCES dw_workspaces(id),
+                        action VARCHAR(16) NOT NULL,
+                        status VARCHAR(32) NOT NULL DEFAULT 'queued',
+                        total INTEGER NOT NULL DEFAULT 0,
+                        succeeded INTEGER NOT NULL DEFAULT 0,
+                        failed INTEGER NOT NULL DEFAULT 0,
+                        skipped INTEGER NOT NULL DEFAULT 0,
+                        approval_id INTEGER REFERENCES dw_publish_approvals(id),
+                        submit_note TEXT,
+                        require_savepoint BOOLEAN NOT NULL DEFAULT TRUE,
+                        created_by INTEGER NOT NULL REFERENCES dw_users(id),
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        started_at TIMESTAMP,
+                        finished_at TIMESTAMP
+                    )
+                    """
+                )
+            )
+            conn.execute(text("CREATE INDEX idx_sbt_workspace ON dw_streaming_batch_tasks (workspace_id)"))
+            conn.execute(text("CREATE INDEX idx_sbt_status ON dw_streaming_batch_tasks (status)"))
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE dw_streaming_batch_task_items (
+                        id SERIAL PRIMARY KEY,
+                        batch_task_id INTEGER NOT NULL REFERENCES dw_streaming_batch_tasks(id) ON DELETE CASCADE,
+                        job_id INTEGER NOT NULL REFERENCES dw_streaming_jobs(id),
+                        job_name VARCHAR(128),
+                        status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                        error_message TEXT,
+                        result_json TEXT,
+                        started_at TIMESTAMP,
+                        finished_at TIMESTAMP
+                    )
+                    """
+                )
+            )
+            conn.execute(text("CREATE INDEX idx_sbti_batch ON dw_streaming_batch_task_items (batch_task_id)"))
+            conn.execute(text("CREATE INDEX idx_sbti_job ON dw_streaming_batch_task_items (job_id)"))
+        else:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE dw_streaming_batch_tasks (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        workspace_id INTEGER NOT NULL,
+                        action VARCHAR(16) NOT NULL,
+                        status VARCHAR(32) NOT NULL DEFAULT 'queued',
+                        total INTEGER NOT NULL DEFAULT 0,
+                        succeeded INTEGER NOT NULL DEFAULT 0,
+                        failed INTEGER NOT NULL DEFAULT 0,
+                        skipped INTEGER NOT NULL DEFAULT 0,
+                        approval_id INTEGER,
+                        submit_note TEXT,
+                        require_savepoint BOOLEAN NOT NULL DEFAULT 1,
+                        created_by INTEGER NOT NULL,
+                        created_at TIMESTAMP NOT NULL,
+                        started_at TIMESTAMP,
+                        finished_at TIMESTAMP,
+                        FOREIGN KEY (workspace_id) REFERENCES dw_workspaces(id),
+                        FOREIGN KEY (approval_id) REFERENCES dw_publish_approvals(id),
+                        FOREIGN KEY (created_by) REFERENCES dw_users(id)
+                    )
+                    """
+                )
+            )
+            conn.execute(text("CREATE INDEX idx_sbt_workspace ON dw_streaming_batch_tasks (workspace_id)"))
+            conn.execute(text("CREATE INDEX idx_sbt_status ON dw_streaming_batch_tasks (status)"))
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE dw_streaming_batch_task_items (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        batch_task_id INTEGER NOT NULL,
+                        job_id INTEGER NOT NULL,
+                        job_name VARCHAR(128),
+                        status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                        error_message TEXT,
+                        result_json TEXT,
+                        started_at TIMESTAMP,
+                        finished_at TIMESTAMP,
+                        FOREIGN KEY (batch_task_id) REFERENCES dw_streaming_batch_tasks(id) ON DELETE CASCADE,
+                        FOREIGN KEY (job_id) REFERENCES dw_streaming_jobs(id)
+                    )
+                    """
+                )
+            )
+            conn.execute(text("CREATE INDEX idx_sbti_batch ON dw_streaming_batch_task_items (batch_task_id)"))
+            conn.execute(text("CREATE INDEX idx_sbti_job ON dw_streaming_batch_task_items (job_id)"))
+
+
+def migrate_dw_streaming_jobs_jar_nexus(engine: Engine) -> None:
+    """JAR 作业：Nexus 直链 + 物化 sha256（方案 2 S3 统一存储）。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_streaming_jobs"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_streaming_jobs")}
+    stmts: list[str] = []
+    if "jar_nexus_url" not in cols:
+        stmts.append("ALTER TABLE dw_streaming_jobs ADD COLUMN jar_nexus_url VARCHAR(2048) NULL")
+    if "jar_nexus_sha256" not in cols:
+        stmts.append("ALTER TABLE dw_streaming_jobs ADD COLUMN jar_nexus_sha256 VARCHAR(64) NULL")
+    if "jar_nexus_fetched_at" not in cols:
+        if engine.dialect.name == "mysql":
+            stmts.append("ALTER TABLE dw_streaming_jobs ADD COLUMN jar_nexus_fetched_at DATETIME NULL")
+        else:
+            stmts.append("ALTER TABLE dw_streaming_jobs ADD COLUMN jar_nexus_fetched_at TIMESTAMP NULL")
+    if not stmts:
+        return
+    with engine.begin() as conn:
+        for stmt in stmts:
+            conn.execute(text(stmt))
+
+
 def run_rbac_bootstrap(db: Session):
     by_code = seed_permissions(db)
     roles = seed_roles(db, by_code)

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # @author felixzhu
 # @date 2026-06-10
-"""Flink Operator JAR/SQL 制品 S3 持久化（SQL 等；JAR 仅存 backend 本地，见 jar_artifact.py）。"""
+"""Flink Operator JAR/SQL 制品 S3 持久化（Profile 级前缀；JAR 提交时物化，见 jar_artifact.py）。"""
 from __future__ import annotations
 
 import logging
@@ -193,6 +193,36 @@ def upload_artifact_bytes(
     uri = f"s3://{bucket}/{key}"
     logger.info("已上传制品到 S3 job=%s key=%s", job_id, key)
     return uri
+
+
+def presign_s3_artifact_get_url(
+    job_id: int,
+    filename: str,
+    runtime_ctx: Optional["OperatorRuntimeContext"] = None,
+    *,
+    expires_in: Optional[int] = None,
+) -> str:
+    """签发 S3 对象 GET presigned URL（供 Flink 1.17 init curl 拉包）。"""
+    prefix = artifact_s3_prefix(runtime_ctx)
+    if not prefix:
+        raise RuntimeError("未配置 JAR 制品 S3 前缀，无法签发 presigned URL")
+    bucket, _ = _parse_s3_prefix(prefix)
+    key = s3_key_for_artifact(job_id, filename, runtime_ctx=runtime_ctx)
+    if not key:
+        raise RuntimeError("无法解析 S3 artifact key")
+    ttl = int(expires_in or settings.GIDO_ARTIFACT_PRESIGN_TTL_SECONDS or 900)
+    if ttl < 60:
+        ttl = 60
+    client = _s3_client(runtime_ctx)
+    url = client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": key},
+        ExpiresIn=ttl,
+    )
+    if not url:
+        raise RuntimeError("S3 presigned URL 生成为空")
+    logger.info("已签发 S3 presigned URL job=%s key=%s ttl=%ss", job_id, key, ttl)
+    return str(url)
 
 
 def artifact_exists_in_s3(

@@ -192,7 +192,44 @@ kubectl -n gido exec deploy/gido-backend -- python init_db.py
 
 ---
 
-## 五、其他可选
+## 五、Flink Web UI（方案 A：集群内 Backend 反向代理）
+
+**适用：** [`gido-production-external-pg.yaml`](gido-production-external-pg.yaml) 将 `gido-backend` 与 Flink 作业部署在**同一 K8s 集群**。
+
+浏览器 → GIDO Frontend → **gido-backend** → `{deployment_name}-rest.{namespace}.svc.cluster.local:8081`。
+
+### ConfigMap `gido-backend-config` 键（清单默认已写入）
+
+| ConfigMap 键 | 生产推荐值 | 说明 |
+|--------------|------------|------|
+| `FLINK_OPERATOR_UI_PROXY_ENABLED` | **`true`** | 经 GIDO `/api/streaming/jobs/{id}/flink-ui` 打开 UI |
+| `FLINK_OPERATOR_JM_REST_TEMPLATE` | `http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081` | Backend 连 JM REST |
+| `FLINK_OPERATOR_JAR_HTTP_BASE` | `http://backend.gido.svc.cluster.local:8001` | Operator 拉 JAR |
+| `FLINK_OPERATOR_DEV_LOCAL` | `false` | 生产关闭 |
+| `FLINK_OPERATOR_AUTO_UI_TUNNEL` | `false` | 仅 Backend 在集群外时开启 |
+| `FLINK_OPERATOR_UI_URL_TEMPLATE` | （空） | 有 Ingress 时填 `https://{deployment_name}-flink.example.com` |
+| `FLINK_OPERATOR_BROWSER_JM_BASE` | （空） | 可选 |
+| `FLINK_K8S_REST_EXPOSED_TYPE` | `ClusterIP` | 方案 A 无需 LoadBalancer |
+
+### `gido-production.env` 可选覆盖
+
+| env 变量 | 写入 ConfigMap 键 |
+|----------|------------------|
+| `GIDO_FLINK_OPERATOR_UI_URL_TEMPLATE` | `FLINK_OPERATOR_UI_URL_TEMPLATE` |
+| `GIDO_FLINK_OPERATOR_BROWSER_JM_BASE` | `FLINK_OPERATOR_BROWSER_JM_BASE` |
+
+Pod 内环境变量键名为 **`FLINK_OPERATOR_*`**，不是 `GIDO_FLINK_OPERATOR_*`。
+
+### 部署后校验
+
+```bash
+kubectl -n gido exec deploy/gido-backend -- sh -c 'env | grep -E "FLINK_OPERATOR_UI|FLINK_OPERATOR_JM_REST|FLINK_OPERATOR_JAR_HTTP"'
+kubectl -n flink get svc | grep gido-jar
+```
+
+---
+
+## 六、其他可选
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
@@ -219,7 +256,7 @@ kubectl create secret docker-registry ghcr-pull \
 
 ---
 
-## 六、完整生产示例
+## 七、完整生产示例
 
 ```bash
 # --- 镜像 ---
@@ -256,7 +293,7 @@ GIDO_IMAGE_PULL_SECRET=ghcr-pull
 
 ---
 
-## 七、不在本 env 文件中的配置
+## 八、不在本 env 文件中的配置
 
 | 项 | 配置方式 |
 |----|----------|
@@ -269,7 +306,7 @@ GIDO_IMAGE_PULL_SECRET=ghcr-pull
 
 ---
 
-## 八、相关文件
+## 九、相关文件
 
 | 文件 | 用途 |
 |------|------|

@@ -21,14 +21,15 @@ from app.services.rbac import (
 )
 
 
-VALID_RESOURCE_TYPES = frozenset({"workflow", "studio_node", "stream_job", "data_service_api"})
-VALID_ACTIONS = frozenset({"publish_to_ds", "publish_node", "submit_job", "publish_api", "offline_api"})
+VALID_RESOURCE_TYPES = frozenset({"workflow", "studio_node", "stream_job", "stream_job_batch", "data_service_api"})
+VALID_ACTIONS = frozenset({"publish_to_ds", "publish_node", "submit_job", "batch_submit", "publish_api", "offline_api"})
 TERMINAL_STATUSES = frozenset({"approved", "rejected", "cancelled"})
 
 _RESOURCE_ACTIONS: dict[str, frozenset[str]] = {
     "workflow": frozenset({"publish_to_ds"}),
     "studio_node": frozenset({"publish_node"}),
     "stream_job": frozenset({"submit_job"}),
+    "stream_job_batch": frozenset({"batch_submit"}),
     "data_service_api": frozenset({"publish_api", "offline_api"}),
 }
 
@@ -40,6 +41,7 @@ def _perm_for_resource(resource_type: str) -> str:
         "workflow": PC.GIDO_BATCH_WORKFLOW_RUN,
         "studio_node": PC.GIDO_BATCH_STUDIO_RUN,
         "stream_job": PC.GIDO_STREAM_RUN,
+        "stream_job_batch": PC.GIDO_STREAM_RUN,
         "data_service_api": PC.GIDO_SERVICE_RUN,
     }[resource_type]
 
@@ -97,6 +99,17 @@ def _resolve_resource(
         if not job:
             raise HTTPException(status_code=404, detail="实时作业不存在")
         return job.name, job
+    if resource_type == "stream_job_batch":
+        from app.api.streaming import StreamingBatchTask
+
+        task = (
+            db.query(StreamingBatchTask)
+            .filter(StreamingBatchTask.id == resource_id, StreamingBatchTask.workspace_id == workspace_id)
+            .first()
+        )
+        if not task:
+            raise HTTPException(status_code=404, detail="批量任务不存在")
+        return f"批量启动 {task.total} 个实时作业", task
     if resource_type == "data_service_api":
         api = db.query(DataApi).filter(DataApi.id == resource_id, DataApi.workspace_id == workspace_id).first()
         if not api:
@@ -231,6 +244,11 @@ def _execute_approval_action(db: Session, row: PublishApproval, reviewer) -> Dic
         if not job:
             raise HTTPException(status_code=404, detail="实时作业不存在")
         return execute_streaming_job_submit(db, job, reviewer, script_content=None)
+
+    if row.action == "batch_submit":
+        from app.services.streaming_batch import execute_approved_batch_submit
+
+        return execute_approved_batch_submit(db, int(row.resource_id), reviewer)
 
     if row.action == "publish_api":
         from app.services.data_service_publish import execute_data_api_publish

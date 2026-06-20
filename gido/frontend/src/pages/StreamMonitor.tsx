@@ -6,18 +6,46 @@
  */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
-  Table, Button, Space, Tag, message, Popconfirm, Typography, Alert, Drawer, Tooltip,
+  Table, Button, Space, Tag, message, Popconfirm, Typography, Alert, Drawer, Tooltip, Modal, Progress, Input,
 } from 'antd'
-import { ReloadOutlined, DeleteOutlined, LinkOutlined, BugOutlined, StopOutlined } from '@ant-design/icons'
+import { ReloadOutlined, DeleteOutlined, LinkOutlined, BugOutlined, StopOutlined, PlayCircleOutlined } from '@ant-design/icons'
 import { streamingApi } from '../api'
 import { useAppStore } from '../store'
-import { can, P } from '../perm'
+import { can, isWorkspaceAdmin, P } from '../perm'
 import { R } from '../routes'
 import { Link } from 'react-router-dom'
 import { formatInTimeZone } from '../utils/datetime'
 import { openFlinkConsoleUrl } from '../utils/flinkConsole'
 
 const { Paragraph, Text } = Typography
+
+type OperatorSavepoint = {
+  location?: string | null
+  timestamp_ms?: number | null
+  trigger_type?: string | null
+  pending?: boolean
+}
+
+function formatOperatorSavepoint(sp: OperatorSavepoint | null | undefined, displayTz: string) {
+  if (!sp?.location) {
+    if (sp?.pending) return <Tag color="processing">savepoint 进行中</Tag>
+    return <Text type="secondary">—</Text>
+  }
+  const ts = sp.timestamp_ms
+    ? formatInTimeZone(new Date(sp.timestamp_ms), displayTz)
+    : null
+  return (
+    <Tooltip title={`${sp.location}${sp.trigger_type ? ` · ${sp.trigger_type}` : ''}`}>
+      <Paragraph copyable={{ text: sp.location }} style={{ marginBottom: 0, fontSize: 12 }}>
+        {ts || sp.location}
+      </Paragraph>
+    </Tooltip>
+  )
+}
+
+function pickSavepoint(row: any, flinkMap: Record<number, { operator_last_savepoint?: OperatorSavepoint }>) {
+  return flinkMap[row.id]?.operator_last_savepoint ?? row.operator_last_savepoint
+}
 
 function flinkStatusDisplay(fs: string | undefined) {
   if (!fs) return <Text type="secondary">—</Text>
@@ -69,13 +97,25 @@ export default function StreamMonitorPage() {
   const displayTz = currentWorkspace?.timezone || 'Asia/Shanghai'
   const [jobs, setJobs] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
-  const [flinkMap, setFlinkMap] = useState<Record<number, { flink_status?: string; status?: string }>>({})
+  const [flinkMap, setFlinkMap] = useState<Record<number, {
+    flink_status?: string
+    status?: string
+    operator_last_savepoint?: OperatorSavepoint
+  }>>({})
   const [diagOpen, setDiagOpen] = useState(false)
   const [diagRow, setDiagRow] = useState<any | null>(null)
   const [diagExceptions, setDiagExceptions] = useState<any>(null)
   const [diagSync, setDiagSync] = useState<any>(null)
+  const [selectedRowKeys, setSelectedRowKeys] = useState<number[]>([])
+  const [batchDrawerOpen, setBatchDrawerOpen] = useState(false)
+  const [batchTask, setBatchTask] = useState<any | null>(null)
+  const [batchSubmitOpen, setBatchSubmitOpen] = useState(false)
+  const [batchSubmitNote, setBatchSubmitNote] = useState('')
+  const [batchSubmitting, setBatchSubmitting] = useState(false)
 
   const jobsRef = useRef<any[]>([])
+  const canPublishDirect = isWorkspaceAdmin(user, currentWorkspace)
+  const BATCH_MAX = 100
 
   useEffect(() => {
     jobsRef.current = jobs
@@ -150,8 +190,9 @@ export default function StreamMonitorPage() {
 
   const handleStop = async (row: any) => {
     try {
-      await streamingApi.cancelJob(row.id)
-      message.success('已请求停止')
+      const res: any = await streamingApi.cancelJob(row.id, true)
+      const sp = res?.savepoint_location || res?.savepoint?.location
+      message.success(sp ? `已停止（savepoint: ${sp}）` : (res?.message || '已停止'))
       await loadJobs()
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '停止失败')
@@ -166,12 +207,20 @@ export default function StreamMonitorPage() {
       const list = jobsRef.current
       const withFlink = list.filter(jobNeedsFlinkStatusPoll)
       if (withFlink.length === 0) return
-      const nextMap: Record<number, { flink_status?: string; status?: string }> = {}
+      const nextMap: Record<number, {
+        flink_status?: string
+        status?: string
+        operator_last_savepoint?: OperatorSavepoint
+      }> = {}
       await Promise.all(
         withFlink.map(async j => {
           try {
             const s: any = await streamingApi.getStatus(j.id)
-            nextMap[j.id] = { flink_status: s.flink_status, status: s.status }
+            nextMap[j.id] = {
+              flink_status: s.flink_status,
+              status: s.status,
+              operator_last_savepoint: s.operator_last_savepoint,
+            }
           } catch {
             nextMap[j.id] = { flink_status: 'UNKNOWN' }
           }
@@ -188,6 +237,116 @@ export default function StreamMonitorPage() {
       window.clearInterval(t)
     }
   }, [wsId, loadJobs])
+
+  useEffect(() => {
+    if (!batchDrawerOpen || !batchTask?.id) return undefined
+    if (['completed', 'failed', 'cancelled', 'pending_approval'].includes(batchTask.status)) return undefined
+    let alive = true
+    const poll = async () => {
+      try {
+        const t: any = await streamingApi.getBatchTask(batchTask.id)
+        if (!alive) return
+        setBatchTask(t.batch_task ?? t)
+        if (['completed', 'failed'].includes((t.batch_task ?? t).status)) {
+          await loadJobs(false)
+        }
+      } catch { /* ignore */ }
+    }
+    poll()
+    const iv = window.setInterval(poll, 1500)
+    return () => {
+      alive = false
+      window.clearInterval(iv)
+    }
+  }, [batchDrawerOpen, batchTask?.id, batchTask?.status, loadJobs])
+
+  const openBatchProgress = (task: any) => {
+    setBatchTask(task)
+    setBatchDrawerOpen(true)
+  }
+
+  const runBatchCancel = async (ids: number[]) => {
+    if (!wsId) return
+    try {
+      const res: any = await streamingApi.createBatchTask({
+        workspace_id: wsId,
+        action: 'cancel',
+        job_ids: ids,
+        require_savepoint: true,
+      })
+      message.success(res?.message || '批量停止已开始')
+      openBatchProgress(res.batch_task)
+      setSelectedRowKeys([])
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '批量停止失败')
+    }
+  }
+
+  const runBatchStart = async (ids: number[], note?: string) => {
+    if (!wsId) return
+    setBatchSubmitting(true)
+    try {
+      const res: any = await streamingApi.createBatchTask({
+        workspace_id: wsId,
+        action: 'start',
+        job_ids: ids,
+        submit_note: note,
+      })
+      if (res.needs_approval) {
+        message.success('已提交批量启动审批')
+        openBatchProgress(res.batch_task)
+      } else {
+        message.success(res?.message || '批量启动已开始')
+        openBatchProgress(res.batch_task)
+      }
+      setBatchSubmitOpen(false)
+      setBatchSubmitNote('')
+      setSelectedRowKeys([])
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '批量启动失败')
+    } finally {
+      setBatchSubmitting(false)
+    }
+  }
+
+  const handleBatchStartClick = () => {
+    const ids = selectedRowKeys.slice(0, BATCH_MAX)
+    if (ids.length === 0) {
+      message.warning('请先选择作业')
+      return
+    }
+    if (ids.length > BATCH_MAX) {
+      message.error(`单次最多 ${BATCH_MAX} 个作业`)
+      return
+    }
+    const running = jobs.filter(j => ids.includes(j.id) && (j.status || '').toLowerCase() === 'running')
+    if (running.length > 0) {
+      message.error('批量启动不能包含 running 状态作业')
+      return
+    }
+    if (canPublishDirect) {
+      Modal.confirm({
+        title: `批量启动 ${ids.length} 个作业？`,
+        content: '仅提交当前非 running 作业；失败项不会自动重试。',
+        onOk: () => runBatchStart(ids),
+      })
+    } else {
+      setBatchSubmitOpen(true)
+    }
+  }
+
+  const handleBatchStopClick = () => {
+    const ids = selectedRowKeys.slice(0, BATCH_MAX)
+    if (ids.length === 0) {
+      message.warning('请先选择作业')
+      return
+    }
+    Modal.confirm({
+      title: `批量停止 ${ids.length} 个作业？`,
+      content: '仅 cancel（暂停/停 JM），不含下线；须 savepoint 成功；无运行实例的将跳过。',
+      onOk: () => runBatchCancel(ids),
+    })
+  }
 
   const statusColor: Record<string, string> = {
     draft: 'default', running: 'processing', finished: 'success', failed: 'error', cancelled: 'warning',
@@ -223,6 +382,12 @@ export default function StreamMonitorPage() {
       key: 'fs',
       width: 128,
       render: (_: any, row: any) => flinkStatusDisplay(flinkMap[row.id]?.flink_status),
+    },
+    {
+      title: 'Savepoint',
+      key: 'sp',
+      width: 156,
+      render: (_: unknown, row: any) => formatOperatorSavepoint(pickSavepoint(row, flinkMap), displayTz),
     },
     {
       title: '部署标识',
@@ -319,6 +484,7 @@ export default function StreamMonitorPage() {
               return (
                 <Popconfirm
                   title={opJar ? '暂停 FlinkDeployment 并停止作业？' : '在 Flink 上停止该作业？'}
+                  description={opJar ? 'Operator 模式：须 savepoint 成功后才暂停；失败则作业保持运行。' : undefined}
                   onConfirm={() => handleStop(row)}
                 >
                   <Button type="link" size="small" danger icon={<StopOutlined />} />
@@ -384,8 +550,105 @@ export default function StreamMonitorPage() {
       <Space style={{ marginBottom: 16 }} wrap>
         <Button icon={<ReloadOutlined />} onClick={() => loadJobs(true)} loading={loading}>刷新列表</Button>
         <Button type="primary" onClick={syncAll}>全量同步状态</Button>
+        {canRun && (
+          <>
+            <Button
+              type="primary"
+              icon={<PlayCircleOutlined />}
+              disabled={selectedRowKeys.length === 0}
+              onClick={handleBatchStartClick}
+            >
+              批量启动 ({selectedRowKeys.length})
+            </Button>
+            <Button
+              danger
+              icon={<StopOutlined />}
+              disabled={selectedRowKeys.length === 0}
+              onClick={handleBatchStopClick}
+            >
+              批量停止 ({selectedRowKeys.length})
+            </Button>
+          </>
+        )}
+        {selectedRowKeys.length > BATCH_MAX && (
+          <Text type="danger">已选 {selectedRowKeys.length} 个，超出上限 {BATCH_MAX}</Text>
+        )}
       </Space>
-      <Table rowKey="id" loading={loading} dataSource={jobs} columns={columns as any} scroll={{ x: 1520 }} pagination={{ pageSize: 12 }} />
+      <Table
+        rowKey="id"
+        loading={loading}
+        dataSource={jobs}
+        columns={columns as any}
+        scroll={{ x: 1520 }}
+        pagination={{ pageSize: 12 }}
+        rowSelection={canRun ? {
+          selectedRowKeys,
+          onChange: keys => setSelectedRowKeys(keys as number[]),
+        } : undefined}
+      />
+
+      <Modal
+        title="提交批量启动审批"
+        open={batchSubmitOpen}
+        confirmLoading={batchSubmitting}
+        onCancel={() => { setBatchSubmitOpen(false); setBatchSubmitNote('') }}
+        onOk={() => runBatchStart(selectedRowKeys.slice(0, BATCH_MAX), batchSubmitNote)}
+        okText="提交审批"
+      >
+        <Paragraph type="secondary">
+          将提交整批 {Math.min(selectedRowKeys.length, BATCH_MAX)} 个作业的启动审批；通过后系统依次提交，失败项不会自动重试。
+        </Paragraph>
+        <Input.TextArea
+          rows={3}
+          placeholder="审批说明（可选）"
+          value={batchSubmitNote}
+          onChange={e => setBatchSubmitNote(e.target.value)}
+        />
+      </Modal>
+
+      <Drawer
+        title={batchTask ? `批量${batchTask.action === 'start' ? '启动' : '停止'} · #${batchTask.id}` : '批量任务'}
+        width={640}
+        open={batchDrawerOpen}
+        onClose={() => { setBatchDrawerOpen(false); setBatchTask(null) }}
+        destroyOnClose
+      >
+        {batchTask && (
+          <>
+            <Space direction="vertical" style={{ width: '100%' }} size="middle">
+              <div>
+                <Text type="secondary">状态 </Text>
+                <Tag>{batchTask.status}</Tag>
+                <Text type="secondary" style={{ marginLeft: 8 }}>
+                  成功 {batchTask.succeeded} / 失败 {batchTask.failed} / 跳过 {batchTask.skipped} / 共 {batchTask.total}
+                </Text>
+              </div>
+              <Progress
+                percent={batchTask.progress_percent ?? 0}
+                status={batchTask.status === 'failed' ? 'exception' : batchTask.status === 'completed' ? 'success' : 'active'}
+              />
+            </Space>
+            <Table
+              style={{ marginTop: 16 }}
+              size="small"
+              rowKey="id"
+              pagination={false}
+              dataSource={batchTask.items || []}
+              scroll={{ y: 420 }}
+              columns={[
+                { title: '作业', dataIndex: 'job_name', ellipsis: true },
+                { title: '状态', dataIndex: 'status', width: 88, render: (s: string) => <Tag>{s}</Tag> },
+                {
+                  title: '说明',
+                  dataIndex: 'error_message',
+                  ellipsis: true,
+                  render: (t: string, row: any) => t || (row.status === 'succeeded' ? '—' : ''),
+                },
+              ]}
+            />
+          </>
+        )}
+      </Drawer>
 
       <Drawer
         title={diagRow ? `诊断 · ${diagRow.name}` : '诊断'}

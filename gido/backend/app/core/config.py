@@ -122,6 +122,8 @@ class Settings(BaseSettings):
     # savepoint 目录；upgradeMode=savepoint 时 Operator 要求 execution.checkpointing.savepoint-dir
     FLINK_OPERATOR_SAVEPOINT_DIR: Optional[str] = None
     FLINK_OPERATOR_CHECKPOINT_INTERVAL: str = "60s"
+    # Operator 停止：等待 savepoint 完成的最长秒数（require_savepoint 时）
+    FLINK_OPERATOR_STOP_SAVEPOINT_TIMEOUT_SECONDS: float = 300.0
     FLINK_OPERATOR_JM_MEMORY: str = "2048m"
     FLINK_OPERATOR_TM_MEMORY: str = "2048m"
     FLINK_OPERATOR_JM_CPU: float = 1.0
@@ -177,6 +179,17 @@ class Settings(BaseSettings):
     # Flink 1.17 等 Application 模式仅支持 local:// jarURI：init 容器从 HTTP 下载到此目录
     FLINK_OPERATOR_JAR_STAGING_MOUNT: str = "/opt/flink/usrlib/gido-artifacts"
     FLINK_OPERATOR_JAR_STAGING_INIT_IMAGE: str = "curlimages/curl:8.5.0"
+    # JAR 制品：生产 Profile 须配 S3 前缀；为 true 时禁止无 S3 的 HTTP/PVC 回退
+    GIDO_JAR_ARTIFACT_REQUIRE_S3: bool = False
+    # S3 presigned URL（Flink 1.17/1.18 init 拉包）有效期（秒）
+    GIDO_ARTIFACT_PRESIGN_TTL_SECONDS: int = 900
+    # Nexus → S3 物化（方案 2）；默认内网临时开放直链，匿名 GET，勿配 USERNAME/PASSWORD
+    GIDO_NEXUS_USERNAME: Optional[str] = None
+    GIDO_NEXUS_PASSWORD: Optional[str] = None
+    GIDO_NEXUS_ALLOWED_HOSTS: Optional[str] = None  # 建议：nexus.cg.xxx
+    GIDO_NEXUS_MAX_JAR_BYTES: int = 524_288_000
+    GIDO_NEXUS_DOWNLOAD_TIMEOUT_SECONDS: float = 120.0
+    GIDO_NEXUS_ALLOW_INSECURE: bool = False
     # 用户自定义头像（容器内建议挂卷持久化）
     AVATAR_UPLOAD_DIR: str = "/data/user-avatars"
     AVATAR_MAX_BYTES: int = 2 * 1024 * 1024

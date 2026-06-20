@@ -85,7 +85,7 @@ def operator_paimon_warehouse_pod_template() -> Optional[Dict[str, Any]]:
 
 def operator_jar_staging_pod_template(http_jar_url: str) -> Dict[str, Any]:
     """
-    Flink 1.17 Application 模式仅接受 local:// 主 JAR：init 容器从 GIDO HTTP 下载到 emptyDir，
+    Flink 1.17 Application 模式仅接受 local:// 主 JAR：init 容器从 presigned HTTPS（或 GIDO HTTP）下载到 emptyDir，
     JM/TM 以 local:///…/job.jar 启动。
     """
     mount = (settings.FLINK_OPERATOR_JAR_STAGING_MOUNT or "/opt/flink/usrlib/gido-artifacts").strip()

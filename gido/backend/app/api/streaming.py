@@ -43,6 +43,7 @@ from app.services.rbac import (
 )
 from app.services.publish_approval import assert_can_publish_production
 import os
+import hashlib
 import requests
 import logging
 from urllib.parse import urlparse, quote
@@ -439,6 +440,7 @@ def _streaming_job_public_dict(
     username_by_id: Optional[dict] = None,
     runtime_cfg: Optional[FlinkRuntimeConfig] = None,
     profile_name: Optional[str] = None,
+    operator_savepoint: Optional[dict] = None,
 ) -> dict:
     fjid = job.flink_job_id or None
     oid = getattr(job, "owner_id", None) or job.created_by
@@ -570,6 +572,9 @@ def _streaming_job_public_dict(
         "main_class": job.main_class,
         "program_args": job.program_args,
         "jar_path": job.jar_path,
+        "jar_nexus_url": getattr(job, "jar_nexus_url", None),
+        "jar_nexus_sha256": getattr(job, "jar_nexus_sha256", None),
+        "jar_nexus_fetched_at": getattr(job, "jar_nexus_fetched_at", None),
         "created_at": job.created_at,
         "updated_at": job.updated_at,
         "created_by": job.created_by,
@@ -577,6 +582,7 @@ def _streaming_job_public_dict(
         "owner_username": uname,
         "is_locked": bool(getattr(job, "is_locked", False)),
         "flink_operational": _compute_flink_operational(job, runtime_cfg=cfg),
+        "operator_last_savepoint": operator_savepoint,
     }
 
 
@@ -590,6 +596,9 @@ class StreamingJob(Base):
     job_type = Column(String(16), nullable=False)   # SQL / JAR
     script_content = Column(Text)                   # SQL 内容
     jar_path = Column(String(512))                  # JAR 文件路径（容器内）
+    jar_nexus_url = Column(String(2048), nullable=True)
+    jar_nexus_sha256 = Column(String(64), nullable=True)
+    jar_nexus_fetched_at = Column(DateTime, nullable=True)
     main_class = Column(String(256))                # JAR 主类
     program_args = Column(String(512))              # 运行参数
     parallelism = Column(Integer, default=1)
@@ -636,6 +645,44 @@ class StreamingJobHistory(Base):
     flink_jar_submit_mode = Column(String(32), nullable=True)
     saved_at = Column(DateTime, default=datetime.utcnow)
     saved_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+
+
+class StreamingBatchTask(Base):
+    """实时作业批量启停任务（异步执行 + 进度查询）。"""
+    __tablename__ = "dw_streaming_batch_tasks"
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("dw_workspaces.id"), nullable=False, index=True)
+    action = Column(String(16), nullable=False)  # start | cancel
+    status = Column(String(32), default="queued", nullable=False, index=True)
+    total = Column(Integer, default=0, nullable=False)
+    succeeded = Column(Integer, default=0, nullable=False)
+    failed = Column(Integer, default=0, nullable=False)
+    skipped = Column(Integer, default=0, nullable=False)
+    approval_id = Column(Integer, ForeignKey("dw_publish_approvals.id"), nullable=True)
+    submit_note = Column(Text, nullable=True)
+    require_savepoint = Column(Boolean, default=True, nullable=False)
+    created_by = Column(Integer, ForeignKey("dw_users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+
+class StreamingBatchTaskItem(Base):
+    __tablename__ = "dw_streaming_batch_task_items"
+    id = Column(Integer, primary_key=True, index=True)
+    batch_task_id = Column(
+        Integer, ForeignKey("dw_streaming_batch_tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    job_id = Column(Integer, ForeignKey("dw_streaming_jobs.id"), nullable=False, index=True)
+    job_name = Column(String(128), nullable=True)
+    status = Column(String(32), default="pending", nullable=False)
+    error_message = Column(Text, nullable=True)
+    result_json = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+
+STREAMING_BATCH_MAX_JOBS = 100
 
 
 def _append_streaming_job_history_snapshot(db: Session, job: StreamingJob, user_id: int) -> None:
@@ -1440,6 +1487,19 @@ class JobCreate(BaseModel):
     flink_jar_submit_mode: str = "flink_operator"
     flink_session_profile_id: Optional[int] = None
     flink_operator_profile_id: Optional[int] = None
+    jar_nexus_url: Optional[str] = None
+
+    @field_validator("jar_nexus_url")
+    @classmethod
+    def _validate_jar_nexus_url_create(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        s = str(v).strip()
+        if not s:
+            return None
+        from app.services.nexus_artifact import validate_nexus_jar_url
+
+        return validate_nexus_jar_url(s)
 
     @field_validator("flink_sql_submit_mode")
     @classmethod
@@ -1470,6 +1530,19 @@ class JobUpdate(BaseModel):
     flink_jar_submit_mode: Optional[str] = None
     flink_session_profile_id: Optional[int] = None
     flink_operator_profile_id: Optional[int] = None
+    jar_nexus_url: Optional[str] = None
+
+    @field_validator("jar_nexus_url")
+    @classmethod
+    def _validate_jar_nexus_url_update(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        s = str(v).strip()
+        if not s:
+            return None
+        from app.services.nexus_artifact import validate_nexus_jar_url
+
+        return validate_nexus_jar_url(s)
 
     @field_validator("flink_sql_submit_mode")
     @classmethod
@@ -1495,6 +1568,62 @@ class JobUpdate(BaseModel):
 class SubmitJobBody(BaseModel):
     """POST /streaming/jobs/{id}/submit：大段 SQL 请放 body，勿用 query（易超长或被代理截断）。"""
     script_content: Optional[str] = None
+
+
+class CancelJobBody(BaseModel):
+    """POST /streaming/jobs/{id}/cancel：Operator 停止前是否必须 savepoint 成功。"""
+    require_savepoint: bool = True
+
+
+class BatchTaskCreate(BaseModel):
+    workspace_id: int
+    action: str  # start | cancel
+    job_ids: List[int]
+    submit_note: Optional[str] = None
+    require_savepoint: bool = True
+
+
+def _bulk_operator_savepoint_for_jobs(db: Session, jobs: List[StreamingJob]) -> dict:
+    """按 Operator 集群批量读取 CR savepointInfo，返回 job_id -> savepoint 公共字段。"""
+    from collections import defaultdict
+
+    from app.services.flink_operator_submit import (
+        extract_savepoint_info_from_cr,
+        list_flink_deployments,
+        savepoint_info_public,
+    )
+    from app.services.operator_runtime import resolve_operator_runtime_for_job
+
+    groups: dict = defaultdict(list)
+    for job in jobs:
+        dep = _operator_deployment_name_for_job(job)
+        if not dep:
+            continue
+        pid = getattr(job, "flink_operator_profile_id", None)
+        groups[int(pid) if pid is not None else 0].append((job, dep))
+
+    out: dict = {}
+    for _pid, pairs in groups.items():
+        sample_job = pairs[0][0]
+        try:
+            op_ctx = resolve_operator_runtime_for_job(db, sample_job)
+        except ValueError:
+            continue
+        ns = op_ctx.namespace
+        try:
+            crs = list_flink_deployments(namespace=ns, runtime_ctx=op_ctx)
+        except Exception:
+            logger.debug("批量读取 FlinkDeployment savepoint 失败 ns=%s", ns, exc_info=True)
+            continue
+        by_name = {(cr.get("metadata") or {}).get("name"): cr for cr in crs if isinstance(cr, dict)}
+        for job, dep in pairs:
+            cr = by_name.get(dep)
+            if not cr:
+                continue
+            pub = savepoint_info_public(extract_savepoint_info_from_cr(cr))
+            if pub:
+                out[job.id] = pub
+    return out
 
 
 def _jar_session_blocked_reason() -> Optional[str]:
@@ -2491,15 +2620,13 @@ def _ensure_operator_ui_tunnels(jobs: List[StreamingJob]) -> None:
 
 
 def _sync_operator_jobs_from_cluster(db: Session, jobs: List[StreamingJob]) -> None:
-    """Operator JAR 作业：若库内仍为 draft 但集群 CR 已运行，刷新列表时回填状态。"""
+    """Operator 作业：列表刷新时与 FlinkDeployment CR 对齐（含 cancelled 与集群不一致时的自愈）。"""
     from app.services.flink_operator_submit import sync_job_from_flink_deployment
 
     changed = False
     for job in jobs:
         dep = _operator_deployment_name_for_job(job)
         if not dep:
-            continue
-        if job.status == "cancelled":
             continue
         patch = sync_job_from_flink_deployment(
             job.id,
@@ -2554,9 +2681,16 @@ def list_jobs(workspace_id: int, db: Session = Depends(get_db), current_user: Us
         pr = prof_by_id.get(int(x))
         return pr.name if pr and int(pr.workspace_id) == int(jj.workspace_id) else None
 
+    sp_by_job = _bulk_operator_savepoint_for_jobs(db, jobs)
+
     return [
         _streaming_job_public_dict(
-            db, j, username_by_id=umap, runtime_cfg=cfg_by_job[j.id], profile_name=_pname(j)
+            db,
+            j,
+            username_by_id=umap,
+            runtime_cfg=cfg_by_job[j.id],
+            profile_name=_pname(j),
+            operator_savepoint=sp_by_job.get(j.id),
         )
         for j in jobs
     ]
@@ -2619,6 +2753,9 @@ def copy_streaming_job(
         script_content=src.script_content,
         jar_path=None,
         main_class=src.main_class,
+        jar_nexus_url=getattr(src, "jar_nexus_url", None),
+        jar_nexus_sha256=None,
+        jar_nexus_fetched_at=None,
         program_args=src.program_args,
         parallelism=src.parallelism or 1,
         streaming_properties=getattr(src, "streaming_properties", None),
@@ -2651,6 +2788,12 @@ def update_job(job_id: int, job_in: JobUpdate, db: Session = Depends(get_db), cu
         _require_flink_profile_in_workspace(db, job.workspace_id, patch.get("flink_session_profile_id"))
     if "flink_operator_profile_id" in patch:
         _require_flink_operator_profile_in_workspace(db, job.workspace_id, patch.get("flink_operator_profile_id"))
+    if "jar_nexus_url" in patch:
+        new_url = (patch.get("jar_nexus_url") or "").strip()
+        old_url = (getattr(job, "jar_nexus_url", None) or "").strip()
+        if new_url != old_url:
+            job.jar_nexus_sha256 = None
+            job.jar_nexus_fetched_at = None
     watch = {
         "script_content",
         "main_class",
@@ -2661,6 +2804,7 @@ def update_job(job_id: int, job_in: JobUpdate, db: Session = Depends(get_db), cu
         "flink_jar_submit_mode",
         "flink_session_profile_id",
         "flink_operator_profile_id",
+        "jar_nexus_url",
     }
     if watch & set(patch.keys()):
         _append_streaming_job_history_snapshot(db, job, current_user.id)
@@ -2805,7 +2949,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                 ),
             )
     elif job.job_type == "JAR":
-        from app.services.jar_artifact import jar_artifact_exists
+        from app.services.jar_artifact import jar_artifact_source_ready
         from app.services.operator_runtime import resolve_operator_runtime_for_job
 
         jar_mode = _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None))
@@ -2815,14 +2959,13 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
             else None
         )
         if jar_mode == "flink_operator":
-            if not jar_artifact_exists(job.id, runtime_ctx=jar_runtime_ctx, jar_path=job.jar_path):
+            if not jar_artifact_source_ready(job):
                 hint = (
-                    "请重新上传 JAR。Operator 从 backend HTTP 拉取制品；"
-                    "须配置 FLINK_OPERATOR_JAR_HTTP_BASE 且 Flink Pod 能访问 backend；"
-                    "backend 未挂 PVC 时 Pod 重启会丢制品，需重传。"
+                    "请配置 jar_nexus_url（Nexus 内网临时开放 HTTPS 直链，无需账号密码）或上传 JAR。"
+                    "Operator 生产路径：提交时物化到 Operator 集群 JAR 制品 S3 前缀。"
                 )
-                raise HTTPException(status_code=400, detail=f"JAR 制品不存在。{hint}")
-        elif not job.jar_path and not jar_artifact_exists(job.id, jar_path=job.jar_path):
+                raise HTTPException(status_code=400, detail=hint)
+        elif not job.jar_path and not jar_artifact_source_ready(job):
             raise HTTPException(status_code=400, detail="请先上传 JAR 文件")
         if jar_mode == "session":
             blocked = _jar_session_blocked_reason()
@@ -2833,7 +2976,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                 raise HTTPException(status_code=400, detail="Flink Operator 生产提交须填写入口类（Main Class）")
             from app.services.flink_operator_submit import operator_submit_ready
 
-            ok, reason = operator_submit_ready()
+            ok, reason = operator_submit_ready(jar_runtime_ctx)
             if not ok:
                 raise HTTPException(status_code=400, detail=reason)
     else:
@@ -2917,6 +3060,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
             _append_streaming_job_history_snapshot(db, job, current_user.id)
             jar_mode = _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None))
             if jar_mode == "flink_operator":
+                from app.services.jar_artifact import prepare_jar_for_operator_submit
                 from app.services.flink_operator_submit import submit_jar_via_operator
                 from app.services.operator_resources import split_streaming_properties_for_operator
 
@@ -2929,6 +3073,11 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                     sql_version=hist_version,
                     sql_hash=None,
                 )
+                try:
+                    jar_artifacts = prepare_jar_for_operator_submit(job, op_runtime_ctx)
+                    job.jar_nexus_fetched_at = datetime.utcnow()
+                except RuntimeError as ex:
+                    raise HTTPException(status_code=400, detail=str(ex)) from ex
                 out = submit_jar_via_operator(
                     job_id=job.id,
                     workspace_id=int(job.workspace_id or 0),
@@ -2940,6 +3089,8 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                     deployment_meta=dep_meta,
                     runtime_ctx=op_runtime_ctx,
                     jar_path=job.jar_path,
+                    jar_artifacts=jar_artifacts,
+                    job=job,
                 )
                 job.flink_operator_deployment_name = out.get("deployment_name")
                 job.flink_application_jm_rest = out.get("application_jm_rest")
@@ -3054,6 +3205,58 @@ def _clear_job_runtime_fields(job: StreamingJob) -> None:
     job.updated_at = datetime.utcnow()
 
 
+_ACTIVE_FLINK_JOB_STATES = frozenset(
+    {
+        "RUNNING",
+        "INITIALIZING",
+        "CREATED",
+        "RESTARTING",
+        "RECONCILING",
+        "SCHEDULED",
+        "RECONNECTING",
+        "FAILING",
+    }
+)
+_OPERATOR_RUNNING_LIFECYCLES = frozenset({"STABLE", "DEPLOYED", "CREATED", "RUNNING", "STARTING"})
+
+
+def _operator_cr_spec_job_suspended(cr: Optional[dict]) -> Optional[bool]:
+    """从 FlinkDeployment CR 读取 spec.job.state；None 表示无法判断。"""
+    if not cr:
+        return None
+    spec_state = (cr.get("spec", {}).get("job", {}).get("state") or "").strip().lower()
+    if spec_state == "suspended":
+        return True
+    if spec_state in ("running", "initializing"):
+        return False
+    return None
+
+
+def _preserve_platform_cancelled_on_flink_sync(
+    job: StreamingJob,
+    flink_state: str,
+    *,
+    operator_spec_suspended: Optional[bool] = None,
+    session_cancel_grace_seconds: float = 90.0,
+) -> bool:
+    """平台已是 cancelled 且 Flink 仍报活跃态时，是否保留 cancelled（不升回 running）。"""
+    fs = (flink_state or "").upper()
+    if fs in ("CANCELED", "CANCELLED", "CANCELLING", "SUSPENDED"):
+        return True
+    if fs not in _ACTIVE_FLINK_JOB_STATES:
+        return False
+    if operator_spec_suspended is True:
+        return True
+    if operator_spec_suspended is False:
+        return False
+    # Session / 无 Operator CR：停止后 JM 可能短暂仍返回 RUNNING
+    if job.updated_at:
+        age = (datetime.utcnow() - job.updated_at).total_seconds()
+        if age < session_cancel_grace_seconds:
+            return True
+    return False
+
+
 @router.delete("/jobs/{job_id}")
 def delete_job(job_id: int, db: Session = Depends(get_db_flink), current_user: User = Depends(get_current_user)):
     job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_WRITE)
@@ -3093,51 +3296,69 @@ def offline_job(job_id: int, db: Session = Depends(get_db_flink), current_user: 
     return {"message": "已下线（作业定义仍保留，可在作业开发中重新提交）"}
 
 
-@router.post("/jobs/{job_id}/cancel")
-def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: User = Depends(get_current_user)):
-    """停止 Flink 任务"""
-    job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_RUN)
+def execute_streaming_job_cancel(
+    db: Session,
+    job: StreamingJob,
+    *,
+    require_savepoint: bool = True,
+) -> dict:
+    """停止作业（不含权限校验）；失败抛异常。"""
     jm_ov = _jm_base_for_job(db, job)
     dep_name = _operator_deployment_name_for_job(job)
     if dep_name:
-        try:
-            from app.services.flink_operator_submit import suspend_flink_deployment
+        from app.services.flink_operator_submit import suspend_flink_deployment_with_savepoint_guard
 
-            op_ctx = _operator_runtime_ctx_for_job(db, job)
-            suspend_flink_deployment(dep_name, namespace=op_ctx.namespace, runtime_ctx=op_ctx)
-            _release_operator_ui_tunnel(job)
-            if job.job_type == "SQL" and _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None)) == "flink_operator":
-                from app.services.flink_operator_submit import _operator_namespace
-                from app.services.sql_artifact import delete_sql_script_configmap
+        op_ctx = _operator_runtime_ctx_for_job(db, job)
+        stop_out = suspend_flink_deployment_with_savepoint_guard(
+            dep_name,
+            namespace=op_ctx.namespace,
+            runtime_ctx=op_ctx,
+            require_savepoint=require_savepoint,
+        )
+        _release_operator_ui_tunnel(job)
+        if job.job_type == "SQL" and _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None)) == "flink_operator":
+            from app.services.flink_operator_submit import _operator_namespace
+            from app.services.sql_artifact import delete_sql_script_configmap
 
-                delete_sql_script_configmap(
-                    job.id, int(job.workspace_id or 0), _operator_namespace()
-                )
-            job.flink_operator_deployment_name = dep_name
-            job.status = "cancelled"
-            job.updated_at = datetime.utcnow()
-            db.commit()
-            return {"message": "已通过 Flink Operator 暂停作业（FlinkDeployment suspended）"}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"停止失败: {e}")
-    if not job.flink_job_id:
-        if getattr(job, "flink_application_cluster_id", None):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"当前为 K8s Application 且尚未回填 jobId（clusterID={job.flink_application_cluster_id}）。"
-                    " 请在「系统管理 → 集成」配置 JM REST 模板（含 {cluster_id}）或环境变量 FLINK_K8S_APPLICATION_JM_REST_TEMPLATE 后重试，或在 Flink/K8s 控制台停止该集群。"
-                ),
+            delete_sql_script_configmap(
+                job.id, int(job.workspace_id or 0), _operator_namespace()
             )
-        raise HTTPException(status_code=400, detail="任务尚未提交")
-    try:
-        _flink_client_for_job(db, job).cancel_job(job.flink_job_id, jm_base=jm_ov)
+        job.flink_operator_deployment_name = dep_name
         job.status = "cancelled"
         job.updated_at = datetime.utcnow()
         db.commit()
-        return {"message": "已停止"}
+        return {
+            "message": stop_out.get("message") or "已通过 Flink Operator 暂停作业",
+            "savepoint": stop_out.get("savepoint"),
+            "savepoint_location": stop_out.get("savepoint_location"),
+        }
+    if not job.flink_job_id:
+        if getattr(job, "flink_application_cluster_id", None):
+            raise RuntimeError(
+                f"当前为 K8s Application 且尚未回填 jobId（clusterID={job.flink_application_cluster_id}）。"
+                " 请配置 JM REST 模板后重试，或在 Flink/K8s 控制台停止。"
+            )
+        raise RuntimeError("任务尚未提交，无法停止")
+    _flink_client_for_job(db, job).cancel_job(job.flink_job_id, jm_base=jm_ov)
+    job.status = "cancelled"
+    job.updated_at = datetime.utcnow()
+    db.commit()
+    return {"message": "已停止"}
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(
+    job_id: int,
+    body: CancelJobBody = Body(default_factory=CancelJobBody),
+    db: Session = Depends(get_db_flink),
+    current_user: User = Depends(get_current_user),
+):
+    """停止 Flink 任务；Operator 默认 require_savepoint=true，savepoint 失败则不更新平台状态。"""
+    job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_RUN)
+    try:
+        return execute_streaming_job_cancel(db, job, require_savepoint=body.require_savepoint)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"停止失败: {e}")
+        raise HTTPException(status_code=500, detail=f"停止失败: {e}") from e
 
 
 @router.get("/jobs/{job_id}/status")
@@ -3147,23 +3368,31 @@ def get_job_status(job_id: int, db: Session = Depends(get_db_flink), current_use
     rt_cfg = _flink_runtime_cfg_for_job(db, job)
     fc = _flink_client_for_job(db, job)
 
+    dep_name = _operator_deployment_name_for_job(job)
+    op_ctx = _operator_runtime_ctx_for_job(db, job) if dep_name else None
+    operator_cr: Optional[dict] = None
+    operator_spec_suspended: Optional[bool] = None
+    operator_savepoint_pub: Optional[dict] = None
+
     def _payload(**extra):
         out = {"status": job.status, "flink_operational": _compute_flink_operational(job, runtime_cfg=rt_cfg)}
+        if operator_savepoint_pub is not None and "operator_last_savepoint" not in extra:
+            out["operator_last_savepoint"] = operator_savepoint_pub
         out.update(extra)
         return out
 
-    jm_ov = _jm_base_for_job(db, job)
-    if jm_ov and jm_ov != (getattr(job, "flink_application_jm_rest", None) or "").strip().rstrip("/"):
-        job.flink_application_jm_rest = jm_ov
-    dep_name = _operator_deployment_name_for_job(job)
-    op_ctx = _operator_runtime_ctx_for_job(db, job) if dep_name else None
     if dep_name and op_ctx:
         try:
-            from app.services.flink_operator_submit import read_flink_deployment
+            from app.services.flink_operator_submit import (
+                extract_savepoint_info_from_cr,
+                read_flink_deployment,
+                savepoint_info_public,
+            )
 
-            cr = read_flink_deployment(dep_name, namespace=op_ctx.namespace, runtime_ctx=op_ctx)
-            spec_state = (cr.get("spec", {}).get("job", {}).get("state") or "").strip().lower()
-            if spec_state == "suspended":
+            operator_cr = read_flink_deployment(dep_name, namespace=op_ctx.namespace, runtime_ctx=op_ctx)
+            operator_savepoint_pub = savepoint_info_public(extract_savepoint_info_from_cr(operator_cr))
+            operator_spec_suspended = _operator_cr_spec_job_suspended(operator_cr)
+            if operator_spec_suspended is True:
                 if job.status != "cancelled":
                     job.status = "cancelled"
                     job.flink_operator_deployment_name = dep_name
@@ -3176,20 +3405,35 @@ def get_job_status(job_id: int, db: Session = Depends(get_db_flink), current_use
         except Exception:
             logger.debug("读取 FlinkDeployment 状态失败 job_id=%s dep=%s", job.id, dep_name, exc_info=True)
 
+    jm_ov = _jm_base_for_job(db, job)
+    if jm_ov and jm_ov != (getattr(job, "flink_application_jm_rest", None) or "").strip().rstrip("/"):
+        job.flink_application_jm_rest = jm_ov
+
     if dep_name and not job.flink_job_id and op_ctx:
         try:
             from app.services.flink_operator_submit import extract_status_from_cr, read_flink_deployment
 
-            cr = read_flink_deployment(dep_name, namespace=op_ctx.namespace, runtime_ctx=op_ctx)
+            cr = operator_cr or read_flink_deployment(dep_name, namespace=op_ctx.namespace, runtime_ctx=op_ctx)
+            operator_spec_suspended = operator_spec_suspended if operator_spec_suspended is not None else _operator_cr_spec_job_suspended(cr)
             jid, lifecycle, err = extract_status_from_cr(cr)
             if jid:
                 job.flink_job_id = jid
+                if operator_spec_suspended is False and (job.status or "").lower() == "cancelled":
+                    job.status = "running"
+                    job.last_submit_error = None
                 job.updated_at = datetime.utcnow()
                 db.commit()
             else:
                 lifecycle_up = (lifecycle or "").strip().upper()
-                if job.status == "cancelled":
-                    flink_st = "SUSPENDED"
+                if (job.status or "").lower() == "cancelled":
+                    if operator_spec_suspended is False and lifecycle_up in _OPERATOR_RUNNING_LIFECYCLES:
+                        job.status = "running"
+                        job.last_submit_error = None
+                        job.updated_at = datetime.utcnow()
+                        db.commit()
+                        flink_st = lifecycle_up or "STARTING"
+                    else:
+                        flink_st = "SUSPENDED"
                 elif err or lifecycle_up == "FAILED":
                     flink_st = "FAILED"
                 elif lifecycle_up:
@@ -3200,7 +3444,7 @@ def get_job_status(job_id: int, db: Session = Depends(get_db_flink), current_use
                 return _payload(flink_status=flink_st, note=note)
         except Exception as ex:
             logger.debug("Operator CR 状态读取失败 job_id=%s dep=%s", job.id, dep_name, exc_info=True)
-            if job.status == "cancelled":
+            if (job.status or "").lower() == "cancelled" and operator_spec_suspended is not False:
                 return _payload(flink_status="SUSPENDED", note=str(ex))
             return _payload(flink_status="UNKNOWN", note=str(ex))
 
@@ -3243,9 +3487,11 @@ def get_job_status(job_id: int, db: Session = Depends(get_db_flink), current_use
             "CANCELLING": "cancelled",
         }
         new_status = state_map.get(flink_state)
-        # Operator/Session 停止后 JM 可能仍短暂返回 RECONCILING/RUNNING，勿把平台 cancelled 冲回 running
-        if job.status == "cancelled" and new_status == "running":
-            new_status = None
+        if (job.status or "").lower() == "cancelled" and new_status == "running":
+            if _preserve_platform_cancelled_on_flink_sync(
+                job, flink_state, operator_spec_suspended=operator_spec_suspended
+            ):
+                new_status = None
         if new_status:
             job.status = new_status
         job.updated_at = datetime.utcnow()
@@ -3461,12 +3707,16 @@ async def upload_jar(
             except Exception as ex:
                 logger.warning("Session JM 上传 JAR 失败（制品已保存）: %s", ex)
         job.jar_path = jar_name
+        from app.services.artifact_s3 import artifact_s3_enabled, build_s3_artifact_uri
+
+        if artifact_s3_enabled(runtime_ctx):
+            job.jar_nexus_sha256 = hashlib.sha256(content).hexdigest()
         db.commit()
         http_warning = None
-        if not (settings.FLINK_OPERATOR_JAR_HTTP_BASE or "").strip():
+        s3_uri = build_s3_artifact_uri(job.id, saved.storage_filename, runtime_ctx=runtime_ctx) if artifact_s3_enabled(runtime_ctx) else None
+        if not s3_uri and not (settings.FLINK_OPERATOR_JAR_HTTP_BASE or "").strip():
             http_warning = (
-                "JAR 已写入本地制品库，但未配置 FLINK_OPERATOR_JAR_HTTP_BASE，"
-                "Flink Operator 无法拉取制品。"
+                "JAR 已写入本地制品库，但未配置 Operator 集群 S3 前缀或 FLINK_OPERATOR_JAR_HTTP_BASE。"
             )
         return {
             "message": "上传成功",
@@ -3475,7 +3725,8 @@ async def upload_jar(
             "storage_filename": saved.storage_filename,
             "artifact_saved": True,
             "artifact_local_path": str(saved.path),
-            "storage_mode": "local",
+            "storage_mode": "s3" if s3_uri else "local",
+            "s3_uri": s3_uri,
             "session_uploaded": bool(session_jar_id),
             "operator_jar_http_base": (settings.FLINK_OPERATOR_JAR_HTTP_BASE or "").strip() or None,
             "warning": http_warning,
@@ -3489,3 +3740,42 @@ async def upload_jar(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"上传失败: {e}")
+
+
+@router.post("/batch-tasks")
+def create_streaming_batch_task_api(
+    body: BatchTaskCreate,
+    db: Session = Depends(get_db_flink),
+    current_user: User = Depends(get_current_user),
+):
+    """批量启动/停止实时作业；启动时非管理员走整批一张审批单。"""
+    from app.services.streaming_batch import create_streaming_batch_task
+
+    perm = PC.GIDO_STREAM_RUN
+    assert_workspace_data_capability(db, current_user, body.workspace_id, "developer", perm)
+    return create_streaming_batch_task(
+        db,
+        current_user,
+        workspace_id=body.workspace_id,
+        action=body.action,
+        job_ids=body.job_ids,
+        submit_note=body.submit_note,
+        require_savepoint=body.require_savepoint,
+        max_jobs=STREAMING_BATCH_MAX_JOBS,
+    )
+
+
+@router.get("/batch-tasks/{task_id}")
+def get_streaming_batch_task_api(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """查询批量任务进度与逐项结果。"""
+    from app.services.streaming_batch import serialize_batch_task
+
+    task = db.query(StreamingBatchTask).filter(StreamingBatchTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="批量任务不存在")
+    assert_workspace_data_capability(db, current_user, task.workspace_id, "developer", PC.GIDO_STREAM_READ)
+    return serialize_batch_task(db, task, include_items=True)

@@ -279,7 +279,16 @@ export const streamingApi = {
       `/streaming/jobs/${id}/submit`,
       scriptContent !== undefined ? { script_content: scriptContent } : {},
     ),
-  cancelJob: (id: number) => request.post(`/streaming/jobs/${id}/cancel`),
+  cancelJob: (id: number, requireSavepoint = true) =>
+    request.post(`/streaming/jobs/${id}/cancel`, { require_savepoint: requireSavepoint }),
+  createBatchTask: (data: {
+    workspace_id: number
+    action: 'start' | 'cancel'
+    job_ids: number[]
+    submit_note?: string
+    require_savepoint?: boolean
+  }) => request.post('/streaming/batch-tasks', data),
+  getBatchTask: (id: number) => request.get(`/streaming/batch-tasks/${id}`),
   getStatus: (id: number) => request.get(`/streaming/jobs/${id}/status`),
   getExceptions: (id: number) => request.get(`/streaming/jobs/${id}/exceptions`),
   uploadJar: (id: number, file: File) => {

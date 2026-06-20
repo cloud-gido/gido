@@ -93,6 +93,8 @@ async def lifespan(app: FastAPI):
         migrate_dw_flink_operator_profiles_s3_endpoint,
         migrate_dw_flink_operator_profiles_runtime_images,
         migrate_dw_streaming_jobs_flink_operator_profile,
+        migrate_dw_streaming_batch_tasks,
+        migrate_dw_streaming_jobs_jar_nexus,
         migrate_dw_sync_tasks_enhance,
         migrate_dw_data_service,
         migrate_workspace_space_settings,
@@ -133,6 +135,8 @@ async def lifespan(app: FastAPI):
     migrate_dw_flink_operator_profiles_s3_endpoint(engine)
     migrate_dw_flink_operator_profiles_runtime_images(engine)
     migrate_dw_streaming_jobs_flink_operator_profile(engine)
+    migrate_dw_streaming_batch_tasks(engine)
+    migrate_dw_streaming_jobs_jar_nexus(engine)
     migrate_dw_sync_tasks_enhance(engine)
     migrate_dw_data_service(engine)
     migrate_workspace_space_settings(engine)

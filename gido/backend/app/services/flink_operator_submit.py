@@ -77,8 +77,10 @@ def kubernetes_api_available() -> bool:
     return bool(kc and os.path.isfile(kc))
 
 
-def operator_submit_ready() -> Tuple[bool, str]:
-    """Operator 一键提交前置：K8s API + 命名空间 + JAR 拉取基址 + artifact token。"""
+def operator_submit_ready(
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
+) -> Tuple[bool, str]:
+    """Operator 一键提交前置：K8s API + 命名空间 + 制品（S3 或 HTTP）+ S3 认证。"""
     if not kubernetes_api_available():
         return False, (
             "Flink Operator 需要 Kubernetes 访问能力："
@@ -87,16 +89,28 @@ def operator_submit_ready() -> Tuple[bool, str]:
         )
     if not _operator_namespace():
         return False, "请配置 FLINK_OPERATOR_NAMESPACE（或 FLINK_K8S_NAMESPACE）。"
-    if not (settings.FLINK_OPERATOR_ARTIFACT_TOKEN or "").strip():
-        return False, "请配置 FLINK_OPERATOR_ARTIFACT_TOKEN（Operator Pod 拉取 JAR 制品校验）。"
-    ok, s3_msg = validate_s3_auth_for_submit()
+    ok, s3_msg = validate_s3_auth_for_submit(runtime_ctx)
     if not ok:
         return False, s3_msg
+    from app.services.artifact_s3 import artifact_s3_enabled, s3_prefix_config_hint
+
+    if artifact_s3_enabled(runtime_ctx):
+        hint = s3_prefix_config_hint(runtime_ctx)
+        if hint:
+            return False, hint
+        return True, ""
+    if settings.GIDO_JAR_ARTIFACT_REQUIRE_S3:
+        return False, (
+            s3_prefix_config_hint(runtime_ctx)
+            or "生产环境须配置 Operator 集群 JAR 制品 S3 前缀（GIDO_JAR_ARTIFACT_REQUIRE_S3=true）。"
+        )
+    if not (settings.FLINK_OPERATOR_ARTIFACT_TOKEN or "").strip():
+        return False, "请配置 FLINK_OPERATOR_ARTIFACT_TOKEN（HTTP 制品拉取校验）。"
     jar_base = (settings.FLINK_OPERATOR_JAR_HTTP_BASE or "").strip()
     if not jar_base and not (settings.FLINK_OPERATOR_JAR_S3_PREFIX or "").strip():
         return False, (
             "请配置 FLINK_OPERATOR_JAR_HTTP_BASE（集群内如 http://backend.gido.svc.cluster.local:8001）"
-            "或 FLINK_OPERATOR_JAR_S3_PREFIX。"
+            "或 FLINK_OPERATOR_JAR_S3_PREFIX / Operator 集群 JAR 制品 S3 前缀。"
         )
     return True, ""
 
@@ -263,8 +277,9 @@ def build_flink_deployment_body(
         "job": job_spec,
     }
     staging_tpl = None
-    if jar_http_fetch_url and (jar_uri or "").startswith("local://"):
-        staging_tpl = operator_jar_staging_pod_template(jar_http_fetch_url)
+    fetch_url = jar_http_fetch_url
+    if fetch_url and (jar_uri or "").startswith("local://"):
+        staging_tpl = operator_jar_staging_pod_template(fetch_url)
     merged_pod_template = merge_pod_templates(
         operator_runtime_pod_template(),
         operator_image_pull_secrets_pod_template(ctx.image_pull_secrets),
@@ -565,6 +580,257 @@ def suspend_flink_deployment(
         name=deployment_name,
         body=patch,
     )
+
+
+def operator_checkpointing_configured(runtime_ctx: Optional[OperatorRuntimeContext] = None) -> bool:
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
+    return bool((ctx.checkpoint_dir or settings.FLINK_OPERATOR_CHECKPOINT_DIR or "").strip())
+
+
+def extract_savepoint_info_from_cr(cr: Dict[str, Any]) -> Dict[str, Any]:
+    """解析 FlinkDeployment.status.jobStatus.savepointInfo（Operator CR）。"""
+    status = cr.get("status") or {}
+    job_status = status.get("jobStatus") or {}
+    sp_info = job_status.get("savepointInfo") or {}
+    last = sp_info.get("lastSavepoint") or {}
+    loc = (last.get("location") or job_status.get("upgradeSavepointPath") or "").strip() or None
+    ts_raw = last.get("timeStamp") if last.get("timeStamp") is not None else last.get("timestamp")
+    ts_ms: Optional[int] = None
+    if ts_raw is not None:
+        try:
+            ts_ms = int(ts_raw)
+        except (TypeError, ValueError):
+            ts_ms = None
+    trigger_type = last.get("triggerType")
+    trigger_id = sp_info.get("triggerId")
+    trigger_ts_raw = sp_info.get("triggerTimestamp")
+    trigger_ts_ms: Optional[int] = None
+    if trigger_ts_raw is not None:
+        try:
+            trigger_ts_ms = int(trigger_ts_raw)
+        except (TypeError, ValueError):
+            trigger_ts_ms = None
+    return {
+        "location": loc,
+        "timestamp_ms": ts_ms,
+        "trigger_type": str(trigger_type).strip() if trigger_type else None,
+        "pending": bool(trigger_id),
+        "trigger_id": str(trigger_id).strip() if trigger_id else None,
+        "trigger_timestamp_ms": trigger_ts_ms,
+    }
+
+
+def savepoint_info_public(info: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not info or not (info.get("location") or info.get("pending")):
+        return None
+    return {
+        "location": info.get("location"),
+        "timestamp_ms": info.get("timestamp_ms"),
+        "trigger_type": info.get("trigger_type"),
+        "pending": bool(info.get("pending")),
+    }
+
+
+def _savepoint_advanced(baseline: Dict[str, Any], current: Dict[str, Any]) -> bool:
+    cur_loc = (current.get("location") or "").strip()
+    if not cur_loc:
+        return False
+    base_loc = (baseline.get("location") or "").strip()
+    if not base_loc:
+        return True
+    if cur_loc != base_loc:
+        return True
+    base_ts = baseline.get("timestamp_ms") or 0
+    cur_ts = current.get("timestamp_ms") or 0
+    return cur_ts > base_ts
+
+
+def _cr_status_error(cr: Dict[str, Any]) -> Optional[str]:
+    status = cr.get("status") or {}
+    err = status.get("error")
+    if err:
+        return str(err).strip()
+    job_err = (status.get("jobStatus") or {}).get("error")
+    if job_err:
+        return str(job_err).strip()
+    return None
+
+
+def _next_savepoint_trigger_nonce(cr: Dict[str, Any]) -> int:
+    job_spec = (cr.get("spec") or {}).get("job") or {}
+    current = job_spec.get("savepointTriggerNonce")
+    if current is None:
+        return 1
+    try:
+        return int(current) + 1
+    except (TypeError, ValueError):
+        return 1
+
+
+def _patch_flink_deployment_job_spec(
+    deployment_name: str,
+    job_patch: Dict[str, Any],
+    *,
+    namespace: Optional[str] = None,
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
+) -> Dict[str, Any]:
+    api = _custom_objects_api(runtime_ctx)
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
+    ns = namespace or ctx.namespace
+    body = {"spec": {"job": job_patch}}
+    return api.patch_namespaced_custom_object(
+        group=FLINK_DEPLOYMENT_GROUP,
+        version=FLINK_DEPLOYMENT_VERSION,
+        namespace=ns,
+        plural=FLINK_DEPLOYMENT_PLURAL,
+        name=deployment_name,
+        body=body,
+    )
+
+
+def _wait_for_savepoint_after_baseline(
+    deployment_name: str,
+    baseline: Dict[str, Any],
+    *,
+    namespace: Optional[str] = None,
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
+    deadline_seconds: float = 180.0,
+) -> Dict[str, Any]:
+    deadline = time.monotonic() + max(10.0, deadline_seconds)
+    last_err: Optional[str] = None
+    while time.monotonic() < deadline:
+        cr = read_flink_deployment(deployment_name, namespace, runtime_ctx=runtime_ctx)
+        sp = extract_savepoint_info_from_cr(cr)
+        err = _cr_status_error(cr)
+        if err:
+            low = err.lower()
+            if "savepoint" in low or "checkpoint" in low:
+                raise RuntimeError(f"Savepoint 失败: {err}")
+            last_err = err
+        if _savepoint_advanced(baseline, sp) and sp.get("location") and not sp.get("pending"):
+            return sp
+        if _savepoint_advanced(baseline, sp) and sp.get("location"):
+            return sp
+        time.sleep(2.0)
+    hint = f"最近错误: {last_err}" if last_err else "请检查 FlinkDeployment 事件与 savepoint 目录权限"
+    raise RuntimeError(f"等待 savepoint 完成超时（{int(deadline_seconds)}s）。{hint}")
+
+
+def _wait_for_suspend_with_savepoint(
+    deployment_name: str,
+    baseline: Dict[str, Any],
+    *,
+    namespace: Optional[str] = None,
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
+    deadline_seconds: float = 180.0,
+) -> Dict[str, Any]:
+    deadline = time.monotonic() + max(10.0, deadline_seconds)
+    last_err: Optional[str] = None
+    while time.monotonic() < deadline:
+        cr = read_flink_deployment(deployment_name, namespace, runtime_ctx=runtime_ctx)
+        spec_state = (((cr.get("spec") or {}).get("job") or {}).get("state") or "").strip().lower()
+        sp = extract_savepoint_info_from_cr(cr)
+        err = _cr_status_error(cr)
+        if err:
+            low = err.lower()
+            if "savepoint" in low or "checkpoint" in low:
+                raise RuntimeError(f"停止时 savepoint 失败: {err}")
+            last_err = err
+        if spec_state == "suspended" and sp.get("location") and _savepoint_advanced(baseline, sp):
+            return sp
+        if spec_state == "suspended" and sp.get("location") and not (baseline.get("location") or "").strip():
+            return sp
+        time.sleep(2.0)
+    hint = f"最近错误: {last_err}" if last_err else "请确认 upgradeMode=savepoint 且作业处于 RUNNING"
+    raise RuntimeError(f"停止超时：未在限定时间内 suspended 且完成 savepoint。{hint}")
+
+
+def _wait_for_spec_suspended(
+    deployment_name: str,
+    *,
+    namespace: Optional[str] = None,
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
+    deadline_seconds: float = 120.0,
+) -> None:
+    deadline = time.monotonic() + max(10.0, deadline_seconds)
+    while time.monotonic() < deadline:
+        cr = read_flink_deployment(deployment_name, namespace, runtime_ctx=runtime_ctx)
+        spec_state = (((cr.get("spec") or {}).get("job") or {}).get("state") or "").strip().lower()
+        if spec_state == "suspended":
+            return
+        time.sleep(2.0)
+    raise RuntimeError(f"等待 FlinkDeployment suspended 超时（{int(deadline_seconds)}s）")
+
+
+def suspend_flink_deployment_with_savepoint_guard(
+    deployment_name: str,
+    *,
+    namespace: Optional[str] = None,
+    runtime_ctx: Optional[OperatorRuntimeContext] = None,
+    require_savepoint: bool = True,
+    deadline_seconds: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    暂停 FlinkDeployment；require_savepoint 时须 savepoint 成功后才视为停止成功，否则抛错（平台不标 cancelled）。
+    upgradeMode=savepoint：Operator suspend 时自动打 savepoint；
+    其它模式：先 savepointTriggerNonce 触发 savepoint，再 suspend。
+    """
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
+    ns = namespace or ctx.namespace
+    timeout = float(
+        deadline_seconds
+        if deadline_seconds is not None
+        else getattr(settings, "FLINK_OPERATOR_STOP_SAVEPOINT_TIMEOUT_SECONDS", 300.0)
+    )
+    cr = read_flink_deployment(deployment_name, ns, runtime_ctx=ctx)
+    spec_job = (cr.get("spec") or {}).get("job") or {}
+    upgrade_mode = (spec_job.get("upgradeMode") or "stateless").strip().lower()
+    spec_state = (spec_job.get("state") or "").strip().lower()
+    baseline_sp = extract_savepoint_info_from_cr(cr)
+
+    if spec_state == "suspended":
+        sp = savepoint_info_public(baseline_sp) or baseline_sp
+        return {"message": "FlinkDeployment 已处于 suspended", "savepoint": sp}
+
+    if require_savepoint and not operator_checkpointing_configured(ctx):
+        raise RuntimeError(
+            "停止前要求 savepoint 成功，但未配置 checkpoint/savepoint 目录。"
+            "请在 Operator 集群 Profile 或环境变量 FLINK_OPERATOR_CHECKPOINT_DIR 中配置后重试，"
+            "或将 require_savepoint=false（不推荐生产有状态作业）。"
+        )
+
+    pre_trigger_sp = baseline_sp
+    half = max(30.0, timeout * 0.45)
+
+    if require_savepoint and upgrade_mode != "savepoint":
+        nonce = _next_savepoint_trigger_nonce(cr)
+        _patch_flink_deployment_job_spec(
+            deployment_name, {"savepointTriggerNonce": nonce}, namespace=ns, runtime_ctx=ctx
+        )
+        pre_trigger_sp = _wait_for_savepoint_after_baseline(
+            deployment_name, baseline_sp, namespace=ns, runtime_ctx=ctx, deadline_seconds=half
+        )
+
+    suspend_flink_deployment(deployment_name, namespace=ns, runtime_ctx=ctx)
+
+    if require_savepoint and upgrade_mode == "savepoint":
+        final_sp = _wait_for_suspend_with_savepoint(
+            deployment_name, baseline_sp, namespace=ns, runtime_ctx=ctx, deadline_seconds=timeout - half
+        )
+    elif require_savepoint:
+        _wait_for_spec_suspended(deployment_name, namespace=ns, runtime_ctx=ctx, deadline_seconds=half)
+        final_sp = pre_trigger_sp
+    else:
+        _wait_for_spec_suspended(deployment_name, namespace=ns, runtime_ctx=ctx, deadline_seconds=half)
+        final_sp = extract_savepoint_info_from_cr(read_flink_deployment(deployment_name, ns, runtime_ctx=ctx))
+
+    pub = savepoint_info_public(final_sp) or final_sp
+    loc = pub.get("location") or final_sp.get("location")
+    return {
+        "message": "已通过 Flink Operator 暂停作业（savepoint 已完成）" if require_savepoint else "已通过 Flink Operator 暂停作业",
+        "savepoint": pub,
+        "savepoint_location": loc,
+    }
 
 
 def delete_flink_deployment(
@@ -961,6 +1227,8 @@ def submit_jar_via_operator(
     deployment_meta: Optional[GidoDeploymentMeta] = None,
     runtime_ctx: Optional[OperatorRuntimeContext] = None,
     jar_path: Optional[str] = None,
+    jar_artifacts: Optional[Any] = None,
+    job: Optional[Any] = None,
 ) -> Dict[str, Any]:
     if not (entry_class or "").strip():
         raise RuntimeError("Flink Operator 提交 JAR 须填写入口类（Main Class）。")
@@ -968,7 +1236,16 @@ def submit_jar_via_operator(
     ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
     deployment_name = deployment_name_for_job(job_id, workspace_id)
     namespace = ctx.namespace
-    jar_artifacts = resolve_jar_submit_artifacts(job_id, runtime_ctx=ctx, jar_path=jar_path)
+    if jar_artifacts is None:
+        if job is None:
+            raise RuntimeError("submit_jar_via_operator 须传入 job 或预解析的 jar_artifacts")
+        from app.services.jar_artifact import prepare_jar_for_operator_submit
+
+        jar_artifacts = prepare_jar_for_operator_submit(job, ctx)
+    jar_uri = jar_artifacts.jar_uri
+    fetch_url = jar_artifacts.staging_fetch_url or (
+        jar_artifacts.http_download_uri if jar_artifacts.uses_local_staging else None
+    )
     meta = deployment_meta or GidoDeploymentMeta(
         workspace_id=int(workspace_id),
         job_id=int(job_id),
@@ -977,7 +1254,7 @@ def submit_jar_via_operator(
     body = build_flink_deployment_body(
         deployment_name=deployment_name,
         namespace=namespace,
-        jar_uri=jar_artifacts.jar_uri,
+        jar_uri=jar_uri,
         entry_class=entry_class.strip(),
         parallelism=parallelism,
         program_args=program_args,
@@ -985,18 +1262,19 @@ def submit_jar_via_operator(
         extra_flink_props=extra_flink_props,
         deployment_meta=meta,
         runtime_ctx=ctx,
-        jar_http_fetch_url=(
-            jar_artifacts.http_download_uri if jar_artifacts.uses_local_staging else None
-        ),
+        jar_http_fetch_url=fetch_url,
     )
     apply_flink_deployment(body, runtime_ctx=ctx)
-    return _submit_flink_deployment_and_wait(
+    out = _submit_flink_deployment_and_wait(
         job_id=job_id,
         deployment_name=deployment_name,
         namespace=namespace,
-        artifact_uri=jar_artifacts.jar_uri,
+        artifact_uri=jar_uri,
         runtime_ctx=ctx,
     )
+    out["jar_delivery_mode"] = getattr(jar_artifacts, "delivery_mode", None)
+    out["jar_s3_uri"] = getattr(jar_artifacts, "s3_uri", None)
+    return out
 
 
 def submit_sql_via_operator(

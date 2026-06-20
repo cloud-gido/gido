@@ -221,3 +221,36 @@ def test_build_flink_deployment_static_s3_credentials(monkeypatch):
     ok, _ = s3_auth.validate_s3_auth_for_submit(ctx)
     assert ok
 
+
+def test_extract_savepoint_info_from_cr():
+    from app.services.flink_operator_submit import extract_savepoint_info_from_cr, savepoint_info_public
+
+    cr = {
+        "status": {
+            "jobStatus": {
+                "savepointInfo": {
+                    "lastSavepoint": {
+                        "location": "s3://bucket/flink-savepoints/sp-1",
+                        "timeStamp": 1733957991559,
+                        "triggerType": "MANUAL",
+                    },
+                    "triggerId": None,
+                }
+            }
+        }
+    }
+    info = extract_savepoint_info_from_cr(cr)
+    assert info["location"] == "s3://bucket/flink-savepoints/sp-1"
+    assert info["timestamp_ms"] == 1733957991559
+    pub = savepoint_info_public(info)
+    assert pub["location"].endswith("sp-1")
+    assert pub["pending"] is False
+
+
+def test_savepoint_advanced_detects_new_location():
+    from app.services.flink_operator_submit import _savepoint_advanced
+
+    baseline = {"location": "s3://b/old", "timestamp_ms": 1000}
+    assert _savepoint_advanced(baseline, {"location": "s3://b/new", "timestamp_ms": 1001})
+    assert not _savepoint_advanced(baseline, {"location": "s3://b/old", "timestamp_ms": 1000})
+

@@ -347,7 +347,7 @@ export default function StreamStudioPage() {
   const [submitting, setSubmitting] = useState(false)
   const editorRef = useRef<any>(null)
   const [editorAppearance, setEditorAppearance] = useState<EditorAppearance>(() => loadEditorAppearance())
-  const [jarForm, setJarForm] = useState({ main_class: '', program_args: '', parallelism: 1 })
+  const [jarForm, setJarForm] = useState({ main_class: '', program_args: '', parallelism: 1, jar_nexus_url: '' })
   const [sqlParallelism, setSqlParallelism] = useState(1)
   /** Flink SQL Gateway Open Session 合并用 JSON（对标阿里云实时计算「参数调优」的轻量版） */
   const [streamingPropsJson, setStreamingPropsJson] = useState('{}')
@@ -559,6 +559,7 @@ export default function StreamStudioPage() {
     await streamingApi.updateJob(selected.id, {
       script_content: selected.job_type === 'SQL' ? scriptDraft : undefined,
       main_class: selected.job_type === 'JAR' ? (jarForm.main_class || undefined) : undefined,
+      jar_nexus_url: selected.job_type === 'JAR' ? (jarForm.jar_nexus_url?.trim() || null) : undefined,
       program_args: selected.job_type === 'JAR' ? (jarForm.program_args || undefined) : undefined,
       parallelism: selected.job_type === 'JAR' ? jarForm.parallelism : sqlParallelism,
       flink_operator_profile_id: operatorProfileId ?? null,
@@ -575,10 +576,12 @@ export default function StreamStudioPage() {
         main_class: selected.main_class ?? '',
         program_args: selected.program_args ?? '',
         parallelism: selected.parallelism ?? 1,
+        jar_nexus_url: selected.jar_nexus_url ?? '',
       })
-      setJarArtifactHint(selected.jar_path ? `已上传：${selected.jar_path}` : null)
+      const nexusHint = selected.jar_nexus_url ? `Nexus：${selected.jar_nexus_url}` : null
+      setJarArtifactHint(nexusHint || (selected.jar_path ? `已上传：${selected.jar_path}` : null))
     }
-  }, [selected?.id, selected?.job_type, selected?.main_class, selected?.program_args, selected?.parallelism, selected?.jar_path])
+  }, [selected?.id, selected?.job_type, selected?.main_class, selected?.program_args, selected?.parallelism, selected?.jar_path, selected?.jar_nexus_url])
 
   const handleSubmit = async () => {
     if (!selected) return
@@ -654,8 +657,9 @@ export default function StreamStudioPage() {
   const handleCancelJob = async () => {
     if (!selected) return
     try {
-      const res: any = await streamingApi.cancelJob(selected.id)
-      message.success(res?.message || '已停止')
+      const res: any = await streamingApi.cancelJob(selected.id, true)
+      const sp = res?.savepoint_location || res?.savepoint?.location
+      message.success(sp ? `已停止（savepoint: ${sp}）` : (res?.message || '已停止'))
       await load()
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '停止失败')
@@ -812,7 +816,11 @@ export default function StreamStudioPage() {
                   >
                     {isJobPendingApproval ? '审批中' : canPublishDirect ? '提交运行' : '提交审批'}
                   </Button>
-                  <Popconfirm title="停止该作业？Operator 模式将暂停 FlinkDeployment" onConfirm={handleCancelJob}>
+                  <Popconfirm
+                    title="停止该作业？"
+                    description="Operator 模式须 savepoint 成功后才暂停；失败则作业保持运行。请确认已配置 checkpoint/savepoint 目录。"
+                    onConfirm={handleCancelJob}
+                  >
                     <Button danger icon={<StopOutlined />}>停止</Button>
                   </Popconfirm>
                   <Button icon={<ReloadOutlined />} onClick={async () => {
@@ -878,6 +886,28 @@ export default function StreamStudioPage() {
                 <Descriptions.Item label="clusterID">{selected.flink_application_cluster_id || '—'}</Descriptions.Item>
                 <Descriptions.Item label="Flink Job ID">{selected.flink_job_id || '—'}</Descriptions.Item>
                 <Descriptions.Item label="Operator CR">{selected.flink_operator_deployment_name || '—'}</Descriptions.Item>
+                <Descriptions.Item label="最近 Savepoint" span={2}>
+                  {selected.operator_last_savepoint?.location ? (
+                    <>
+                      <div style={{ fontSize: 12, marginBottom: 4 }}>
+                        {selected.operator_last_savepoint.timestamp_ms
+                          ? formatInTimeZone(new Date(selected.operator_last_savepoint.timestamp_ms), displayTz)
+                          : '—'}
+                        {selected.operator_last_savepoint.trigger_type
+                          ? ` · ${selected.operator_last_savepoint.trigger_type}`
+                          : ''}
+                      </div>
+                      <Typography.Paragraph copyable={{ text: selected.operator_last_savepoint.location }} style={{ marginBottom: 0, fontSize: 12 }}>
+                        {selected.operator_last_savepoint.location}
+                      </Typography.Paragraph>
+                    </>
+                  ) : selected.operator_last_savepoint?.pending ? (
+                    <Tag color="processing">savepoint 进行中</Tag>
+                  ) : (
+                    '—'
+                  )}
+                </Descriptions.Item>
+                <Descriptions.Item label="Nexus JAR">{selected.jar_nexus_url || '—'}</Descriptions.Item>
                 <Descriptions.Item label="JAR 标识">{selected.jar_path || '—'}</Descriptions.Item>
                 <Descriptions.Item label="Flink Web UI" span={2}>
                   {selected.flink_console_url ? (
@@ -1119,9 +1149,9 @@ export default function StreamStudioPage() {
                       message="Operator 生产提交"
                       description={(
                         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                          <li>上传 JAR 写入 backend 本地制品库（PVC）；Operator 经 HTTP 拉取，须配置 FLINK_OPERATOR_JAR_HTTP_BASE。</li>
-                          <li>须填写 <strong>Main Class</strong>；Backend 容器需挂载 kubeconfig。</li>
-                          <li>默认 namespace：<code>flink</code>（Kind 集群 <code>kind-gido</code>），Flink 2.2.1 + Operator 1.15。</li>
+                          <li>推荐配置 <strong>jar_nexus_url</strong>（Nexus 内网临时开放 HTTPS 直链，无需账号密码）；提交时物化到 Operator 集群 <strong>JAR 制品 S3 前缀</strong>。</li>
+                          <li>Flink 2.x / 1.19+ 直读 <code>s3://</code>；Flink 1.17/1.18 经 S3 presigned URL + init 拉取。</li>
+                          <li>亦可上传 JAR（写入 S3 + 本地镜像）；须填写 <strong>Main Class</strong>。</li>
                         </ul>
                       )}
                     />
@@ -1184,7 +1214,7 @@ export default function StreamStudioPage() {
                           key: 'jar-inventory',
                           label: (
                             <Space>
-                              <span>制品库（backend 本地）</span>
+                              <span>制品库（S3 / 本地镜像）</span>
                               {jarInventory?.artifact_ready && <Tag color="green">制品就绪</Tag>}
                             </Space>
                           ),
@@ -1324,7 +1354,20 @@ export default function StreamStudioPage() {
                       ]}
                     />
                   )}
-                  <Form layout="vertical" style={{ maxWidth: 560 }}>
+                  <Form layout="vertical" style={{ maxWidth: 720 }}>
+                    {effectiveJarMode === 'flink_operator' && (
+                      <Form.Item
+                        label="Nexus JAR 地址 (jar_nexus_url)"
+                        extra="CI 签发的内网临时下载直链（可含 URL token）；无需 Nexus 账号密码。保存时不下载，提交时写入 Operator 集群 S3。"
+                      >
+                        <Input
+                          value={jarForm.jar_nexus_url}
+                          placeholder="https://nexus.example.com/.../your-app-1.0.0.jar"
+                          disabled={selected.is_locked}
+                          onChange={e => setJarForm(f => ({ ...f, jar_nexus_url: e.target.value }))}
+                        />
+                      </Form.Item>
+                    )}
                     <Form.Item label="入口类 (Main Class)">
                       <Input
                         value={jarForm.main_class}

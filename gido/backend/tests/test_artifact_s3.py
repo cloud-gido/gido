@@ -183,6 +183,19 @@ def test_effective_sql_source_mount_when_no_s3(monkeypatch):
 
 
 @patch("app.services.artifact_s3._s3_client")
+def test_presign_s3_artifact_get_url(mock_client_fn, monkeypatch):
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://test-bucket/jars")
+    monkeypatch.setattr(settings, "GIDO_ARTIFACT_PRESIGN_TTL_SECONDS", 600)
+    mock_s3 = MagicMock()
+    mock_s3.generate_presigned_url.return_value = "https://signed.example/jars/9/artifact.jar"
+    mock_client_fn.return_value = mock_s3
+    url = s3.presign_s3_artifact_get_url(9, "artifact.jar")
+    assert url.startswith("https://signed")
+    mock_s3.generate_presigned_url.assert_called_once()
+    assert mock_s3.generate_presigned_url.call_args.kwargs["ExpiresIn"] == 600
+
+
+@patch("app.services.artifact_s3._s3_client")
 def test_upload_artifact_bytes(mock_client_fn, monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://test-bucket/gido-artifacts")
     monkeypatch.setattr(settings, "JAR_ARTIFACT_DIR", str(tmp_path))

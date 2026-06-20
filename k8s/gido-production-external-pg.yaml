@@ -22,6 +22,10 @@
 #
 # 访问（无 Ingress）：
 #   kubectl -n gido port-forward svc/frontend 8080:80
+#   Flink Web UI：须 gido-backend 在本集群内 + 下方「Flink Web UI 方案 A」ConfigMap 项
+#
+# 部署后校验 Flink UI 代理环境变量：
+#   kubectl -n gido exec deploy/gido-backend -- sh -c 'env | grep -E FLINK_OPERATOR_UI|FLINK_OPERATOR_JM_REST|FLINK_OPERATOR_JAR_HTTP'
 #
 # =============================================================================
 ---
@@ -99,11 +103,25 @@ data:
   FLINK_OPERATOR_IMAGE_PULL_SECRETS: "__FLINK_OPERATOR_IMAGE_PULL_SECRETS__"
   FLINK_OPERATOR_UPGRADE_MODE: "savepoint"
   FLINK_OPERATOR_CHECKPOINT_INTERVAL: "60s"
+
+  # --- Flink Web UI（方案 A：Backend 在集群内反向代理 JM，浏览器只访问 GIDO /api/.../flink-ui）---
+  # 前置：① gido-backend Pod 与本清单同集群  ② 作业已创建 *-rest Service（FlinkDeployment 正常）
+  # 勿在集群外 Docker Compose 跑 Backend 却仅开 UI_PROXY（无法解析 *.svc.cluster.local）
   FLINK_OPERATOR_UI_PROXY_ENABLED: "true"
   FLINK_OPERATOR_DEV_LOCAL: "false"
   FLINK_OPERATOR_AUTO_UI_TUNNEL: "false"
   FLINK_OPERATOR_JM_REST_TEMPLATE: "http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081"
+  FLINK_OPERATOR_UI_URL_TEMPLATE: "__FLINK_OPERATOR_UI_URL_TEMPLATE__"
+  FLINK_OPERATOR_BROWSER_JM_BASE: "__FLINK_OPERATOR_BROWSER_JM_BASE__"
+  FLINK_OPERATOR_UI_LOCAL_PORT_BASE: "22000"
+  FLINK_OPERATOR_UI_TUNNEL_BIND_PORT_BASE: "32000"
+  FLINK_OPERATOR_UI_TUNNEL_BROWSER_HOST: "127.0.0.1"
+
+  # --- JAR 制品 HTTP 拉取（Backend 本地 PVC；Operator Pod 经集群 DNS 访问）---
   FLINK_OPERATOR_JAR_HTTP_BASE: "http://backend.gido.svc.cluster.local:8001"
+  # Flink 1.17/1.18 Application 须 local:// jarURI：init 容器从 HTTP 下载到该目录
+  FLINK_OPERATOR_JAR_STAGING_MOUNT: "/opt/flink/usrlib/gido-artifacts"
+  FLINK_OPERATOR_JAR_STAGING_INIT_IMAGE: "curlimages/curl:8.5.0"
   FLINK_OPERATOR_SQL_RUNNER_JAR_URI: "local:///opt/flink/usrlib/sql-runner.jar"
   FLINK_OPERATOR_SQL_RUNNER_ENTRY_CLASS: "com.gido.flink.SqlRunner"
   FLINK_OPERATOR_JM_MEMORY: "2048m"
@@ -129,7 +147,9 @@ data:
   FLINK_SQL_GATEWAY_URL: ""
   FLINK_GATEWAY_JOBMANAGER_REST_URL: ""
   FLINK_UI_URL: ""
+  # 遗留 K8s Application 路径；Operator 作业以 FLINK_OPERATOR_JM_REST_TEMPLATE 为准
   FLINK_K8S_APPLICATION_JM_REST_TEMPLATE: "http://{cluster_id}-rest.flink.svc.cluster.local:8081"
+  # 方案 A 经 Backend 集群 DNS 访问 JM，ClusterIP 即可；若浏览器直连 JM 再改为 LoadBalancer/NodePort
   FLINK_K8S_REST_EXPOSED_TYPE: "ClusterIP"
 ---
 apiVersion: v1
