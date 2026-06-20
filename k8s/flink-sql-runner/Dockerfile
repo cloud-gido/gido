@@ -27,11 +27,11 @@ COPY dedupe-lib-jars.sh dedupe-lib-jars.sh
 COPY .build/${RUNTIME_PROFILE}/verify-connectors.sh verify-connectors.sh
 RUN mvn -B -q package -DskipTests -s settings-active.xml -gs settings-active.xml \
     && grep -v '^#' hadoop-libs.txt | grep -v '^[[:space:]]*$' | while IFS= read -r artifact; do \
-        mvn -B -q -o org.apache.maven.plugins:maven-dependency-plugin:3.7.1:copy -Dartifact="${artifact}" \
+        mvn -B -q org.apache.maven.plugins:maven-dependency-plugin:3.7.1:copy -Dartifact="${artifact}" \
             -DoutputDirectory=target/connectors -s settings-active.xml -gs settings-active.xml; \
     done \
     && grep -v '^#' security-overrides.txt | grep -v '^[[:space:]]*$' | while IFS= read -r artifact; do \
-        mvn -B -q -o org.apache.maven.plugins:maven-dependency-plugin:3.7.1:copy -Dartifact="${artifact}" \
+        mvn -B -q org.apache.maven.plugins:maven-dependency-plugin:3.7.1:copy -Dartifact="${artifact}" \
             -DoutputDirectory=target/connectors -s settings-active.xml -gs settings-active.xml; \
     done \
     && chmod +x dedupe-lib-jars.sh verify-connectors.sh \
