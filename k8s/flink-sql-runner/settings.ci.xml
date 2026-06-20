@@ -1,25 +1,25 @@
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
-  <!-- China local builds: MAVEN_SETTINGS=settings.aliyun.xml -->
+  <!-- CI / GitHub Actions: avoid repo.maven.apache.org 403 from datacenter IPs -->
   <mirrors>
     <mirror>
-      <id>aliyun-public</id>
+      <id>google-maven-central</id>
       <mirrorOf>central</mirrorOf>
-      <name>Aliyun Public Mirror</name>
-      <url>https://maven.aliyun.com/repository/public</url>
+      <name>Google Maven Central mirror</name>
+      <url>https://maven-central.storage-download.googleapis.com/maven2/</url>
     </mirror>
   </mirrors>
   <profiles>
     <profile>
-      <id>gido-aliyun</id>
+      <id>gido-ci</id>
       <activation>
         <activeByDefault>true</activeByDefault>
       </activation>
       <pluginRepositories>
         <pluginRepository>
           <id>central</id>
-          <url>https://maven.aliyun.com/repository/public</url>
+          <url>https://maven-central.storage-download.googleapis.com/maven2/</url>
           <releases><enabled>true</enabled></releases>
           <snapshots><enabled>false</enabled></snapshots>
         </pluginRepository>

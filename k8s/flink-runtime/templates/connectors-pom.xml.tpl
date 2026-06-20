@@ -19,10 +19,11 @@
         <paimon.artifactId>{{PAIMON_ARTIFACT_ID}}</paimon.artifactId>
     </properties>
 
+    <!-- id=central so settings.xml mirror applies (avoid hard-coded repo.maven.apache.org 403) -->
     <repositories>
         <repository>
-            <id>maven-central-direct</id>
-            <url>https://repo.maven.apache.org/maven2</url>
+            <id>central</id>
+            <url>https://maven-central.storage-download.googleapis.com/maven2/</url>
             <releases><enabled>true</enabled></releases>
             <snapshots><enabled>false</enabled></snapshots>
         </repository>

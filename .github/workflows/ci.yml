@@ -312,6 +312,7 @@ jobs:
             FLINK_BASE_IMAGE=apache/flink:${{ steps.runtime.outputs.FLINK_VERSION }}-java11
             SQL_RUNNER_ARTIFACT_VERSION=${{ steps.runtime.outputs.SQL_RUNNER_VERSION }}
             MAVEN_IMAGE=maven:3.9-eclipse-temurin-11
+            MAVEN_SETTINGS=settings.ci.xml
 
       - name: Verify Flink runtime image (Paimon S3 deps)
         run: |
