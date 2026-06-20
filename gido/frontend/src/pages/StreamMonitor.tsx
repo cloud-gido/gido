@@ -32,7 +32,7 @@ function formatOperatorSavepoint(sp: OperatorSavepoint | null | undefined, displ
     return <Text type="secondary">—</Text>
   }
   const ts = sp.timestamp_ms
-    ? formatInTimeZone(new Date(sp.timestamp_ms), displayTz)
+    ? formatInTimeZone(new Date(sp.timestamp_ms).toISOString(), displayTz)
     : null
   return (
     <Tooltip title={`${sp.location}${sp.trigger_type ? ` · ${sp.trigger_type}` : ''}`}>

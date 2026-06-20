@@ -891,7 +891,7 @@ export default function StreamStudioPage() {
                     <>
                       <div style={{ fontSize: 12, marginBottom: 4 }}>
                         {selected.operator_last_savepoint.timestamp_ms
-                          ? formatInTimeZone(new Date(selected.operator_last_savepoint.timestamp_ms), displayTz)
+                          ? formatInTimeZone(new Date(selected.operator_last_savepoint.timestamp_ms).toISOString(), displayTz)
                           : '—'}
                         {selected.operator_last_savepoint.trigger_type
                           ? ` · ${selected.operator_last_savepoint.trigger_type}`
