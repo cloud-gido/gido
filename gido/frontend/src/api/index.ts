@@ -301,6 +301,9 @@ export const streamingApi = {
     request.get(`/streaming/jobs/${id}/jar-artifacts`, {
       params: { include_cluster_jobs: includeClusterJobs },
     }),
+  previewNacosConfig: (jobId: number) => request.get(`/streaming/jobs/${jobId}/nacos-preview`),
+  previewNacosConfigDraft: (data: { program_args?: string; streaming_properties?: string }) =>
+    request.post('/streaming/nacos-preview', data),
 }
 
 // 数据服务

@@ -366,6 +366,8 @@ export default function StreamStudioPage() {
   const [jarArtifactHint, setJarArtifactHint] = useState<string | null>(null)
   const [jarInventory, setJarInventory] = useState<any | null>(null)
   const [jarInventoryLoading, setJarInventoryLoading] = useState(false)
+  const [nacosPreview, setNacosPreview] = useState<any | null>(null)
+  const [nacosPreviewLoading, setNacosPreviewLoading] = useState(false)
   const [historyModal, setHistoryModal] = useState(false)
   const [historyList, setHistoryList] = useState<any[]>([])
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set())
@@ -440,6 +442,25 @@ export default function StreamStudioPage() {
     }
   }, [selected?.id, selected?.job_type])
 
+  const handleNacosPreview = async () => {
+    setNacosPreviewLoading(true)
+    try {
+      const data: any = await streamingApi.previewNacosConfigDraft({
+        program_args: jarForm.program_args || undefined,
+        streaming_properties: jarStreamingPropsJson || undefined,
+      })
+      setNacosPreview(data)
+      if (data?.error) {
+        message.warning(data.error, 8)
+      }
+    } catch (e: any) {
+      setNacosPreview(null)
+      message.error(apiErrorDetail(e, 'Nacos 配置预览失败'), 8)
+    } finally {
+      setNacosPreviewLoading(false)
+    }
+  }
+
   /** Flink 控制台停止后 JM 已无作业时，单靠列表会卡在 running — 周期性拉 JM 回填平台状态（不打断编辑） */
   useEffect(() => {
     let alive = true
@@ -491,6 +512,7 @@ export default function StreamStudioPage() {
       setOperatorProfileId(selected.flink_operator_profile_id ?? undefined)
       setRuntimeImageOverride(parseRuntimeImageFromProps(sp))
       setJarArtifactHint(null)
+      setNacosPreview(null)
       loadJarInventory(selected.id)
     } else {
       setJarInventory(null)
@@ -1379,10 +1401,38 @@ export default function StreamStudioPage() {
                     <Form.Item label="运行参数">
                       <Input
                         value={jarForm.program_args}
-                        placeholder="--key value"
+                        placeholder="--flink.nacos.dataId xxx --flink.nacos.group DEFAULT ..."
                         disabled={selected.is_locked}
-                        onChange={e => setJarForm(f => ({ ...f, program_args: e.target.value }))}
+                        onChange={e => {
+                          setJarForm(f => ({ ...f, program_args: e.target.value }))
+                          setNacosPreview(null)
+                        }}
                       />
+                    </Form.Item>
+                    <Form.Item label="Nacos 配置预览">
+                      <Space direction="vertical" style={{ width: '100%' }} size="small">
+                        <Button loading={nacosPreviewLoading} onClick={handleNacosPreview}>
+                          预览 Nacos 配置
+                        </Button>
+                        {nacosPreview?.ref && (
+                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            dataId={nacosPreview.ref.data_id || '—'} · group={nacosPreview.ref.group || '—'}
+                            {nacosPreview.ref.namespace_id ? ` · namespace=${nacosPreview.ref.namespace_id}` : ''}
+                            {nacosPreview.ref.server_addr ? ` · ${nacosPreview.ref.server_addr}` : ''}
+                          </Typography.Text>
+                        )}
+                        {nacosPreview?.error && (
+                          <Alert type="warning" showIcon message={nacosPreview.error} />
+                        )}
+                        {nacosPreview?.content != null && (
+                          <Input.TextArea
+                            readOnly
+                            rows={12}
+                            value={nacosPreview.content}
+                            style={{ fontFamily: 'monospace', fontSize: 12 }}
+                          />
+                        )}
+                      </Space>
                     </Form.Item>
                     <Form.Item label="并行度">
                       <InputNumber

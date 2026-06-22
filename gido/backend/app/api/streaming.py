@@ -3515,6 +3515,37 @@ def get_job_exceptions(job_id: int, db: Session = Depends(get_db_flink), current
         return {"exceptions": [], "error": str(e)}
 
 
+class NacosPreviewBody(BaseModel):
+    program_args: Optional[str] = None
+    streaming_properties: Optional[str] = None
+
+
+@router.get("/jobs/{job_id}/nacos-preview")
+def preview_job_nacos_config(
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """从 JAR 作业运行参数解析 flink.nacos.* 并拉取 Nacos 配置正文（只读预览）。"""
+    job = require_streaming_job(db, current_user, job_id, "viewer", PC.GIDO_STREAM_READ)
+    from app.services.nacos_config import build_nacos_preview_payload
+
+    extra = _parse_job_streaming_properties(getattr(job, "streaming_properties", None))
+    return build_nacos_preview_payload(job.program_args, extra or None)
+
+
+@router.post("/nacos-preview")
+def preview_nacos_config_body(
+    body: NacosPreviewBody,
+    current_user: User = Depends(get_current_user),
+):
+    """未保存作业：按运行参数字符串预览 Nacos 配置。"""
+    from app.services.nacos_config import build_nacos_preview_payload
+
+    extra = _parse_job_streaming_properties(body.streaming_properties)
+    return build_nacos_preview_payload(body.program_args, extra or None)
+
+
 @router.get("/jobs/{job_id}/flink-ui/bootstrap")
 def bootstrap_operator_flink_ui_proxy(
     job_id: int,
