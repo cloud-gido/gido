@@ -132,6 +132,30 @@ def nacos_ref_public(params: Dict[str, str]) -> Dict[str, Optional[str]]:
     }
 
 
+def _nacos_login(client: httpx.Client, server: str, username: str, password: str) -> str:
+    """Nacos Open API 鉴权：POST /v1/auth/login 获取 accessToken（非 HTTP Basic）。"""
+    login_url = f"{server}/nacos/v1/auth/login"
+    try:
+        resp = client.post(login_url, data={"username": username, "password": password})
+    except httpx.RequestError as ex:
+        raise ValueError(f"无法连接 Nacos 登录接口 ({server}): {ex}") from ex
+
+    if resp.status_code in (401, 403):
+        raise ValueError("Nacos 登录失败，请检查 username/password")
+    if resp.status_code >= 400:
+        raise ValueError(f"Nacos 登录失败（HTTP {resp.status_code}）: {(resp.text or '')[:200]}")
+
+    try:
+        payload = resp.json()
+    except ValueError as ex:
+        raise ValueError("Nacos 登录响应不是有效 JSON") from ex
+
+    token = (payload.get("accessToken") or "").strip()
+    if not token:
+        raise ValueError("Nacos 登录未返回 accessToken，请检查 username/password")
+    return token
+
+
 def fetch_nacos_config_content(params: Dict[str, str]) -> str:
     missing = [k for k in _REQUIRED if not (params.get(k) or "").strip()]
     if missing:
@@ -149,18 +173,25 @@ def fetch_nacos_config_content(params: Dict[str, str]) -> str:
     if tenant:
         query["tenant"] = tenant
 
-    auth = (username, password) if username else None
     timeout = float(getattr(settings, "GIDO_NACOS_DOWNLOAD_TIMEOUT_SECONDS", 15.0) or 15.0)
     try:
         with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-            resp = client.get(url, params=query, auth=auth)
+            if username:
+                query["accessToken"] = _nacos_login(client, server, username, password)
+            resp = client.get(url, params=query)
     except httpx.RequestError as ex:
         raise ValueError(f"无法连接 Nacos ({server}): {ex}") from ex
 
     if resp.status_code == 404:
         raise ValueError(f"Nacos 上未找到配置 dataId={data_id} group={group} tenant={tenant or '(default)'}")
     if resp.status_code in (401, 403):
-        raise ValueError(f"Nacos 鉴权失败（HTTP {resp.status_code}），请检查 username/password")
+        if username:
+            raise ValueError(
+                f"Nacos 鉴权失败（HTTP {resp.status_code}），请检查 username/password、namespace 或账号对该配置的读权限"
+            )
+        raise ValueError(
+            f"Nacos 鉴权失败（HTTP {resp.status_code}），请在运行参数中填写 --flink.nacos.username / --flink.nacos.password"
+        )
     if resp.status_code >= 400:
         raise ValueError(f"Nacos 返回 HTTP {resp.status_code}: {(resp.text or '')[:200]}")
 

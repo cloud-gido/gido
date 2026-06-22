@@ -73,13 +73,19 @@ def test_build_nacos_preview_strips_password():
 
 @patch("app.services.nacos_config.httpx.Client")
 def test_fetch_nacos_config_content(mock_client_cls):
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.text = "foo: bar"
+    mock_login_resp = MagicMock()
+    mock_login_resp.status_code = 200
+    mock_login_resp.json.return_value = {"accessToken": "tok-abc", "tokenTtl": 18000}
+
+    mock_config_resp = MagicMock()
+    mock_config_resp.status_code = 200
+    mock_config_resp.text = "foo: bar"
+
     mock_client = MagicMock()
     mock_client.__enter__.return_value = mock_client
     mock_client.__exit__.return_value = False
-    mock_client.get.return_value = mock_resp
+    mock_client.post.return_value = mock_login_resp
+    mock_client.get.return_value = mock_config_resp
     mock_client_cls.return_value = mock_client
 
     content = fetch_nacos_config_content({
@@ -91,11 +97,40 @@ def test_fetch_nacos_config_content(mock_client_cls):
         "flink.nacos.password": "p",
     })
     assert content == "foo: bar"
+    mock_client.post.assert_called_once_with(
+        "http://10.0.0.1:8848/nacos/v1/auth/login",
+        data={"username": "u", "password": "p"},
+    )
     mock_client.get.assert_called_once()
     call_kwargs = mock_client.get.call_args
     assert call_kwargs[0][0] == "http://10.0.0.1:8848/nacos/v1/cs/configs"
-    assert call_kwargs[1]["params"] == {"dataId": "d", "group": "g", "tenant": "ns1"}
-    assert call_kwargs[1]["auth"] == ("u", "p")
+    assert call_kwargs[1]["params"] == {
+        "dataId": "d",
+        "group": "g",
+        "tenant": "ns1",
+        "accessToken": "tok-abc",
+    }
+
+
+@patch("app.services.nacos_config.httpx.Client")
+def test_fetch_nacos_config_content_no_auth(mock_client_cls):
+    mock_config_resp = MagicMock()
+    mock_config_resp.status_code = 200
+    mock_config_resp.text = "plain"
+    mock_client = MagicMock()
+    mock_client.__enter__.return_value = mock_client
+    mock_client.__exit__.return_value = False
+    mock_client.get.return_value = mock_config_resp
+    mock_client_cls.return_value = mock_client
+
+    content = fetch_nacos_config_content({
+        "flink.nacos.dataId": "d",
+        "flink.nacos.group": "g",
+        "flink.nacos.serverAddr": "http://10.0.0.1:8848",
+    })
+    assert content == "plain"
+    mock_client.post.assert_not_called()
+    assert "accessToken" not in mock_client.get.call_args[1]["params"]
 
 
 def test_validate_nacos_server_addr_rejects_bad_scheme(monkeypatch):
