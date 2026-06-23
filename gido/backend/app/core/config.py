@@ -195,6 +195,8 @@ class Settings(BaseSettings):
     GIDO_NACOS_ALLOWED_HOSTS: Optional[str] = None
     GIDO_NACOS_ALLOW_INSECURE: bool = True  # 内网常为 http://host:8848
     GIDO_NACOS_DOWNLOAD_TIMEOUT_SECONDS: float = 15.0
+    # 同 group 公共环境配置（解析 ${env.xxx} → Kafka servers 等）
+    GIDO_NACOS_COMMON_DATA_ID: str = "cipher-aes-data-warehouse-config-common.yml"
     # 用户自定义头像（容器内建议挂卷持久化）
     AVATAR_UPLOAD_DIR: str = "/data/user-avatars"
     AVATAR_MAX_BYTES: int = 2 * 1024 * 1024

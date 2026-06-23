@@ -123,13 +123,26 @@ def merge_nacos_params(
 
 
 def nacos_ref_public(params: Dict[str, str]) -> Dict[str, Optional[str]]:
+    common_id = (
+        (params.get("flink.nacos.commonDataId") or "").strip()
+        or (getattr(settings, "GIDO_NACOS_COMMON_DATA_ID", "") or "").strip()
+        or None
+    )
     return {
         "data_id": params.get("flink.nacos.dataId"),
         "group": params.get("flink.nacos.group"),
         "namespace_id": params.get("flink.nacos.namespaceId"),
         "server_addr": params.get("flink.nacos.serverAddr"),
         "username": params.get("flink.nacos.username"),
+        "common_data_id": common_id,
     }
+
+
+def _common_data_id(params: Dict[str, str]) -> str:
+    custom = (params.get("flink.nacos.commonDataId") or "").strip()
+    if custom:
+        return custom
+    return (getattr(settings, "GIDO_NACOS_COMMON_DATA_ID", "") or "").strip()
 
 
 def _nacos_login(client: httpx.Client, server: str, username: str, password: str) -> str:
@@ -156,13 +169,16 @@ def _nacos_login(client: httpx.Client, server: str, username: str, password: str
     return token
 
 
-def fetch_nacos_config_content(params: Dict[str, str]) -> str:
+def fetch_nacos_config_by_data_id(params: Dict[str, str], data_id: str) -> str:
     missing = [k for k in _REQUIRED if not (params.get(k) or "").strip()]
     if missing:
         raise ValueError(f"缺少 Nacos 参数: {', '.join(missing)}")
 
+    data_id = (data_id or "").strip()
+    if not data_id:
+        raise ValueError("dataId 不能为空")
+
     server = validate_nacos_server_addr(params["flink.nacos.serverAddr"])
-    data_id = params["flink.nacos.dataId"].strip()
     group = params["flink.nacos.group"].strip()
     tenant = (params.get("flink.nacos.namespaceId") or "").strip()
     username = (params.get("flink.nacos.username") or "").strip()
@@ -201,6 +217,20 @@ def fetch_nacos_config_content(params: Dict[str, str]) -> str:
     return content
 
 
+def fetch_nacos_config_content(params: Dict[str, str]) -> str:
+    return fetch_nacos_config_by_data_id(params, params["flink.nacos.dataId"].strip())
+
+
+def _fetch_nacos_config_optional(params: Dict[str, str], data_id: str) -> Optional[str]:
+    if not (data_id or "").strip():
+        return None
+    try:
+        return fetch_nacos_config_by_data_id(params, data_id)
+    except ValueError as ex:
+        logger.info("Nacos optional fetch %s skipped: %s", data_id, ex)
+        return None
+
+
 def build_nacos_preview_payload(
     program_args: Optional[str],
     streaming_properties: Optional[Dict[str, Any]] = None,
@@ -211,16 +241,46 @@ def build_nacos_preview_payload(
         return {
             "ref": ref,
             "params": {},
-            "content": None,
+            "connections": [],
+            "unresolved": [],
+            "warnings": [],
             "error": "未解析到 flink.nacos.* 参数，请在运行参数中填写 --flink.nacos.dataId 等",
         }
 
     public_params = {k: v for k, v in params.items() if k != "flink.nacos.password"}
     try:
-        content = fetch_nacos_config_content(params)
-        return {"ref": ref, "params": public_params, "content": content, "error": None}
+        job_data_id = params["flink.nacos.dataId"].strip()
+        job_content = fetch_nacos_config_by_data_id(params, job_data_id)
+        common_id = _common_data_id(params)
+        common_content = _fetch_nacos_config_optional(params, common_id) if common_id else None
+
+        from app.services.nacos_config_resolve import build_connection_preview
+
+        conn = build_connection_preview(job_content, job_data_id, common_content, common_id)
+        return {
+            "ref": ref,
+            "params": public_params,
+            "connections": conn.get("connections") or [],
+            "unresolved": conn.get("unresolved") or [],
+            "warnings": conn.get("warnings") or [],
+            "error": None,
+        }
     except ValueError as ex:
-        return {"ref": ref, "params": public_params, "content": None, "error": str(ex)}
+        return {
+            "ref": ref,
+            "params": public_params,
+            "connections": [],
+            "unresolved": [],
+            "warnings": [],
+            "error": str(ex),
+        }
     except Exception as ex:
         logger.warning("Nacos preview failed: %s", ex, exc_info=True)
-        return {"ref": ref, "params": public_params, "content": None, "error": str(ex)}
+        return {
+            "ref": ref,
+            "params": public_params,
+            "connections": [],
+            "unresolved": [],
+            "warnings": [],
+            "error": str(ex),
+        }

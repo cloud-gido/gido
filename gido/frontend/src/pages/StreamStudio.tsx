@@ -1409,27 +1409,41 @@ export default function StreamStudioPage() {
                         }}
                       />
                     </Form.Item>
-                    <Form.Item label="Nacos 配置预览">
+                    <Form.Item label="Nacos 连接预览">
                       <Space direction="vertical" style={{ width: '100%' }} size="small">
                         <Button loading={nacosPreviewLoading} onClick={handleNacosPreview}>
-                          预览 Nacos 配置
+                          预览连接地址
                         </Button>
                         {nacosPreview?.ref && (
                           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                            dataId={nacosPreview.ref.data_id || '—'} · group={nacosPreview.ref.group || '—'}
-                            {nacosPreview.ref.namespace_id ? ` · namespace=${nacosPreview.ref.namespace_id}` : ''}
-                            {nacosPreview.ref.server_addr ? ` · ${nacosPreview.ref.server_addr}` : ''}
+                            作业 dataId={nacosPreview.ref.data_id || '—'} · common={nacosPreview.ref.common_data_id || '—'}
+                            {nacosPreview.ref.group ? ` · group=${nacosPreview.ref.group}` : ''}
                           </Typography.Text>
                         )}
                         {nacosPreview?.error && (
                           <Alert type="warning" showIcon message={nacosPreview.error} />
                         )}
-                        {nacosPreview?.content != null && (
-                          <Input.TextArea
-                            readOnly
-                            rows={12}
-                            value={nacosPreview.content}
-                            style={{ fontFamily: 'monospace', fontSize: 12 }}
+                        {(nacosPreview?.warnings || []).map((w: string, i: number) => (
+                          <Alert key={i} type="info" showIcon message={w} />
+                        ))}
+                        {(nacosPreview?.connections?.length ?? 0) > 0 && (
+                          <Table
+                            size="small"
+                            pagination={false}
+                            rowKey={(r: any, i) => `${r.config_key}-${i}`}
+                            dataSource={nacosPreview.connections}
+                            columns={[
+                              { title: '类型', dataIndex: 'kind', width: 72 },
+                              { title: '配置项', dataIndex: 'config_key', ellipsis: true },
+                              { title: '连接地址', dataIndex: 'value', ellipsis: true },
+                            ]}
+                          />
+                        )}
+                        {(nacosPreview?.unresolved?.length ?? 0) > 0 && (
+                          <Alert
+                            type="warning"
+                            showIcon
+                            message={`未解析引用: ${nacosPreview.unresolved.join(', ')}`}
                           />
                         )}
                       </Space>

@@ -54,7 +54,7 @@ def test_merge_nacos_params_program_args_override_props():
 
 def test_build_nacos_preview_no_params():
     payload = build_nacos_preview_payload("--other flag", None)
-    assert payload["content"] is None
+    assert payload["connections"] == []
     assert payload["error"]
     assert "flink.nacos" in payload["error"]
 
@@ -65,9 +65,15 @@ def test_build_nacos_preview_strips_password():
         "--flink.nacos.serverAddr http://10.0.0.1:8848 "
         "--flink.nacos.password p"
     )
-    with patch("app.services.nacos_config.fetch_nacos_config_content", return_value="key: value"):
+    with patch("app.services.nacos_config.fetch_nacos_config_by_data_id") as mock_fetch:
+        mock_fetch.side_effect = lambda params, data_id: (
+            "flink.ticdc.kafka.connector.servers=${env.flink.ticdc.kafka.connector.servers}"
+            if data_id == "x"
+            else "env:\n  flink:\n    ticdc:\n      kafka:\n        connector:\n          servers: 10.0.0.9:9092"
+        )
         payload = build_nacos_preview_payload(args, None)
-    assert payload["content"] == "key: value"
+    assert payload["connections"]
+    assert payload["connections"][0]["value"] == "10.0.0.9:9092"
     assert "flink.nacos.password" not in payload["params"]
 
 
