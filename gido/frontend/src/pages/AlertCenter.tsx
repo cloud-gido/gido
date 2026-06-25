@@ -275,7 +275,12 @@ export default function AlertCenterPage() {
             <Form.Item name="smtp_host" label="SMTP Host" style={{ width: 260 }}>
               <Input placeholder="smtp.example.com" />
             </Form.Item>
-            <Form.Item name="smtp_port" label="SMTP Port" style={{ width: 120 }}>
+            <Form.Item
+              name="smtp_port"
+              label="SMTP Port"
+              style={{ width: 120 }}
+              extra="465 自动 SSL；587/25 请开 TLS"
+            >
               <InputNumber min={1} max={65535} style={{ width: '100%' }} />
             </Form.Item>
             <Form.Item name="smtp_tls" label="TLS" valuePropName="checked">

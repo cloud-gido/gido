@@ -15,7 +15,7 @@ from fastapi import HTTPException
 
 from app.core.config import settings
 from app.services.flink_operator_submit import _load_k8s_config, kubernetes_api_available
-from app.services.flink_pod_scheduling import operator_paimon_warehouse_pod_template
+from app.services.flink_pod_scheduling import operator_paimon_warehouse_pod_template, operator_scheduling_pod_template
 from app.services.stream_sql_preview_validate import parse_stream_preview_statements
 
 logger = logging.getLogger(__name__)
@@ -127,6 +127,20 @@ def _aws_env_from_sql(script: str) -> List[dict]:
     return env
 
 
+def _preview_pod_scheduling_spec() -> Dict[str, Any]:
+    """与 FlinkDeployment 共用 nodeSelector/tolerations，避免预览 Job 在污点节点池上 Pending。"""
+    tpl = operator_scheduling_pod_template()
+    if not tpl:
+        return {}
+    spec = tpl.get("spec") or {}
+    out: Dict[str, Any] = {}
+    if spec.get("nodeSelector"):
+        out["node_selector"] = dict(spec["nodeSelector"])
+    if spec.get("tolerations"):
+        out["tolerations"] = list(spec["tolerations"])
+    return out
+
+
 def _wait_job_terminal(batch, core, ns: str, job_name: str, timeout: int) -> tuple[bool, str]:
     from kubernetes.client.rest import ApiException  # type: ignore
 
@@ -224,10 +238,14 @@ def run_stream_sql_preview(sql: str, *, limit: int = 100) -> Dict[str, Any]:
             limits={"cpu": "2", "memory": "3Gi"},
         ),
     )
+    sched = _preview_pod_scheduling_spec()
     pod_spec = client.V1PodSpec(
         restart_policy="Never",
+        service_account_name=(settings.FLINK_OPERATOR_SERVICE_ACCOUNT or "").strip() or None,
         containers=[container],
         volumes=volumes or None,
+        node_selector=sched.get("node_selector"),
+        tolerations=[client.V1Toleration(**t) for t in sched.get("tolerations") or []] or None,
     )
     job = client.V1Job(
         metadata=client.V1ObjectMeta(

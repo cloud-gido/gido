@@ -58,8 +58,6 @@ GIDO Batch **告警中心**聚合工作流/节点失败与运维事件，支持�
 
 ### 4.2 环境变量默认值（可选）
 
-在 `gido/backend/.env` 或 K8s ConfigMap 中设置：
-
 ```bash
 SMTP_HOST=smtp.example.com
 SMTP_PORT=587
@@ -101,6 +99,8 @@ ALERT_WEBHOOK_URL=https://hooks.example.com/gido-alerts
 |------|------|
 | 无告警数据 | DS 是否启用、实例同步是否正常、Token 是否有效 |
 | 测试通知失败 | SMTP 防火墙、Webhook URL、机器人是否被禁言 |
+| 163/QQ 465 超时 | 465 须 **SSL**（GIDO 已自动处理）；密码须为**授权码**非登录密码 |
+| 465 仍超时 | K8s 集群可能封禁出站 SMTP，改 587+TLS 或走 Webhook |
 | 自动通知未触发 | `enabled` 是否为 true、`min_severity` 是否过高 |
 | 401 导致无实例 | 见 [TROUBLESHOOTING_SOP.md](../gido/docs/TROUBLESHOOTING_SOP.md) §1 |
 

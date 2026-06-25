@@ -151,6 +151,17 @@ def render_alert_message(db: Session, event: AlertEvent) -> tuple[str, str]:
     return title, "\n".join(lines)
 
 
+def _smtp_connect(host: str, port: int, use_tls: bool):
+    """465 使用 SMTP_SSL；587/25 使用 SMTP，可选 STARTTLS（163/QQ 等常见配置）。"""
+    timeout = 30
+    if port == 465:
+        return smtplib.SMTP_SSL(host, port, timeout=timeout)
+    smtp = smtplib.SMTP(host, port, timeout=timeout)
+    if use_tls:
+        smtp.starttls()
+    return smtp
+
+
 def _send_email(cfg: AlertNotificationConfig, title: str, content: str) -> None:
     host = cfg.smtp_host or settings.SMTP_HOST
     recipients = _split_recipients(cfg.email_to or settings.ALERT_EMAIL)
@@ -161,12 +172,17 @@ def _send_email(cfg: AlertNotificationConfig, title: str, content: str) -> None:
     msg["Subject"] = f"【{BRAND_SUITE}告警】{title}"
     msg["From"] = sender
     msg["To"] = ", ".join(recipients)
-    with smtplib.SMTP(host, int(cfg.smtp_port or settings.SMTP_PORT or 25), timeout=10) as smtp:
-        if cfg.smtp_tls:
-            smtp.starttls()
+    port = int(cfg.smtp_port or settings.SMTP_PORT or 25)
+    smtp = _smtp_connect(host, port, bool(cfg.smtp_tls))
+    try:
         if cfg.smtp_user and cfg.smtp_password:
             smtp.login(cfg.smtp_user, cfg.smtp_password)
         smtp.sendmail(sender, recipients, msg.as_string())
+    finally:
+        try:
+            smtp.quit()
+        except Exception:
+            pass
 
 
 def _post_json(url: str, payload: dict) -> None:
