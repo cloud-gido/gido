@@ -2119,6 +2119,7 @@ _FLINK_OPERATOR_PROFILE_FIELDS = (
     "flink_operator_jm_gateway_host",
     "flink_operator_jm_gateway_namespace",
     "flink_operator_jm_gateway_ingress_class",
+    "flink_operator_jm_gateway_dns_ip",
 )
 
 
@@ -2157,6 +2158,7 @@ class FlinkOperatorProfileCreate(BaseModel):
     flink_operator_jm_gateway_host: Optional[str] = None
     flink_operator_jm_gateway_namespace: Optional[str] = None
     flink_operator_jm_gateway_ingress_class: Optional[str] = None
+    flink_operator_jm_gateway_dns_ip: Optional[str] = None
 
 
 class FlinkOperatorProfileUpdate(BaseModel):
@@ -2186,6 +2188,7 @@ class FlinkOperatorProfileUpdate(BaseModel):
     flink_operator_jm_gateway_host: Optional[str] = None
     flink_operator_jm_gateway_namespace: Optional[str] = None
     flink_operator_jm_gateway_ingress_class: Optional[str] = None
+    flink_operator_jm_gateway_dns_ip: Optional[str] = None
 
 
 def _normalize_s3_auth_mode(value: Optional[str]) -> Optional[str]:
@@ -2228,6 +2231,7 @@ def _flink_operator_profile_public(p: FlinkOperatorProfile) -> dict:
         "flink_operator_jm_gateway_host": getattr(p, "flink_operator_jm_gateway_host", None),
         "flink_operator_jm_gateway_namespace": getattr(p, "flink_operator_jm_gateway_namespace", None),
         "flink_operator_jm_gateway_ingress_class": getattr(p, "flink_operator_jm_gateway_ingress_class", None),
+        "flink_operator_jm_gateway_dns_ip": getattr(p, "flink_operator_jm_gateway_dns_ip", None),
         "flink_operator_jm_gateway_status": getattr(p, "flink_operator_jm_gateway_status", None),
         "created_at": p.created_at,
         "updated_at": p.updated_at,
@@ -2544,6 +2548,7 @@ def update_flink_operator_profile(
         or "flink_operator_jm_gateway_host" in patch
         or "flink_operator_jm_gateway_namespace" in patch
         or "flink_operator_jm_gateway_ingress_class" in patch
+        or "flink_operator_jm_gateway_dns_ip" in patch
         or "flink_k8s_context" in patch
         or "flink_k8s_kubeconfig_path" in patch
         or "flink_k8s_cluster_domain" in patch

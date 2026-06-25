@@ -43,23 +43,37 @@ def test_nginx_config_contains_cluster_domain():
 
 
 def test_cluster_dns_resolver_ip_from_coredns(monkeypatch):
+    class FakeMeta:
+        name = "coredns"
+
     class FakeSpec:
         cluster_ip = "172.20.0.10"
+        cluster_ips = None
 
     class FakeSvc:
+        metadata = FakeMeta()
         spec = FakeSpec()
 
+    class FakeList:
+        items = [FakeSvc()]
+
     class FakeCore:
-        def read_namespaced_service(self, name, namespace):
-            if name == "kube-dns":
-                from kubernetes.client import ApiException
-                raise ApiException(status=404)
-            if name == "coredns":
-                return FakeSvc()
-            raise AssertionError(f"unexpected {name}")
+        def list_namespaced_service(self, namespace):
+            if namespace == "kube-system":
+                return FakeList()
+            from kubernetes.client import ApiException
+            raise ApiException(status=404)
 
     monkeypatch.setattr(gw.settings, "FLINK_OPERATOR_JM_GATEWAY_DNS_IP", None)
     assert gw._cluster_dns_resolver_ip(FakeCore(), "cluster.local") == "172.20.0.10"
+
+
+def test_cluster_dns_resolver_ip_profile_override():
+    class FakeCore:
+        def list_namespaced_service(self, namespace):
+            raise AssertionError("should not list when override set")
+
+    assert gw._cluster_dns_resolver_ip(FakeCore(), "cluster.local", dns_override="10.43.0.10") == "10.43.0.10"
 
 
 def test_ingress_body_uses_host_and_class():

@@ -46,7 +46,6 @@ subjects:
   - kind: ServiceAccount
     name: gido-jm-gateway-admin
     namespace: gido-flink-gateway
-  # 若 Backend 使用 kubeconfig 中的用户身份，可改为：
-  # - kind: User
-  #   name: gido-backend
-  #   apiGroup: rbac.authorization.k8s.io
+# 若 Backend 使用 kubeconfig 中的用户/证书（非上述 SA），须把该身份绑定到 ClusterRole：
+#   kubectl create clusterrolebinding gido-jm-gw-backend --clusterrole=gido-jm-gateway-admin --user=<kubeconfig用户>
+# 部署网关时会 list kube-system Service 以获取 CoreDNS ClusterIP；无权限时请改在 Profile 手填 DNS IP。

@@ -47,6 +47,7 @@ type OperatorProfile = {
   flink_operator_jm_gateway_host?: string | null
   flink_operator_jm_gateway_namespace?: string | null
   flink_operator_jm_gateway_ingress_class?: string | null
+  flink_operator_jm_gateway_dns_ip?: string | null
   flink_operator_jm_gateway_status?: Record<string, unknown> | null
   effective?: Record<string, unknown>
 }
@@ -206,6 +207,7 @@ export default function OperatorClustersPage() {
       flink_operator_jm_gateway_host: row.flink_operator_jm_gateway_host ?? '',
       flink_operator_jm_gateway_namespace: row.flink_operator_jm_gateway_namespace ?? '',
       flink_operator_jm_gateway_ingress_class: row.flink_operator_jm_gateway_ingress_class ?? '',
+      flink_operator_jm_gateway_dns_ip: row.flink_operator_jm_gateway_dns_ip ?? '',
     })
     setDrawerOpen(true)
   }
@@ -667,6 +669,13 @@ export default function OperatorClustersPage() {
             extra="与集群 Ingress Controller 一致，如 nginx、nginx-internal。"
           >
             <Input placeholder="nginx" />
+          </Form.Item>
+          <Form.Item
+            name="flink_operator_jm_gateway_dns_ip"
+            label="集群 DNS IP（nginx resolver）"
+            extra="CoreDNS/kube-dns 的 ClusterIP，如 10.96.0.10。自动探测失败时必填；查询：kubectl -n kube-system get svc kube-dns coredns"
+          >
+            <Input placeholder="10.96.0.10" />
           </Form.Item>
 
           <div style={{ fontWeight: 600, margin: '16px 0 12px' }}>高级</div>

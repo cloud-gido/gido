@@ -968,6 +968,31 @@ def migrate_dw_flink_operator_profiles_jm_gateway(engine: Engine) -> None:
                     conn.execute(text(f"ALTER TABLE dw_flink_operator_profiles ADD COLUMN {name} {ddl}"))
 
 
+def migrate_dw_flink_operator_profiles_jm_gateway_dns_ip(engine: Engine) -> None:
+    """Operator Profile：JM 网关 nginx resolver（集群 DNS ClusterIP）。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_flink_operator_profiles"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_flink_operator_profiles")}
+    if "flink_operator_jm_gateway_dns_ip" in cols:
+        return
+    with engine.begin() as conn:
+        if engine.dialect.name == "mysql":
+            conn.execute(
+                text(
+                    "ALTER TABLE dw_flink_operator_profiles "
+                    "ADD COLUMN flink_operator_jm_gateway_dns_ip VARCHAR(64) NULL"
+                )
+            )
+        else:
+            conn.execute(
+                text(
+                    "ALTER TABLE dw_flink_operator_profiles "
+                    "ADD COLUMN flink_operator_jm_gateway_dns_ip VARCHAR(64) NULL"
+                )
+            )
+
+
 def migrate_dw_streaming_jobs_flink_operator_profile(engine: Engine) -> None:
     """实时作业可选绑定 Flink Operator 集群；提交后持久化目标 namespace / 镜像。"""
     insp = inspect(engine)

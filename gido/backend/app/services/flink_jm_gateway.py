@@ -116,30 +116,82 @@ def _gateway_labels(profile_id: int) -> Dict[str, str]:
     }
 
 
-def _cluster_dns_resolver_ip(core_v1, cluster_domain: str) -> str:
-    """nginx 的 resolver 须为 IP；hostname（kube-dns.svc...）在启动阶段常解析失败导致 [emerg]。"""
+_PREFERRED_DNS_SVC_NAMES = (
+    "kube-dns",
+    "coredns",
+    "dns-default",
+    "coredns-kube-system",
+    "node-local-dns",
+)
+_DNS_SVC_NAMESPACES = ("kube-system", "openshift-dns")
+
+
+def _svc_cluster_ip(svc: Any) -> Optional[str]:
+    ip = (getattr(getattr(svc, "spec", None), "cluster_ip", None) or "").strip()
+    if ip and ip.lower() != "none":
+        return ip
+    for item in getattr(getattr(svc, "spec", None), "cluster_ips", None) or []:
+        s = (item or "").strip()
+        if s and s.lower() != "none":
+            return s
+    return None
+
+
+def _cluster_dns_resolver_ip(
+    core_v1,
+    cluster_domain: str,
+    *,
+    dns_override: Optional[str] = None,
+) -> str:
+    """nginx 的 resolver 须为 IP；hostname 在启动阶段常解析失败导致 [emerg]。"""
     from kubernetes.client import ApiException  # type: ignore
 
-    override = (getattr(settings, "FLINK_OPERATOR_JM_GATEWAY_DNS_IP", None) or "").strip()
+    override = (dns_override or getattr(settings, "FLINK_OPERATOR_JM_GATEWAY_DNS_IP", None) or "").strip()
     if override:
         return override
 
-    ns = "kube-system"
-    for svc_name in ("kube-dns", "coredns", "dns-default", "kube-dns-kube-system"):
+    hints: list[str] = []
+    for ns in _DNS_SVC_NAMESPACES:
         try:
-            svc = core_v1.read_namespaced_service(svc_name, ns)
+            svcs = core_v1.list_namespaced_service(ns)
         except ApiException as ex:
-            if getattr(ex, "status", None) == 404:
+            status = getattr(ex, "status", None)
+            if status == 404:
                 continue
-            raise
-        ip = (getattr(svc.spec, "cluster_ip", None) or "").strip()
-        if ip and ip != "None":
-            return ip
+            if status == 403:
+                hints.append(f"{ns}/services: 403 Forbidden（kubeconfig 无权 list Service）")
+                continue
+            raise RuntimeError(f"列举 {ns} Service 失败: {ex}") from ex
+
+        by_name = {svc.metadata.name: svc for svc in svcs.items if svc.metadata and svc.metadata.name}
+        for name in _PREFERRED_DNS_SVC_NAMES:
+            svc = by_name.get(name)
+            if svc:
+                ip = _svc_cluster_ip(svc)
+                if ip:
+                    return ip
+
+        for svc in svcs.items:
+            labels = (svc.metadata.labels or {}) if svc.metadata else {}
+            k8s_app = (labels.get("k8s-app") or labels.get("k8s_app") or "").lower()
+            if k8s_app in ("kube-dns", "coredns", "core-dns"):
+                ip = _svc_cluster_ip(svc)
+                if ip:
+                    return ip
+
+        for svc in svcs.items:
+            name = ((svc.metadata.name if svc.metadata else None) or "").lower()
+            if "dns" in name and "metrics" not in name and "prom" not in name:
+                ip = _svc_cluster_ip(svc)
+                if ip:
+                    return ip
 
     domain = (cluster_domain or "cluster.local").strip() or "cluster.local"
+    detail = "；".join(hints) if hints else "未发现 kube-dns/coredns Service 或 ClusterIP 为空"
     raise RuntimeError(
-        f"无法获取集群 DNS Service ClusterIP（kube-system/kube-dns 或 coredns，domain={domain}）。"
-        "请确认 CoreDNS 已安装，或设置平台 FLINK_OPERATOR_JM_GATEWAY_DNS_IP（如 10.96.0.10）。"
+        f"无法自动获取集群 DNS Service ClusterIP（domain={domain}）。{detail}。"
+        "请在 Operator Profile 填写「集群 DNS IP」，或平台配置 FLINK_OPERATOR_JM_GATEWAY_DNS_IP；"
+        "查询命令：kubectl -n kube-system get svc kube-dns coredns -o wide"
     )
 
 
@@ -337,11 +389,12 @@ def provision_jm_gateway(
     ingress_class = gateway_ingress_class_for_profile(profile)
     cluster_domain = (runtime_ctx.cluster_domain or "cluster.local").strip() or "cluster.local"
     labels = _gateway_labels(profile_id)
+    dns_override = (getattr(profile, "flink_operator_jm_gateway_dns_ip", None) or "").strip() or None
 
     core_v1, apps_v1, net_v1 = _k8s_clients(runtime_ctx)
     _ensure_namespace(core_v1, gw_ns, {MANAGED_BY_LABEL: MANAGED_BY_VALUE})
 
-    dns_resolver = _cluster_dns_resolver_ip(core_v1, cluster_domain)
+    dns_resolver = _cluster_dns_resolver_ip(core_v1, cluster_domain, dns_override=dns_override)
     cm_body = _nginx_configmap_body(name, gw_ns, cluster_domain, dns_resolver, labels)
     dep_body = _deployment_body(name, gw_ns, labels)
     svc_body = _service_body(name, gw_ns, labels)
