@@ -37,7 +37,35 @@ def test_parse_preview_json_marker():
     assert out["total"] == 1
 
 
-def test_aws_env_from_sql_s3a_settings():
+def test_prepare_preview_script_irsa_strips_static_keys(monkeypatch):
+    from app.core.config import settings
+    from app.services.stream_sql_preview import _prepare_preview_script
+
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True)
+    monkeypatch.setattr(
+        settings,
+        "FLINK_OPERATOR_S3_CREDENTIALS_PROVIDER",
+        "com.amazonaws.auth.WebIdentityTokenCredentialsProvider",
+    )
+    monkeypatch.setattr(settings, "GIDO_ARTIFACT_S3_REGION", "sa-east-1")
+    sql = """
+SET 'execution.runtime-mode' = 'batch';
+SET 'fs.s3a.access.key' = 'AKIA_TEST';
+SET 'fs.s3a.aws.credentials.provider' = 'org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider';
+CREATE TABLE t (id BIGINT) WITH ('connector'='paimon', 'path'='s3a://bucket/demo/t');
+SELECT * FROM t;
+"""
+    out = _prepare_preview_script(sql)
+    assert "fs.s3a.access.key" not in out
+    assert "SimpleAWSCredentialsProvider" not in out
+    assert "WebIdentityTokenCredentialsProvider" in out
+    assert "sa-east-1" in out
+
+
+def test_aws_env_from_sql_s3a_settings(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", False)
     sql = """
 SET 'fs.s3a.access.key' = 'AKIA_TEST';
 SET 'fs.s3a.secret.key' = 'secret';

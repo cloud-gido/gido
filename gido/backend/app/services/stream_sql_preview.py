@@ -100,6 +100,50 @@ def _preview_shell(script: str, limit: int) -> str:
     )
 
 
+_IRSA_STRIP_FS_KEYS = frozenset({
+    "fs.s3a.access.key",
+    "fs.s3a.secret.key",
+    "fs.s3a.session.token",
+    "fs.s3a.aws.credentials.provider",
+})
+
+
+def _script_uses_s3(script: str) -> bool:
+    s = (script or "").lower()
+    return "s3a://" in s or "s3://" in s
+
+
+def _strip_sql_set_keys(script: str, keys: frozenset[str]) -> str:
+    def _drop(match: re.Match[str]) -> str:
+        if match.group(1).strip() in keys:
+            return ""
+        return match.group(0)
+
+    return _SQL_SET_PATTERN.sub(_drop, script or "")
+
+
+def _prepare_preview_script(sql: str) -> str:
+    """EKS IRSA：去掉 SQL 中静态 AK/SK，注入 WebIdentityTokenCredentialsProvider（与正式提交一致）。"""
+    statements = parse_stream_preview_statements(sql)
+    script = ";\n".join(statements) + ";\n"
+    if not _script_uses_s3(script):
+        return script
+    if not getattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True):
+        return script
+
+    script = _strip_sql_set_keys(script, _IRSA_STRIP_FS_KEYS)
+    prepends: List[str] = []
+    provider = (settings.FLINK_OPERATOR_S3_CREDENTIALS_PROVIDER or "").strip()
+    if provider:
+        prepends.append(f"SET 'fs.s3a.aws.credentials.provider' = '{provider}';")
+    region = (settings.GIDO_ARTIFACT_S3_REGION or "").strip()
+    if region:
+        prepends.append(f"SET 'fs.s3a.endpoint.region' = '{region}';")
+    if prepends:
+        return "\n".join(prepends) + "\n" + script
+    return script
+
+
 def _aws_env_from_sql(script: str) -> List[dict]:
     """预览 Job 是普通 K8s Job，需把 SQL 里的 S3A 静态凭证传给 Hadoop S3A env provider。"""
     values: Dict[str, str] = {}
@@ -116,11 +160,11 @@ def _aws_env_from_sql(script: str) -> List[dict]:
         m = re.search(r"s3[.-]([a-z0-9-]+)\.amazonaws\.com", endpoint)
         if m:
             region = m.group(1)
-    if access_key:
+    if access_key and not getattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True):
         env.append({"name": "AWS_ACCESS_KEY_ID", "value": access_key})
-    if secret_key:
+    if secret_key and not getattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True):
         env.append({"name": "AWS_SECRET_ACCESS_KEY", "value": secret_key})
-    if session_token:
+    if session_token and not getattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True):
         env.append({"name": "AWS_SESSION_TOKEN", "value": session_token})
     if region:
         env.append({"name": "AWS_DEFAULT_REGION", "value": region})
@@ -187,8 +231,7 @@ def run_stream_sql_preview(sql: str, *, limit: int = 100) -> Dict[str, Any]:
             ),
         )
 
-    statements = parse_stream_preview_statements(sql)
-    script = ";\n".join(statements) + ";\n"
+    script = _prepare_preview_script(sql)
     lim = min(max(int(limit), 1), 10000)
     timeout = int(getattr(settings, "FLINK_STREAM_PREVIEW_TIMEOUT_SEC", 180) or 180)
 
