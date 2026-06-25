@@ -62,6 +62,25 @@ SELECT * FROM t;
     assert "sa-east-1" in out
 
 
+def test_prepare_preview_script_keeps_static_keys_when_present(monkeypatch):
+    from app.core.config import settings
+    from app.services.stream_sql_preview import _prepare_preview_script
+
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True)
+    sql = """
+SET 'execution.runtime-mode' = 'batch';
+SET 'fs.s3a.access.key' = 'AKIA_LOCAL';
+SET 'fs.s3a.secret.key' = 'secret';
+SET 'fs.s3a.aws.credentials.provider' = 'org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider';
+CREATE TABLE t (id BIGINT) WITH ('connector'='paimon', 'path'='s3a://bucket/demo/t');
+SELECT * FROM t;
+"""
+    out = _prepare_preview_script(sql)
+    assert "AKIA_LOCAL" in out
+    assert "SimpleAWSCredentialsProvider" in out
+    assert "WebIdentityTokenCredentialsProvider" not in out
+
+
 def test_aws_env_from_sql_s3a_settings(monkeypatch):
     from app.core.config import settings
 

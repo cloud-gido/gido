@@ -122,13 +122,24 @@ def _strip_sql_set_keys(script: str, keys: frozenset[str]) -> str:
     return _SQL_SET_PATTERN.sub(_drop, script or "")
 
 
+def _sql_has_static_s3_keys(script: str) -> bool:
+    for match in _SQL_SET_PATTERN.finditer(script or ""):
+        key = match.group(1).strip()
+        val = (match.group(2) or "").strip()
+        if key == "fs.s3a.access.key" and val and not val.startswith("${"):
+            return True
+    return False
+
+
 def _prepare_preview_script(sql: str) -> str:
-    """EKS IRSA：去掉 SQL 中静态 AK/SK，注入 WebIdentityTokenCredentialsProvider（与正式提交一致）。"""
+    """EKS IRSA：无静态 AK/SK 时注入 WebIdentity；本地 SQL 显式 AK/SK 时保留不动。"""
     statements = parse_stream_preview_statements(sql)
     script = ";\n".join(statements) + ";\n"
     if not _script_uses_s3(script):
         return script
     if not getattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True):
+        return script
+    if _sql_has_static_s3_keys(script):
         return script
 
     script = _strip_sql_set_keys(script, _IRSA_STRIP_FS_KEYS)
@@ -160,11 +171,11 @@ def _aws_env_from_sql(script: str) -> List[dict]:
         m = re.search(r"s3[.-]([a-z0-9-]+)\.amazonaws\.com", endpoint)
         if m:
             region = m.group(1)
-    if access_key and not getattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True):
+    if access_key and (not getattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True) or _sql_has_static_s3_keys(script)):
         env.append({"name": "AWS_ACCESS_KEY_ID", "value": access_key})
-    if secret_key and not getattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True):
+    if secret_key and (not getattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True) or _sql_has_static_s3_keys(script)):
         env.append({"name": "AWS_SECRET_ACCESS_KEY", "value": secret_key})
-    if session_token and not getattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True):
+    if session_token and (not getattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True) or _sql_has_static_s3_keys(script)):
         env.append({"name": "AWS_SESSION_TOKEN", "value": session_token})
     if region:
         env.append({"name": "AWS_DEFAULT_REGION", "value": region})
