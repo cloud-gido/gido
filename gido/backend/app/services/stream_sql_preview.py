@@ -88,13 +88,53 @@ def _paimon_volume_mounts() -> tuple[List[dict], List[dict]]:
     return list(spec.get("volumes") or []), list((spec.get("containers") or [{}])[0].get("volumeMounts") or [])
 
 
+def _preview_uses_irsa(script: str) -> bool:
+    if not getattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True):
+        return False
+    if not _script_uses_s3(script):
+        return False
+    return not _sql_has_static_s3_keys(script)
+
+
+def _preview_java_sys_props(script: str) -> str:
+    """Hadoop/Paimon 读 s3a 时不走 Flink TableConfig，须用 JVM -D 提前注入 fs.s3a.*。"""
+    if not _preview_uses_irsa(script):
+        return ""
+    flags: List[str] = []
+    provider = (settings.FLINK_OPERATOR_S3_CREDENTIALS_PROVIDER or "").strip()
+    if provider:
+        flags.append(f"-Dfs.s3a.aws.credentials.provider={provider}")
+    region = (settings.GIDO_ARTIFACT_S3_REGION or "").strip()
+    if not region:
+        for match in _SQL_SET_PATTERN.finditer(script or ""):
+            key = match.group(1).strip()
+            if key in ("fs.s3a.endpoint.region", "fs.s3a.region"):
+                region = (match.group(2) or "").strip()
+                break
+    if region:
+        flags.append(f"-Dfs.s3a.endpoint.region={region}")
+    return " ".join(flags)
+
+
 def _preview_shell(script: str, limit: int) -> str:
     """将 SQL 以 base64 写入 Pod 内临时文件，避免 ConfigMap 挂载竞态。"""
     encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    java_opts = _preview_java_sys_props(script)
+    java_cmd = f"java {java_opts}" if java_opts else "java"
+    irsa_debug = ""
+    if java_opts:
+        irsa_debug = (
+            f"echo 'GIDO_PREVIEW_IRSA: java_opts={java_opts}'\n"
+            "for n in AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE AWS_REGION AWS_DEFAULT_REGION; do "
+            'if [ -n "${!n:-}" ]; then echo "GIDO_PREVIEW_IRSA: $n=set"; '
+            'else echo "GIDO_PREVIEW_IRSA: $n=missing"; fi; '
+            "done\n"
+        )
     return (
         "set -euo pipefail\n"
         f"echo '{encoded}' | base64 -d > /tmp/gido-preview.sql\n"
-        "java -cp '/opt/flink/usrlib/sql-runner.jar:/opt/flink/lib/*' "
+        f"{irsa_debug}"
+        f"{java_cmd} -cp '/opt/flink/usrlib/sql-runner.jar:/opt/flink/lib/*' "
         "com.gido.flink.SqlRunner "
         f"file:///tmp/gido-preview.sql --preview {limit}\n"
     )
@@ -156,7 +196,7 @@ def _prepare_preview_script(sql: str) -> str:
 
 
 def _aws_env_from_sql(script: str) -> List[dict]:
-    """预览 Job 是普通 K8s Job，需把 SQL 里的 S3A 静态凭证传给 Hadoop S3A env provider。"""
+    """预览 Job 是普通 K8s Job，需把 SQL 里的 S3A 静态凭证或 IRSA 区域传给容器环境。"""
     values: Dict[str, str] = {}
     for match in _SQL_SET_PATTERN.finditer(script or ""):
         values[match.group(1).strip()] = match.group(2)
@@ -167,6 +207,8 @@ def _aws_env_from_sql(script: str) -> List[dict]:
     session_token = values.get("fs.s3a.session.token")
     region = values.get("fs.s3a.endpoint.region") or values.get("fs.s3a.region")
     endpoint = values.get("fs.s3a.endpoint")
+    if not region:
+        region = (settings.GIDO_ARTIFACT_S3_REGION or "").strip()
     if not region and endpoint:
         m = re.search(r"s3[.-]([a-z0-9-]+)\.amazonaws\.com", endpoint)
         if m:
@@ -179,6 +221,8 @@ def _aws_env_from_sql(script: str) -> List[dict]:
         env.append({"name": "AWS_SESSION_TOKEN", "value": session_token})
     if region:
         env.append({"name": "AWS_DEFAULT_REGION", "value": region})
+        if _preview_uses_irsa(script):
+            env.append({"name": "AWS_REGION", "value": region})
     return env
 
 
@@ -295,6 +339,7 @@ def run_stream_sql_preview(sql: str, *, limit: int = 100) -> Dict[str, Any]:
     sched = _preview_pod_scheduling_spec()
     pod_spec = client.V1PodSpec(
         restart_policy="Never",
+        automount_service_account_token=True,
         service_account_name=(settings.FLINK_OPERATOR_SERVICE_ACCOUNT or "").strip() or None,
         containers=[container],
         volumes=volumes or None,

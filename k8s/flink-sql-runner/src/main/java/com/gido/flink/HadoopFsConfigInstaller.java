@@ -28,6 +28,9 @@ final class HadoopFsConfigInstaller {
         if (fsProperties == null || fsProperties.isEmpty()) {
             return;
         }
+        for (Map.Entry<String, String> entry : fsProperties.entrySet()) {
+            System.setProperty(entry.getKey(), entry.getValue());
+        }
         java.nio.file.Path dir = Files.createTempDirectory("gido-hadoop-conf");
         java.nio.file.Path coreSite = dir.resolve("core-site.xml");
         Files.writeString(coreSite, toCoreSiteXml(fsProperties), StandardCharsets.UTF_8);
