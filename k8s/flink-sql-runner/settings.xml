@@ -1,47 +1,18 @@
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
-  <!-- Maven 镜像配置：主用阿里云，备用其他仓库以防 502 错误 -->
+  <!--
+    Docker / GitHub Actions 默认走 Maven Central（稳定、全球可用）。
+    Maven 对同一 mirrorOf 只使用第一个 mirror，不会自动 failover。
+    国内本地构建可选用 settings.aliyun.xml：
+      docker build --build-arg MAVEN_SETTINGS=settings.aliyun.xml ...
+  -->
   <mirrors>
-    <mirror>
-      <id>aliyun-public</id>
-      <mirrorOf>central</mirrorOf>
-      <name>Aliyun Public Mirror</name>
-      <url>https://maven.aliyun.com/repository/public</url>
-    </mirror>
     <mirror>
       <id>maven-central</id>
       <mirrorOf>central</mirrorOf>
       <name>Maven Central</name>
       <url>https://repo.maven.apache.org/maven2</url>
     </mirror>
-    <mirror>
-      <id>repo1-maven-org</id>
-      <mirrorOf>central</mirrorOf>
-      <name>repo1.maven.org</name>
-      <url>https://repo1.maven.org/maven2</url>
-    </mirror>
   </mirrors>
-  <!-- 配置仓库优先级和容错 -->
-  <profiles>
-    <profile>
-      <id>default</id>
-      <activation>
-        <activeByDefault>true</activeByDefault>
-      </activation>
-      <repositories>
-        <repository>
-          <id>central</id>
-          <url>https://repo.maven.apache.org/maven2</url>
-          <releases>
-            <enabled>true</enabled>
-            <updatePolicy>never</updatePolicy>
-          </releases>
-          <snapshots>
-            <enabled>false</enabled>
-          </snapshots>
-        </repository>
-      </repositories>
-    </profile>
-  </profiles>
 </settings>
