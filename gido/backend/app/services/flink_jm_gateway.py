@@ -24,7 +24,7 @@ _NGINX_CONF_TEMPLATE = """server {{
     server_name _;
 
     location ~ ^/jm/(?<ns>[^/]+)/(?<dep>[^/]+)(?<path>/.*)?$ {{
-        resolver kube-dns.kube-system.svc.{cluster_domain} valid=10s ipv6=off;
+        resolver {dns_resolver} valid=10s ipv6=off;
         set $upstream http://$dep-rest.$ns.svc.{cluster_domain}:8081;
         proxy_pass $upstream$path$is_args$args;
         proxy_http_version 1.1;
@@ -42,6 +42,8 @@ _NGINX_CONF_TEMPLATE = """server {{
     }}
 }}
 """
+
+_NGINX_CONF_KEY = "gido-jm-gateway.conf"
 
 
 def gateway_resource_name(profile_id: int) -> str:
@@ -114,13 +116,46 @@ def _gateway_labels(profile_id: int) -> Dict[str, str]:
     }
 
 
-def _nginx_configmap_body(name: str, namespace: str, cluster_domain: str, labels: Dict[str, str]) -> Dict[str, Any]:
-    conf = _NGINX_CONF_TEMPLATE.format(cluster_domain=cluster_domain)
+def _cluster_dns_resolver_ip(core_v1, cluster_domain: str) -> str:
+    """nginx 的 resolver 须为 IP；hostname（kube-dns.svc...）在启动阶段常解析失败导致 [emerg]。"""
+    from kubernetes.client import ApiException  # type: ignore
+
+    override = (getattr(settings, "FLINK_OPERATOR_JM_GATEWAY_DNS_IP", None) or "").strip()
+    if override:
+        return override
+
+    ns = "kube-system"
+    for svc_name in ("kube-dns", "coredns", "dns-default", "kube-dns-kube-system"):
+        try:
+            svc = core_v1.read_namespaced_service(svc_name, ns)
+        except ApiException as ex:
+            if getattr(ex, "status", None) == 404:
+                continue
+            raise
+        ip = (getattr(svc.spec, "cluster_ip", None) or "").strip()
+        if ip and ip != "None":
+            return ip
+
+    domain = (cluster_domain or "cluster.local").strip() or "cluster.local"
+    raise RuntimeError(
+        f"无法获取集群 DNS Service ClusterIP（kube-system/kube-dns 或 coredns，domain={domain}）。"
+        "请确认 CoreDNS 已安装，或设置平台 FLINK_OPERATOR_JM_GATEWAY_DNS_IP（如 10.96.0.10）。"
+    )
+
+
+def _nginx_configmap_body(
+    name: str,
+    namespace: str,
+    cluster_domain: str,
+    dns_resolver: str,
+    labels: Dict[str, str],
+) -> Dict[str, Any]:
+    conf = _NGINX_CONF_TEMPLATE.format(cluster_domain=cluster_domain, dns_resolver=dns_resolver)
     return {
         "apiVersion": "v1",
         "kind": "ConfigMap",
         "metadata": {"name": name, "namespace": namespace, "labels": labels},
-        "data": {"default.conf": conf},
+        "data": {_NGINX_CONF_KEY: conf},
     }
 
 
@@ -141,8 +176,16 @@ def _deployment_body(name: str, namespace: str, labels: Dict[str, str]) -> Dict[
                         {
                             "name": "nginx",
                             "image": image,
+                            "command": ["nginx", "-g", "daemon off;"],
                             "ports": [{"containerPort": 8080, "name": "http"}],
-                            "volumeMounts": [{"name": "nginx-conf", "mountPath": "/etc/nginx/conf.d"}],
+                            "volumeMounts": [
+                                {
+                                    "name": "nginx-conf",
+                                    "mountPath": f"/etc/nginx/conf.d/{_NGINX_CONF_KEY}",
+                                    "subPath": _NGINX_CONF_KEY,
+                                    "readOnly": True,
+                                }
+                            ],
                             "readinessProbe": {
                                 "httpGet": {"path": "/healthz", "port": 8080},
                                 "initialDelaySeconds": 2,
@@ -298,7 +341,8 @@ def provision_jm_gateway(
     core_v1, apps_v1, net_v1 = _k8s_clients(runtime_ctx)
     _ensure_namespace(core_v1, gw_ns, {MANAGED_BY_LABEL: MANAGED_BY_VALUE})
 
-    cm_body = _nginx_configmap_body(name, gw_ns, cluster_domain, labels)
+    dns_resolver = _cluster_dns_resolver_ip(core_v1, cluster_domain)
+    cm_body = _nginx_configmap_body(name, gw_ns, cluster_domain, dns_resolver, labels)
     dep_body = _deployment_body(name, gw_ns, labels)
     svc_body = _service_body(name, gw_ns, labels)
     ing_body = _ingress_body(name, gw_ns, host, ingress_class, labels)
@@ -343,6 +387,7 @@ def provision_jm_gateway(
         "ingress_class": ingress_class,
         "jm_rest_template": jm_tpl,
         "ingress_load_balancer": lb_hint,
+        "dns_resolver": dns_resolver,
         "resources": {
             "namespace": gw_ns,
             "configmap": name,

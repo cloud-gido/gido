@@ -35,10 +35,31 @@ def test_resolve_gateway_host_requires_host_or_suffix(monkeypatch):
 
 
 def test_nginx_config_contains_cluster_domain():
-    body = gw._nginx_configmap_body("gido-jm-gw-1", "gido-flink-gateway", "cluster.local", {})
-    conf = body["data"]["default.conf"]
+    body = gw._nginx_configmap_body("gido-jm-gw-1", "gido-flink-gateway", "cluster.local", "10.96.0.10", {})
+    conf = body["data"][gw._NGINX_CONF_KEY]
+    assert "resolver 10.96.0.10 valid=10s" in conf
     assert "svc.cluster.local:8081" in conf
     assert "/jm/" in conf
+
+
+def test_cluster_dns_resolver_ip_from_coredns(monkeypatch):
+    class FakeSpec:
+        cluster_ip = "172.20.0.10"
+
+    class FakeSvc:
+        spec = FakeSpec()
+
+    class FakeCore:
+        def read_namespaced_service(self, name, namespace):
+            if name == "kube-dns":
+                from kubernetes.client import ApiException
+                raise ApiException(status=404)
+            if name == "coredns":
+                return FakeSvc()
+            raise AssertionError(f"unexpected {name}")
+
+    monkeypatch.setattr(gw.settings, "FLINK_OPERATOR_JM_GATEWAY_DNS_IP", None)
+    assert gw._cluster_dns_resolver_ip(FakeCore(), "cluster.local") == "172.20.0.10"
 
 
 def test_ingress_body_uses_host_and_class():
@@ -104,6 +125,7 @@ def test_provision_jm_gateway_calls_k8s(monkeypatch):
         def read_namespaced_ingress(self, name, namespace):
             return SimpleNamespace(metadata=FakeMeta())
 
+    monkeypatch.setattr(gw, "_cluster_dns_resolver_ip", lambda core, domain: "10.96.0.10")
     monkeypatch.setattr(gw, "kubernetes_api_available", lambda: True)
     monkeypatch.setattr(gw, "_k8s_clients", lambda ctx: (FakeCore(), FakeApps(), FakeNet()))
 

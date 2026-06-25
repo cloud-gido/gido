@@ -170,6 +170,8 @@ class Settings(BaseSettings):
     FLINK_OPERATOR_JM_GATEWAY_INGRESS_CLASS: str = "nginx"
     FLINK_OPERATOR_JM_GATEWAY_IMAGE: str = "nginx:1.27-alpine"
     FLINK_OPERATOR_JM_GATEWAY_REPLICAS: int = 2
+    # nginx resolver：默认自动读 kube-system/kube-dns|coredns ClusterIP；无法探测时手动指定
+    FLINK_OPERATOR_JM_GATEWAY_DNS_IP: Optional[str] = None
     # 未填 Profile host 时生成 jm-gw-{slug}-p{id}.{suffix}
     FLINK_OPERATOR_JM_GATEWAY_HOST_SUFFIX: Optional[str] = None
     # 仅本机 Kind/Mac 开发：为 true 时在 UI 展示 kubectl port-forward 提示
