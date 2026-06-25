@@ -166,39 +166,6 @@ def test_profile_s3_region_overrides_platform(monkeypatch):
     assert kwargs["region_name"] == "ap-southeast-1"
 
 
-def test_profile_s3_endpoint_overrides_platform(monkeypatch):
-    from app.services.operator_runtime import OperatorRuntimeContext
-
-    monkeypatch.setattr(settings, "GIDO_ARTIFACT_S3_ENDPOINT_URL", "https://s3.us-east-1.amazonaws.com")
-    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://b/jars")
-    ctx = OperatorRuntimeContext(
-        profile_id=6,
-        profile_name="sg",
-        namespace="flink",
-        image="img:1",
-        flink_version="v1_17",
-        service_account="flink",
-        k8s_context=None,
-        kubeconfig_path=None,
-        jm_rest_template="http://x",
-        cluster_domain="cluster.local",
-        checkpoint_dir="s3://b/ckpt",
-        image_pull_secrets=None,
-        s3_auth_mode="irsa",
-        s3_access_key_id=None,
-        s3_secret_access_key=None,
-        s3_session_token=None,
-        jar_s3_prefix=None,
-        s3_region=None,
-        s3_endpoint_url="https://s3.ap-southeast-1.amazonaws.com",
-    )
-    kwargs = s3_auth.boto3_client_kwargs(ctx)
-    assert kwargs["endpoint_url"] == "https://s3.ap-southeast-1.amazonaws.com"
-    conf: dict = {}
-    s3_auth.apply_flink_s3_flink_conf(conf, ctx)
-    assert conf["fs.s3a.endpoint"] == "https://s3.ap-southeast-1.amazonaws.com"
-
-
 def test_profile_irsa_injects_region_env(monkeypatch):
     from app.services.operator_runtime import OperatorRuntimeContext
 
@@ -233,6 +200,107 @@ def test_profile_irsa_injects_region_env(monkeypatch):
     conf: dict = {}
     s3_auth.apply_flink_s3_flink_conf(conf, ctx)
     assert conf["fs.s3a.endpoint.region"] == "ap-southeast-1"
+    assert "fs.s3a.endpoint" not in conf
+
+
+def test_profile_region_only_skips_platform_endpoint_for_flink(monkeypatch):
+    """Profile 只填 region、Endpoint 留空时，不应继承平台 Endpoint 导致 Flink 2.x 配置冲突。"""
+    from app.services.operator_runtime import OperatorRuntimeContext
+
+    monkeypatch.setattr(settings, "GIDO_ARTIFACT_S3_ENDPOINT_URL", "https://s3.ap-southeast-1.amazonaws.com")
+    monkeypatch.setattr(settings, "PAIMON_WAREHOUSE_DEFAULT", "s3://b/wh")
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_S3_AUTH_MODE", "irsa")
+    ctx = OperatorRuntimeContext(
+        profile_id=7,
+        profile_name="cross-cluster",
+        namespace="flink",
+        image="img:1",
+        flink_version="v2_2",
+        service_account="flink",
+        k8s_context=None,
+        kubeconfig_path=None,
+        jm_rest_template="http://x",
+        cluster_domain="cluster.local",
+        checkpoint_dir="s3://b/ckpt",
+        image_pull_secrets=None,
+        s3_auth_mode="irsa",
+        s3_access_key_id=None,
+        s3_secret_access_key=None,
+        s3_session_token=None,
+        jar_s3_prefix=None,
+        s3_region="ap-southeast-1",
+        s3_endpoint_url=None,
+    )
+    conf: dict = {}
+    s3_auth.apply_flink_s3_flink_conf(conf, ctx)
+    assert conf["fs.s3a.endpoint.region"] == "ap-southeast-1"
+    assert "fs.s3a.endpoint" not in conf
+
+
+def test_profile_custom_endpoint_without_region(monkeypatch):
+    from app.services.operator_runtime import OperatorRuntimeContext
+
+    monkeypatch.setattr(settings, "PAIMON_WAREHOUSE_DEFAULT", "s3://b/wh")
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_S3_AUTH_MODE", "irsa")
+    ctx = OperatorRuntimeContext(
+        profile_id=8,
+        profile_name="minio",
+        namespace="flink",
+        image="img:1",
+        flink_version="v2_2",
+        service_account="flink",
+        k8s_context=None,
+        kubeconfig_path=None,
+        jm_rest_template="http://x",
+        cluster_domain="cluster.local",
+        checkpoint_dir="s3://b/ckpt",
+        image_pull_secrets=None,
+        s3_auth_mode="irsa",
+        s3_access_key_id=None,
+        s3_secret_access_key=None,
+        s3_session_token=None,
+        jar_s3_prefix=None,
+        s3_region=None,
+        s3_endpoint_url="https://minio.example.com",
+    )
+    conf: dict = {}
+    s3_auth.apply_flink_s3_flink_conf(conf, ctx)
+    assert conf["fs.s3a.endpoint"] == "https://minio.example.com"
+    assert "fs.s3a.endpoint.region" not in conf
+
+
+def test_profile_s3_endpoint_overrides_platform(monkeypatch):
+    from app.services.operator_runtime import OperatorRuntimeContext
+
+    monkeypatch.setattr(settings, "GIDO_ARTIFACT_S3_ENDPOINT_URL", "https://s3.us-east-1.amazonaws.com")
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://b/jars")
+    ctx = OperatorRuntimeContext(
+        profile_id=6,
+        profile_name="sg",
+        namespace="flink",
+        image="img:1",
+        flink_version="v1_17",
+        service_account="flink",
+        k8s_context=None,
+        kubeconfig_path=None,
+        jm_rest_template="http://x",
+        cluster_domain="cluster.local",
+        checkpoint_dir="s3://b/ckpt",
+        image_pull_secrets=None,
+        s3_auth_mode="irsa",
+        s3_access_key_id=None,
+        s3_secret_access_key=None,
+        s3_session_token=None,
+        jar_s3_prefix=None,
+        s3_region=None,
+        s3_endpoint_url="https://s3.ap-southeast-1.amazonaws.com",
+    )
+    kwargs = s3_auth.boto3_client_kwargs(ctx)
+    assert kwargs["endpoint_url"] == "https://s3.ap-southeast-1.amazonaws.com"
+    conf: dict = {}
+    s3_auth.apply_flink_s3_flink_conf(conf, ctx)
+    assert conf["fs.s3a.endpoint"] == "https://s3.ap-southeast-1.amazonaws.com"
+    assert "fs.s3a.endpoint.region" not in conf
 
 
 def test_profile_static_missing_keys_fails(monkeypatch):

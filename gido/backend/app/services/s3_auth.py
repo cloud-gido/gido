@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
@@ -135,11 +136,25 @@ def _resolved_s3_region(runtime_ctx: Optional["OperatorRuntimeContext"] = None) 
     return _platform_s3_region()
 
 
+_AWS_S3_ENDPOINT_RE = re.compile(
+    r"^https?://(?:s3[.-][a-z0-9-]+\.amazonaws\.com|s3\.amazonaws\.com)(?:[:/]|$)",
+    re.IGNORECASE,
+)
+
+
+def _is_standard_aws_s3_endpoint(endpoint: str) -> bool:
+    """AWS 区域 S3 域名；此类 endpoint 与 fs.s3a.endpoint.region 不可同时写入 Flink 2.x。"""
+    return bool(_AWS_S3_ENDPOINT_RE.match((endpoint or "").strip()))
+
+
 def _resolved_s3_endpoint(runtime_ctx: Optional["OperatorRuntimeContext"] = None) -> Optional[str]:
     if runtime_ctx is not None:
         prof = _strip_or_none(getattr(runtime_ctx, "s3_endpoint_url", None))
         if prof:
             return prof
+        # Profile 仅配 region 时，不继承平台 Endpoint（否则 Flink 2.x 会同时注入 endpoint + region）
+        if runtime_ctx.profile_id is not None and _strip_or_none(getattr(runtime_ctx, "s3_region", None)):
+            return None
     return _platform_s3_endpoint()
 
 
@@ -244,15 +259,24 @@ def apply_flink_s3_flink_conf(
     if provider:
         flink_conf["fs.s3a.aws.credentials.provider"] = provider
 
-    endpoint = snap.endpoint_url
-    if endpoint:
+    endpoint = (snap.endpoint_url or "").strip()
+    region = (snap.region or "").strip()
+    # Flink 2.x：fs.s3a.endpoint 与 fs.s3a.endpoint.region 前缀重叠，不可同时设置
+    use_custom_endpoint = bool(endpoint) and not _is_standard_aws_s3_endpoint(endpoint)
+    if use_custom_endpoint:
         flink_conf["fs.s3a.endpoint"] = endpoint
         flink_conf["fs.s3a.path.style.access"] = "true"
         flink_conf["fs.s3a.connection.ssl.enabled"] = (
             "false" if endpoint.lower().startswith("http://") else "true"
         )
-    if snap.region:
-        flink_conf["fs.s3a.endpoint.region"] = snap.region
+    elif region:
+        flink_conf["fs.s3a.endpoint.region"] = region
+    elif endpoint:
+        flink_conf["fs.s3a.endpoint"] = endpoint
+        flink_conf["fs.s3a.path.style.access"] = "true"
+        flink_conf["fs.s3a.connection.ssl.enabled"] = (
+            "false" if endpoint.lower().startswith("http://") else "true"
+        )
 
 
 def _flink_s3_pod_env(runtime_ctx: Optional["OperatorRuntimeContext"] = None) -> List[Dict[str, str]]:
