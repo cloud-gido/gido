@@ -108,6 +108,9 @@ export const workflowApi = {
   delete: (id: number) => request.delete(`/workflows/${id}`),
   run: (id: number, businessDate?: string) => request.post(`/workflows/${id}/run`, null, { params: { business_date: businessDate } }),
   publishToDS: (id: number) => request.post(`/workflows/${id}/publish-to-ds`),
+  pause: (id: number) => request.post(`/workflows/${id}/pause`),
+  resume: (id: number) => request.post(`/workflows/${id}/resume`),
+  offline: (id: number) => request.post(`/workflows/${id}/offline`),
   bulkPublishToDS: (workspaceId: number) =>
     request.post('/workflows/bulk-publish-to-ds', { workspace_id: workspaceId }),
   instances: (id: number) => request.get(`/workflows/${id}/instances`),
@@ -189,7 +192,30 @@ export const operationApi = {
   getLog: (niId: number) => request.get(`/operation/node-instances/${niId}/log`),
   kill: (niId: number) => request.post(`/operation/node-instances/${niId}/kill`),
   retry: (niId: number) => request.post(`/operation/node-instances/${niId}/retry`),
+  stopWorkflowInstance: (workspaceId: number, wfId: number, instId: number) =>
+    request.post(`/operation/workflows/${wfId}/instances/${instId}/stop`, null, { params: { workspace_id: workspaceId } }),
+  refreshWorkflowInstance: (workspaceId: number, wfId: number, instId: number) =>
+    request.post(`/operation/workflows/${wfId}/instances/${instId}/refresh`, null, { params: { workspace_id: workspaceId } }),
+  rerunWorkflowInstance: (workspaceId: number, wfId: number, instId: number) =>
+    request.post(`/operation/workflows/${wfId}/instances/${instId}/rerun`, null, { params: { workspace_id: workspaceId } }),
+  retryFailedNodes: (workspaceId: number, wfId: number, instId: number) =>
+    request.post(`/operation/workflows/${wfId}/instances/${instId}/retry-failed-nodes`, null, { params: { workspace_id: workspaceId } }),
   alerts: (workspaceId: number) => request.get('/operation/alerts', { params: { workspace_id: workspaceId } }),
+}
+
+// 告警中心
+export const alertApi = {
+  list: (workspaceId: number, params?: Record<string, unknown>) =>
+    request.get('/alerts', { params: { workspace_id: workspaceId, ...params } }),
+  ack: (id: number) => request.post(`/alerts/${id}/ack`),
+  resolve: (id: number) => request.post(`/alerts/${id}/resolve`),
+  notify: (id: number) => request.post(`/alerts/${id}/notify`, { force: true }),
+  getNotificationConfig: (workspaceId: number) =>
+    request.get('/alerts/notification/config', { params: { workspace_id: workspaceId } }),
+  putNotificationConfig: (workspaceId: number, data: Record<string, unknown>) =>
+    request.put('/alerts/notification/config', data, { params: { workspace_id: workspaceId } }),
+  testNotificationConfig: (workspaceId: number, data: Record<string, unknown>) =>
+    request.post('/alerts/notification/test', data, { params: { workspace_id: workspaceId } }),
 }
 
 // 发布审批
@@ -274,6 +300,8 @@ export const streamingApi = {
     form.append('file', file)
     return request.post(`/streaming/jobs/${id}/upload-jar`, form, { headers: { 'Content-Type': 'multipart/form-data' } })
   },
+  previewSql: (data: { workspace_id: number; sql: string; limit?: number }) =>
+    request.post('/streaming/preview-sql', data),
 }
 
 // 数据服务

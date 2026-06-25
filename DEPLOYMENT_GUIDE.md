@@ -24,3 +24,7 @@
 **CDC→Paimon（EKS）**：RDS MySQL binlog + S3 Paimon warehouse + checkpoint；Stream Studio 内置模板，详见 [docs/CDC_PAIMON_EKS.md](docs/CDC_PAIMON_EKS.md)。
 
 **功能完整度**：见 [docs/PRODUCT_MATURITY.md](docs/PRODUCT_MATURITY.md)。
+
+**Batch 调度与告警**：见 [docs/SCHEDULER_INTEGRATION.md](docs/SCHEDULER_INTEGRATION.md)、[docs/ALERT_NOTIFICATION.md](docs/ALERT_NOTIFICATION.md)。
+
+**GitHub 公开发布**：见 [docs/GITHUB_RELEASE_CHECKLIST.md](docs/GITHUB_RELEASE_CHECKLIST.md)。

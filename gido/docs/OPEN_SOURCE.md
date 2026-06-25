@@ -106,7 +106,9 @@ Python / TypeScript 源文件可在文件头添加上述两行（非强制，但
 python gido/scripts/add_spdx_headers.py
 ```
 
-CI 会在 PR 中校验 `gido/` 源码均已包含 SPDX 头。
+覆盖范围：`gido/` 下 `.py` / `.ts` / `.tsx`，以及 `k8s/flink-sql-runner/src/**/*.java`。
+
+CI 会在 PR 中校验 `gido/` 与 `k8s/flink-sql-runner/src` 均已包含 SPDX 头。
 
 ---
 
@@ -115,3 +117,4 @@ CI 会在 PR 中校验 `gido/` 源码均已包含 SPDX 头。
 - [MIGRATION_FROM_DATAWORKS.md](./MIGRATION_FROM_DATAWORKS.md) — 历史命名迁移  
 - [DEPLOYMENT_SOP.md](./DEPLOYMENT_SOP.md) — 部署  
 - [BRAND.md](./BRAND.md) — 品牌视觉  
+- [../../docs/GITHUB_RELEASE_CHECKLIST.md](../../docs/GITHUB_RELEASE_CHECKLIST.md) — **GitHub 公开发布当日检查清单**

@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
-from app.models.workspace import NodeInstance, TaskNode, Workflow, WorkflowInstance, Workspace
+from app.models.workspace import JobVersion, NodeInstance, TaskNode, Workflow, WorkflowInstance, Workspace
 from app.services.dolphin import map_dolphin_process_instance_state
 
 logger = logging.getLogger(__name__)
@@ -105,6 +105,115 @@ def _process_instance_id_from_row(row: dict) -> Optional[int]:
     return None
 
 
+def _scheduler_instance_id_from_inst(inst: WorkflowInstance) -> Optional[int]:
+    raw = getattr(inst, "scheduler_instance_id", None)
+    if raw is not None and str(raw).strip():
+        s = str(raw).strip()
+        if s.isdigit() or (s.startswith("-") and s[1:].isdigit()):
+            return int(s)
+    try:
+        return int(str(inst.trigger_type).split("ds:")[-1].split("|")[0].strip())
+    except (ValueError, IndexError, AttributeError):
+        return None
+
+
+def _workflow_scheduler_refs(wf: Workflow) -> Tuple[Optional[int], Optional[int]]:
+    project_id = getattr(wf, "scheduler_project_id", None)
+    definition_id = getattr(wf, "scheduler_definition_id", None)
+    try:
+        return int(project_id), int(definition_id)
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _instance_project_code(db: Session, inst: WorkflowInstance, wf: Workflow) -> Optional[int]:
+    """实例优先使用发布版本里的 project，避免重发/DS 重建后用当前 workflow refs 误查旧实例。"""
+    raw_pc = getattr(inst, "scheduler_project_id", None)
+    if raw_pc is not None and str(raw_pc).strip():
+        try:
+            return int(str(raw_pc).strip())
+        except (TypeError, ValueError):
+            pass
+    if getattr(inst, "job_version_id", None):
+        ver = db.query(JobVersion).filter(JobVersion.id == inst.job_version_id).first()
+        if ver and ver.scheduler_project_id:
+            try:
+                return int(ver.scheduler_project_id)
+            except (TypeError, ValueError):
+                pass
+    pc, _ = _workflow_scheduler_refs(wf)
+    return pc
+
+
+def _instance_definition_code(db: Session, inst: WorkflowInstance, wf: Workflow) -> Optional[int]:
+    raw_def = getattr(inst, "scheduler_definition_id", None)
+    if raw_def is not None and str(raw_def).strip():
+        try:
+            return int(str(raw_def).strip())
+        except (TypeError, ValueError):
+            pass
+    if getattr(inst, "job_version_id", None):
+        ver = db.query(JobVersion).filter(JobVersion.id == inst.job_version_id).first()
+        if ver and ver.scheduler_definition_id:
+            try:
+                return int(ver.scheduler_definition_id)
+            except (TypeError, ValueError):
+                pass
+    _, definition_id = _workflow_scheduler_refs(wf)
+    return definition_id
+
+
+def _scheduler_run_key(engine: str, project_id: Any, definition_id: Any, instance_id: Any) -> str:
+    return f"{engine or 'dolphin'}:{project_id or ''}:{definition_id or ''}:{instance_id or ''}"[:128]
+
+
+def _row_raw_state(row: dict) -> Optional[str]:
+    for key in ("state", "executionStatus", "execution_status", "processInstanceState", "process_instance_state"):
+        if row.get(key) is not None and str(row.get(key)).strip() != "":
+            return str(row.get(key)).strip()[:128]
+    return None
+
+
+def _mark_instance_scheduler_lost(inst: WorkflowInstance, reason: str) -> bool:
+    if inst.status not in ("running", "pending"):
+        return False
+    inst.status = "failed"
+    inst.finished_at = datetime.utcnow()
+    inst.scheduler_error = reason[:2000] if reason else None
+    inst.last_synced_at = datetime.utcnow()
+    if reason:
+        existing = str(inst.trigger_type or "")
+        if "scheduler_lost" not in existing:
+            inst.trigger_type = (existing + "|scheduler_lost")[:128] if existing else "scheduler_lost"
+    return True
+
+
+def _active_version_id(db: Session, wf: Workflow) -> Optional[int]:
+    if getattr(wf, "active_version_id", None):
+        return int(wf.active_version_id)
+    row = (
+        db.query(JobVersion)
+        .filter(JobVersion.workflow_id == wf.id, JobVersion.status == "active")
+        .order_by(JobVersion.version_no.desc(), JobVersion.id.desc())
+        .first()
+    )
+    return row.id if row else None
+
+
+def _task_instance_id_from_row(row: dict) -> Optional[str]:
+    for key in ("id", "taskInstanceId", "task_instance_id"):
+        if row.get(key) is not None:
+            return str(row.get(key))
+    return None
+
+
+def _task_code_from_row(row: dict) -> Optional[str]:
+    for key in ("taskCode", "task_code", "taskDefinitionCode", "task_definition_code"):
+        if row.get(key) is not None:
+            return str(row.get(key))
+    return None
+
+
 def _name_to_node_id(db: Session, wf: Workflow) -> Dict[str, int]:
     dag = wf.dag_config or {}
     m: Dict[str, int] = {}
@@ -152,10 +261,26 @@ def _upsert_node_instances_from_ds_tasks(
         )
         t_start = _parse_dolphin_api_time(t.get("startTime") or t.get("start_time"), tz_w)
         t_end = _parse_dolphin_api_time(t.get("endTime") or t.get("end_time"), tz_w)
+        task_instance_id = _task_instance_id_from_row(t)
+        task_code = _task_code_from_row(t)
+        raw_task_state = _row_raw_state(t)
+        sync_now = datetime.utcnow()
         if ni:
             if ni.status != t_dw:
                 ni.status = t_dw
                 changed = True
+            snapshot_updates = {
+                "scheduler_engine": getattr(inst, "scheduler_engine", None) or "dolphin",
+                "scheduler_project_id": getattr(inst, "scheduler_project_id", None),
+                "scheduler_definition_id": getattr(inst, "scheduler_definition_id", None),
+                "scheduler_instance_id": getattr(inst, "scheduler_instance_id", None),
+                "scheduler_state_raw": raw_task_state,
+                "last_synced_at": sync_now,
+            }
+            for key, val in snapshot_updates.items():
+                if val is not None and getattr(ni, key, None) != val:
+                    setattr(ni, key, val)
+                    changed = True
             if t_start and ni.started_at != t_start:
                 ni.started_at = t_start
                 changed = True
@@ -167,18 +292,45 @@ def _upsert_node_instances_from_ds_tasks(
                 if ni.finished_at is not None:
                     ni.finished_at = None
                     changed = True
+            if task_instance_id and getattr(ni, "scheduler_task_instance_id", None) != task_instance_id:
+                ni.scheduler_engine = "dolphin"
+                ni.scheduler_task_instance_id = task_instance_id
+                changed = True
+            if task_code and getattr(ni, "scheduler_task_code", None) != task_code:
+                ni.scheduler_engine = "dolphin"
+                ni.scheduler_task_code = task_code
+                changed = True
         else:
-            db.add(
-                NodeInstance(
-                    workflow_instance_id=inst.id,
-                    node_id=node_id,
-                    status=t_dw,
-                    started_at=t_start or datetime.utcnow(),
-                    finished_at=t_end if t_dw != "running" else None,
-                    log_content="",
-                )
+            ni = NodeInstance(
+                workflow_instance_id=inst.id,
+                node_id=node_id,
+                status=t_dw,
+                started_at=t_start or datetime.utcnow(),
+                finished_at=t_end if t_dw != "running" else None,
+                log_content="",
+                scheduler_engine=getattr(inst, "scheduler_engine", None) or "dolphin",
+                scheduler_project_id=getattr(inst, "scheduler_project_id", None),
+                scheduler_definition_id=getattr(inst, "scheduler_definition_id", None),
+                scheduler_instance_id=getattr(inst, "scheduler_instance_id", None),
+                scheduler_task_instance_id=task_instance_id,
+                scheduler_task_code=task_code,
+                scheduler_state_raw=raw_task_state,
+                last_synced_at=sync_now,
             )
+            db.add(ni)
             changed = True
+        if t_dw == "failed":
+            try:
+                from app.services.alert_center import open_instance_alert
+
+                open_instance_alert(
+                    db,
+                    workflow_instance=inst,
+                    node_instance=ni,
+                    message=f"节点 {tname or node_id} 执行失败",
+                )
+            except Exception:
+                logger.debug("open node alert failed", exc_info=True)
         touched += 1
     return changed, touched
 
@@ -202,8 +354,8 @@ def _business_date_from_row(row: dict, tz_name: str) -> Optional[str]:
 
 def sync_from_dolphin_definitions(db: Session, ds_client: Any) -> Dict[str, int]:
     """
-    对每个已发布到 DS 的工作流（dag 含 ds_project_code / ds_process_code），
-    从 Dolphin 拉最近流程实例并 upsert WorkflowInstance；再拉任务实例填充 NodeInstance。
+    对每个已发布到生产调度的工作流，从执行引擎拉最近流程实例并 upsert WorkflowInstance；
+    再拉任务实例填充 NodeInstance。
     """
     ingested = 0
     updated = 0
@@ -213,14 +365,10 @@ def sync_from_dolphin_definitions(db: Session, ds_client: Any) -> Dict[str, int]
 
     workflows = db.query(Workflow).order_by(Workflow.id.asc()).all()
     for wf in workflows:
-        dag = wf.dag_config or {}
-        try:
-            pc = int(dag.get("ds_project_code") or 0)
-            pcode = int(dag.get("ds_process_code") or 0)
-        except (TypeError, ValueError):
-            continue
+        pc, pcode = _workflow_scheduler_refs(wf)
         if not pc or not pcode:
             continue
+        active_vid = _active_version_id(db, wf)
         definitions_scanned += 1
         name_map = _name_to_node_id(db, wf)
         tz_w = _workspace_tz_for_wf(db, wf)
@@ -239,10 +387,21 @@ def sync_from_dolphin_definitions(db: Session, ds_client: Any) -> Dict[str, int]
                     db.query(WorkflowInstance)
                     .filter(
                         WorkflowInstance.workflow_id == wf.id,
-                        WorkflowInstance.trigger_type.like(f"%ds:{ds_pi_id}%"),
+                        WorkflowInstance.scheduler_instance_id == str(ds_pi_id),
+                        WorkflowInstance.job_version_id == active_vid,
                     )
                     .first()
                 )
+                if inst is None:
+                    inst = (
+                        db.query(WorkflowInstance)
+                        .filter(
+                            WorkflowInstance.workflow_id == wf.id,
+                            WorkflowInstance.trigger_type.like(f"%ds:{ds_pi_id}%"),
+                            WorkflowInstance.job_version_id == active_vid,
+                        )
+                        .first()
+                    )
                 cmd_type = _row_command_type(row)
                 raw_pi_state = row.get("state")
                 if raw_pi_state is None or raw_pi_state == "":
@@ -264,13 +423,27 @@ def sync_from_dolphin_definitions(db: Session, ds_client: Any) -> Dict[str, int]
                 ended = _parse_dolphin_api_time(row.get("endTime") or row.get("end_time"), tz_w)
                 biz = _business_date_from_row(row, tz_w)
                 ct_str = str(cmd_type)[:64] if cmd_type else None
+                raw_state_str = str(raw_pi_state)[:128] if raw_pi_state is not None else None
+                active_ver = db.query(JobVersion).filter(JobVersion.id == active_vid).first() if active_vid else None
+                active_version_no = getattr(active_ver, "version_no", None)
+                run_key = _scheduler_run_key("dolphin", pc, pcode, ds_pi_id)
+                sync_now = datetime.utcnow()
 
                 if inst is None:
                     inst = WorkflowInstance(
                         workflow_id=wf.id,
+                        job_version_id=active_vid,
                         status=dw_status,
                         trigger_type=new_trigger[:128],
                         dolphin_command_type=ct_str,
+                        scheduler_engine="dolphin",
+                        scheduler_project_id=str(pc),
+                        scheduler_definition_id=str(pcode),
+                        scheduler_definition_version=active_version_no,
+                        scheduler_instance_id=str(ds_pi_id),
+                        scheduler_run_key=run_key,
+                        scheduler_state_raw=raw_state_str,
+                        last_synced_at=sync_now,
                         business_date=biz,
                         started_at=started or datetime.utcnow(),
                         finished_at=ended if dw_status != "running" else None,
@@ -289,9 +462,40 @@ def sync_from_dolphin_definitions(db: Session, ds_client: Any) -> Dict[str, int]
                     if (inst.trigger_type or "") != new_trigger and len(new_trigger) <= 128:
                         inst.trigger_type = new_trigger[:128]
                         changed = True
+                    if getattr(inst, "scheduler_engine", None) != "dolphin":
+                        inst.scheduler_engine = "dolphin"
+                        changed = True
+                    snapshot_updates = {
+                        "scheduler_project_id": str(pc),
+                        "scheduler_definition_id": str(pcode),
+                        "scheduler_definition_version": active_version_no,
+                        "scheduler_run_key": run_key,
+                        "scheduler_state_raw": raw_state_str,
+                        "scheduler_error": None,
+                        "last_synced_at": sync_now,
+                    }
+                    for key, val in snapshot_updates.items():
+                        if val is not None and getattr(inst, key, None) != val:
+                            setattr(inst, key, val)
+                            changed = True
+                    if getattr(inst, "scheduler_instance_id", None) != str(ds_pi_id):
+                        inst.scheduler_instance_id = str(ds_pi_id)
+                        changed = True
+                    if getattr(inst, "job_version_id", None) is None:
+                        vid = _active_version_id(db, wf)
+                        if vid:
+                            inst.job_version_id = vid
+                            changed = True
                     if inst.status != dw_status:
                         inst.status = dw_status
                         changed = True
+                        if dw_status == "failed":
+                            try:
+                                from app.services.alert_center import open_instance_alert
+
+                                open_instance_alert(db, workflow_instance=inst, message=f"实例 #{inst.id} 执行失败")
+                            except Exception:
+                                logger.debug("open workflow alert failed", exc_info=True)
                     if started and inst.started_at != started:
                         inst.started_at = started
                         changed = True
@@ -347,36 +551,73 @@ def patch_instances_from_ds_detail(
     cmd_filled = 0
     candidates = (
         db.query(WorkflowInstance)
-        .filter(WorkflowInstance.trigger_type.like("%ds:%"))
+        .filter(
+            (WorkflowInstance.scheduler_instance_id.isnot(None))
+            | (WorkflowInstance.trigger_type.like("%ds:%"))
+        )
         .order_by(WorkflowInstance.id.desc())
         .limit(limit)
         .all()
     )
     for inst in candidates:
-        try:
-            ds_instance_id = int(str(inst.trigger_type).split("ds:")[-1].split("|")[0].strip())
-        except (ValueError, IndexError):
+        ds_instance_id = _scheduler_instance_id_from_inst(inst)
+        if ds_instance_id is None:
             continue
         wf = db.query(Workflow).filter(Workflow.id == inst.workflow_id).first()
         if not wf:
             continue
-        dag = wf.dag_config or {}
-        project_code = dag.get("ds_project_code")
+        project_code = _instance_project_code(db, inst, wf)
         if not project_code:
             continue
         try:
             ds_info = ds_client.get_instance_status(int(project_code), ds_instance_id)
-        except Exception:
+        except Exception as e:
+            msg = str(e)
+            lowered = msg.lower()
+            if any(x in lowered for x in ("not found", "not exist", "does not exist", "not_exists", "不存在")):
+                if _mark_instance_scheduler_lost(inst, f"调度实例不存在或已丢失: {msg}"):
+                    synced += 1
+                    try:
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                continue
             db.rollback()
             continue
         ct = ds_info.get("command_type")
         if ct and (getattr(inst, "dolphin_command_type", None) or "") != str(ct):
             inst.dolphin_command_type = str(ct)[:64]
             cmd_filled += 1
+        if getattr(inst, "scheduler_engine", None) != "dolphin":
+            inst.scheduler_engine = "dolphin"
+        definition_code = _instance_definition_code(db, inst, wf)
+        version_no = None
+        if getattr(inst, "job_version_id", None):
+            ver = db.query(JobVersion).filter(JobVersion.id == inst.job_version_id).first()
+            version_no = getattr(ver, "version_no", None)
+        inst.scheduler_project_id = str(project_code)
+        if definition_code is not None:
+            inst.scheduler_definition_id = str(definition_code)
+        if version_no is not None:
+            inst.scheduler_definition_version = version_no
+        inst.scheduler_run_key = _scheduler_run_key("dolphin", project_code, definition_code, ds_instance_id)
+        raw_state = ds_info.get("state")
+        inst.scheduler_state_raw = str(raw_state)[:128] if raw_state is not None else None
+        inst.scheduler_error = None
+        inst.last_synced_at = datetime.utcnow()
+        if getattr(inst, "scheduler_instance_id", None) != str(ds_instance_id):
+            inst.scheduler_instance_id = str(ds_instance_id)
         dw_status = ds_info.get("state_dw") or map_dolphin_process_instance_state(ds_info.get("state"))
         if inst.status != dw_status:
             inst.status = dw_status
             synced += 1
+            if dw_status == "failed":
+                try:
+                    from app.services.alert_center import open_instance_alert
+
+                    open_instance_alert(db, workflow_instance=inst, message=f"实例 #{inst.id} 执行失败")
+                except Exception:
+                    logger.debug("open workflow alert failed", exc_info=True)
         tz_w = _workspace_tz_for_wf(db, wf)
         st_t = _parse_dolphin_api_time(ds_info.get("startTime") or ds_info.get("start_time"), tz_w)
         if st_t and (not inst.started_at or inst.started_at != st_t):
@@ -404,27 +645,73 @@ def patch_instances_from_ds_detail(
 
 def _apply_ds_poll_to_instance(db: Session, inst: WorkflowInstance, wf: Workflow, ds_client: Any) -> bool:
     """根据 Dolphin 流程实例详情更新一条工作流实例。返回是否有变更（由调用方 commit）。"""
-    dag = wf.dag_config or {}
-    project_code = dag.get("ds_project_code")
+    project_code = _instance_project_code(db, inst, wf)
     if not project_code:
         return False
-    try:
-        ds_instance_id = int(str(inst.trigger_type).split("ds:")[-1].split("|")[0].strip())
-    except (ValueError, IndexError):
+    ds_instance_id = _scheduler_instance_id_from_inst(inst)
+    if ds_instance_id is None:
         return False
     try:
         ds_info = ds_client.get_instance_status(int(project_code), ds_instance_id)
-    except Exception:
+    except Exception as e:
+        msg = str(e)
+        lowered = msg.lower()
+        if any(x in lowered for x in ("not found", "not exist", "does not exist", "not_exists", "不存在")):
+            return _mark_instance_scheduler_lost(inst, f"调度实例不存在或已丢失: {msg}")
+        logger.debug(
+            "get_instance_status failed workflow_instance=%s project=%s ds_instance=%s: %s",
+            inst.id,
+            project_code,
+            ds_instance_id,
+            e,
+            exc_info=True,
+        )
         return False
     changed = False
     ct = ds_info.get("command_type")
     if ct and (getattr(inst, "dolphin_command_type", None) or "") != str(ct):
         inst.dolphin_command_type = str(ct)[:64]
         changed = True
+    if getattr(inst, "scheduler_engine", None) != "dolphin":
+        inst.scheduler_engine = "dolphin"
+        changed = True
+    if getattr(inst, "scheduler_instance_id", None) != str(ds_instance_id):
+        inst.scheduler_instance_id = str(ds_instance_id)
+        changed = True
+    definition_code = _instance_definition_code(db, inst, wf)
+    version_no = None
+    if getattr(inst, "job_version_id", None):
+        ver = db.query(JobVersion).filter(JobVersion.id == inst.job_version_id).first()
+        version_no = getattr(ver, "version_no", None)
+    snapshot_updates = {
+        "scheduler_project_id": str(project_code),
+        "scheduler_definition_id": str(definition_code) if definition_code is not None else None,
+        "scheduler_definition_version": version_no,
+        "scheduler_run_key": _scheduler_run_key("dolphin", project_code, definition_code, ds_instance_id),
+        "scheduler_state_raw": str(ds_info.get("state"))[:128] if ds_info.get("state") is not None else None,
+        "scheduler_error": None,
+        "last_synced_at": datetime.utcnow(),
+    }
+    for key, val in snapshot_updates.items():
+        if val is not None and getattr(inst, key, None) != val:
+            setattr(inst, key, val)
+            changed = True
+    if getattr(inst, "job_version_id", None) is None:
+        vid = _active_version_id(db, wf)
+        if vid:
+            inst.job_version_id = vid
+            changed = True
     dw_status = ds_info.get("state_dw") or map_dolphin_process_instance_state(ds_info.get("state"))
     if inst.status != dw_status:
         inst.status = dw_status
         changed = True
+        if dw_status == "failed":
+            try:
+                from app.services.alert_center import open_instance_alert
+
+                open_instance_alert(db, workflow_instance=inst, message=f"实例 #{inst.id} 执行失败")
+            except Exception:
+                logger.debug("open workflow alert failed", exc_info=True)
     tz_w = _workspace_tz_for_wf(db, wf)
     st_t = _parse_dolphin_api_time(ds_info.get("startTime") or ds_info.get("start_time"), tz_w)
     if st_t and (not inst.started_at or inst.started_at != st_t):
@@ -467,7 +754,8 @@ def refresh_ds_workflow_instance_from_dolphin(
         .filter(
             Workflow.workspace_id == workspace_id,
             WorkflowInstance.id == workflow_instance_id,
-            WorkflowInstance.trigger_type.like("%ds:%"),
+            (WorkflowInstance.scheduler_instance_id.isnot(None))
+            | (WorkflowInstance.trigger_type.like("%ds:%")),
         )
         .first()
     )
@@ -508,7 +796,8 @@ def refresh_running_ds_instances_for_workspace(db: Session, workspace_id: int, *
         .filter(
             Workflow.workspace_id == workspace_id,
             WorkflowInstance.status.in_(("running", "pending")),
-            WorkflowInstance.trigger_type.like("%ds:%"),
+            (WorkflowInstance.scheduler_instance_id.isnot(None))
+            | (WorkflowInstance.trigger_type.like("%ds:%")),
         )
         .order_by(WorkflowInstance.id.desc())
         .limit(limit)
@@ -544,7 +833,8 @@ def refresh_running_ds_instances_for_workflow(db: Session, wf_id: int, *, limit:
         .filter(
             WorkflowInstance.workflow_id == wf_id,
             WorkflowInstance.status.in_(("running", "pending")),
-            WorkflowInstance.trigger_type.like("%ds:%"),
+            (WorkflowInstance.scheduler_instance_id.isnot(None))
+            | (WorkflowInstance.trigger_type.like("%ds:%")),
         )
         .order_by(WorkflowInstance.id.desc())
         .limit(limit)

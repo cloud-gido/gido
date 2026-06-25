@@ -11,7 +11,7 @@ import logging
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.core import perm_codes as PC
-from app.models.workspace import Workflow, WorkflowInstance, NodeInstance, TaskNode, User
+from app.models.workspace import BackfillRequest, JobVersion, Workflow, WorkflowInstance, NodeInstance, TaskNode, User
 from app.services.ds_runtime import get_dolphin_runtime, refresh_ds_client
 from app.services.rbac import assert_workspace_data_capability, require_workflow, workspace_data_full_control
 from app.services.publish_approval import assert_can_publish_production
@@ -45,8 +45,14 @@ class WorkflowOut(BaseModel):
     created_by_username: Optional[str] = None
     updated_by: Optional[int] = None
     updated_by_username: Optional[str] = None
+    status: Optional[str] = None
+    active_version_id: Optional[int] = None
+    active_version_no: Optional[int] = None
+    scheduler_engine: Optional[str] = None
+    scheduler_definition_id: Optional[str] = None
+    scheduler_project_id: Optional[str] = None
     dolphin_workflow_url: Optional[str] = None
-    """已发布到 Dolphin 后，若本地定义/调度与引擎可能不一致，为 True（需再次「发布DS」对齐）。"""
+    """已发布到生产调度后，若本地定义/调度与引擎可能不一致，为 True（需再次发布对齐）。"""
     needs_ds_republish: Optional[bool] = None
 
     class Config:
@@ -64,12 +70,15 @@ def workflow_to_out(wf: Workflow, db: Session) -> WorkflowOut:
     from app.services.dolphin import dolphin_workflow_console_url
     dag = wf.dag_config or {}
     url = None
-    if get_dolphin_runtime(db, wf.workspace_id).enabled and dag.get("ds_project_code") and dag.get("ds_process_code"):
+    project_id = getattr(wf, "scheduler_project_id", None)
+    definition_id = getattr(wf, "scheduler_definition_id", None)
+    if get_dolphin_runtime(db, wf.workspace_id).enabled and project_id and definition_id:
         url = dolphin_workflow_console_url(
-            dag["ds_project_code"], f"dw_{wf.id}_{wf.name}", db=db, workspace_id=wf.workspace_id
+            int(project_id), f"dw_{wf.id}_{wf.name}", db=db, workspace_id=wf.workspace_id
         )
     meta = dag.get("ds_meta") or {}
     needs = bool(meta.get("needs_republish"))
+    active_version = _active_job_version(db, wf)
     cb, cbn = _wf_user_brief(db, wf.created_by)
     ub, ubn = _wf_user_brief(db, getattr(wf, "updated_by", None))
     return WorkflowOut(
@@ -87,8 +96,27 @@ def workflow_to_out(wf: Workflow, db: Session) -> WorkflowOut:
         created_by_username=cbn,
         updated_by=ub,
         updated_by_username=ubn,
+        status=getattr(wf, "status", None),
+        active_version_id=getattr(wf, "active_version_id", None),
+        active_version_no=getattr(active_version, "version_no", None),
+        scheduler_engine=getattr(wf, "scheduler_engine", None) or "dolphin",
+        scheduler_definition_id=str(definition_id) if definition_id is not None else None,
+        scheduler_project_id=str(project_id) if project_id is not None else None,
         dolphin_workflow_url=url,
-        needs_ds_republish=needs if dag.get("ds_process_code") is not None else None,
+        needs_ds_republish=needs if definition_id is not None else None,
+    )
+
+
+def _active_job_version(db: Session, wf: Workflow) -> Optional[JobVersion]:
+    if getattr(wf, "active_version_id", None):
+        v = db.query(JobVersion).filter(JobVersion.id == wf.active_version_id, JobVersion.workflow_id == wf.id).first()
+        if v:
+            return v
+    return (
+        db.query(JobVersion)
+        .filter(JobVersion.workflow_id == wf.id, JobVersion.status == "active")
+        .order_by(JobVersion.version_no.desc(), JobVersion.id.desc())
+        .first()
     )
 
 
@@ -115,7 +143,7 @@ def create_workflow(wf_in: WorkflowCreate, db: Session = Depends(get_db), curren
 
 @router.post("/{wf_id}/publish-to-ds")
 def publish_to_ds(wf_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """将工作流发布到 DolphinScheduler（定义上线 + 可选定时）；与脚本 bulk 发布共用同一套校验与合并逻辑。"""
+    """将工作流发布到生产调度引擎（定义上线 + 可选定时）；与脚本 bulk 发布共用同一套校验与合并逻辑。"""
     from app.services.workflow_ds_publish import publish_workflow_to_ds
 
     wf = require_workflow(db, current_user, wf_id, "developer", PC.GIDO_BATCH_WORKFLOW_RUN)
@@ -123,11 +151,11 @@ def publish_to_ds(wf_id: int, db: Session = Depends(get_db), current_user: User 
     if not get_dolphin_runtime(db, wf.workspace_id).enabled:
         raise HTTPException(
             status_code=400,
-            detail="DolphinScheduler 未启用：请在本工作空间「空间设置」配置，或设置环境变量 DS_ENABLED=true",
+            detail="生产调度引擎未启用：请在本工作空间「空间设置」配置，或设置环境变量 DS_ENABLED=true",
         )
     refresh_ds_client(db, wf.workspace_id)
     try:
-        out = publish_workflow_to_ds(db, wf)
+        out = publish_workflow_to_ds(db, wf, published_by=current_user.id)
     except RuntimeError as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
@@ -136,13 +164,101 @@ def publish_to_ds(wf_id: int, db: Session = Depends(get_db), current_user: User 
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"同步 DS 失败: {e}")
+        raise HTTPException(status_code=500, detail=f"发布到生产调度失败: {e}")
     wf2 = db.query(Workflow).filter(Workflow.id == wf_id).first()
     if wf2:
         wf2.updated_by = current_user.id
         wf2.updated_at = datetime.utcnow()
         db.commit()
-    return {"message": "已同步到 DolphinScheduler", **out}
+    return {"message": "已发布到生产调度", **out}
+
+
+def _require_scheduler_definition(wf: Workflow) -> Tuple[str, str]:
+    project_id = getattr(wf, "scheduler_project_id", None)
+    definition_id = getattr(wf, "scheduler_definition_id", None)
+    if not project_id or not definition_id:
+        raise HTTPException(status_code=400, detail="工作流尚未发布生产版本")
+    return str(project_id), str(definition_id)
+
+
+def _scheduler_engine_for_workflow(wf: Workflow):
+    from app.services.scheduler_engine import get_scheduler_engine
+
+    return get_scheduler_engine(getattr(wf, "scheduler_engine", None) or "dolphin")
+
+
+@router.post("/{wf_id}/pause")
+def pause_workflow_schedule(wf_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """暂停周期调度：保留生产定义和历史，禁止自动周期触发；仍允许手动运行/补数。"""
+    wf = require_workflow(db, current_user, wf_id, "developer", PC.GIDO_BATCH_WORKFLOW_RUN)
+    assert_can_publish_production(db, current_user, wf.workspace_id)
+    project_id, definition_id = _require_scheduler_definition(wf)
+    if not get_dolphin_runtime(db, wf.workspace_id).enabled:
+        raise HTTPException(status_code=400, detail="生产调度引擎未启用")
+    refresh_ds_client(db, wf.workspace_id)
+    try:
+        count = _scheduler_engine_for_workflow(wf).pause_schedule(project_id, definition_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"暂停调度失败: {e}")
+    wf.status = "paused"
+    wf.is_active = False
+    wf.updated_by = current_user.id
+    wf.updated_at = datetime.utcnow()
+    db.commit()
+    return {"message": "已暂停周期调度", "workflow_id": wf.id, "status": wf.status, "schedules_touched": count}
+
+
+@router.post("/{wf_id}/resume")
+def resume_workflow_schedule(wf_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """恢复周期调度：要求已有生产定义；没有调度配置时按当前 cron 重新设置。"""
+    wf = require_workflow(db, current_user, wf_id, "developer", PC.GIDO_BATCH_WORKFLOW_RUN)
+    assert_can_publish_production(db, current_user, wf.workspace_id)
+    if getattr(wf, "status", None) == "offline":
+        raise HTTPException(status_code=400, detail="工作流已下线，请重新发布上线")
+    project_id, definition_id = _require_scheduler_definition(wf)
+    if not get_dolphin_runtime(db, wf.workspace_id).enabled:
+        raise HTTPException(status_code=400, detail="生产调度引擎未启用")
+    refresh_ds_client(db, wf.workspace_id)
+    engine = _scheduler_engine_for_workflow(wf)
+    try:
+        engine.online_definition(project_id, definition_id)
+        count = 0
+        if wf.schedule_type == "cron" and (wf.cron_expression or "").strip():
+            count = engine.resume_schedule(project_id, definition_id)
+            if count == 0:
+                engine.set_schedule(project_id, definition_id, wf.cron_expression.strip())
+                count = 1
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"恢复调度失败: {e}")
+    wf.status = "published"
+    wf.is_active = True
+    wf.updated_by = current_user.id
+    wf.updated_at = datetime.utcnow()
+    db.commit()
+    return {"message": "已恢复生产调度", "workflow_id": wf.id, "status": wf.status, "schedules_touched": count}
+
+
+@router.post("/{wf_id}/offline")
+def offline_workflow(wf_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """任务下线：停止周期并下线生产定义，保留 GIDO 定义、版本和历史实例。"""
+    wf = require_workflow(db, current_user, wf_id, "developer", PC.GIDO_BATCH_WORKFLOW_RUN)
+    assert_can_publish_production(db, current_user, wf.workspace_id)
+    project_id, definition_id = _require_scheduler_definition(wf)
+    if not get_dolphin_runtime(db, wf.workspace_id).enabled:
+        raise HTTPException(status_code=400, detail="生产调度引擎未启用")
+    refresh_ds_client(db, wf.workspace_id)
+    engine = _scheduler_engine_for_workflow(wf)
+    try:
+        count = engine.pause_schedule(project_id, definition_id)
+        engine.offline_definition(project_id, definition_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"任务下线失败: {e}")
+    wf.status = "offline"
+    wf.is_active = False
+    wf.updated_by = current_user.id
+    wf.updated_at = datetime.utcnow()
+    db.commit()
+    return {"message": "任务已下线，历史实例已保留", "workflow_id": wf.id, "status": wf.status, "schedules_touched": count}
 
 
 @router.get("/{wf_id}", response_model=WorkflowOut)
@@ -165,15 +281,13 @@ def update_workflow(wf_id: int, wf_in: WorkflowCreate, db: Session = Depends(get
         assert_cron_when_scheduled(wf.schedule_type, wf.cron_expression)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    dag = wf.dag_config or {}
-    if dag.get("ds_process_code") is not None and bool(dirty_ds & patch.keys()):
+    if getattr(wf, "scheduler_definition_id", None) is not None and bool(dirty_ds & patch.keys()):
         mark_ds_needs_republish(wf)
     db.commit()
     db.refresh(wf)
     # 已发布到 Dolphin 后，仅点「保存」不会走 publish-to-ds；Cron 若不推送则 DS 侧仍用旧表达式或从未上线定时
     if get_dolphin_runtime(db, wf.workspace_id).enabled and wf.schedule_type == "cron" and (wf.cron_expression or "").strip():
-        dag = wf.dag_config or {}
-        pr, pc = dag.get("ds_project_code"), dag.get("ds_process_code")
+        pr, pc = getattr(wf, "scheduler_project_id", None), getattr(wf, "scheduler_definition_id", None)
         if pr is not None and pc is not None:
             try:
                 from app.services.dolphin import ds_client
@@ -181,16 +295,17 @@ def update_workflow(wf_id: int, wf_in: WorkflowCreate, db: Session = Depends(get
                 refresh_ds_client(db, wf.workspace_id)
                 ds_client.set_schedule(int(pr), int(pc), wf.cron_expression.strip())
             except Exception as e:
-                logger.warning("保存后同步 DS Cron 失败（可再点「发布DS」重试）: %s", e)
+                logger.warning("保存后同步调度 Cron 失败（可再点「发布生产」重试）: %s", e)
     return workflow_to_out(wf, db)
 
 
 @router.delete("/{wf_id}")
 def delete_workflow(wf_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     wf = require_workflow(db, current_user, wf_id, "developer", PC.GIDO_BATCH_WORKFLOW_WRITE)
-    dag = wf.dag_config or {}
-    ds_process_code = dag.get("ds_process_code")
-    ds_project_code = dag.get("ds_project_code")
+    if getattr(wf, "scheduler_definition_id", None) and getattr(wf, "status", None) not in ("offline", "draft"):
+        raise HTTPException(status_code=400, detail="已上线工作流不能直接删除，请先执行「任务下线」以保留历史实例")
+    ds_process_code = getattr(wf, "scheduler_definition_id", None)
+    ds_project_code = getattr(wf, "scheduler_project_id", None)
     dolphin_deleted = False
     dolphin_note: Optional[str] = None
     if get_dolphin_runtime(db, wf.workspace_id).enabled and ds_process_code and ds_project_code:
@@ -212,29 +327,38 @@ def delete_workflow(wf_id: int, db: Session = Depends(get_db), current_user: Use
     db.commit()
     msg = "删除成功"
     if ds_process_code and dolphin_deleted:
-        msg = "已删除工作流，并已从 Dolphin 移除对应流程定义"
+        msg = "已删除工作流，并已从调度引擎移除对应流程定义"
     elif ds_process_code and dolphin_note:
-        msg = f"工作流已删除；Dolphin 流程未删除（{dolphin_note}），请在 DS 控制台手动清理"
+        msg = f"工作流已删除；调度引擎流程未删除（{dolphin_note}），请在管理员诊断入口手动清理"
     return {"message": msg, "dolphin_deleted": dolphin_deleted, "dolphin_note": dolphin_note}
 
 
 @router.post("/{wf_id}/run")
 def run_workflow(wf_id: int, business_date: Optional[str] = None, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """手动触发：DS 开启时仅走 DolphinScheduler；否则走本地执行（开发环境）。"""
+    """手动触发：生产调度开启时走调度引擎；否则走本地执行（开发环境）。"""
     from app.services.alert import alert_workflow_failed
     from app.services.lineage import auto_parse_lineage
     wf = require_workflow(db, current_user, wf_id, "developer", PC.GIDO_BATCH_WORKFLOW_RUN)
+    if getattr(wf, "status", None) == "offline":
+        raise HTTPException(status_code=400, detail="工作流已下线，请重新发布上线后再运行")
 
     if get_dolphin_runtime(db, wf.workspace_id).enabled:
-        dag = wf.dag_config or {}
-        process_code = dag.get("ds_process_code")
-        project_code = dag.get("ds_project_code")
+        version = _active_job_version(db, wf)
+        if not version:
+            raise HTTPException(status_code=400, detail="工作流尚未发布生产版本，请先发布")
+        process_code = version.scheduler_definition_id
+        project_code = version.scheduler_project_id
         if not process_code or not project_code:
-            raise HTTPException(status_code=400, detail="工作流尚未发布到 DolphinScheduler，请先发布上线")
-        from app.services.dolphin import ds_client
+            raise HTTPException(status_code=400, detail="工作流尚未发布到生产调度，请先发布上线")
+        from app.services.scheduler_engine import get_scheduler_engine
         refresh_ds_client(db, wf.workspace_id)
         instance = WorkflowInstance(
             workflow_id=wf_id, status="running", trigger_type="manual",
+            job_version_id=version.id,
+            scheduler_engine=version.scheduler_engine or "dolphin",
+            scheduler_project_id=str(project_code),
+            scheduler_definition_id=str(process_code),
+            scheduler_definition_version=version.version_no,
             business_date=business_date or datetime.utcnow().strftime("%Y-%m-%d"),
             started_at=datetime.utcnow(),
             submitted_by=current_user.id,
@@ -243,20 +367,27 @@ def run_workflow(wf_id: int, business_date: Optional[str] = None, db: Session = 
         db.commit()
         db.refresh(instance)
         try:
-            ds_instance_id = ds_client.run_process(project_code, process_code, business_date)
-            instance.trigger_type = f"manual|ds:{ds_instance_id}"
+            engine = get_scheduler_engine(version.scheduler_engine or "dolphin")
+            ref = engine.trigger(str(project_code), str(process_code), business_date=business_date)
+            instance.scheduler_engine = ref.engine
+            instance.scheduler_instance_id = ref.instance_id
+            instance.scheduler_run_key = f"{ref.engine}:{project_code}:{process_code}:{ref.instance_id}"[:128]
+            instance.trigger_type = "manual"
             db.commit()
             return {
                 "instance_id": instance.id, "status": "running",
-                "ds_instance_id": ds_instance_id, "message": "已提交到 DolphinScheduler",
+                "scheduler_instance_id": ref.instance_id,
+                "ds_instance_id": ref.instance_id,
+                "message": "已提交到生产调度",
             }
         except Exception as e:
             instance.status = "failed"
             db.commit()
-            raise HTTPException(status_code=500, detail=f"Dolphin 触发失败: {e}")
+            raise HTTPException(status_code=500, detail=f"生产调度触发失败: {e}")
 
     instance = WorkflowInstance(
         workflow_id=wf_id,
+        job_version_id=getattr(_active_job_version(db, wf), "id", None),
         status="running",
         trigger_type="manual",
         business_date=business_date or datetime.utcnow().strftime("%Y-%m-%d"),
@@ -375,7 +506,7 @@ def list_instances(wf_id: int, db: Session = Depends(get_db), current_user: User
 
 @router.post("/{wf_id}/instances/{inst_id}/rerun")
 def rerun_instance(wf_id: int, inst_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """失败实例重跑：DS 开启时提交 Dolphin；否则进入 pending 由本地执行器处理。"""
+    """失败实例重跑：生产调度开启时提交调度引擎；否则进入 pending 由本地执行器处理。"""
     wf = require_workflow(db, current_user, wf_id, "developer", PC.GIDO_BATCH_WORKFLOW_RUN)
     inst = db.query(WorkflowInstance).filter(
         WorkflowInstance.id == inst_id,
@@ -384,23 +515,39 @@ def rerun_instance(wf_id: int, inst_id: int, db: Session = Depends(get_db), curr
     if not inst:
         raise HTTPException(status_code=404, detail="实例不存在")
     if get_dolphin_runtime(db, wf.workspace_id).enabled:
-        dag = wf.dag_config or {}
-        project_code, process_code = dag.get("ds_project_code"), dag.get("ds_process_code")
+        version = _active_job_version(db, wf)
+        if not version:
+            raise HTTPException(status_code=400, detail="工作流尚未发布生产版本")
+        project_code = version.scheduler_project_id
+        process_code = version.scheduler_definition_id
         if not project_code or not process_code:
-            raise HTTPException(status_code=400, detail="工作流尚未发布到 DolphinScheduler")
-        from app.services.dolphin import ds_client
+            raise HTTPException(status_code=400, detail="工作流尚未发布到生产调度")
+        from app.services.scheduler_engine import get_scheduler_engine
         refresh_ds_client(db, wf.workspace_id)
         try:
-            ds_instance_id = ds_client.run_process(project_code, process_code, inst.business_date)
+            engine = get_scheduler_engine(version.scheduler_engine or "dolphin")
+            ref = engine.trigger(str(project_code), str(process_code), business_date=inst.business_date)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Dolphin 重跑失败: {e}")
+            raise HTTPException(status_code=500, detail=f"生产调度重跑失败: {e}")
         inst.status = "running"
-        inst.trigger_type = f"rerun|ds:{ds_instance_id}"
+        inst.job_version_id = version.id
+        inst.scheduler_engine = ref.engine
+        inst.scheduler_project_id = str(project_code)
+        inst.scheduler_definition_id = str(process_code)
+        inst.scheduler_definition_version = version.version_no
+        inst.scheduler_instance_id = ref.instance_id
+        inst.scheduler_run_key = f"{ref.engine}:{project_code}:{process_code}:{ref.instance_id}"[:128]
+        inst.trigger_type = "rerun"
         inst.started_at = datetime.utcnow()
         inst.finished_at = None
         inst.submitted_by = current_user.id
         db.commit()
-        return {"message": "已向 DolphinScheduler 提交重跑", "instance_id": inst.id, "ds_instance_id": ds_instance_id}
+        return {
+            "message": "已向生产调度提交重跑",
+            "instance_id": inst.id,
+            "scheduler_instance_id": ref.instance_id,
+            "ds_instance_id": ref.instance_id,
+        }
     inst.status = "pending"
     inst.trigger_type = "rerun"
     inst.submitted_by = current_user.id
@@ -419,6 +566,8 @@ def batch_run_workflow(
     """批量补数据：按日期范围批量创建实例"""
     from datetime import datetime, timedelta
     wf = require_workflow(db, current_user, wf_id, "developer", PC.GIDO_BATCH_WORKFLOW_RUN)
+    if getattr(wf, "status", None) == "offline":
+        raise HTTPException(status_code=400, detail="工作流已下线，请重新发布上线后再补数据")
     try:
         start = datetime.strptime(start_date, "%Y-%m-%d")
         end = datetime.strptime(end_date, "%Y-%m-%d")
@@ -427,24 +576,49 @@ def batch_run_workflow(
     if (end - start).days > 90:
         raise HTTPException(status_code=400, detail="批量补数据最多90天")
     if get_dolphin_runtime(db, wf.workspace_id).enabled:
-        dag = wf.dag_config or {}
-        project_code, process_code = dag.get("ds_project_code"), dag.get("ds_process_code")
+        version = _active_job_version(db, wf)
+        if not version:
+            raise HTTPException(status_code=400, detail="工作流尚未发布生产版本")
+        project_code = version.scheduler_project_id
+        process_code = version.scheduler_definition_id
         if not project_code or not process_code:
-            raise HTTPException(status_code=400, detail="工作流尚未发布到 DolphinScheduler")
-        from app.services.dolphin import ds_client
+            raise HTTPException(status_code=400, detail="工作流尚未发布到生产调度")
+        from app.services.scheduler_engine import get_scheduler_engine
         refresh_ds_client(db, wf.workspace_id)
+        engine = get_scheduler_engine(version.scheduler_engine or "dolphin")
+        backfill = BackfillRequest(
+            workflow_id=wf_id,
+            job_version_id=version.id,
+            date_start=start.strftime("%Y-%m-%d"),
+            date_end=end.strftime("%Y-%m-%d"),
+            status="running",
+            total_instances=(end - start).days + 1,
+            running_instances=(end - start).days + 1,
+            submit_mode="daily",
+            created_by=current_user.id,
+        )
+        db.add(backfill)
+        db.flush()
         dates: List[str] = []
         current = start
         while current <= end:
             bd = current.strftime("%Y-%m-%d")
             try:
-                ds_id = ds_client.run_process(project_code, process_code, bd)
+                ref = engine.trigger(str(project_code), str(process_code), business_date=bd)
             except Exception as e:
-                raise HTTPException(status_code=500, detail=f"Dolphin 补数据失败 ({bd}): {e}")
+                raise HTTPException(status_code=500, detail=f"生产调度补数据失败 ({bd}): {e}")
             db.add(WorkflowInstance(
                 workflow_id=wf_id,
+                job_version_id=version.id,
+                backfill_request_id=backfill.id,
                 status="running",
-                trigger_type=f"batch|ds:{ds_id}",
+                trigger_type="backfill",
+                scheduler_engine=ref.engine,
+                scheduler_project_id=str(project_code),
+                scheduler_definition_id=str(process_code),
+                scheduler_definition_version=version.version_no,
+                scheduler_instance_id=ref.instance_id,
+                scheduler_run_key=f"{ref.engine}:{project_code}:{process_code}:{ref.instance_id}"[:128],
                 business_date=bd,
                 started_at=datetime.utcnow(),
                 submitted_by=current_user.id,
@@ -452,14 +626,30 @@ def batch_run_workflow(
             dates.append(bd)
             current += timedelta(days=1)
         db.commit()
-        return {"message": f"已向 DolphinScheduler 提交 {len(dates)} 次补数据运行", "dates": dates}
+        return {"message": f"已向生产调度提交 {len(dates)} 次补数据运行", "dates": dates}
     instances: List[str] = []
+    version = _active_job_version(db, wf)
+    backfill = BackfillRequest(
+        workflow_id=wf_id,
+        job_version_id=getattr(version, "id", None),
+        date_start=start.strftime("%Y-%m-%d"),
+        date_end=end.strftime("%Y-%m-%d"),
+        status="running",
+        total_instances=(end - start).days + 1,
+        running_instances=(end - start).days + 1,
+        submit_mode="daily",
+        created_by=current_user.id,
+    )
+    db.add(backfill)
+    db.flush()
     current = start
     while current <= end:
         inst = WorkflowInstance(
             workflow_id=wf_id,
+            job_version_id=getattr(version, "id", None),
+            backfill_request_id=backfill.id,
             status="pending",
-            trigger_type="batch",
+            trigger_type="backfill",
             business_date=current.strftime("%Y-%m-%d"),
             submitted_by=current_user.id,
         )

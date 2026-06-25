@@ -50,6 +50,7 @@ def _kind_from_dolphin_command(command_upper: str) -> Optional[str]:
 def format_trigger_type_label(
     trigger_type: Optional[str],
     dolphin_command_type: Optional[str] = None,
+    scheduler_instance_id: Optional[str] = None,
 ) -> str:
     """
     将库内 trigger_type（如 manual|ds:12345）格式化为运维可读文案。
@@ -58,10 +59,14 @@ def format_trigger_type_label(
     if trigger_type is None or not str(trigger_type).strip():
         return "—"
     raw = str(trigger_type).strip()
-    ds_id = parse_dolphin_process_instance_id(raw)
+    ds_id = None
+    if scheduler_instance_id and str(scheduler_instance_id).strip().lstrip("-").isdigit():
+        ds_id = int(str(scheduler_instance_id).strip())
+    if ds_id is None:
+        ds_id = parse_dolphin_process_instance_id(raw)
     cmd_kind = _kind_from_dolphin_command((dolphin_command_type or "").upper())
     if ds_id is not None and cmd_kind:
-        return f"Dolphin 流程实例 #{ds_id}（{cmd_kind}）"
+        return f"调度实例 #{ds_id}（{cmd_kind}）"
     left = raw.split("|ds:", 1)[0] if "|ds:" in raw else raw
     base = (left.split("|")[0] if left else raw).strip() or "unknown"
     kind_cn = {
@@ -71,7 +76,7 @@ def format_trigger_type_label(
         "batch": "补数据",
     }.get(base, base)
     if ds_id is not None:
-        return f"Dolphin 流程实例 #{ds_id}（{kind_cn}）"
+        return f"调度实例 #{ds_id}（{kind_cn}）"
     if base == "schedule":
-        return f"{kind_cn}（内置调度，无 Dolphin 流程实例 ID）"
-    return f"{kind_cn}（本地执行，无 Dolphin 流程实例 ID）"
+        return f"{kind_cn}（内置调度，无调度实例 ID）"
+    return f"{kind_cn}（本地执行，无调度实例 ID）"

@@ -1,0 +1,34 @@
+---
+description: 禁止 AI 擅自部署 GIDO 到 Kind/K8s；仅用户明确要求时才执行部署脚本
+alwaysApply: true
+---
+
+# GIDO K8s 部署守卫
+
+## 禁止自动执行
+
+**不得**在用户未明确要求时执行以下命令或等价操作：
+
+- `k8s/apply-gido-stack.sh`
+- `k8s/apply-gido-orbstack.sh`
+- 为「修复 port-forward」「后台任务失败」「命名空间被删」等理由擅自重新 `kubectl apply` `k8s/gido.yaml`
+
+## 允许执行的前提
+
+仅当用户**明确**说出部署意图时才可执行，例如：
+
+- 「部署 GIDO」「跑 apply-gido-stack」「重新拉起 GIDO 栈」
+- 「帮我 apply gido.yaml」
+
+含糊表述（「8080 打不开」「port-forward 挂了」「gido 没了」）**不算**部署授权——只汇报状态，并告诉用户可自行运行的命令。
+
+## port-forward 同样克制
+
+- 用户未要求时，**不要**自动 `kubectl port-forward -n gido svc/frontend 8080:80`
+- 用户已 `kubectl delete namespace gido` 或正在关停 GIDO 时，**不要** redeploy 或 port-forward
+
+## 推荐响应（未授权时）
+
+1. 说明当前集群状态（`kubectl get ns/pods -n gido`）
+2. 说明 8080 是否有进程监听
+3. 若用户需要恢复，给出命令让用户自己执行，或等待用户明确说「请部署」

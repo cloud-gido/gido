@@ -4,37 +4,19 @@
  */
 import { Avatar } from 'antd'
 import type { AvatarProps } from 'antd'
+import { presetAvatarDataUri } from '../utils/avatarPresetArt'
 import {
-  AVATAR_PRESET_COLORS,
   avatarUploadUrl,
   isAvatarPresetId,
   parseAvatarRef,
   userDisplayInitial,
+  userInitialBackground,
 } from '../utils/userAvatar'
 
 type UserLike = {
   username?: string
   full_name?: string | null
   avatar?: string | null
-}
-
-function PresetFace({ id }: { id: string }) {
-  const color = isAvatarPresetId(id) ? AVATAR_PRESET_COLORS[id] : '#64748b'
-  const eyeY = 18
-  const mouth =
-    id === '1' || id === '5'
-      ? <path d="M14 30 Q20 36 26 30" stroke="#fff" strokeWidth="2" fill="none" strokeLinecap="round" />
-      : id === '2' || id === '6'
-        ? <path d="M14 32 Q20 28 26 32" stroke="#fff" strokeWidth="2" fill="none" strokeLinecap="round" />
-        : <line x1="14" y1="32" x2="26" y2="32" stroke="#fff" strokeWidth="2" strokeLinecap="round" />
-  return (
-    <svg viewBox="0 0 40 40" width="100%" height="100%" aria-hidden>
-      <rect width="40" height="40" fill={color} />
-      <circle cx="14" cy={eyeY} r="2.5" fill="#fff" />
-      <circle cx="26" cy={eyeY} r="2.5" fill="#fff" />
-      {mouth}
-    </svg>
-  )
 }
 
 export default function UserAvatarDisplay({
@@ -56,16 +38,31 @@ export default function UserAvatarDisplay({
     )
   }
 
-  if (ref.kind === 'preset' && ref.id) {
-    return (
-      <Avatar {...rest} className={className} alt={`头像 ${ref.id}`}>
-        <PresetFace id={ref.id} />
-      </Avatar>
-    )
+  if (ref.kind === 'preset' && ref.id && isAvatarPresetId(ref.id)) {
+    const src = presetAvatarDataUri(ref.id)
+    if (src) {
+      return (
+        <Avatar
+          {...rest}
+          className={className}
+          src={src}
+          alt={`头像 ${ref.id}`}
+        />
+      )
+    }
   }
 
   return (
-    <Avatar {...rest} className={className}>
+    <Avatar
+      {...rest}
+      className={className}
+      style={{
+        backgroundColor: userInitialBackground(user),
+        color: '#fff',
+        fontWeight: 600,
+        ...(typeof rest.style === 'object' ? rest.style : {}),
+      }}
+    >
       {initial}
     </Avatar>
   )

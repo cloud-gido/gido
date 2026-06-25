@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 from app.core import perm_codes as PC
 from sqlalchemy.orm import Session
 from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, JSON
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Tuple, Set
 from datetime import datetime
 from app.core.database import get_db, Base
@@ -54,6 +54,33 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
+
+STREAM_JOB_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{1,48}[a-z0-9]$")
+STREAM_JOB_NAME_RULE = "作业名须为 3-50 位小写字母、数字、短横线，且以字母开头、以字母或数字结尾，例如 s3-copy-users"
+
+
+def normalize_stream_job_name(name: str) -> str:
+    value = (name or "").strip()
+    if not STREAM_JOB_NAME_PATTERN.fullmatch(value):
+        raise HTTPException(status_code=422, detail=STREAM_JOB_NAME_RULE)
+    return value
+
+
+def ensure_stream_job_name_available(
+    db: Session,
+    workspace_id: int,
+    name: str,
+    *,
+    exclude_job_id: Optional[int] = None,
+) -> None:
+    q = db.query(StreamingJob).filter(
+        StreamingJob.workspace_id == int(workspace_id),
+        StreamingJob.name == name,
+    )
+    if exclude_job_id is not None:
+        q = q.filter(StreamingJob.id != int(exclude_job_id))
+    if q.first():
+        raise HTTPException(status_code=409, detail=f"作业名 {name} 已存在")
 
 
 def _flink_http_session_for_get() -> requests.Session:
@@ -1460,6 +1487,12 @@ class SubmitJobBody(BaseModel):
     script_content: Optional[str] = None
 
 
+class StreamPreviewSqlIn(BaseModel):
+    workspace_id: int
+    sql: str
+    limit: int = Field(default=100, ge=1, le=10000)
+
+
 def _jar_session_blocked_reason() -> Optional[str]:
     """Operator 与 Session Flink 主版本不一致时，阻止 Session JAR 误提交。"""
     op_ver = (settings.FLINK_OPERATOR_FLINK_VERSION or "").strip().lower()
@@ -1787,6 +1820,26 @@ def flink_runtime_info(
     return flink_runtime_api_payload()
 
 
+@router.post("/preview-sql")
+def stream_preview_sql(
+    body: StreamPreviewSqlIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Stream SQL 预览：在 Flink 运行时镜像中 batch 执行 SELECT，返回结果表（不创建 FlinkDeployment）。"""
+    from app.services.stream_sql_preview import run_stream_sql_preview
+
+    assert_workspace_data_capability(db, current_user, body.workspace_id, "developer", PC.GIDO_STREAM_READ)
+    sql = substitute_stream_preview_sql(db, body.workspace_id, body.sql)
+    return run_stream_sql_preview(sql, limit=body.limit)
+
+
+def substitute_stream_preview_sql(db: Session, workspace_id: int, sql: str) -> str:
+    from app.services.workspace_variables import substitute_script_variables
+
+    return substitute_script_variables(db, int(workspace_id), sql or "", "stream")
+
+
 @router.get("/operator-overview")
 def operator_overview(
     workspace_id: int,
@@ -1803,6 +1856,13 @@ def operator_overview(
         .filter(StreamingJob.workspace_id == workspace_id)
         .all()
     )
+    jobs_by_id = {str(j.id): j for j in jobs}
+    for dep in payload.get("deployments") or []:
+        jid = str(dep.get("job_id") or "")
+        job = jobs_by_id.get(jid)
+        if job:
+            dep["job_name"] = getattr(job, "name", None)
+            dep["job_status"] = getattr(job, "status", None)
     with_dep = [
         j for j in jobs
         if (getattr(j, "flink_operator_deployment_name", None) or "").strip()
@@ -1978,6 +2038,7 @@ def _build_operator_deployment_meta(
         workspace_id=int(getattr(job, "workspace_id", None) or 0),
         job_id=int(job.id),
         job_type=jt,
+        job_name=getattr(job, "name", None),
         sql_version=str(sql_version) if sql_version is not None else None,
         sql_hash=sql_hash,
         submitted_by=(getattr(user, "username", None) or str(user.id)),
@@ -2111,7 +2172,10 @@ def list_jobs(workspace_id: int, db: Session = Depends(get_db), current_user: Us
 def create_job(job_in: JobCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     assert_workspace_data_capability(db, current_user, job_in.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
     _require_flink_profile_in_workspace(db, job_in.workspace_id, job_in.flink_session_profile_id)
-    job = StreamingJob(**job_in.model_dump(), created_by=current_user.id, owner_id=current_user.id, is_locked=False)
+    data = job_in.model_dump()
+    data["name"] = normalize_stream_job_name(data.get("name") or "")
+    ensure_stream_job_name_available(db, int(job_in.workspace_id), data["name"])
+    job = StreamingJob(**data, created_by=current_user.id, owner_id=current_user.id, is_locked=False)
     db.add(job)
     db.commit()
     db.refresh(job)
@@ -2119,7 +2183,11 @@ def create_job(job_in: JobCreate, db: Session = Depends(get_db), current_user: U
 
 
 def _unique_streaming_job_copy_name(db: Session, workspace_id: int, base_name: str) -> str:
-    root = (base_name or "job").strip() or "job"
+    try:
+        root = normalize_stream_job_name(base_name or "job")
+    except HTTPException:
+        root = "job"
+    root = root[:43].rstrip("-") or "job"
     candidate = f"{root}-copy"
     n = 1
     while (
@@ -2148,14 +2216,8 @@ def copy_streaming_job(
 ):
     """复制为新草稿作业（不含 Flink 运行时状态）。"""
     src = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_WRITE)
-    name = (body.name or "").strip() or _unique_streaming_job_copy_name(db, src.workspace_id, src.name)
-    dup = (
-        db.query(StreamingJob)
-        .filter(StreamingJob.workspace_id == src.workspace_id, StreamingJob.name == name)
-        .first()
-    )
-    if dup:
-        raise HTTPException(status_code=409, detail=f"作业名 {name} 已存在")
+    name = normalize_stream_job_name((body.name or "").strip() or _unique_streaming_job_copy_name(db, src.workspace_id, src.name))
+    ensure_stream_job_name_available(db, int(src.workspace_id), name)
     job = StreamingJob(
         workspace_id=src.workspace_id,
         name=name,
@@ -2187,6 +2249,13 @@ def update_job(job_id: int, job_in: JobUpdate, db: Session = Depends(get_db), cu
     if getattr(job, "is_locked", False):
         raise HTTPException(status_code=403, detail="作业已锁定，请先解锁后再修改")
     patch = job_in.model_dump(exclude_unset=True)
+    if "name" in patch and patch["name"] is not None:
+        new_name = normalize_stream_job_name(str(patch["name"]))
+        if new_name != (job.name or ""):
+            if (job.status or "").lower() == "running":
+                raise HTTPException(status_code=409, detail="运行中的作业不支持重命名，请先停止或复制为新作业")
+            ensure_stream_job_name_available(db, int(job.workspace_id), new_name, exclude_job_id=job.id)
+        patch["name"] = new_name
     if "streaming_properties" in patch and patch["streaming_properties"] is not None:
         sp = str(patch["streaming_properties"]).strip()
         patch["streaming_properties"] = sp or None
@@ -2410,6 +2479,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                 out = submit_sql_via_operator(
                     job_id=job.id,
                     workspace_id=int(job.workspace_id or 0),
+                    job_name=job.name,
                     sql_content=sql_to_run or "",
                     parallelism=job.parallelism or 1,
                     operator_resources=op_resources,
@@ -2458,6 +2528,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                 out = submit_jar_via_operator(
                     job_id=job.id,
                     workspace_id=int(job.workspace_id or 0),
+                    job_name=job.name,
                     entry_class=job.main_class or "",
                     parallelism=job.parallelism or 1,
                     program_args=job.program_args,

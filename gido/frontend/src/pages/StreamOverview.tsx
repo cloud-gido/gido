@@ -24,6 +24,8 @@ type DeploymentRow = {
   namespace?: string
   workspace_id?: string
   job_id?: string
+  job_name?: string
+  job_status?: string
   job_type?: string
   lifecycle?: string
   health?: string
@@ -264,17 +266,25 @@ export default function StreamOverviewPage() {
           locale={{ emptyText: '当前工作空间暂无 FlinkDeployment（提交作业后将自动创建）' }}
           columns={[
             {
-              title: '部署名',
+              title: '作业',
               dataIndex: 'name',
               ellipsis: true,
-              render: (name: string) => (
-                <Tooltip title="FlinkDeployment CR 名称">
-                  <Text code style={{ fontSize: 11 }}>{name}</Text>
-                </Tooltip>
+              render: (name: string, row: DeploymentRow) => (
+                <div>
+                  <Space size={6} wrap>
+                    <Text strong>{row.job_name || (row.job_id ? `作业 #${row.job_id}` : name)}</Text>
+                    {row.job_status && <Tag>{row.job_status}</Tag>}
+                  </Space>
+                  <div style={{ marginTop: 2 }}>
+                    <Tooltip title="FlinkDeployment CR 名称">
+                      <Text code type="secondary" style={{ fontSize: 11 }}>{name}</Text>
+                    </Tooltip>
+                  </div>
+                </div>
               ),
             },
             {
-              title: 'GIDO 作业',
+              title: 'GIDO ID',
               key: 'job',
               width: 100,
               render: (_: unknown, row: DeploymentRow) => (

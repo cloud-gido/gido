@@ -40,6 +40,7 @@ from app.services.rbac_seed import (
     migrate_platform_integration_flink,
     migrate_dw_workspace_variables,
     migrate_dw_users_avatar,
+    migrate_scheduler_engine_fields,
     run_rbac_bootstrap,
 )
 
@@ -71,6 +72,7 @@ migrate_platform_integration(engine)
 migrate_platform_integration_flink(engine)
 migrate_dw_workspace_variables(engine)
 migrate_dw_users_avatar(engine)
+migrate_scheduler_engine_fields(engine)
 
 db = SessionLocal()
 run_rbac_bootstrap(db)

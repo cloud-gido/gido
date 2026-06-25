@@ -12,7 +12,7 @@ export const APPROVAL_RESOURCE_LABEL: Record<string, string> = {
 }
 
 export const APPROVAL_ACTION_LABEL: Record<string, string> = {
-  publish_to_ds: '发布到 Dolphin（生产）',
+  publish_to_ds: '发布到生产调度',
   publish_node: '提交脚本（生产）',
   submit_job: '提交到 Flink（生产）',
   publish_api: 'API 发布上线',

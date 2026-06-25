@@ -1,7 +1,7 @@
 # GIDO 中台 · 功能完整度梳理
 
 > 璇玑指引 · 数据有渡 — 一站式 **批 / 流 / 服** 数据开发与治理中台  
-> 最后更新：2026-06 · 对应仓库 `main`（Flink Operator + S3 制品 + CDC→Paimon EKS）
+> 最后更新：2026-06 · 对应仓库 `main`（调度实例中心深化 + 告警通知 + Flink Operator + S3）
 
 本文描述 **当前代码与典型部署路径** 下的能力边界，便于评估落地、裁剪与发包说明。
 
@@ -47,7 +47,7 @@ GIDO 是 **单壳三产品** 的中台：
 | **Kind 开发** | `k8s/apply-gido-stack.sh` | 同 K3s | Operator；Session 可选 | 同 K3s | 完整 |
 | **AWS EKS 生产** | [CDC_PAIMON_EKS.md](./CDC_PAIMON_EKS.md) | 外置 DS | Operator + **S3 制品** + CDC→Paimon | **S3 持久化** | 完整 |
 
-**流计算主推栈**：Flink Kubernetes Operator **1.15** + Flink **2.0.1**（`flinkVersion: v2_0`），镜像 `gido-flink-runtime`（Paimon + MySQL CDC + S3 插件）。
+**流计算主推栈**：Flink Kubernetes Operator **1.15** + Flink **2.0.1**（`flinkVersion: v2_0`），镜像 `gido-flink-sql-runner`（Paimon + MySQL CDC + S3 插件）。
 
 ---
 
@@ -56,18 +56,19 @@ GIDO 是 **单壳三产品** 的中台：
 | 模块 | 前端 | 后端 API | Compose | K8s 最小栈 | 说明 |
 |------|:----:|:--------:|:-------:|:----------:|------|
 | 数据开发 Studio | ✅ | `/studio` | ✅ | ✅ | SQL 编辑、运行、结果 |
-| 工作流 DAG | ✅ | `/workflows` | ✅ | ✅ | 可视化编排；**发布需 DS** |
-| 调度 / 实例 | ✅ | `/scheduler` | ✅ | ⚠️ | K8s 默认 `DS_ENABLED=false` |
+| 工作流 DAG | ✅ | `/workflows` | ✅ | ✅ | 可视化编排；生命周期：草稿/上线/暂停/下线 |
+| 调度 / 实例 | ✅ | `/scheduler` | ✅ | ⚠️ | **GIDO 实例中心**；K8s 需外置 DS |
+| 运维中心 | ✅ | `/operation` | ✅ | ⚠️ | 工作流/节点两层视图；停止/重试/日志 |
+| 告警中心 | ✅ | `/alerts` | ✅ | ⚠️ | 邮件/Webhook/飞书/企微；与 DS Alert 插件无关 |
 | 数据集成 | ✅ | `/integration` | ✅ | ✅ | 多源同步；CDC 为**轮询增量** |
 | 数据地图 | ✅ | `/datamap` | ✅ | ✅ | 字典 + **SQL 正则血缘** |
 | 数据探查 | ✅ | `/probe` | ✅ | ✅ | 采样统计 |
 | 数据质量 | ✅ | `/quality` | ⚠️ | ⚠️ | 规则可用；执行偏 **MySQL 协议** |
-| 运维中心 | ✅ | `/operation` | ✅ | ⚠️ | 有 DS 才有真实实例数据 |
 | 发布审批 | ✅ | `/approvals` | ✅ | ✅ | 批/流共用 |
 | 数据源 | ✅ | `/datasources` | ✅ | ✅ | PG/MySQL 等 |
 | RBAC | ✅ | `/admin` | ✅ | ✅ | 角色、权限码、工作空间 |
 
-**Batch 生产落地**：K8s/EKS 需外置 Dolphin（Compose 全栈或 `k8s/legacy/dolphinscheduler.yaml`）才能端到端「发布 → 调度 → 实例」。
+**Batch 生产落地**：K8s/EKS 需外置 Dolphin（Compose 全栈或 `k8s/legacy/dolphinscheduler.yaml`）才能端到端「发布 → 调度 → 实例」。架构见 [SCHEDULER_INTEGRATION.md](./SCHEDULER_INTEGRATION.md)。
 
 ---
 
@@ -120,7 +121,7 @@ Serve **完整度最高**，EKS 上仅需 PG 元库 + 业务数据源即可独�
 | 多工作空间 | ✅ | 隔离脚本、作业、权限 |
 | 审计日志 | ✅ | 关键操作留痕 |
 | 品牌 / 多主题 | ✅ | 登录、关于页 |
-| CI | ✅ | backend pytest + frontend build |
+| CI | ✅ | frontend build + 开源合规（SPDX / dataworks / 密钥扫描） |
 | K3s 分层部署 | ✅ | 应用每次构建 / Flink runtime 按需 |
 | EKS 示例清单 | ✅ | `k8s/eks/`（双 IRSA、MySQL Secret） |
 | 单元测试 | ✅ | Operator、S3 制品、runtime API 等 |
@@ -136,21 +137,26 @@ Serve **完整度最高**，EKS 上仅需 PG 元库 + 业务数据源即可独�
 - CDC→Paimon 运行时、SQL 模板、IRSA 示例、部署文档
 - Serve 全链路
 - RBAC、审批、审计、多工作空间
+- **Batch 调度实例中心**（GIDO 运维面 + DS 隐藏引擎）
+- **告警中心**与多渠道通知（需配置 SMTP/Webhook）
 
 ### 条件就绪（需外置组件或配置）
 
-- Batch 调度 → 需 **DolphinScheduler**
+- Batch 调度 → 需 **DolphinScheduler** 与有效 **API Token**
+- 告警邮件 → 需 SMTP 或 Webhook
 - Batch 集成 CDC → 轻量轮询，非 Debezium 管道
 - K3s 测试 → 无 IRSA 时 Paimon 可用 `file://`/PVC，S3 需 MinIO 或直连 AWS
 
 ### 已知局限（产品级）
 
-1. **Batch 调度**：K8s/EKS 默认不 bundled Dolphin。  
-2. **Batch 集成 CDC**：非 Flink CDC / Debezium 一体化。  
-3. **血缘**：基于 SQL 正则，复杂脚本可能不全。  
-4. **质量执行**：非所有 JDBC 类型对等支持。  
-5. **流 SQL**：复杂 DDL/多语句依赖 SqlRunner 与 Catalog 配置。  
-6. **Postgres 元库**：K8s 清单默认 emptyDir，**生产须改 PVC**。
+1. **Batch 调度**：K8s/EKS 默认不 bundled Dolphin；DS Token 过期会导致 401。  
+2. **DS Token 运维**：库中旧 Token 覆盖环境变量，见排障 SOP。  
+3. **Batch 集成 CDC**：非 Flink CDC / Debezium 一体化。  
+4. **血缘**：基于 SQL 正则，复杂脚本可能不全。  
+5. **质量执行**：非所有 JDBC 类型对等支持。  
+6. **流 SQL**：复杂 DDL/多语句依赖 SqlRunner 与 Catalog 配置。  
+7. **Postgres 元库**：K8s 清单默认 emptyDir，**生产须改 PVC**。  
+8. **E2E 测试**：DS 集成以单元测试与手工联调为主。
 
 ---
 
@@ -171,6 +177,9 @@ Serve **完整度最高**，EKS 上仅需 PG 元库 + 业务数据源即可独�
 | 文档 | 说明 |
 |------|------|
 | [PRODUCT_OVERVIEW.md](./PRODUCT_OVERVIEW.md) | 界面截图与快速体验 |
+| [SCHEDULER_INTEGRATION.md](./SCHEDULER_INTEGRATION.md) | Batch 调度与实例中心 |
+| [ALERT_NOTIFICATION.md](./ALERT_NOTIFICATION.md) | 告警通知配置 |
+| [GITHUB_RELEASE_CHECKLIST.md](./GITHUB_RELEASE_CHECKLIST.md) | GitHub 发布自查 |
 | [CDC_PAIMON_EKS.md](./CDC_PAIMON_EKS.md) | EKS CDC→Paimon + S3 |
 | [FLINK_ARCHITECTURE.md](./FLINK_ARCHITECTURE.md) | Operator vs 遗留 Session |
 | [k8s/README.md](../k8s/README.md) | Kind / K3s |

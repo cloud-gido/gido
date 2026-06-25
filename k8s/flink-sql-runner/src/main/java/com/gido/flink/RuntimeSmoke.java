@@ -1,3 +1,7 @@
+/**
+ * Copyright 2026 玑渡 GIDO Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.gido.flink;
 
 import org.apache.hadoop.conf.Configuration;
@@ -20,6 +24,8 @@ public final class RuntimeSmoke {
 
         // Paimon 写 Parquet 统计信息时 ParquetReadOptions 依赖 FileInputFormat
         Class.forName("org.apache.hadoop.mapreduce.lib.input.FileInputFormat");
+        // Paimon S3 catalog 走 HadoopFileIO，S3A 必须在主 classpath（非 s3-fs-hadoop 插件）
+        Class.forName("org.apache.hadoop.fs.s3a.S3AFileSystem");
         org.apache.paimon.shade.org.apache.parquet.ParquetReadOptions.builder();
     }
 }

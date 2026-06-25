@@ -4,14 +4,14 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
-  Table, Button, Space, Tag, message, Modal, Form, Input, InputNumber, Select, Upload, Card, Descriptions,
+  Table, Button, Space, Tag, message, Modal, Form, Input, InputNumber, Select, Upload, Card, Drawer,
   Divider, Typography, Alert, notification, Collapse, Popconfirm,
 } from 'antd'
 import {
   PlusOutlined, PlayCircleOutlined, StopOutlined, SaveOutlined, ReloadOutlined, UploadOutlined, DeleteOutlined,
-  UnlockOutlined, HistoryOutlined, CopyOutlined,
+  UnlockOutlined, HistoryOutlined, CopyOutlined, SearchOutlined, EditOutlined,
 } from '@ant-design/icons'
 import Editor from '@monaco-editor/react'
 import { streamingApi, approvalApi } from '../api'
@@ -21,6 +21,9 @@ import PublishApprovalModal from '../components/PublishApprovalModal'
 import { approvalPendingKey } from '../approvalLabels'
 import EditorAppearanceToolbar from '../components/EditorAppearanceToolbar'
 import ResizableSidebar from '../components/ResizableSidebar'
+import QueryResultPanel from '../components/QueryResultPanel'
+import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
+import { normalizeQueryColumns } from '../utils/queryColumns'
 import { R } from '../routes'
 import { Link } from 'react-router-dom'
 import {
@@ -33,6 +36,8 @@ import { formatInTimeZone } from '../utils/datetime'
 import { openFlinkConsoleUrl } from '../utils/flinkConsole'
 
 const { Paragraph, Text } = Typography
+const STREAM_JOB_NAME_RULE = '3-50 位小写字母、数字、短横线，字母开头，字母或数字结尾，例如 s3-copy-users'
+const STREAM_JOB_NAME_PATTERN = /^[a-z][a-z0-9-]{1,48}[a-z0-9]$/
 
 const JOB_TYPES = [
   { label: 'Flink SQL', value: 'SQL' },
@@ -190,6 +195,8 @@ export default function StreamStudioPage() {
   const [scriptDraft, setScriptDraft] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [createForm] = Form.useForm()
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [renameForm] = Form.useForm()
   const [submitting, setSubmitting] = useState(false)
   const editorRef = useRef<any>(null)
   const [editorAppearance, setEditorAppearance] = useState<EditorAppearance>(() => loadEditorAppearance())
@@ -209,6 +216,55 @@ export default function StreamStudioPage() {
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set())
   const [approvalOpen, setApprovalOpen] = useState(false)
   const [approvalNote, setApprovalNote] = useState('')
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewResult, setPreviewResult] = useState<any | null>(null)
+  const [previewLimit, setPreviewLimit] = useState(100)
+  const [submitDrawerOpen, setSubmitDrawerOpen] = useState(false)
+  const [resultPanelOpen, setResultPanelOpen] = useState(false)
+  const [resultPanelHeight, setResultPanelHeight] = useState(() => {
+    try {
+      const v = Number(localStorage.getItem('gido.streamStudio.resultPanelHeight'))
+      if (Number.isFinite(v) && v >= 180 && v <= 720) return v
+    } catch {
+      /* ignore */
+    }
+    return 300
+  })
+  const resultPanelHeightRef = useRef(resultPanelHeight)
+  resultPanelHeightRef.current = resultPanelHeight
+  const resultResizeRef = useRef<{ startY: number; startHeight: number } | null>(null)
+
+  const onResultResizeMove = useCallback((e: MouseEvent) => {
+    const d = resultResizeRef.current
+    if (!d) return
+    const next = Math.min(720, Math.max(180, d.startHeight - (e.clientY - d.startY)))
+    resultPanelHeightRef.current = next
+    setResultPanelHeight(next)
+  }, [])
+
+  const onResultResizeUp = useCallback(() => {
+    if (!resultResizeRef.current) return
+    resultResizeRef.current = null
+    try {
+      localStorage.setItem('gido.streamStudio.resultPanelHeight', String(resultPanelHeightRef.current))
+    } catch {
+      /* ignore */
+    }
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+    window.removeEventListener('mousemove', onResultResizeMove)
+    window.removeEventListener('mouseup', onResultResizeUp)
+  }, [onResultResizeMove])
+
+  const startResultResize = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    resultResizeRef.current = { startY: e.clientY, startHeight: resultPanelHeightRef.current }
+    document.body.style.cursor = 'row-resize'
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', onResultResizeMove)
+    window.addEventListener('mouseup', onResultResizeUp)
+  }
 
   const load = useCallback(async (showSpinner = true) => {
     if (!wsId) return
@@ -308,7 +364,7 @@ export default function StreamStudioPage() {
 
   const handleCreate = async () => {
     const v = await createForm.validateFields()
-    await streamingApi.createJob({
+    const created: any = await streamingApi.createJob({
       workspace_id: wsId,
       name: v.name,
       job_type: v.job_type,
@@ -318,7 +374,23 @@ export default function StreamStudioPage() {
     message.success('已创建任务')
     setCreateOpen(false)
     createForm.resetFields()
-    await load()
+    await load(false)
+    setSelected(created)
+  }
+
+  const openRename = () => {
+    if (!selected) return
+    renameForm.setFieldsValue({ name: selected.name })
+    setRenameOpen(true)
+  }
+
+  const handleRename = async () => {
+    if (!selected) return
+    const v = await renameForm.validateFields()
+    await streamingApi.updateJob(selected.id, { name: v.name })
+    message.success('已重命名')
+    setRenameOpen(false)
+    await load(true)
   }
 
   const handleUnlock = async () => {
@@ -379,12 +451,65 @@ export default function StreamStudioPage() {
     }
   }, [selected?.id, selected?.job_type])
 
+  const canPreviewSql = useMemo(
+    () => /\bSELECT\b/i.test(scriptDraft || ''),
+    [scriptDraft],
+  )
+
+  const previewTable = useMemo(() => {
+    if (!previewResult?.columns?.length) {
+      return { dataSource: [] as ReturnType<typeof rowsToRecordDataSource>, tableColumns: buildQueryTableColumns([]) }
+    }
+    const colMetas = normalizeQueryColumns(previewResult.columns, previewResult.column_types)
+    const dataSource = rowsToRecordDataSource(previewResult.columns, previewResult.rows)
+    return {
+      dataSource,
+      tableColumns: buildQueryTableColumns(colMetas, { dataSource }),
+    }
+  }, [previewResult])
+
+  const handlePreviewSql = async () => {
+    if (!wsId || !selected || selected.job_type !== 'SQL') return
+    const sql = (scriptDraft || '').trim()
+    if (!sql) {
+      message.warning('请先编写 SQL')
+      return
+    }
+    if (!canPreviewSql) {
+      message.warning('预览须包含 SELECT 或 WITH…SELECT')
+      return
+    }
+    setPreviewLoading(true)
+    setPreviewResult(null)
+    try {
+      const res: any = await streamingApi.previewSql({ workspace_id: wsId, sql, limit: previewLimit })
+      setPreviewResult(res)
+      setResultPanelOpen(true)
+      if (res?.truncated) message.info(`结果已按上限 ${previewLimit} 行截断`)
+    } catch (e: any) {
+      const d = e?.response?.data?.detail
+      const text = typeof d === 'string' ? d : Array.isArray(d) ? d.map((x: any) => x?.msg || x).join('; ') : '预览失败'
+      message.error(text.length > 500 ? `${text.slice(0, 500)}…` : text, 8)
+    }
+    setPreviewLoading(false)
+  }
+
+  const openSubmitDrawer = () => {
+    if (!selected) return
+    if (selected.is_locked) {
+      message.warning('作业已锁定，请先解锁后再提交')
+      return
+    }
+    setSubmitDrawerOpen(true)
+  }
+
   const handleSubmit = async () => {
     if (!selected) return
     if (selected.is_locked) {
       message.warning('作业已锁定，请先解锁后再提交')
       return
     }
+    setSubmitDrawerOpen(false)
     if (!canPublishDirect) {
       await handleSave()
       setApprovalNote('')
@@ -586,6 +711,16 @@ export default function StreamStudioPage() {
               title={
                 <Space wrap>
                   <span>{selected.name}</span>
+                  <Button
+                    type="link"
+                    size="small"
+                    icon={<EditOutlined />}
+                    disabled={selected.is_locked || (selected.status || '').toLowerCase() === 'running'}
+                    onClick={openRename}
+                    title={(selected.status || '').toLowerCase() === 'running' ? '运行中的作业不可重命名' : '重命名'}
+                  >
+                    重命名
+                  </Button>
                   <Tag>{selected.job_type}</Tag>
                   {selected.status && (
                     <Tag color={statusColor[selected.status] || 'default'}>{selected.status}</Tag>
@@ -606,7 +741,7 @@ export default function StreamStudioPage() {
                     type="primary"
                     icon={<PlayCircleOutlined />}
                     loading={submitting}
-                    onClick={handleSubmit}
+                    onClick={openSubmitDrawer}
                     disabled={selected.is_locked || isJobPendingApproval}
                   >
                     {isJobPendingApproval ? '审批中' : canPublishDirect ? '提交运行' : '提交审批'}
@@ -658,99 +793,43 @@ export default function StreamStudioPage() {
                   )}
                 />
               ) : null}
-              <Descriptions size="small" column={2}>
-                <Descriptions.Item label="最近提交">
-                  {selected.last_submitted_at
-                    ? `${formatInTimeZone(selected.last_submitted_at, displayTz)} · ${selected.last_submitted_by_username || '—'}`
-                    : '—'}
-                </Descriptions.Item>
-                <Descriptions.Item label="就绪度">
-                  {selected.job_type === 'SQL' && selected.flink_operational?.readiness
-                    ? selected.flink_operational.readiness
-                    : '—'}
-                </Descriptions.Item>
-                <Descriptions.Item label="提交模式">
-                  {selected.job_type === 'SQL' || selected.job_type === 'JAR'
-                    ? 'Flink Operator（统一运行时）'
-                    : '—'}
-                </Descriptions.Item>
-                <Descriptions.Item label="clusterID">{selected.flink_application_cluster_id || '—'}</Descriptions.Item>
-                <Descriptions.Item label="Flink Job ID">{selected.flink_job_id || '—'}</Descriptions.Item>
-                <Descriptions.Item label="Operator CR">{selected.flink_operator_deployment_name || '—'}</Descriptions.Item>
-                <Descriptions.Item label="JAR 标识">{selected.jar_path || '—'}</Descriptions.Item>
-                <Descriptions.Item label="Flink Web UI" span={2}>
-                  {selected.flink_console_url ? (
-                    <>
-                      <Button
-                        type="link"
-                        size="small"
-                        style={{ padding: 0, height: 'auto' }}
-                        onClick={() => openFlinkConsoleUrl(selected.flink_console_url, selected.id)}
-                      >
-                        {selected.flink_jar_submit_mode === 'flink_operator' || selected.flink_console_mode === 'operator'
-                          ? '打开 K8s 作业 Flink UI'
-                          : '打开 Flink Web UI（作业详情）'}
-                      </Button>
-                      {selected.flink_k8s_jm_service && (
-                        <div style={{ marginTop: 4, fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>
-                          K8s Service：<code>{selected.flink_k8s_jm_service}</code>
-                        </div>
-                      )}
-                      <div style={{ marginTop: 4, fontSize: 12, color: 'var(--ant-color-text-secondary)', wordBreak: 'break-all' }}>
-                        {selected.flink_console_url}
-                      </div>
-                      {selected.flink_ui_port_forward_hint && (
-                        <Alert
-                          type="info"
-                          showIcon
-                          style={{ marginTop: 8 }}
-                          message="Kind 本机须先 port-forward"
-                          description={(
-                            <>
-                              在终端执行后保持窗口不关，再点上方链接：
-                              <pre style={{ margin: '8px 0 0', whiteSpace: 'pre-wrap' }}>{selected.flink_ui_port_forward_hint}</pre>
-                            </>
-                          )}
-                        />
-                      )}
-                    </>
-                  ) : (selected.job_type === 'JAR' && selected.flink_jar_submit_mode === 'flink_operator')
-                    || (selected.job_type === 'SQL' && selected.flink_sql_submit_mode === 'flink_operator') ? (
-                    <Text type="secondary">提交成功后点链接即可（经 GIDO 代理，无需 port-forward JM）</Text>
-                  ) : (
-                    <Text type="secondary">提交成功后将生成链接</Text>
-                  )}
-                </Descriptions.Item>
-              </Descriptions>
-              <Divider style={{ margin: '12px 0' }} />
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: 12,
+                flexWrap: 'wrap',
+                padding: '8px 12px',
+                marginBottom: 12,
+                border: '1px solid #f0f0f0',
+                borderRadius: 8,
+                background: '#fafafa',
+                fontSize: 12,
+              }}>
+                <Space wrap size={[8, 4]}>
+                  <Tag color="purple">Flink Operator</Tag>
+                  <span>最近提交：{selected.last_submitted_at ? `${formatInTimeZone(selected.last_submitted_at, displayTz)} · ${selected.last_submitted_by_username || '—'}` : '—'}</span>
+                  <span>就绪度：{selected.job_type === 'SQL' && selected.flink_operational?.readiness ? selected.flink_operational.readiness : '—'}</span>
+                  {selected.flink_job_id && <span>Job ID：<code>{selected.flink_job_id}</code></span>}
+                  {selected.flink_operator_deployment_name && <span>Operator CR：<code>{selected.flink_operator_deployment_name}</code></span>}
+                </Space>
+                {selected.flink_console_url ? (
+                  <Button
+                    type="link"
+                    size="small"
+                    style={{ padding: 0, height: 'auto' }}
+                    onClick={() => openFlinkConsoleUrl(selected.flink_console_url, selected.id)}
+                  >
+                    打开 Flink UI
+                  </Button>
+                ) : (
+                  <Text type="secondary">提交成功后生成 Flink UI 链接</Text>
+                )}
+              </div>
 
               {selected.job_type === 'SQL' ? (
                 <>
-                  <Alert
-                    type="info"
-                    showIcon
-                    style={{ marginBottom: 8 }}
-                    message="统一运行时 · Flink Operator + gido-flink-runtime（Paimon / CDC）"
-                    description={(
-                      <div style={{ fontSize: 13 }}>
-                        <div>Flink {flinkRuntime?.flink_version || '2.0.1'} · 命名空间 {flinkRuntime?.operator_namespace || 'flink'}</div>
-                        {flinkRuntime?.paimon_warehouse_default && (
-                          <div>默认 Paimon warehouse：<code>{flinkRuntime.paimon_warehouse_default}</code></div>
-                        )}
-                        {flinkRuntime?.connectors?.length ? (
-                          <div style={{ marginTop: 4 }}>
-                            预置连接器：{flinkRuntime.connectors.map((c: any) => `${c.name} ${c.version}`).join(' · ')}
-                          </div>
-                        ) : null}
-                      </div>
-                    )}
-                  />
                   <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
-                    <Space>
-                      <span style={{ marginRight: 8 }}>并行度</span>
-                      <InputNumber min={1} value={sqlParallelism} onChange={v => setSqlParallelism(Number(v) || 1)} disabled={selected.is_locked} />
-                    </Space>
-                    <Tag color="purple">Flink Operator</Tag>
                     <Button
                       size="small"
                       disabled={selected.is_locked}
@@ -760,116 +839,93 @@ export default function StreamStudioPage() {
                     </Button>
                     <EditorAppearanceToolbar value={editorAppearance} onChange={setEditorAppearance} />
                   </div>
-                  {effectiveSqlMode === 'flink_operator' && (
-                    <Alert
-                      type="info"
-                      showIcon
-                      style={{ marginBottom: 8 }}
-                      message="FlinkDeployment Application + SQL Runner"
-                      description={(
-                        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                          <li>统一镜像含 <code>sql-runner.jar</code>、Paimon、MySQL/Postgres CDC。</li>
-                          <li>SQL 脚本经 ConfigMap 挂载；资源在下方「Operator 资源配置」按作业覆盖。</li>
-                        </ul>
-                      )}
-                    />
-                  )}
-                  <Collapse
-                    ghost
-                    style={{ marginBottom: 8 }}
-                    items={[
-                      ...(effectiveSqlMode === 'flink_operator' ? [{
-                        key: 'operator-res',
-                        label: 'Operator 资源配置（JM / TM / Slots，留空用平台默认）',
-                        children: (
-                          <div>
-                            <Form.Item label="规格模板" style={{ marginBottom: 12, maxWidth: 360 }}>
-                              <Select
-                                allowClear
-                                placeholder="平台默认（不套用模板）"
-                                value={resourceTier || undefined}
-                                disabled={selected.is_locked}
-                                onChange={v => setResourceTier(v || '')}
-                                options={[
-                                  { value: 'small', label: '小 — 轻量 SQL / 探查' },
-                                  { value: 'medium', label: '中 — 默认生产' },
-                                  { value: 'large', label: '大 — 高并行 / 重 SQL' },
-                                ]}
-                              />
-                            </Form.Item>
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12 }}>
-                            <Form.Item label="JM 内存" style={{ marginBottom: 0 }}>
-                              <Input placeholder="2048m" value={operatorResForm.jm_memory} disabled={selected.is_locked}
-                                onChange={e => setOperatorResForm(f => ({ ...f, jm_memory: e.target.value }))} />
-                            </Form.Item>
-                            <Form.Item label="JM CPU" style={{ marginBottom: 0 }}>
-                              <InputNumber min={0.1} step={0.5} style={{ width: '100%' }} placeholder="1"
-                                value={operatorResForm.jm_cpu ? Number(operatorResForm.jm_cpu) : undefined}
-                                disabled={selected.is_locked}
-                                onChange={v => setOperatorResForm(f => ({ ...f, jm_cpu: v != null ? String(v) : '' }))} />
-                            </Form.Item>
-                            <Form.Item label="TM 内存" style={{ marginBottom: 0 }}>
-                              <Input placeholder="4096m" value={operatorResForm.tm_memory} disabled={selected.is_locked}
-                                onChange={e => setOperatorResForm(f => ({ ...f, tm_memory: e.target.value }))} />
-                            </Form.Item>
-                            <Form.Item label="TM CPU" style={{ marginBottom: 0 }}>
-                              <InputNumber min={0.1} step={0.5} style={{ width: '100%' }} placeholder="1"
-                                value={operatorResForm.tm_cpu ? Number(operatorResForm.tm_cpu) : undefined}
-                                disabled={selected.is_locked}
-                                onChange={v => setOperatorResForm(f => ({ ...f, tm_cpu: v != null ? String(v) : '' }))} />
-                            </Form.Item>
-                            <Form.Item label="Task Slots" style={{ marginBottom: 0 }}>
-                              <InputNumber min={1} style={{ width: '100%' }} placeholder="2"
-                                value={operatorResForm.task_slots ? Number(operatorResForm.task_slots) : undefined}
-                                disabled={selected.is_locked}
-                                onChange={v => setOperatorResForm(f => ({ ...f, task_slots: v != null ? String(v) : '' }))} />
-                            </Form.Item>
-                            <Form.Item label="TM 副本数" style={{ marginBottom: 0 }}>
-                              <InputNumber min={1} style={{ width: '100%' }} placeholder="自动"
-                                value={operatorResForm.tm_replicas ? Number(operatorResForm.tm_replicas) : undefined}
-                                disabled={selected.is_locked}
-                                onChange={v => setOperatorResForm(f => ({ ...f, tm_replicas: v != null ? String(v) : '' }))} />
-                            </Form.Item>
-                            </div>
-                          </div>
+                  <div style={{ flex: 1, minHeight: 360, display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ height: resultPanelOpen ? 520 : 620, border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden' }}>
+                      <Editor
+                        height="100%"
+                        language="sql"
+                        theme={editorAppearance.theme}
+                        value={scriptDraft}
+                        onChange={selected.is_locked ? undefined : (v => setScriptDraft(v ?? ''))}
+                        beforeMount={registerDwMonacoThemes}
+                        onMount={ed => { editorRef.current = ed }}
+                        options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: Boolean(selected.is_locked), minimap: { enabled: false } }}
+                      />
+                    </div>
+                    <Collapse
+                      style={{ marginTop: 12 }}
+                      activeKey={resultPanelOpen ? ['result'] : []}
+                      onChange={keys => setResultPanelOpen(Array.isArray(keys) ? keys.includes('result') : keys === 'result')}
+                      items={[{
+                        key: 'result',
+                        label: (
+                          <Space>
+                            <span>查询结果</span>
+                            {previewResult && <Tag>{previewResult.total ?? 0} 行</Tag>}
+                          </Space>
                         ),
-                      }] : []),
-                      {
-                        key: 'tuning',
-                        label: effectiveSqlMode === 'flink_operator'
-                          ? '高级 Flink 配置（合并进 FlinkDeployment flinkConfiguration）'
-                          : '参数调优（Flink SQL Gateway 会话级，类似实时计算高级配置）',
-                        children: (
-                          <div>
-                            <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
-                              {effectiveSqlMode === 'flink_operator'
-                                ? '填写 JSON：顶级键（除 operator_resources）合并进 FlinkDeployment flinkConfiguration。operator_resources 请用上方面板。'
-                                : '填写 JSON 对象：普通键值合并进 Gateway Open Session 的 properties。K8s Application 可在顶级增加 k8s_application 覆盖 executionConfig。'}
-                            </Paragraph>
-                            <Input.TextArea
-                              rows={8}
-                              value={streamingPropsJson}
-                              onChange={e => setStreamingPropsJson(e.target.value)}
-                              disabled={selected.is_locked}
-                              style={{ fontFamily: 'monospace', fontSize: 12 }}
-                              placeholder={'{\n  "execution.checkpointing.interval": "60000"\n}'}
+                        extra: (
+                          <Space
+                            size={8}
+                            onClick={e => e.stopPropagation()}
+                            onMouseDown={e => e.stopPropagation()}
+                          >
+                            <InputNumber
+                              min={1}
+                              max={10000}
+                              size="small"
+                              value={previewLimit}
+                              onChange={v => setPreviewLimit(Number(v) || 100)}
+                              addonBefore="预览行数"
+                              style={{ width: 148 }}
                             />
+                            <Button
+                              size="small"
+                              icon={<SearchOutlined />}
+                              loading={previewLoading}
+                              disabled={!canPreviewSql || selected.is_locked}
+                              onClick={handlePreviewSql}
+                            >
+                              预览查询
+                            </Button>
+                          </Space>
+                        ),
+                        children: (
+                          <div style={{ height: resultPanelHeight, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                            <div
+                              role="separator"
+                              aria-orientation="horizontal"
+                              title="拖拽调整查询结果高度"
+                              onMouseDown={startResultResize}
+                              style={{
+                                height: 8,
+                                flexShrink: 0,
+                                cursor: 'row-resize',
+                                margin: '-8px 0 0',
+                                background: 'linear-gradient(180deg, transparent 0, transparent 3px, #d9d9d9 3px, #d9d9d9 5px, transparent 5px)',
+                              }}
+                            />
+                            {previewResult ? (
+                              <QueryResultPanel
+                                dataSource={previewTable.dataSource}
+                                columns={previewTable.tableColumns}
+                                toolbar={(
+                                  <div style={{ padding: '8px 12px', fontSize: 12, color: '#666' }}>
+                                    共 <strong>{previewResult.total ?? 0}</strong> 行
+                                    {previewResult.truncated ? `（已按上限 ${previewLimit} 截断）` : ''}
+                                    ；预览在集群内短生命周期 Job 执行，不创建 FlinkDeployment
+                                  </div>
+                                )}
+                              />
+                            ) : (
+                              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999', fontSize: 13, padding: 16, textAlign: 'center' }}>
+                                点击「预览查询」在此展示 SELECT 结果（须 SET batch 模式；支持 CREATE TABLE 定义连接器后 SELECT）
+                              </div>
+                            )}
                           </div>
                         ),
-                      },
-                    ]}
-                  />
-                  <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden' }}>
-                  <Editor
-                    height="420px"
-                    language="sql"
-                    theme={editorAppearance.theme}
-                    value={scriptDraft}
-                    onChange={selected.is_locked ? undefined : (v => setScriptDraft(v ?? ''))}
-                    beforeMount={registerDwMonacoThemes}
-                    onMount={ed => { editorRef.current = ed }}
-                    options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: Boolean(selected.is_locked) }}
-                  />
+                      }]}
+                    />
                   </div>
                 </>
               ) : (
@@ -1039,9 +1095,17 @@ export default function StreamStudioPage() {
 
       <Modal title="新建实时作业" open={createOpen} onOk={handleCreate} onCancel={() => setCreateOpen(false)} destroyOnClose>
         <Form form={createForm} layout="vertical" initialValues={{ job_type: 'SQL', parallelism: 1 }}>
-          <Form.Item name="name" label="作业名称" rules={[{ required: true }]}>
-            <Input placeholder="例如 ods_user_kafka_to_hudi" />
+          <Form.Item
+            name="name"
+            label="作业名称"
+            rules={[
+              { required: true, message: '请输入作业名称' },
+              { pattern: STREAM_JOB_NAME_PATTERN, message: STREAM_JOB_NAME_RULE },
+            ]}
+          >
+            <Input placeholder="例如 s3-copy-users" />
           </Form.Item>
+          <Paragraph type="secondary" style={{ marginTop: -12, fontSize: 12 }}>{STREAM_JOB_NAME_RULE}</Paragraph>
           <Form.Item name="job_type" label="类型" rules={[{ required: true }]}>
             <Select options={JOB_TYPES} />
           </Form.Item>
@@ -1059,6 +1123,143 @@ export default function StreamStudioPage() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <Modal title="重命名作业" open={renameOpen} onOk={handleRename} onCancel={() => setRenameOpen(false)} destroyOnClose>
+        <Form form={renameForm} layout="vertical">
+          <Form.Item
+            name="name"
+            label="作业名称"
+            rules={[
+              { required: true, message: '请输入作业名称' },
+              { pattern: STREAM_JOB_NAME_PATTERN, message: STREAM_JOB_NAME_RULE },
+            ]}
+          >
+            <Input placeholder="例如 s3-copy-users" />
+          </Form.Item>
+          <Alert type="info" showIcon message="命名规范" description={STREAM_JOB_NAME_RULE} />
+        </Form>
+      </Modal>
+
+      <Drawer
+        title={canPublishDirect ? '提交运行配置' : '提交审批配置'}
+        placement="right"
+        width={520}
+        open={submitDrawerOpen}
+        onClose={() => setSubmitDrawerOpen(false)}
+        destroyOnClose={false}
+        extra={<Tag color="purple">Flink Operator</Tag>}
+        footer={(
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <Button onClick={() => setSubmitDrawerOpen(false)}>取消</Button>
+            <Button
+              type="primary"
+              icon={<PlayCircleOutlined />}
+              loading={submitting}
+              disabled={Boolean(selected?.is_locked) || isJobPendingApproval}
+              onClick={handleSubmit}
+            >
+              {isJobPendingApproval ? '审批中' : canPublishDirect ? '确认提交运行' : '提交审批'}
+            </Button>
+          </div>
+        )}
+      >
+        {selected?.job_type === 'SQL' ? (
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Alert
+              type="info"
+              showIcon
+              message="FlinkDeployment Application + SQL Runner"
+              description={(
+                <div style={{ fontSize: 13 }}>
+                  <div>Flink {flinkRuntime?.flink_version || '2.0.1'} · 命名空间 {flinkRuntime?.operator_namespace || 'flink'}</div>
+                  {flinkRuntime?.paimon_warehouse_default && (
+                    <div>默认 Paimon warehouse：<code>{flinkRuntime.paimon_warehouse_default}</code></div>
+                  )}
+                </div>
+              )}
+            />
+            <Form layout="vertical">
+              <Form.Item label="并行度">
+                <InputNumber
+                  min={1}
+                  style={{ width: '100%' }}
+                  value={sqlParallelism}
+                  onChange={v => setSqlParallelism(Number(v) || 1)}
+                  disabled={selected.is_locked}
+                />
+              </Form.Item>
+              <Form.Item label="规格模板">
+                <Select
+                  allowClear
+                  placeholder="平台默认（不套用模板）"
+                  value={resourceTier || undefined}
+                  disabled={selected.is_locked}
+                  onChange={v => setResourceTier(v || '')}
+                  options={[
+                    { value: 'small', label: '小 — 轻量 SQL / 探查' },
+                    { value: 'medium', label: '中 — 默认生产' },
+                    { value: 'large', label: '大 — 高并行 / 重 SQL' },
+                  ]}
+                />
+              </Form.Item>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+                <Form.Item label="JM 内存" style={{ marginBottom: 0 }}>
+                  <Input placeholder="2048m" value={operatorResForm.jm_memory} disabled={selected.is_locked}
+                    onChange={e => setOperatorResForm(f => ({ ...f, jm_memory: e.target.value }))} />
+                </Form.Item>
+                <Form.Item label="JM CPU" style={{ marginBottom: 0 }}>
+                  <InputNumber min={0.1} step={0.5} style={{ width: '100%' }} placeholder="1"
+                    value={operatorResForm.jm_cpu ? Number(operatorResForm.jm_cpu) : undefined}
+                    disabled={selected.is_locked}
+                    onChange={v => setOperatorResForm(f => ({ ...f, jm_cpu: v != null ? String(v) : '' }))} />
+                </Form.Item>
+                <Form.Item label="TM 内存" style={{ marginBottom: 0 }}>
+                  <Input placeholder="4096m" value={operatorResForm.tm_memory} disabled={selected.is_locked}
+                    onChange={e => setOperatorResForm(f => ({ ...f, tm_memory: e.target.value }))} />
+                </Form.Item>
+                <Form.Item label="TM CPU" style={{ marginBottom: 0 }}>
+                  <InputNumber min={0.1} step={0.5} style={{ width: '100%' }} placeholder="1"
+                    value={operatorResForm.tm_cpu ? Number(operatorResForm.tm_cpu) : undefined}
+                    disabled={selected.is_locked}
+                    onChange={v => setOperatorResForm(f => ({ ...f, tm_cpu: v != null ? String(v) : '' }))} />
+                </Form.Item>
+                <Form.Item label="Task Slots" style={{ marginBottom: 0 }}>
+                  <InputNumber min={1} style={{ width: '100%' }} placeholder="2"
+                    value={operatorResForm.task_slots ? Number(operatorResForm.task_slots) : undefined}
+                    disabled={selected.is_locked}
+                    onChange={v => setOperatorResForm(f => ({ ...f, task_slots: v != null ? String(v) : '' }))} />
+                </Form.Item>
+                <Form.Item label="TM 副本数" style={{ marginBottom: 0 }}>
+                  <InputNumber min={1} style={{ width: '100%' }} placeholder="自动"
+                    value={operatorResForm.tm_replicas ? Number(operatorResForm.tm_replicas) : undefined}
+                    disabled={selected.is_locked}
+                    onChange={v => setOperatorResForm(f => ({ ...f, tm_replicas: v != null ? String(v) : '' }))} />
+                </Form.Item>
+              </div>
+              <Form.Item label="高级 Flink 配置" style={{ marginTop: 16 }}>
+                <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
+                  JSON 顶级键会合并进 FlinkDeployment flinkConfiguration；Operator 资源请用上方表单。
+                </Paragraph>
+                <Input.TextArea
+                  rows={8}
+                  value={streamingPropsJson}
+                  onChange={e => setStreamingPropsJson(e.target.value)}
+                  disabled={selected.is_locked}
+                  style={{ fontFamily: 'monospace', fontSize: 12 }}
+                  placeholder={'{\n  "execution.checkpointing.interval": "60000"\n}'}
+                />
+              </Form.Item>
+            </Form>
+            <Divider style={{ margin: '4px 0' }} />
+            <div style={{ fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>
+              <div>Operator CR：<code>{selected.flink_operator_deployment_name || '提交后生成'}</code></div>
+              <div>Flink Job ID：<code>{selected.flink_job_id || '提交后生成'}</code></div>
+            </div>
+          </Space>
+        ) : (
+          <Text type="secondary">JAR 作业暂沿用主页面配置。</Text>
+        )}
+      </Drawer>
 
       <Modal title="版本历史" open={historyModal} onCancel={() => setHistoryModal(false)} footer={null} width={780} destroyOnClose>
         {historyList.length === 0 && (

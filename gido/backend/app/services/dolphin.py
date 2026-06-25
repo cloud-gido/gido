@@ -77,6 +77,16 @@ def _format_ds_failure(resp: dict) -> str:
     return "; ".join(bits) if bits else json.dumps(resp, ensure_ascii=False)[:1600]
 
 
+def _raise_for_ds_http(r: requests.Response) -> None:
+    """把 DS 认证类 HTTP 错误翻译成 GIDO 语义，避免前端暴露裸 requests 异常。"""
+    if r.status_code in (401, 403):
+        raise RuntimeError(
+            "生产调度引擎认证失败：DolphinScheduler Token 已过期、无效或权限不足。"
+            "请在 GIDO 空间设置中更新 DolphinScheduler Token，或在 DS 重新生成长期 Token。"
+        )
+    r.raise_for_status()
+
+
 def _jdbc_other_defaults_for_dolphin(ds_logical_type: str, extra_from_dw: Optional[dict]) -> dict:
     """Dolphin JDBC 连接器常要求 timezone/SSL；空 other 易出现参数构建失败（UI 常为 serverTimezone）。"""
     o: dict[str, Any] = {}
@@ -119,7 +129,7 @@ class DSClient:
 
     def _get(self, path: str, params: dict = None) -> dict:
         r = requests.get(f"{self.base}{path}", headers=self.headers, params=params, timeout=10)
-        r.raise_for_status()
+        _raise_for_ds_http(r)
         data = r.json()
         if data.get("code") != 0:
             raise RuntimeError(f"DS API error: {data.get('msg')}")
@@ -131,7 +141,7 @@ class DSClient:
         else:
             # DS 3.x 大部分接口用 query 参数（form-urlencoded）
             r = requests.post(f"{self.base}{path}", headers=self.headers, params=data, timeout=10)
-        r.raise_for_status()
+        _raise_for_ds_http(r)
         resp = r.json()
         if resp.get("code") != 0:
             raise RuntimeError(f"DS API error: {resp.get('msg')}")
@@ -139,7 +149,7 @@ class DSClient:
 
     def _put(self, path: str, data: dict = None) -> dict:
         r = requests.put(f"{self.base}{path}", headers=self.headers, params=data, timeout=10)
-        r.raise_for_status()
+        _raise_for_ds_http(r)
         resp = r.json()
         if resp.get("code") != 0:
             raise RuntimeError(f"DS API error: {resp.get('msg')}")
@@ -231,7 +241,7 @@ class DSClient:
                     data=body.encode("utf-8"),
                     timeout=30,
                 )
-                r.raise_for_status()
+                _raise_for_ds_http(r)
                 resp = _response_json_raw(r)
                 if resp.get("code") != 0:
                     raise RuntimeError(
@@ -247,7 +257,7 @@ class DSClient:
                     data=body.encode("utf-8"),
                     timeout=30,
                 )
-                r.raise_for_status()
+                _raise_for_ds_http(r)
                 resp = _response_json_raw(r)
             except requests.RequestException as e:
                 raise RuntimeError(f"DS 创建数据源网络/HTTP失败: {e}") from e
@@ -276,7 +286,7 @@ class DSClient:
             if did is None:
                 continue
             r = requests.delete(f"{self.base}/datasources/{did}", headers=self.headers, timeout=15)
-            r.raise_for_status()
+            _raise_for_ds_http(r)
             resp = r.json()
             if resp.get("code") != 0:
                 raise RuntimeError(f"DS 删除数据源失败: {resp.get('msg')}")
@@ -358,6 +368,7 @@ class DSClient:
                 "node_type": node_type,
                 "datasource_id": datasource_id,
                 "ds_task_type": "SHELL",
+                "ds_task_code": task_code,
                 "reason": None,
             }
 
@@ -599,7 +610,18 @@ class DSClient:
                     business_date: str = None, cron_expr: str = None) -> int:
         """触发一次流程执行，返回 DS processInstanceId"""
         from datetime import datetime
+        import time
         biz = business_date or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        before_ids: set[int] = set()
+        try:
+            for row in self.list_process_instances(
+                int(project_code), process_definition_code=int(process_code), page_size=20
+            ):
+                rid = row.get("id") or row.get("processInstanceId") or row.get("process_instance_id")
+                if rid is not None:
+                    before_ids.add(int(rid))
+        except Exception:
+            before_ids = set()
         resp = self._post(f"/projects/{project_code}/executors/start-process-instance", data={
             "processDefinitionCode": process_code,
             "scheduleTime": biz,
@@ -617,7 +639,29 @@ class DSClient:
             "expectedParallelismNumber": None,
             "dryRun": 0,
         })
-        instance_id = unwrap_ds_numeric(resp["data"], keys=("id", "code"))
+        # DS 3.2.x may return a command/code from start-process-instance, not the
+        # workflow instance id. Poll the instance list and return the newly created id.
+        instance_id: Optional[int] = None
+        for _ in range(20):
+            try:
+                rows = self.list_process_instances(
+                    int(project_code), process_definition_code=int(process_code), page_size=20
+                )
+                for row in rows:
+                    rid = row.get("id") or row.get("processInstanceId") or row.get("process_instance_id")
+                    if rid is None:
+                        continue
+                    rid_int = int(rid)
+                    if not before_ids or rid_int not in before_ids:
+                        instance_id = rid_int
+                        break
+                if instance_id is not None:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.25)
+        if instance_id is None:
+            instance_id = unwrap_ds_numeric(resp["data"], keys=("id", "code"))
         logger.info(f"DS 流程实例已触发: processCode={process_code} instanceId={instance_id}")
         return instance_id
 
@@ -706,6 +750,70 @@ class DSClient:
             page += 1
         return out
 
+    def get_task_log(
+        self,
+        task_instance_id: int,
+        *,
+        skip_line_num: int = 0,
+        limit: int = 2000,
+    ) -> str:
+        """拉取 Dolphin 任务实例执行日志（运维中心节点日志主来源）。"""
+        resp = self._get(
+            "/log/detail",
+            params={
+                "taskInstanceId": int(task_instance_id),
+                "skipLineNum": int(skip_line_num),
+                "limit": int(limit),
+            },
+        )
+        data = resp.get("data")
+        if isinstance(data, str):
+            return data
+        if isinstance(data, dict):
+            for key in ("message", "log", "lineNum"):
+                if key in data and data[key] not in (None, ""):
+                    if key == "lineNum":
+                        continue
+                    return str(data[key])
+            return str(data)
+        return ""
+
+    def stop_task_instance(self, project_code: int, task_instance_id: int) -> None:
+        """终止单个任务实例（流/批任务 stop）。"""
+        self._post(f"/projects/{int(project_code)}/task-instances/{int(task_instance_id)}/stop")
+
+    def control_process_instance(self, project_code: int, process_instance_id: int, execute_type: str) -> None:
+        """流程实例控制：STOP / START_FAILURE_TASK_PROCESS / REPEAT_RUNNING 等。"""
+        self._post(
+            f"/projects/{int(project_code)}/executors/execute",
+            data={
+                # The local 3.2.2 image expects processInstanceId, while newer docs use
+                # workflowInstanceId. Send both so either controller shape can bind.
+                "processInstanceId": int(process_instance_id),
+                "workflowInstanceId": int(process_instance_id),
+                "executeType": str(execute_type).strip().upper(),
+            },
+        )
+
+    def execute_task_on_instance(
+        self,
+        project_code: int,
+        process_instance_id: int,
+        task_code: int,
+        *,
+        task_depend_type: str = "TASK_POST",
+    ) -> None:
+        """在已有流程实例上重跑指定任务节点。"""
+        self._post(
+            f"/projects/{int(project_code)}/executors/execute-task",
+            data={
+                "processInstanceId": int(process_instance_id),
+                "workflowInstanceId": int(process_instance_id),
+                "startNodeList": str(int(task_code)),
+                "taskDependType": str(task_depend_type).strip().upper(),
+            },
+        )
+
     def set_schedule(self, project_code: int, process_code: int, cron_expr: str):
         """为流程定义设置 Cron 调度，自动将5位 Linux cron 转为 DS 的 Quartz 6位格式"""
         # DS 用 Quartz cron（秒 分 时 日 月 周），标准 Linux cron 是5位（分 时 日 月 周）
@@ -763,6 +871,45 @@ class DSClient:
             data={"releaseState": "ONLINE"}
         )
 
+    def offline_process(self, project_code: int, process_code: int):
+        """下线流程定义：停止作为生产定义服务，历史实例仍保留。"""
+        self._post(
+            f"/projects/{int(project_code)}/process-definition/{int(process_code)}/release",
+            data={"releaseState": "OFFLINE"},
+        )
+
+    def _schedule_ids_for_process(self, project_code: int, process_code: int) -> List[int]:
+        resp = self._get(
+            f"/projects/{int(project_code)}/schedules",
+            params={"processDefinitionCode": int(process_code), "pageSize": 50, "pageNo": 1},
+        )
+        out: List[int] = []
+        for item in resp.get("data", {}).get("totalList", []) or []:
+            try:
+                out.append(unwrap_ds_numeric(item.get("id"), keys=("id", "code")))
+            except Exception:
+                logger.debug("DS 调度 id 解析失败: %s", item, exc_info=True)
+        return out
+
+    def offline_schedules(self, project_code: int, process_code: int) -> int:
+        """暂停该流程定义关联的周期调度，返回处理的调度条数。"""
+        count = 0
+        for sid in self._schedule_ids_for_process(project_code, process_code):
+            try:
+                self._post(f"/projects/{int(project_code)}/schedules/{sid}/offline")
+                count += 1
+            except Exception:
+                logger.debug("DS 调度下线可忽略 sid=%s", sid, exc_info=True)
+        return count
+
+    def online_schedules(self, project_code: int, process_code: int) -> int:
+        """恢复该流程定义关联的周期调度，返回处理的调度条数。"""
+        count = 0
+        for sid in self._schedule_ids_for_process(project_code, process_code):
+            self._post(f"/projects/{int(project_code)}/schedules/{sid}/online")
+            count += 1
+        return count
+
     def delete_process_definition(self, project_code: int, process_code: int) -> None:
         """删除 DS 流程定义（先下线流程与关联调度，再 DELETE）。"""
         pcode = int(project_code)
@@ -791,7 +938,7 @@ class DSClient:
                         headers=self.headers,
                         timeout=15,
                     )
-                    r.raise_for_status()
+                    _raise_for_ds_http(r)
                     body = r.json()
                     if body.get("code") != 0:
                         logger.warning("DS 删除调度 sid=%s: %s", sid, _format_ds_failure(body))
@@ -804,7 +951,7 @@ class DSClient:
             headers=self.headers,
             timeout=30,
         )
-        r.raise_for_status()
+        _raise_for_ds_http(r)
         body = _response_json_raw(r)
         if body.get("code") != 0:
             raise RuntimeError(f"DS 删除流程定义失败: {_format_ds_failure(body)}")
@@ -926,7 +1073,7 @@ DS_PROCESS_INSTANCE_CODE_TO_DW = {
     1: "running",   # RUNNING_EXECUTION
     2: "running",
     3: "running",   # PAUSE
-    4: "running",
+    4: "killed",    # STOP in DolphinScheduler 3.2.x numeric enum
     5: "killed",    # STOP
     6: "failed",    # FAILURE
     7: "success",   # SUCCESS

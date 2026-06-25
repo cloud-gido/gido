@@ -211,7 +211,7 @@ def _execute_approval_action(db: Session, row: PublishApproval, reviewer) -> Dic
         if not get_dolphin_runtime(db, wf.workspace_id).enabled:
             raise HTTPException(status_code=400, detail="DolphinScheduler 未启用")
         refresh_ds_client(db, wf.workspace_id)
-        return publish_workflow_to_ds(db, wf)
+        return publish_workflow_to_ds(db, wf, published_by=reviewer.id if reviewer else None)
 
     if row.action == "publish_node":
         node = db.query(TaskNode).filter(TaskNode.id == row.resource_id).first()

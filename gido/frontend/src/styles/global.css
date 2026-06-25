@@ -850,6 +850,16 @@ body {
   outline-offset: 2px;
 }
 
+.dw-avatar-picker-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+  margin-bottom: 16px;
+  padding: 4px 2px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.02);
+}
+
 .dw-avatar-picker-preview {
   display: flex;
   flex-direction: column;
@@ -863,6 +873,18 @@ body {
   grid-template-columns: repeat(4, 1fr);
   gap: 10px;
   margin-bottom: 16px;
+}
+
+.dw-avatar-picker-grid--emoji {
+  grid-template-columns: repeat(8, 1fr);
+  gap: 6px;
+  margin-bottom: 0;
+  padding: 8px;
+}
+
+.dw-avatar-picker-grid--emoji .dw-avatar-picker-item {
+  padding: 4px;
+  border-radius: 10px;
 }
 
 .dw-avatar-picker-item {

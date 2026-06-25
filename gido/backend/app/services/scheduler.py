@@ -6,6 +6,7 @@
 调度器服务：基于 APScheduler，自动触发 cron 任务
 """
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime
 import logging
@@ -122,6 +123,42 @@ def _run_sync_task_job(task_id: int):
         logger.exception("数据集成任务 %s 定时执行失败: %s", task_id, e)
 
 
+def _poll_scheduler_instances_job():
+    """生产调度实例轮询补偿：回调丢失时仍能把实例状态写回 GIDO。"""
+    from app.core.database import SessionLocal
+    from app.services.ds_runtime import get_dolphin_runtime, refresh_ds_client
+    from app.services.dolphin import ds_client
+    from app.services.dolphin_instance_sync import patch_instances_from_ds_detail, sync_from_dolphin_definitions
+
+    db = SessionLocal()
+    try:
+        if not get_dolphin_runtime(db).enabled:
+            return
+        refresh_ds_client(db)
+        sync_from_dolphin_definitions(db, ds_client)
+        patch_instances_from_ds_detail(db, ds_client, limit=120)
+    except Exception as e:
+        logger.warning("生产调度实例轮询同步失败: %s", e, exc_info=True)
+    finally:
+        db.close()
+
+
+def reload_scheduler_instance_polling():
+    """注册实例中心的调度引擎状态轮询补偿任务。"""
+    for job in list(scheduler.get_jobs()):
+        if job.id == "scheduler_instance_poll":
+            job.remove()
+    scheduler.add_job(
+        _poll_scheduler_instances_job,
+        IntervalTrigger(seconds=30),
+        id="scheduler_instance_poll",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info("已注册生产调度实例轮询补偿任务：30s")
+
+
 def reload_integration_schedules():
     """注册数据集成 Cron 任务（与工作流调度独立）。"""
     from app.core.database import SessionLocal
@@ -158,6 +195,7 @@ def reload_integration_schedules():
                 logger.warning("数据集成 %s 调度注册失败: %s", t.name, e)
     finally:
         db.close()
+    reload_scheduler_instance_polling()
 
 
 def reload_schedules():

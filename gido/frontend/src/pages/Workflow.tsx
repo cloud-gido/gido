@@ -8,7 +8,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Table, Button, Modal, Form, Input, Select, Tag, Space, message,
-  Drawer, Badge, DatePicker, Tooltip, Popconfirm, Tabs, Alert
+  Drawer, DatePicker, Tooltip, Popconfirm, Tabs, Alert
 } from 'antd'
 import {
   PlusOutlined, PlayCircleOutlined, DeleteOutlined, EyeOutlined,
@@ -26,6 +26,13 @@ import { useResizableTableColumns } from '../hooks/useResizableTableColumns'
 
 const STATUS_COLOR: Record<string, string> = {
   success: 'green', failed: 'red', running: 'blue', pending: 'orange', killed: 'default'
+}
+
+const WORKFLOW_STATUS: Record<string, { label: string; color: string; desc: string }> = {
+  draft: { label: '草稿', color: 'default', desc: '仅保存在 GIDO，尚未发布生产' },
+  published: { label: '已上线', color: 'green', desc: '已发布到生产调度，可周期触发' },
+  paused: { label: '已暂停', color: 'orange', desc: '生产定义保留，周期调度已暂停' },
+  offline: { label: '已下线', color: 'red', desc: '生产调度已下线，历史实例保留' },
 }
 
 export default function WorkflowPage() {
@@ -89,7 +96,7 @@ export default function WorkflowPage() {
     const values = await form.validateFields()
     values.workspace_id = wsId
     const fromEditor = dagEditorRef.current?.getDAG() ?? dagConfig
-    // 编辑器只产出 nodes/edges；合并保留已发布到 Dolphin 的 ds_*，否则保存会抹掉导致 Cron 无法同步到 DS
+    // 编辑器只产出 nodes/edges；调度映射绑定生产版本，不写进草稿 DAG。
     const prevDag = editingWf?.dag_config || {}
     values.dag_config = { ...prevDag, ...fromEditor }
     if (editingWf) {
@@ -108,7 +115,7 @@ export default function WorkflowPage() {
     try {
       const res: any = await workflowApi.run(wf.id)
       if (res.ds_instance_id) {
-        message.success({ content: `已提交到 DolphinScheduler (DS实例: ${res.ds_instance_id})`, key: 'run' })
+        message.success({ content: `已提交到生产调度 (调度实例: ${res.scheduler_instance_id || res.ds_instance_id})`, key: 'run' })
       } else if (res.status === 'success') {
         message.success({ content: '执行成功', key: 'run' })
       } else {
@@ -121,7 +128,7 @@ export default function WorkflowPage() {
   }
 
   const handlePublishToDS = async (wf: any) => {
-    message.loading({ content: '同步到 DolphinScheduler...', key: 'ds' })
+    message.loading({ content: '发布到生产调度...', key: 'ds' })
     try {
       const res: any = await workflowApi.publishToDS(wf.id)
       const sync = Array.isArray(res?.ds_task_sync) ? res.ds_task_sync : []
@@ -129,14 +136,14 @@ export default function WorkflowPage() {
         ? sync.map((d: any) => `节点#${d.node_id}→${d.ds_task_type}${d.jdbc_type ? `(${d.jdbc_type})` : ''}`).join('；')
         : ''
       message.success({
-        content: `已同步到 DS (processCode: ${res.ds_process_code})${syncHint ? ` · ${syncHint}` : ''}`,
+        content: `已发布生产版本 v${res.version_no || '-'} (definition: ${res.scheduler_definition_id})${syncHint ? ` · ${syncHint}` : ''}`,
         key: 'ds',
       })
       if (res.dolphin_workflow_url) {
         message.info(
           <span>
-            可在 Dolphin 查看：
-            <a href={res.dolphin_workflow_url} target="_blank" rel="noreferrer">打开工作流定义</a>
+            诊断入口：
+            <a href={res.dolphin_workflow_url} target="_blank" rel="noreferrer">打开调度定义</a>
           </span>,
           6,
         )
@@ -144,6 +151,36 @@ export default function WorkflowPage() {
       load()
     } catch (e: any) {
       message.error({ content: e?.response?.data?.detail || '同步失败', key: 'ds' })
+    }
+  }
+
+  const handlePause = async (wf: any) => {
+    try {
+      const res: any = await workflowApi.pause(wf.id)
+      message.success(res?.message || '已暂停调度')
+      load()
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '暂停失败')
+    }
+  }
+
+  const handleResume = async (wf: any) => {
+    try {
+      const res: any = await workflowApi.resume(wf.id)
+      message.success(res?.message || '已恢复调度')
+      load()
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '恢复失败')
+    }
+  }
+
+  const handleOffline = async (wf: any) => {
+    try {
+      const res: any = await workflowApi.offline(wf.id)
+      message.success(res?.message || '任务已下线')
+      load()
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '下线失败')
     }
   }
 
@@ -213,6 +250,7 @@ export default function WorkflowPage() {
   const baseColumns = [
     { key: 'name', title: '工作流名称', dataIndex: 'name', width: 140, ellipsis: true },
     { key: 'description', title: '描述', dataIndex: 'description', width: 160, ellipsis: true },
+    { key: 'version', title: '生产版本', dataIndex: 'active_version_no', width: 90, render: (v: number) => v ? <Tag color="blue">v{v}</Tag> : <Tag>草稿</Tag> },
     { key: 'created_by', title: '创建人', dataIndex: 'created_by_username', width: 88, render: (v: string) => v || '—' },
     { key: 'updated_by', title: '最近保存人', dataIndex: 'updated_by_username', width: 120, render: (v: string) => v || '—' },
     { key: 'node_count', title: '节点数', width: 72, align: 'center' as const, render: (_: any, row: any) => row.dag_config?.nodes?.length || 0 },
@@ -228,18 +266,28 @@ export default function WorkflowPage() {
     },
     {
       key: 'status',
-      title: '状态',
-      dataIndex: 'is_active',
-      width: 88,
-      render: (v: boolean) => <Badge status={v ? 'success' : 'default'} text={v ? '启用' : '停用'} />
+      title: '生命周期',
+      dataIndex: 'status',
+      width: 110,
+      render: (v: string, row: any) => {
+        const status = v || (row.scheduler_definition_id ? 'published' : 'draft')
+        const meta = WORKFLOW_STATUS[status] || WORKFLOW_STATUS.draft
+        return (
+          <Tooltip title={meta.desc}>
+            <Tag color={meta.color}>{meta.label}</Tag>
+          </Tooltip>
+        )
+      }
     },
     {
-      key: 'dolphin',
-      title: 'Dolphin',
+      key: 'scheduler',
+      title: '发布状态',
       width: 120,
       render: (_: any, row: any) => (
         <Space size={4} wrap>
-          {row.needs_ds_republish && row.dag_config?.ds_process_code ? (
+          {row.status === 'offline' ? <Tag color="red">已下线</Tag> : null}
+          {row.status === 'paused' ? <Tag color="orange">调度暂停</Tag> : null}
+          {row.needs_ds_republish && row.scheduler_definition_id ? (
             <Tag color="warning">待发布</Tag>
           ) : null}
           {isWorkflowPendingApproval(row) ? <Tag color="orange">审批中</Tag> : null}
@@ -256,41 +304,81 @@ export default function WorkflowPage() {
     {
       key: 'actions',
       title: '操作',
-      width: 300,
+      width: 420,
       render: (_: any, row: any) => (
         <Space>
           <Tooltip title="编辑"><Button size="small" icon={<EditOutlined />} onClick={() => openEdit(row)} /></Tooltip>
-          <Tooltip title="立即运行"><Button size="small" type="primary" icon={<PlayCircleOutlined />} onClick={() => handleRun(row)} /></Tooltip>
-          <Tooltip title={canPublishDirect ? '将当前定义与定时发布到 Dolphin' : '提交审批，由空间/平台管理员通过后发布到生产'}>
+          <Tooltip title={row.status === 'offline' ? '已下线任务不能运行，请重新发布上线' : '立即运行'}>
+            <Button
+              size="small"
+              type="primary"
+              icon={<PlayCircleOutlined />}
+              disabled={row.status === 'offline'}
+              onClick={() => handleRun(row)}
+            />
+          </Tooltip>
+          <Tooltip title={canPublishDirect ? '将当前定义与定时发布到生产调度' : '提交审批，由空间/平台管理员通过后发布到生产'}>
             <Button
               size="small"
               icon={<CloudUploadOutlined />}
               disabled={isWorkflowPendingApproval(row)}
               onClick={() => (canPublishDirect ? handlePublishToDS(row) : setApprovalModal(row))}
-              style={{ color: row.dag_config?.ds_process_code ? '#52c41a' : undefined }}
+              style={{ color: row.scheduler_definition_id ? '#52c41a' : undefined }}
             >
               {isWorkflowPendingApproval(row)
                 ? '审批中'
                 : canPublishDirect
-                  ? (row.dag_config?.ds_process_code ? 'DS已同步' : '发布DS')
+                  ? (row.status === 'offline' ? '重新上线' : row.scheduler_definition_id ? '发布变更' : '发布上线')
                   : '提交审批'}
             </Button>
           </Tooltip>
+          {row.status === 'published' && row.schedule_type === 'cron' && (
+            <Tooltip title="暂停周期调度；生产定义和历史实例保留，仍可手动运行/补数">
+              <Button size="small" onClick={() => handlePause(row)}>暂停</Button>
+            </Tooltip>
+          )}
+          {row.status === 'paused' && (
+            <Tooltip title="恢复周期调度">
+              <Button size="small" onClick={() => handleResume(row)}>恢复</Button>
+            </Tooltip>
+          )}
+          {row.scheduler_definition_id && row.status !== 'offline' && (
+            <Popconfirm
+              title="下线任务？"
+              description="将暂停周期并下线生产定义，历史实例保留；下线后不能运行或补数，重新发布可再次上线。"
+              okText="下线"
+              okButtonProps={{ danger: true }}
+              cancelText="取消"
+              onConfirm={() => handleOffline(row)}
+            >
+              <Button size="small" danger>下线</Button>
+            </Popconfirm>
+          )}
           <Tooltip title="运行历史"><Button size="small" icon={<HistoryOutlined />} onClick={() => showInstances(row)} /></Tooltip>
-          <Tooltip title="补数据"><Button size="small" icon={<CalendarOutlined />} onClick={() => { setSelectedWf(row); setBatchModal(true) }} /></Tooltip>
+          <Tooltip title={row.status === 'offline' ? '已下线任务不能补数，请重新发布上线' : '补数据'}>
+            <Button
+              size="small"
+              icon={<CalendarOutlined />}
+              disabled={row.status === 'offline'}
+              onClick={() => { setSelectedWf(row); setBatchModal(true) }}
+            />
+          </Tooltip>
           <Popconfirm
             title="删除工作流？"
             description={
-              row.dag_config?.ds_process_code
-                ? '将删除平台记录，并尝试从 Dolphin 移除已发布的流程定义（含定时）。不可恢复。'
+              row.scheduler_definition_id
+                ? row.status === 'offline'
+                  ? '将删除已下线的 GIDO 工作流记录，并尝试清理调度引擎定义。历史实例将不可通过该任务继续追溯。'
+                  : '已上线工作流不能直接删除，请先执行「下线」以保留历史实例。'
                 : '将删除平台工作流记录，不可恢复。'
             }
             okText="删除"
             okButtonProps={{ danger: true }}
             cancelText="取消"
+            disabled={row.scheduler_definition_id && row.status !== 'offline'}
             onConfirm={() => handleDelete(row)}
           >
-            <Button size="small" danger icon={<DeleteOutlined />} />
+            <Button size="small" danger icon={<DeleteOutlined />} disabled={row.scheduler_definition_id && row.status !== 'offline'} />
           </Popconfirm>
         </Space>
       )
@@ -306,9 +394,9 @@ export default function WorkflowPage() {
       updated_by: 120,
       node_count: 72,
       schedule: 120,
-      status: 88,
-      dolphin: 120,
-      actions: 300,
+      status: 110,
+      scheduler: 120,
+      actions: 420,
     },
   })
 
@@ -346,7 +434,7 @@ export default function WorkflowPage() {
         <div>
           <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600, color: '#0f172a', letterSpacing: '-0.02em' }}>工作流</h2>
           <div style={{ fontSize: 13, color: '#64748b', marginTop: 4 }}>
-            草稿在平台保存；发布到 Dolphin 后由 DS 负责周期调度（与 Airflow / GIDO 的「保存 / 发布」分层一致）
+            草稿在 GIDO 保存；发布上线后由调度引擎负责周期触发与执行；暂停只停周期，下线退出生产但保留历史实例。
           </div>
         </div>
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建工作流</Button>
@@ -407,7 +495,7 @@ export default function WorkflowPage() {
                   type="info"
                   showIcon
                   style={{ marginBottom: 12 }}
-                  message="编排方式与 Airflow / Dolphin 类似：添加节点后拖拽排版，从端口拖线表示依赖；点击「保存」时写入布局。"
+                  message="添加节点后拖拽排版，从端口拖线表示依赖；点击「保存」写入 GIDO 工作流定义。"
                 />
                 <DAGEditor
                   ref={dagEditorRef}
@@ -473,7 +561,7 @@ export default function WorkflowPage() {
             <DatePicker.RangePicker style={{ width: '100%' }} />
           </Form.Item>
           <div style={{ color: '#666', fontSize: 12 }}>
-            按业务日期逐天触发运行，最多 90 天。生产环境（Dolphin 已启用）下每次会向 DS 提交一次运行；未启用 DS 时由本地执行器消费队列。
+            按业务日期逐天触发运行，最多 90 天。生产调度启用时每次会向调度引擎提交一次运行；未启用时由本地执行器消费队列。
           </div>
         </Form>
       </Modal>
@@ -489,7 +577,7 @@ export default function WorkflowPage() {
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
-          message="普通开发不能直接发布到生产。提交后由空间管理员或平台管理员审批，通过后将自动同步到 DolphinScheduler。"
+          message="普通开发不能直接发布到生产。提交后由空间管理员或平台管理员审批，通过后将自动发布到生产调度。"
         />
         <Input.TextArea
           rows={3}

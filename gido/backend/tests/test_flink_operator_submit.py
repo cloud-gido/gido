@@ -29,10 +29,19 @@ def test_build_flink_deployment_body_structure():
     assert body["spec"]["flinkConfiguration"]["taskmanager.numberOfTaskSlots"] == "2"
 
 
-def test_sql_deployment_name_for_job():
-    from app.services.flink_operator_submit import sql_deployment_name_for_job
+def test_extract_sql_set_flink_configuration():
+    from app.services.flink_operator_submit import extract_sql_set_flink_configuration
 
-    assert sql_deployment_name_for_job(7, 3) == "gido-sql-3-7"
+    sql = """
+SET 'execution.runtime-mode' = 'batch';
+SET 'fs.s3a.access.key' = 'AKIA123';
+SET 'fs.s3a.secret.key' = 'sec/ret';
+SET 'fs.s3a.endpoint' = 's3.us-east-2.amazonaws.com';
+"""
+    props = extract_sql_set_flink_configuration(sql)
+    assert props["fs.s3a.access.key"] == "AKIA123"
+    assert props["fs.s3a.secret.key"] == "sec/ret"
+    assert "execution.runtime-mode" not in props
 
 
 def test_apply_flink_deployment_replace_sets_resource_version(monkeypatch):

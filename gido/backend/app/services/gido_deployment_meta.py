@@ -24,14 +24,19 @@ def _truncate_k8s_name(name: str, max_len: int = 63) -> str:
     return name[:max_len].rstrip("-")
 
 
-def jar_deployment_name(workspace_id: int, job_id: int) -> str:
-    raw = f"gido-jar-{_sanitize_k8s_name_part(workspace_id)}-{_sanitize_k8s_name_part(job_id)}"
-    return _truncate_k8s_name(raw)
+def _deployment_name(kind: str, workspace_id: int, job_id: int) -> str:
+    ws = _sanitize_k8s_name_part(workspace_id)
+    jid = _sanitize_k8s_name_part(job_id)
+    prefix = f"gido-{_sanitize_k8s_name_part(kind)}"
+    return _truncate_k8s_name(f"{prefix}-{ws}-{jid}")
 
 
-def sql_deployment_name(workspace_id: int, job_id: int) -> str:
-    raw = f"gido-sql-{_sanitize_k8s_name_part(workspace_id)}-{_sanitize_k8s_name_part(job_id)}"
-    return _truncate_k8s_name(raw)
+def jar_deployment_name(workspace_id: int, job_id: int, job_name: Optional[str] = None) -> str:
+    return _deployment_name("jar", workspace_id, job_id)
+
+
+def sql_deployment_name(workspace_id: int, job_id: int, job_name: Optional[str] = None) -> str:
+    return _deployment_name("sql", workspace_id, job_id)
 
 
 def sql_configmap_name(workspace_id: int, job_id: int) -> str:
@@ -49,6 +54,7 @@ class GidoDeploymentMeta:
     workspace_id: int
     job_id: int
     job_type: str
+    job_name: Optional[str] = None
     sql_version: Optional[str] = None
     sql_hash: Optional[str] = None
     submitted_by: Optional[str] = None
@@ -69,6 +75,8 @@ class GidoDeploymentMeta:
             "gido.io/job-id": str(int(self.job_id)),
             "gido.io/job-type": (self.job_type or "").strip().lower(),
         }
+        if self.job_name:
+            ann["gido.io/job-name"] = str(self.job_name)
         if self.sql_version:
             if (self.job_type or "").lower() == "sql":
                 ann["gido.io/sql-version"] = str(self.sql_version)

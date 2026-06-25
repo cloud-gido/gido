@@ -17,6 +17,12 @@ def test_sql_deployment_name_with_workspace():
     assert len(sql_deployment_name(999999, 888888)) <= 63
 
 
+def test_deployment_name_with_job_name():
+    assert sql_deployment_name(1, 31, "s3-copy") == "gido-sql-1-31"
+    assert jar_deployment_name(2, 7, "ODS 用户 sync") == "gido-jar-2-7"
+    assert len(sql_deployment_name(999999, 888888, "very-long-job-name-" * 8)) <= 63
+
+
 def test_sql_configmap_name():
     assert sql_configmap_name(5, 9) == "gido-sql-script-5-9"
 
@@ -33,6 +39,7 @@ def test_gido_deployment_meta_annotations():
         workspace_id=10,
         job_id=20,
         job_type="sql",
+        job_name="s3-copy",
         sql_version="15",
         sql_hash="abc123",
         submitted_by="admin",
@@ -41,6 +48,7 @@ def test_gido_deployment_meta_annotations():
     ann = meta.annotations()
     assert ann["gido.io/workspace-id"] == "10"
     assert ann["gido.io/job-id"] == "20"
+    assert ann["gido.io/job-name"] == "s3-copy"
     assert ann["gido.io/sql-version"] == "15"
     assert ann["gido.io/sql-hash"] == "abc123"
     body = {"metadata": {"name": "gido-sql-10-20", "namespace": "flink"}}

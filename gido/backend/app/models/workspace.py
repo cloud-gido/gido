@@ -157,22 +157,57 @@ class Workflow(Base):
     dag_config = Column(JSON)  # 节点和边的配置
     schedule_type = Column(String(32), default="manual")
     cron_expression = Column(String(64))
+    status = Column(String(32), default="draft")  # draft/published/offline
+    active_version_id = Column(Integer, nullable=True)
+    scheduler_engine = Column(String(32), default="dolphin")
+    scheduler_definition_id = Column(String(128), nullable=True)
+    scheduler_project_id = Column(String(128), nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_by = Column(Integer, ForeignKey("dw_users.id"))
     updated_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
     instances = relationship("WorkflowInstance", back_populates="workflow")
+    versions = relationship("JobVersion", back_populates="workflow")
+
+
+class JobVersion(Base):
+    """GIDO 生产版本：每次发布生成不可变快照，实例绑定版本而非当前草稿。"""
+    __tablename__ = "dw_job_versions"
+    id = Column(Integer, primary_key=True, index=True)
+    workflow_id = Column(Integer, ForeignKey("dw_workflows.id"), nullable=False)
+    version_no = Column(Integer, nullable=False)
+    dag_snapshot = Column(JSON)
+    cron_snapshot = Column(String(64), nullable=True)
+    schedule_type_snapshot = Column(String(32), default="manual")
+    scheduler_engine = Column(String(32), default="dolphin")
+    scheduler_definition_id = Column(String(128), nullable=True)
+    scheduler_project_id = Column(String(128), nullable=True)
+    status = Column(String(32), default="active")  # active/archived
+    published_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    published_at = Column(DateTime, default=datetime.utcnow)
+    workflow = relationship("Workflow", back_populates="versions")
 
 
 class WorkflowInstance(Base):
     __tablename__ = "dw_workflow_instances"
     id = Column(Integer, primary_key=True, index=True)
     workflow_id = Column(Integer, ForeignKey("dw_workflows.id"))
+    job_version_id = Column(Integer, ForeignKey("dw_job_versions.id"), nullable=True)
+    backfill_request_id = Column(Integer, ForeignKey("dw_backfill_requests.id"), nullable=True)
     status = Column(String(32), default="pending")  # pending/running/success/failed/killed
-    trigger_type = Column(String(128), default="manual")  # manual|ds:{id} / schedule|ds:{id} 等，需容纳 Dolphin 实例 ID
+    trigger_type = Column(String(128), default="manual")  # schedule/manual/backfill/rerun/local
     # Dolphin 流程实例详情中的 commandType（如 SCHEDULER）；用于运维展示，与 trigger_type 前缀解耦
     dolphin_command_type = Column(String(64), nullable=True)
+    scheduler_engine = Column(String(32), default="dolphin")
+    scheduler_project_id = Column(String(128), nullable=True)
+    scheduler_definition_id = Column(String(128), nullable=True)
+    scheduler_definition_version = Column(Integer, nullable=True)
+    scheduler_instance_id = Column(String(128), nullable=True)
+    scheduler_run_key = Column(String(128), nullable=True)
+    scheduler_state_raw = Column(String(128), nullable=True)
+    scheduler_error = Column(Text, nullable=True)
+    last_synced_at = Column(DateTime, nullable=True)
     business_date = Column(String(32))
     started_at = Column(DateTime)
     finished_at = Column(DateTime)
@@ -180,6 +215,7 @@ class WorkflowInstance(Base):
     submitted_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
     workflow = relationship("Workflow", back_populates="instances")
     node_instances = relationship("NodeInstance", back_populates="workflow_instance")
+    version = relationship("JobVersion")
 
 
 class NodeInstance(Base):
@@ -192,7 +228,84 @@ class NodeInstance(Base):
     started_at = Column(DateTime)
     finished_at = Column(DateTime)
     retry_count = Column(Integer, default=0)
+    scheduler_engine = Column(String(32), default="dolphin")
+    scheduler_project_id = Column(String(128), nullable=True)
+    scheduler_definition_id = Column(String(128), nullable=True)
+    scheduler_instance_id = Column(String(128), nullable=True)
+    scheduler_task_instance_id = Column(String(128), nullable=True)
+    scheduler_task_code = Column(String(128), nullable=True)
+    scheduler_state_raw = Column(String(128), nullable=True)
+    scheduler_error = Column(Text, nullable=True)
+    last_synced_at = Column(DateTime, nullable=True)
     workflow_instance = relationship("WorkflowInstance", back_populates="node_instances")
+
+
+class BackfillRequest(Base):
+    """补数批次：一次补数申请生成多个业务日期实例。"""
+    __tablename__ = "dw_backfill_requests"
+    id = Column(Integer, primary_key=True, index=True)
+    workflow_id = Column(Integer, ForeignKey("dw_workflows.id"), nullable=False)
+    job_version_id = Column(Integer, ForeignKey("dw_job_versions.id"), nullable=True)
+    date_start = Column(String(32), nullable=False)
+    date_end = Column(String(32), nullable=False)
+    status = Column(String(32), default="running")  # running/success/failed/partial
+    total_instances = Column(Integer, default=0)
+    succeeded_instances = Column(Integer, default=0)
+    failed_instances = Column(Integer, default=0)
+    running_instances = Column(Integer, default=0)
+    submit_mode = Column(String(32), default="daily")
+    failure_reason = Column(Text, nullable=True)
+    created_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)
+
+
+class AlertEvent(Base):
+    """GIDO 告警事件：由实例/节点状态驱动，不依赖具体调度引擎。"""
+    __tablename__ = "dw_alert_events"
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("dw_workspaces.id"), nullable=True)
+    workflow_id = Column(Integer, ForeignKey("dw_workflows.id"), nullable=True)
+    workflow_instance_id = Column(Integer, ForeignKey("dw_workflow_instances.id"), nullable=True)
+    node_instance_id = Column(Integer, ForeignKey("dw_node_instances.id"), nullable=True)
+    alert_type = Column(String(32), nullable=False)  # failed/timeout/sla
+    level = Column(String(16), default="warning")
+    severity = Column(String(16), default="warning")
+    dedupe_key = Column(String(256), nullable=True)
+    assignee_id = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    assignee_group = Column(String(128), nullable=True)
+    notification_status = Column(String(32), default="pending")
+    status = Column(String(32), default="open")  # open/acknowledged/resolved
+    message = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    ack_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    ack_at = Column(DateTime, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+
+
+class AlertNotificationConfig(Base):
+    """工作区告警通知配置：支持邮件、通用 Webhook、Lark/飞书、企业微信。"""
+    __tablename__ = "dw_alert_notification_configs"
+
+    workspace_id = Column(Integer, ForeignKey("dw_workspaces.id"), primary_key=True)
+    enabled = Column(Boolean, default=False, nullable=False)
+    min_severity = Column(String(16), default="error", nullable=False)
+    email_enabled = Column(Boolean, default=False, nullable=False)
+    email_to = Column(Text, nullable=True)
+    smtp_host = Column(String(256), nullable=True)
+    smtp_port = Column(Integer, default=25, nullable=True)
+    smtp_user = Column(String(256), nullable=True)
+    smtp_password = Column(Text, nullable=True)
+    smtp_from = Column(String(256), nullable=True)
+    smtp_tls = Column(Boolean, default=False, nullable=False)
+    webhook_enabled = Column(Boolean, default=False, nullable=False)
+    webhook_url = Column(Text, nullable=True)
+    lark_enabled = Column(Boolean, default=False, nullable=False)
+    lark_webhook_url = Column(Text, nullable=True)
+    wecom_enabled = Column(Boolean, default=False, nullable=False)
+    wecom_webhook_url = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
 
 
 # ==================== 数据集成 ====================

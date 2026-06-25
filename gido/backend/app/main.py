@@ -23,7 +23,7 @@ from app.api import audit
 from app.api import streaming
 from app.api import admin_rbac, admin_integration
 from app.api import data_service, data_service_open
-from app.api import approval
+from app.api import alert, approval
 from app.models import rbac_models  # noqa: F401  — 注册 RBAC 表
 from app.models.workspace import PlatformIntegration, FlinkSessionProfile, WorkspacePlatformIntegration, PublishApproval, WorkspaceVariable  # noqa: F401
 from app.models import data_service as data_service_models  # noqa: F401
@@ -99,6 +99,7 @@ async def lifespan(app: FastAPI):
         migrate_dw_quality_dolphin_refs,
         migrate_dw_workspace_variables,
         migrate_dw_users_avatar,
+        migrate_scheduler_engine_fields,
         run_rbac_bootstrap,
     )
     from app.core.database import SessionLocal
@@ -129,6 +130,8 @@ async def lifespan(app: FastAPI):
     migrate_platform_integration(engine)
     migrate_platform_integration_flink(engine)
     migrate_dw_workspace_variables(engine)
+    migrate_dw_users_avatar(engine)
+    migrate_scheduler_engine_fields(engine)
     db = SessionLocal()
     try:
         run_rbac_bootstrap(db)
@@ -225,6 +228,7 @@ app.include_router(admin_integration.router, prefix="/api")
 app.include_router(data_service.router, prefix="/api")
 app.include_router(data_service_open.open_router, prefix="/api")
 app.include_router(approval.router, prefix="/api")
+app.include_router(alert.router, prefix="/api")
 
 
 @app.get("/")

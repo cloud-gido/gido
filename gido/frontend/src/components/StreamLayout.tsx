@@ -7,7 +7,7 @@
 import { Layout, Menu } from 'antd'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import {
-  CodeOutlined, MonitorOutlined, CloudServerOutlined, AuditOutlined,
+  CodeOutlined, MonitorOutlined, AuditOutlined,
 } from '@ant-design/icons'
 import ProductBrandBlock from './ProductBrandBlock'
 import WorkspaceHeaderBar from './shell/WorkspaceHeaderBar'
@@ -21,7 +21,6 @@ const MENU_ITEMS = [
   { key: R.stream.studio, icon: <CodeOutlined />, label: '作业开发' },
   { key: R.stream.monitor, icon: <MonitorOutlined />, label: '作业运维' },
   { key: R.stream.approval, icon: <AuditOutlined />, label: '发布审批' },
-  { key: R.stream.overview, icon: <CloudServerOutlined />, label: 'Flink 运行概览' },
 ]
 
 export default function StreamLayout() {
@@ -31,7 +30,12 @@ export default function StreamLayout() {
 
   return (
     <Layout className="dw-app-shell dw-app-shell--stream" style={{ minHeight: '100vh', background: 'var(--dw-bg)' }}>
-      <Sider theme="dark" width={216} className="dw-menu-dark dw-sider-unified dw-accent-stream">
+      <Sider
+        theme="dark"
+        width={216}
+        className="dw-menu-dark dw-sider-unified dw-accent-stream"
+        style={{ position: 'sticky', top: 0, height: '100vh', overflow: 'auto' }}
+      >
         <div className="dw-sider-brand dw-accent-stream">
           <ProductBrandBlock variant="stream" />
           <div className="dw-accent-bar" aria-hidden />
@@ -39,7 +43,7 @@ export default function StreamLayout() {
         <Menu
           theme="dark"
           mode="inline"
-          selectedKeys={[location.pathname]}
+          selectedKeys={[location.pathname === R.stream.overview ? R.stream.monitor : location.pathname]}
           items={MENU_ITEMS}
           onClick={({ key }) => navigate(key)}
           style={{ borderInlineEnd: 'none', paddingTop: 8, paddingBottom: 16, background: 'transparent' }}

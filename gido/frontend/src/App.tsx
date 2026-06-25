@@ -17,12 +17,12 @@ import ProbePage from './pages/Probe'
 import QualityPage from './pages/Quality'
 import IntegrationPage from './pages/Integration'
 import OperationPage from './pages/Operation'
+import AlertCenterPage from './pages/AlertCenter'
 import ApprovalPage from './pages/Approval'
 import DatasourcePage from './pages/Datasource'
 import WorkflowPage from './pages/Workflow'
 import StreamStudioPage from './pages/StreamStudio'
 import StreamMonitorPage from './pages/StreamMonitor'
-import StreamOverviewPage from './pages/StreamOverview'
 import SystemRbacPage from './pages/SystemRbac'
 import WorkspaceSettingsPage from './pages/WorkspaceSettings'
 import ServiceOverviewPage from './pages/service/ServiceOverviewPage'
@@ -77,6 +77,7 @@ export default function App() {
             <Route path="quality" element={<RequireGidoBatchRoute><QualityPage /></RequireGidoBatchRoute>} />
             <Route path="integration" element={<RequireGidoBatchRoute><IntegrationPage /></RequireGidoBatchRoute>} />
             <Route path="operation" element={<RequireGidoBatchRoute><OperationPage /></RequireGidoBatchRoute>} />
+            <Route path="alert" element={<RequireGidoBatchRoute><AlertCenterPage /></RequireGidoBatchRoute>} />
             <Route path="approval" element={<RequireGidoBatchRoute><ApprovalPage /></RequireGidoBatchRoute>} />
             <Route path="dataservice" element={<Navigate to={R.service.apis} replace />} />
             <Route path="datasource" element={<RequireGidoBatchRoute><DatasourcePage /></RequireGidoBatchRoute>} />
@@ -89,8 +90,8 @@ export default function App() {
             <Route index element={<Navigate to={R.stream.studio} replace />} />
             <Route path="studio" element={<StreamStudioPage />} />
             <Route path="monitor" element={<StreamMonitorPage />} />
-            <Route path="overview" element={<StreamOverviewPage />} />
-            <Route path="flink-sessions" element={<Navigate to={R.stream.overview} replace />} />
+            <Route path="overview" element={<Navigate to={R.stream.monitor} replace />} />
+            <Route path="flink-sessions" element={<Navigate to={R.stream.monitor} replace />} />
             <Route path="approval" element={<ApprovalPage />} />
           </Route>
 

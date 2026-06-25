@@ -8,11 +8,13 @@ import { UploadOutlined, UserOutlined } from '@ant-design/icons'
 import { authApi } from '../api'
 import { useAppStore } from '../store'
 import UserAvatarDisplay from './UserAvatarDisplay'
-import { AVATAR_PRESET_IDS, parseAvatarRef, type AvatarPresetId } from '../utils/userAvatar'
+import { allPickerPresetEntries } from '../utils/avatarCatalog'
+import { parseAvatarRef } from '../utils/userAvatar'
 
 const { Text } = Typography
 
 const MAX_BYTES = 2 * 1024 * 1024
+const PICKER_PRESETS = allPickerPresetEntries()
 
 type Props = {
   open: boolean
@@ -29,7 +31,7 @@ export default function AvatarPickerModal({ open, onClose }: Props) {
     setUser(next)
   }
 
-  const pickPreset = async (id: AvatarPresetId) => {
+  const pickPreset = async (id: string) => {
     setSaving(true)
     try {
       const next = await authApi.updateAvatar(`preset:${id}`)
@@ -80,38 +82,43 @@ export default function AvatarPickerModal({ open, onClose }: Props) {
     return false
   }
 
+  const isActivePreset = (id: string) => current.kind === 'preset' && current.id === id
+
   return (
     <Modal
       title="更换头像"
       open={open}
       onCancel={onClose}
       footer={null}
-      width={420}
+      width={520}
       destroyOnClose
     >
       <div className="dw-avatar-picker-preview">
         <UserAvatarDisplay user={user} size={72} />
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          点击选择内置头像，或上传自定义图片（PNG / JPEG / WebP，≤2MB）
+        <Text type="secondary" style={{ fontSize: 12, textAlign: 'center' }}>
+          点选内置头像（共 {PICKER_PRESETS.length} 款），或上传自定义图片（PNG / JPEG / WebP，≤2MB）
         </Text>
       </div>
 
-      <div className="dw-avatar-picker-grid">
-        {AVATAR_PRESET_IDS.map((id) => (
-          <button
-            key={id}
-            type="button"
-            className={
-              'dw-avatar-picker-item'
-              + (current.kind === 'preset' && current.id === id ? ' dw-avatar-picker-item--active' : '')
-            }
-            disabled={saving}
-            onClick={() => pickPreset(id)}
-            aria-label={`内置头像 ${id}`}
-          >
-            <UserAvatarDisplay user={{ avatar: `preset:${id}` }} size={44} />
-          </button>
-        ))}
+      <div className="dw-avatar-picker-scroll">
+        <div className="dw-avatar-picker-grid dw-avatar-picker-grid--emoji">
+          {PICKER_PRESETS.map(({ id, label }) => (
+            <button
+              key={id}
+              type="button"
+              className={
+                'dw-avatar-picker-item'
+                + (isActivePreset(id) ? ' dw-avatar-picker-item--active' : '')
+              }
+              disabled={saving}
+              onClick={() => pickPreset(id)}
+              aria-label={label}
+              title={label}
+            >
+              <UserAvatarDisplay user={{ avatar: `preset:${id}` }} size={40} />
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="dw-avatar-picker-actions">

@@ -19,8 +19,12 @@ _TINY_PNG = (
 
 def test_normalize_preset_avatar():
     assert normalize_avatar_value("preset:3") == "preset:3"
+    assert normalize_avatar_value("preset:emoji-2") == "preset:emoji-2"
+    assert normalize_avatar_value("preset:avataaars-6") == "preset:avataaars-6"
     with pytest.raises(ValueError):
         normalize_avatar_value("preset:99")
+    with pytest.raises(ValueError):
+        normalize_avatar_value("preset:emoji-9")
 
 
 def test_upload_and_replace_avatar(tmp_path, monkeypatch):

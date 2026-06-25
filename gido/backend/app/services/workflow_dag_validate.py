@@ -103,7 +103,7 @@ def validate_workflow_publishable(db: Session, wf: Workflow) -> None:
 
 
 def merge_dag_graph_into_config(wf: Workflow, graph: Dict[str, Any]) -> Dict[str, Any]:
-    """将仅含 nodes/edges 的编排结果合并进 dag_config，保留 ds_*、ds_meta 等扩展字段。"""
+    """将仅含 nodes/edges 的编排结果合并进 dag_config，保留 GIDO 内部扩展字段。"""
     base: Dict[str, Any] = dict(wf.dag_config or {})
     base["nodes"] = graph.get("nodes") or []
     base["edges"] = graph.get("edges") or []
@@ -111,9 +111,9 @@ def merge_dag_graph_into_config(wf: Workflow, graph: Dict[str, Any]) -> Dict[str
 
 
 def mark_ds_needs_republish(wf: Workflow) -> None:
-    """已对接 Dolphin 时，标记「定义与引擎可能不一致」，需再次发布对齐。"""
+    """已发布生产版本后，草稿变更需再次发布对齐。"""
     dag = dict(wf.dag_config or {})
-    if dag.get("ds_process_code") is None:
+    if getattr(wf, "scheduler_definition_id", None) is None:
         return
     meta = dict(dag.get("ds_meta") or {})
     meta["needs_republish"] = True

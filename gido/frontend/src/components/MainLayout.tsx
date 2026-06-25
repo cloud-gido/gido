@@ -8,7 +8,7 @@ import { Layout, Menu, type MenuProps } from 'antd'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import {
   CodeOutlined, DatabaseOutlined, ApartmentOutlined, SafetyOutlined,
-  MonitorOutlined, ApiOutlined, SwapOutlined,
+  MonitorOutlined, ApiOutlined, SwapOutlined, BellOutlined,
   SettingOutlined, FolderAddOutlined, TeamOutlined, DeploymentUnitOutlined,
   ExperimentOutlined, PartitionOutlined, AuditOutlined,
 } from '@ant-design/icons'
@@ -34,7 +34,8 @@ const MENU_GROUPS: { label: string; items: MenuItemDef[] }[] = [
       { key: R.batch.studio, icon: <CodeOutlined />, label: '数据开发', perm: P.GIDO_BATCH_STUDIO_READ },
       { key: R.batch.workflow, icon: <ApartmentOutlined />, label: '工作流', perm: P.GIDO_BATCH_WORKFLOW_READ },
       { key: R.batch.integration, icon: <SwapOutlined />, label: '数据集成', perm: P.GIDO_BATCH_INTEGRATION_READ },
-      { key: R.batch.operation, icon: <MonitorOutlined />, label: '运维中心', perm: P.GIDO_BATCH_OPERATION_READ },
+      { key: R.batch.operation, icon: <MonitorOutlined />, label: '实例中心', perm: P.GIDO_BATCH_OPERATION_READ },
+      { key: R.batch.alert, icon: <BellOutlined />, label: '告警中心', perm: P.GIDO_BATCH_OPERATION_READ },
       { key: R.batch.approval, icon: <AuditOutlined />, label: '发布审批', perm: P.GIDO_BATCH_OPERATION_READ },
     ],
   },

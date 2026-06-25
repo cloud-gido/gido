@@ -4,11 +4,16 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
-  Table, Button, Space, Tag, message, Popconfirm, Typography, Alert, Drawer, Tooltip,
+  Table, Button, Space, Tag, message, Popconfirm, Typography, Alert, Drawer, Tooltip, Input, Select, Card,
+  Row, Col, Statistic, Tabs, Descriptions,
 } from 'antd'
-import { ReloadOutlined, DeleteOutlined, LinkOutlined, BugOutlined, StopOutlined } from '@ant-design/icons'
+import {
+  ReloadOutlined, LinkOutlined, BugOutlined, StopOutlined, SearchOutlined,
+  ClusterOutlined, CloseCircleOutlined, ContainerOutlined, SyncOutlined, ThunderboltOutlined,
+  CloudServerOutlined,
+} from '@ant-design/icons'
 import { streamingApi } from '../api'
 import { useAppStore } from '../store'
 import { can, P } from '../perm'
@@ -18,6 +23,68 @@ import { formatInTimeZone } from '../utils/datetime'
 import { openFlinkConsoleUrl } from '../utils/flinkConsole'
 
 const { Paragraph, Text } = Typography
+
+type DeploymentRow = {
+  name?: string
+  namespace?: string
+  workspace_id?: string
+  job_id?: string
+  job_name?: string
+  job_status?: string
+  job_type?: string
+  lifecycle?: string
+  health?: string
+  flink_job_id?: string
+  error?: string
+  spec_state?: string
+  image?: string
+  flink_version?: string
+  job_manager_status?: Record<string, unknown>
+  task_manager_status?: Record<string, unknown>
+  created_at?: string
+}
+
+const HEALTH_COLOR: Record<string, string> = {
+  healthy: 'success',
+  failed: 'error',
+  suspended: 'warning',
+  starting: 'processing',
+  unknown: 'default',
+}
+
+const HEALTH_LABEL: Record<string, string> = {
+  healthy: '运行中',
+  failed: '失败',
+  suspended: '已暂停',
+  starting: '启动中',
+  unknown: '未知',
+}
+
+const PLATFORM_STATUS_LABEL: Record<string, string> = {
+  draft: '草稿',
+  running: '运行中',
+  finished: '已完成',
+  failed: '失败',
+  cancelled: '已停止',
+}
+
+const FLINK_STATUS_LABEL: Record<string, string> = {
+  APPLICATION_PENDING_JOB_ID: '等待 JobId',
+  STARTING: '启动中',
+  DEPLOYING: '部署中',
+  CREATED: '已创建',
+  STABLE: '稳定',
+  SUSPENDED: '已暂停',
+  NOT_FOUND_ON_JM: 'JM 未找到',
+  UNKNOWN: '未知',
+  RUNNING: '运行中',
+  INITIALIZING: '初始化',
+  FINISHED: '已完成',
+  FAILED: '失败',
+  CANCELED: '已取消',
+  CANCELLED: '已取消',
+  CANCELLING: '取消中',
+}
 
 function flinkStatusDisplay(fs: string | undefined) {
   if (!fs) return <Text type="secondary">—</Text>
@@ -38,7 +105,7 @@ function flinkStatusDisplay(fs: string | undefined) {
     CANCELLED: 'warning',
     CANCELLING: 'warning',
   }
-  return <Tag color={color[fs] || 'blue'}>{fs}</Tag>
+  return <Tag color={color[fs] || 'blue'}>{FLINK_STATUS_LABEL[fs] || fs}</Tag>
 }
 
 function isOperatorJob(j: any) {
@@ -74,6 +141,12 @@ export default function StreamMonitorPage() {
   const [diagRow, setDiagRow] = useState<any | null>(null)
   const [diagExceptions, setDiagExceptions] = useState<any>(null)
   const [diagSync, setDiagSync] = useState<any>(null)
+  const [overview, setOverview] = useState<Record<string, any> | null>(null)
+  const [overviewErr, setOverviewErr] = useState<string | null>(null)
+  const [keyword, setKeyword] = useState('')
+  const [typeFilter, setTypeFilter] = useState<string | undefined>()
+  const [deployFilter, setDeployFilter] = useState<string | undefined>()
+  const [stateFilter, setStateFilter] = useState<string | undefined>()
 
   const jobsRef = useRef<any[]>([])
 
@@ -85,8 +158,18 @@ export default function StreamMonitorPage() {
     if (!wsId) return
     if (showSpinner) setLoading(true)
     try {
-      const list: any = await streamingApi.listJobs(wsId)
+      const [list, ov]: any = await Promise.all([
+        streamingApi.listJobs(wsId),
+        streamingApi.operatorOverview(wsId).catch((e: any) => {
+          setOverviewErr(e?.response?.data?.detail || e.message || '加载 FlinkDeployment 概览失败')
+          return null
+        }),
+      ])
       setJobs(list)
+      if (ov) {
+        setOverview(ov)
+        setOverviewErr(null)
+      }
     } finally {
       if (showSpinner) setLoading(false)
     }
@@ -131,23 +214,7 @@ export default function StreamMonitorPage() {
     }
   }
 
-  const canRemove = can(user, P.GIDO_STREAM_WRITE, currentWorkspace)
   const canRun = can(user, P.GIDO_STREAM_RUN, currentWorkspace)
-
-  const handleRemove = async (row: any) => {
-    try {
-      await streamingApi.deleteJob(row.id)
-      message.success('已从平台删除该任务记录')
-      setFlinkMap(prev => {
-        const n = { ...prev }
-        delete n[row.id]
-        return n
-      })
-      await loadJobs()
-    } catch (e: any) {
-      message.error(e?.response?.data?.detail || '删除失败')
-    }
-  }
 
   const handleStop = async (row: any) => {
     try {
@@ -159,7 +226,7 @@ export default function StreamMonitorPage() {
     }
   }
 
-  /** 轮询 Flink 回填库内 status；同时刷新「平台状态」与 Flink 状态列（避免 JM 侧已停止而平台仍为 running） */
+  /** 轮询 Flink 回填库内 status；主表只展示统一作业状态，底层状态留在 tooltip / 诊断中。 */
   useEffect(() => {
     let alive = true
     const poll = async () => {
@@ -190,9 +257,138 @@ export default function StreamMonitorPage() {
     }
   }, [wsId, loadJobs])
 
-  const statusColor: Record<string, string> = {
-    draft: 'default', running: 'processing', finished: 'success', failed: 'error', cancelled: 'warning',
+  const unifiedJobState = (row: any) => {
+    const platform = String(flinkMap[row.id]?.status || row.status || '').toLowerCase()
+    const flink = String(flinkMap[row.id]?.flink_status || row.flink_status || '')
+    if (row.last_submit_error || platform === 'failed' || /FAILED|NOT_FOUND/i.test(flink)) {
+      return { key: 'needs_attention', label: '需处理', color: 'error' }
+    }
+    if (platform === 'draft') return { key: 'draft', label: '草稿', color: 'default' }
+    if (/DEPLOY|START|INITIALIZING|CREATED|PENDING/i.test(flink)) {
+      return { key: 'active', label: '启动中', color: 'processing' }
+    }
+    if (platform === 'running' || /RUNNING|STABLE/i.test(flink)) {
+      return { key: 'active', label: '运行中', color: 'processing' }
+    }
+    if (platform === 'finished' || /FINISHED/i.test(flink)) {
+      return { key: 'terminal', label: '已结束', color: 'success' }
+    }
+    if (platform === 'cancelled' || /CANCEL|SUSPENDED/i.test(flink)) {
+      return { key: 'stopped', label: '已停止', color: 'warning' }
+    }
+    return { key: 'other', label: '未知', color: 'default' }
   }
+
+  const filteredJobs = useMemo(() => {
+    const kw = keyword.trim().toLowerCase()
+    return jobs.filter(row => {
+      const stateClass = unifiedJobState(row).key
+      const deployMode = isOperatorJob(row) ? 'operator' : ((row.flink_sql_submit_mode || row.flink_jar_submit_mode || 'session').toString().toLowerCase())
+      if (typeFilter && row.job_type !== typeFilter) return false
+      if (deployFilter && deployMode !== deployFilter) return false
+      if (stateFilter) {
+        if (stateClass !== stateFilter) return false
+      }
+      if (!kw) return true
+      const hay = [
+        row.name,
+        row.id,
+        row.flink_operator_deployment_name,
+        row.flink_application_cluster_id,
+        row.flink_job_id,
+        row.last_submitted_by_username,
+      ].filter(Boolean).join(' ').toLowerCase()
+      return hay.includes(kw)
+    })
+  }, [jobs, flinkMap, keyword, typeFilter, deployFilter, stateFilter])
+
+  const renderUnifiedState = (row: any) => {
+    const platform = flinkMap[row.id]?.status || row.status
+    const flink = flinkMap[row.id]?.flink_status
+    const state = unifiedJobState(row)
+    return (
+      <Tooltip title={`平台记录：${PLATFORM_STATUS_LABEL[platform] || platform || '—'}；Flink 原始状态：${flink ? (FLINK_STATUS_LABEL[flink] || flink) : '—'}`}>
+        <Tag color={state.color}>{state.label}</Tag>
+      </Tooltip>
+    )
+  }
+
+  const runtime = overview?.runtime || {}
+  const summary = overview?.summary || {}
+  const deployments: DeploymentRow[] = overview?.deployments || []
+
+  const deploymentColumns = [
+    {
+      title: '作业',
+      dataIndex: 'name',
+      ellipsis: true,
+      render: (name: string, row: DeploymentRow) => (
+        <div>
+          <Space size={6} wrap>
+            <Text strong>{row.job_name || (row.job_id ? `作业 #${row.job_id}` : name)}</Text>
+            {row.job_status && <Tag>{row.job_status}</Tag>}
+          </Space>
+          <div style={{ marginTop: 2 }}>
+            <Tooltip title="FlinkDeployment CR 名称">
+              <Text code type="secondary" style={{ fontSize: 11 }}>{name}</Text>
+            </Tooltip>
+          </div>
+        </div>
+      ),
+    },
+    {
+      title: '类型',
+      dataIndex: 'job_type',
+      width: 64,
+      render: (t: string) => t ? <Tag>{t.toUpperCase()}</Tag> : '—',
+    },
+    {
+      title: '健康',
+      dataIndex: 'health',
+      width: 88,
+      render: (h: string) => <Tag color={HEALTH_COLOR[h] || 'default'}>{HEALTH_LABEL[h] || h || '—'}</Tag>,
+    },
+    {
+      title: 'Lifecycle',
+      dataIndex: 'lifecycle',
+      width: 120,
+      render: (lc: string) => lc ? <Tag>{lc}</Tag> : '—',
+    },
+    {
+      title: 'Flink JobId',
+      dataIndex: 'flink_job_id',
+      width: 120,
+      ellipsis: true,
+      render: (id: string) => id ? <Text code style={{ fontSize: 11 }}>{id.slice(0, 8)}…</Text> : '—',
+    },
+    {
+      title: 'JM / TM',
+      key: 'pods',
+      width: 140,
+      render: (_: unknown, row: DeploymentRow) => {
+        const jm = row.job_manager_status
+        const tm = row.task_manager_status
+        const jmOk = jm && /ready|running|stable/i.test(JSON.stringify(jm))
+        const tmOk = tm && /ready|running|stable/i.test(JSON.stringify(tm))
+        return (
+          <Space size={4}>
+            <Tooltip title={`JobManager: ${jm ? JSON.stringify(jm) : '无'}`}>
+              <Tag color={jmOk ? 'success' : 'default'}>JM</Tag>
+            </Tooltip>
+            <Tooltip title={`TaskManager: ${tm ? JSON.stringify(tm) : '无'}`}>
+              <Tag color={tmOk ? 'success' : 'default'}>TM</Tag>
+            </Tooltip>
+          </Space>
+        )
+      },
+    },
+    {
+      title: '错误',
+      dataIndex: 'error',
+      ellipsis: true,
+      render: (e: string) => e ? <Text type="danger" style={{ fontSize: 12 }}>{e}</Text> : '—',
+    },
+  ]
 
   const columns = [
     { title: '作业名', dataIndex: 'name', key: 'name', width: 180, ellipsis: true },
@@ -216,14 +412,10 @@ export default function StreamMonitorPage() {
       },
     },
     {
-      title: '平台状态', dataIndex: 'status', key: 'status', width: 88,
-      render: (s: string) => <Tag color={statusColor[s] || 'default'}>{s}</Tag>,
-    },
-    {
-      title: 'Flink 状态',
-      key: 'fs',
+      title: '作业状态',
+      key: 'state',
       width: 128,
-      render: (_: any, row: any) => flinkStatusDisplay(flinkMap[row.id]?.flink_status),
+      render: (_: any, row: any) => renderUnifiedState(row),
     },
     {
       title: '部署标识',
@@ -339,54 +531,158 @@ export default function StreamMonitorPage() {
           },
         }]
       : []),
-    ...(canRemove
-      ? [{
-          title: '删除',
-          key: 'del',
-          width: 76,
-          render: (_: unknown, row: any) => (
-            <Popconfirm
-              title="删除此作业记录？"
-              description="将尝试停止 Flink 并删除本平台记录。"
-              onConfirm={() => handleRemove(row)}
-              okText="删除"
-              okButtonProps={{ danger: true }}
-            >
-              <Button type="link" size="small" danger icon={<DeleteOutlined />}>删除</Button>
-            </Popconfirm>
-          ),
-        }]
-      : []),
   ]
 
   return (
     <div>
-      <Typography.Title level={4} style={{ marginBottom: 4 }}>作业运维</Typography.Title>
-      <Paragraph type="secondary" style={{ marginBottom: 16, maxWidth: 960 }}>
-        统一 <strong>Flink Operator</strong> 部署模型；<strong>集群与 Job 标识</strong>、<strong>最近提交人时</strong>与<strong>就绪度提示</strong>集中展示。诊断抽屉内合并「平台同步结果」与 JM 异常，便于与 Flink Web UI / K8s 控制台交叉验证。
-        逻辑编辑请前往 <Link to={R.stream.studio}>作业开发</Link>。
-      </Paragraph>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+        <div>
+          <Typography.Title level={4} style={{ marginBottom: 4 }}>作业运维</Typography.Title>
+          <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            统一查看作业状态、FlinkDeployment、诊断与 K8s Flink UI。逻辑编辑请前往 <Link to={R.stream.studio}>作业开发</Link>。
+          </Paragraph>
+        </div>
+      </div>
 
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 16 }}
-        message="控制台链接说明"
-        description={(
-          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-            <li><strong>Operator JAR（集群内 GIDO）</strong>：点「K8s 作业 UI」即可，经 GIDO 代理 JM，无需再 port-forward Flink。</li>
-            <li><strong>Operator JAR（Compose 开发）</strong>：可启用自动隧道，链接形如 <code>http://127.0.0.1:22003/#/job/…</code>。</li>
-            <li>生产环境配置 <code>GIDO_FLINK_OPERATOR_UI_URL_TEMPLATE</code>（Ingress 域名），无需 port-forward。</li>
-            <li>Session SQL / Session JAR 仍用平台 <code>FLINK_UI_URL</code>。</li>
-          </ul>
+      {overviewErr && (
+        <Alert type="warning" showIcon style={{ marginBottom: 16 }} message="FlinkDeployment 概览加载失败" description={overviewErr} />
+      )}
+
+      <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
+        <Col xs={24} sm={12} lg={6}>
+          <Card size="small">
+            <Statistic title="FlinkDeployment" value={summary.deployments_total ?? 0} prefix={<ClusterOutlined />} suffix={<Text type="secondary" style={{ fontSize: 13 }}>/ {summary.running ?? 0} 运行</Text>} />
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card size="small">
+            <Statistic title="失败 / 暂停" value={summary.failed ?? 0} valueStyle={{ color: (summary.failed ?? 0) > 0 ? '#ff4d4f' : undefined }} prefix={<CloseCircleOutlined />} suffix={<Text type="secondary" style={{ fontSize: 13 }}>/ {summary.suspended ?? 0} 暂停</Text>} />
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card size="small">
+            <Statistic title="GIDO 作业" value={summary.jobs_total ?? jobs.length} prefix={<ContainerOutlined />} suffix={<Text type="secondary" style={{ fontSize: 13 }}>/ {summary.jobs_running ?? 0} 运行</Text>} />
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card size="small">
+            <Statistic title="启动中" value={summary.starting ?? 0} prefix={<SyncOutlined spin={(summary.starting ?? 0) > 0} />} />
+          </Card>
+        </Col>
+      </Row>
+
+      <Card size="small" style={{ marginBottom: 16 }}>
+        <Descriptions column={{ xs: 1, md: 2 }} size="small">
+          <Descriptions.Item label="K8s 命名空间"><Text code>{overview?.namespace || runtime.operator_namespace || '—'}</Text></Descriptions.Item>
+          <Descriptions.Item label="Flink 版本">{runtime.flink_version || '—'}</Descriptions.Item>
+          <Descriptions.Item label="运行时镜像" span={2}>
+            <Text code style={{ wordBreak: 'break-all' }}>{runtime.runtime_image || '—'}</Text>
+          </Descriptions.Item>
+          <Descriptions.Item label="Paimon Warehouse" span={2}>
+            <Text code style={{ wordBreak: 'break-all' }}>{runtime.paimon_warehouse_default || '—'}</Text>
+          </Descriptions.Item>
+        </Descriptions>
+      </Card>
+
+      <Card size="small" style={{ marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 18, padding: '4px 0', flexWrap: 'wrap' }}>
+          <div style={{ textAlign: 'center', minWidth: 120 }}>
+            <div style={{ fontSize: 22, color: '#722ed1' }}><ContainerOutlined /></div>
+            <Text strong>作业开发</Text>
+          </div>
+          <Text type="secondary">→</Text>
+          <div style={{ textAlign: 'center', minWidth: 120 }}>
+            <div style={{ fontSize: 22, color: '#1677ff' }}><ClusterOutlined /></div>
+            <Text strong>FlinkDeployment</Text>
+          </div>
+          <Text type="secondary">→</Text>
+          <div style={{ textAlign: 'center', minWidth: 120 }}>
+            <div style={{ fontSize: 22, color: '#13c2c2' }}><CloudServerOutlined /></div>
+            <Text strong>JM / TM Pod</Text>
+          </div>
+          <Text type="secondary">→</Text>
+          <div style={{ textAlign: 'center', minWidth: 120 }}>
+            <div style={{ fontSize: 22, color: '#52c41a' }}><ThunderboltOutlined /></div>
+            <Text strong>Flink Job</Text>
+          </div>
+        </div>
+      </Card>
+      <Tabs
+        tabBarStyle={{ position: 'sticky', top: 0, zIndex: 10, background: '#fff', paddingTop: 8 }}
+        tabBarExtraContent={(
+          <Space wrap>
+            <Button size="small" icon={<ReloadOutlined />} onClick={() => loadJobs(true)} loading={loading}>刷新列表</Button>
+            <Button size="small" type="primary" onClick={syncAll}>全量同步状态</Button>
+          </Space>
         )}
+        items={[
+          {
+            key: 'jobs',
+            label: '作业视图',
+            children: (
+              <>
+                <Card size="small" style={{ marginBottom: 12 }}>
+                  <Space wrap>
+                    <Input
+                      allowClear
+                      prefix={<SearchOutlined />}
+                      placeholder="搜索作业名 / CR / JobId / 提交人"
+                      value={keyword}
+                      onChange={e => setKeyword(e.target.value)}
+                      style={{ width: 280 }}
+                    />
+                    <Select allowClear placeholder="类型" value={typeFilter} onChange={setTypeFilter} style={{ width: 120 }} options={[{ value: 'SQL', label: 'SQL' }, { value: 'JAR', label: 'JAR' }]} />
+                    <Select allowClear placeholder="部署模式" value={deployFilter} onChange={setDeployFilter} style={{ width: 150 }} options={[{ value: 'operator', label: 'Operator' }, { value: 'kubernetes_application', label: 'K8s Application' }, { value: 'session', label: 'Session' }]} />
+                    <Select
+                      allowClear
+                      placeholder="运行状态"
+                      value={stateFilter}
+                      onChange={setStateFilter}
+                      style={{ width: 150 }}
+                      options={[
+                        { value: 'active', label: '运行中' },
+                        { value: 'terminal', label: '已结束' },
+                        { value: 'stopped', label: '已停止' },
+                        { value: 'draft', label: '草稿' },
+                        { value: 'needs_attention', label: '需处理' },
+                      ]}
+                    />
+                    <Text type="secondary">共 {filteredJobs.length} / {jobs.length} 个作业</Text>
+                  </Space>
+                </Card>
+                <Table rowKey="id" loading={loading} dataSource={filteredJobs} columns={columns as any} scroll={{ x: 1320 }} pagination={{ pageSize: 12 }} />
+              </>
+            ),
+          },
+          {
+            key: 'deployments',
+            label: 'FlinkDeployment 视图',
+            children: (
+              <Table
+                size="small"
+                rowKey="name"
+                loading={loading}
+                dataSource={deployments}
+                columns={deploymentColumns as any}
+                pagination={{ pageSize: 10, showSizeChanger: true }}
+                locale={{ emptyText: '当前工作空间暂无 FlinkDeployment（提交作业后将自动创建）' }}
+                expandable={{
+                  expandedRowRender: (row: DeploymentRow) => (
+                    <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: 12 }}>
+                      {JSON.stringify({
+                        image: row.image,
+                        jobManager: row.job_manager_status,
+                        taskManager: row.task_manager_status,
+                      }, null, 2)}
+                    </pre>
+                  ),
+                  rowExpandable: (row) => Boolean(row.job_manager_status || row.task_manager_status || row.image),
+                }}
+              />
+            ),
+          },
+        ]}
       />
-
-      <Space style={{ marginBottom: 16 }} wrap>
-        <Button icon={<ReloadOutlined />} onClick={() => loadJobs(true)} loading={loading}>刷新列表</Button>
-        <Button type="primary" onClick={syncAll}>全量同步状态</Button>
-      </Space>
-      <Table rowKey="id" loading={loading} dataSource={jobs} columns={columns as any} scroll={{ x: 1520 }} pagination={{ pageSize: 12 }} />
 
       <Drawer
         title={diagRow ? `诊断 · ${diagRow.name}` : '诊断'}

@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "@ant-design/icons": "^5.3.0",
+    "@dicebear/collection": "^9.2.2",
+    "@dicebear/core": "^9.2.2",
     "@antv/g6": "^4.8.24",
     "@antv/x6": "^2.18.1",
     "@antv/x6-react-components": "^2.0.8",

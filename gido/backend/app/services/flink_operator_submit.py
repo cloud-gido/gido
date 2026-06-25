@@ -37,23 +37,40 @@ FLINK_DEPLOYMENT_GROUP = "flink.apache.org"
 FLINK_DEPLOYMENT_VERSION = "v1beta1"
 FLINK_DEPLOYMENT_PLURAL = "flinkdeployments"
 
+_SQL_SET_PATTERN = re.compile(
+    r"SET\s+'([^']+)'\s*=\s*'(.*?)'\s*;",
+    re.IGNORECASE | re.DOTALL,
+)
 
-def deployment_name_for_job(job_id: int, workspace_id: Optional[int] = None) -> str:
+
+def extract_sql_set_flink_configuration(sql_content: str) -> Dict[str, str]:
+    """从 SQL SET 提取 fs.*，写入 FlinkDeployment flinkConfiguration（Paimon / S3A 凭证）。"""
+    props: Dict[str, str] = {}
+    if not (sql_content or "").strip():
+        return props
+    for match in _SQL_SET_PATTERN.finditer(sql_content):
+        key = match.group(1).strip()
+        if key.startswith("fs."):
+            props[key] = match.group(2)
+    return props
+
+
+def deployment_name_for_job(job_id: int, workspace_id: Optional[int] = None, job_name: Optional[str] = None) -> str:
     ws = int(workspace_id) if workspace_id is not None else 0
-    return jar_deployment_name(ws, int(job_id))
+    return jar_deployment_name(ws, int(job_id), job_name)
 
 
-def sql_deployment_name_for_job(job_id: int, workspace_id: Optional[int] = None) -> str:
+def sql_deployment_name_for_job(job_id: int, workspace_id: Optional[int] = None, job_name: Optional[str] = None) -> str:
     ws = int(workspace_id) if workspace_id is not None else 0
-    return sql_deployment_name(ws, int(job_id))
+    return sql_deployment_name(ws, int(job_id), job_name)
 
 
 def deployment_name_for_streaming_job(
-    job_id: int, job_type: str, workspace_id: Optional[int] = None
+    job_id: int, job_type: str, workspace_id: Optional[int] = None, job_name: Optional[str] = None
 ) -> str:
     if (job_type or "").upper() == "SQL":
-        return sql_deployment_name_for_job(job_id, workspace_id)
-    return deployment_name_for_job(job_id, workspace_id)
+        return sql_deployment_name_for_job(job_id, workspace_id, job_name)
+    return deployment_name_for_job(job_id, workspace_id, job_name)
 
 
 def _operator_namespace() -> str:
@@ -438,6 +455,7 @@ def deployment_summary_from_cr(cr: Dict[str, Any]) -> Dict[str, Any]:
     status = cr.get("status") or {}
     spec = cr.get("spec") or {}
     labels = meta.get("labels") or {}
+    annotations = meta.get("annotations") or {}
     jid, lifecycle, err = extract_status_from_cr(cr)
     job_status = status.get("jobStatus") or {}
     spec_state = (spec.get("job") or {}).get("state")
@@ -460,6 +478,7 @@ def deployment_summary_from_cr(cr: Dict[str, Any]) -> Dict[str, Any]:
         "namespace": meta.get("namespace") or _operator_namespace(),
         "workspace_id": labels.get("gido.io/workspace-id"),
         "job_id": labels.get("gido.io/job-id"),
+        "job_name": annotations.get("gido.io/job-name"),
         "job_type": labels.get("gido.io/job-type"),
         "lifecycle": lifecycle,
         "health": health,
@@ -898,6 +917,7 @@ def submit_jar_via_operator(
     *,
     job_id: int,
     workspace_id: int,
+    job_name: Optional[str] = None,
     entry_class: str,
     parallelism: int,
     program_args: Optional[str] = None,
@@ -908,7 +928,7 @@ def submit_jar_via_operator(
     if not (entry_class or "").strip():
         raise RuntimeError("Flink Operator 提交 JAR 须填写入口类（Main Class）。")
 
-    deployment_name = deployment_name_for_job(job_id, workspace_id)
+    deployment_name = deployment_name_for_job(job_id, workspace_id, job_name)
     namespace = _operator_namespace()
     jar_uri = resolve_jar_uri_for_job(job_id)
     meta = deployment_meta or GidoDeploymentMeta(
@@ -940,6 +960,7 @@ def submit_sql_via_operator(
     *,
     job_id: int,
     workspace_id: int,
+    job_name: Optional[str] = None,
     sql_content: str,
     parallelism: int,
     operator_resources: Optional[OperatorResources] = None,
@@ -957,7 +978,7 @@ def submit_sql_via_operator(
         save_sql_script,
     )
 
-    deployment_name = sql_deployment_name_for_job(job_id, workspace_id)
+    deployment_name = sql_deployment_name_for_job(job_id, workspace_id, job_name)
     namespace = _operator_namespace()
     save_sql_script(job_id, sql_content)
 
@@ -992,6 +1013,8 @@ def submit_sql_via_operator(
         job_id=int(job_id),
         job_type="sql",
     )
+    merged_flink_extra: Dict[str, Any] = dict(extra_flink_props or {})
+    merged_flink_extra.update(extract_sql_set_flink_configuration(sql_content))
     body = build_flink_deployment_body_for_sql(
         deployment_name=deployment_name,
         namespace=namespace,
@@ -999,7 +1022,7 @@ def submit_sql_via_operator(
         parallelism=parallelism,
         configmap_name=cm_name or "",
         operator_resources=operator_resources,
-        extra_flink_props=extra_flink_props,
+        extra_flink_props=merged_flink_extra or None,
         deployment_meta=meta,
         pod_template=pod_template,
         enable_http_artifacts=http_artifacts,

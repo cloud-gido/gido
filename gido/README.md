@@ -16,6 +16,9 @@
 |------|------|
 | [../docs/PRODUCT_OVERVIEW.md](../docs/PRODUCT_OVERVIEW.md) | **产品截图与 5 分钟体验指南** |
 | [../docs/PRODUCT_MATURITY.md](../docs/PRODUCT_MATURITY.md) | **功能完整度与部署边界** |
+| [../docs/SCHEDULER_INTEGRATION.md](../docs/SCHEDULER_INTEGRATION.md) | **Batch 调度架构**（GIDO 实例中心 + DS 隐藏引擎） |
+| [../docs/ALERT_NOTIFICATION.md](../docs/ALERT_NOTIFICATION.md) | **告警中心**与通知渠道配置 |
+| [../docs/GITHUB_RELEASE_CHECKLIST.md](../docs/GITHUB_RELEASE_CHECKLIST.md) | **GitHub 公开发布检查清单** |
 | [../docs/CDC_PAIMON_EKS.md](../docs/CDC_PAIMON_EKS.md) | **EKS 生产 CDC→Paimon + S3 制品库** |
 | [../docs/FLINK_ARCHITECTURE.md](../docs/FLINK_ARCHITECTURE.md) | Flink Operator 架构说明 |
 | [../k8s/README.md](../k8s/README.md) | Kind / K3s 部署 |

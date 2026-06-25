@@ -16,6 +16,7 @@ export const R = {
     quality: '/gido/batch/quality',
     integration: '/gido/batch/integration',
     operation: '/gido/batch/operation',
+    alert: '/gido/batch/alert',
     approval: '/gido/batch/approval',
     datasource: '/gido/batch/datasource',
     /** @deprecated 旧路径，仅用于菜单策略判断 */

@@ -685,7 +685,7 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
           <span>
             GIDO Stream 生产路径使用 <strong>Flink Kubernetes Operator</strong> 提交 SQL/JAR 作业（FlinkDeployment CR）。
             租户级 Flink 镜像、命名空间、Checkpoint 等在此配置；运行态概览见{' '}
-            <Link to={R.stream.overview}>实时 → Flink 运行概览</Link>。
+            <Link to={R.stream.monitor}>实时 → 作业运维</Link>。
           </span>
         )}
       />

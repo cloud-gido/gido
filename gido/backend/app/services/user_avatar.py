@@ -14,7 +14,10 @@ from app.core.config import settings
 
 AVATAR_PRESET_PREFIX = "preset:"
 AVATAR_UPLOAD_PREFIX = "upload:"
-VALID_PRESET_IDS = frozenset({"1", "2", "3", "4", "5", "6", "7", "8"})
+LEGACY_PRESET_IDS = frozenset(str(i) for i in range(1, 9))
+STYLE_PRESET_RE = re.compile(
+    r"^(emoji|lorelei|notion|smile|avataaars|personas|bottts|adventurer|pixel|micah)-[1-6]$"
+)
 STORED_NAME_RE = re.compile(r"^[0-9]+_[0-9a-f]{8,}\.(png|jpe?g|webp)$", re.IGNORECASE)
 
 _CONTENT_EXT = {
@@ -32,7 +35,7 @@ def avatar_upload_dir() -> Path:
 
 
 def is_valid_preset_id(preset_id: str) -> bool:
-    return preset_id in VALID_PRESET_IDS
+    return preset_id in LEGACY_PRESET_IDS or bool(STYLE_PRESET_RE.match(preset_id))
 
 
 def normalize_avatar_value(raw: Optional[str]) -> Optional[str]:

@@ -1,0 +1,16 @@
+# 覆盖 gido-backend-config：Paimon warehouse 指向 S3（K3s 联调 amzn-test-gido-s3）
+#
+#   kubectl apply -f k8s/gido-s3-test-overrides.yaml
+#   kubectl -n gido rollout restart deployment/gido-backend
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gido-backend-config
+  namespace: gido
+data:
+  PAIMON_WAREHOUSE_DEFAULT: "s3a://amzn-test-gido-s3/paimon-warehouse"
+  # K3s 静态 AK/SK：勿用 EKS IRSA Provider（否则 SQL 里 fs.s3a.access.key 不生效）
+  FLINK_OPERATOR_S3_USE_IRSA: "false"
+  # 可选：checkpoint 也放 S3（流作业）
+  # FLINK_OPERATOR_CHECKPOINT_DIR: "s3://amzn-test-gido-s3/flink-checkpoints"

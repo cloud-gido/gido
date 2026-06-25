@@ -11,6 +11,12 @@ from pathlib import Path
 
 PY_HEADER = "# Copyright 2026 玑渡 GIDO Contributors\n# SPDX-License-Identifier: Apache-2.0\n"
 TS_HEADER = "/**\n * Copyright 2026 玑渡 GIDO Contributors\n * SPDX-License-Identifier: Apache-2.0\n */\n"
+JAVA_HEADER = (
+    "/**\n"
+    " * Copyright 2026 玑渡 GIDO Contributors\n"
+    " * SPDX-License-Identifier: Apache-2.0\n"
+    " */\n"
+)
 MARKER = "SPDX-License-Identifier: Apache-2.0"
 
 SKIP_DIRS = {
@@ -37,28 +43,46 @@ def add_ts_header(text: str) -> str:
         return text
     return TS_HEADER + text
 
-def iter_files(root: Path) -> list[Path]:
+def add_java_header(text: str) -> str:
+    if MARKER in text:
+        return text
+    return JAVA_HEADER + text
+
+def iter_files(root: Path, *, suffixes: set[str]) -> list[Path]:
     files: list[Path] = []
     for path in root.rglob("*"):
         if not path.is_file() or should_skip(path):
             continue
-        if path.suffix in {".py", ".ts", ".tsx"}:
+        if path.suffix in suffixes:
             files.append(path)
     return sorted(files)
 
+def process_file(path: Path, repo_root: Path) -> bool:
+    text = path.read_text(encoding="utf-8")
+    if path.suffix == ".py":
+        updated = add_py_header(text)
+    elif path.suffix == ".java":
+        updated = add_java_header(text)
+    else:
+        updated = add_ts_header(text)
+    if updated == text:
+        return False
+    path.write_text(updated, encoding="utf-8")
+    print(f"updated: {path.relative_to(repo_root)}")
+    return True
+
 def main() -> int:
-    root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
+    gido_root = repo_root / "gido"
+    java_root = repo_root / "k8s" / "flink-sql-runner" / "src"
     changed = 0
-    for path in iter_files(root):
-        text = path.read_text(encoding="utf-8")
-        if path.suffix == ".py":
-            updated = add_py_header(text)
-        else:
-            updated = add_ts_header(text)
-        if updated != text:
-            path.write_text(updated, encoding="utf-8")
+    for path in iter_files(gido_root, suffixes={".py", ".ts", ".tsx"}):
+        if process_file(path, repo_root):
             changed += 1
-            print(f"updated: {path.relative_to(root.parent)}")
+    if java_root.is_dir():
+        for path in iter_files(java_root, suffixes={".java"}):
+            if process_file(path, repo_root):
+                changed += 1
     print(f"done: {changed} file(s) updated")
     return 0
 

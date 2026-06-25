@@ -364,6 +364,9 @@ spec:
         app: dolphinscheduler
         component: master
     spec:
+      # Dolphin API calls the registered master host when stopping workflow instances.
+      # Use a stable hostname plus Service DNS instead of the random Deployment pod name.
+      hostname: dolphinscheduler-master
       initContainers:
         - name: wait-deps
           image: busybox:stable
@@ -450,6 +453,24 @@ spec:
           emptyDir: {}
         - name: soft
           emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dolphinscheduler-master
+  namespace: dolphinscheduler
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5678
+      targetPort: 5678
+      name: rpc
+    - port: 5679
+      targetPort: 5679
+      name: actuator
+  selector:
+    app: dolphinscheduler
+    component: master
 ---
 # ---------- Worker ----------
 apiVersion: apps/v1

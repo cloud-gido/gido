@@ -5,6 +5,9 @@ org.apache.hadoop:hadoop-hdfs-client:3.3.4
 org.apache.hadoop:hadoop-mapreduce-client-core:3.3.4
 org.apache.hadoop:hadoop-auth:3.3.4
 org.apache.hadoop:hadoop-annotations:3.3.4
+# Paimon HadoopFileIO 走主 classpath，需 S3A（非 flink-s3-fs-hadoop 插件 classloader）
+org.apache.hadoop:hadoop-aws:3.3.4
+com.amazonaws:aws-java-sdk-bundle:1.12.262
 org.apache.hadoop.thirdparty:hadoop-shaded-guava:1.1.1
 org.apache.hadoop.thirdparty:hadoop-shaded-protobuf_3_7:1.1.1
 org.apache.commons:commons-configuration2:2.1.1

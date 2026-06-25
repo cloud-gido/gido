@@ -193,7 +193,7 @@ export default function ApprovalPage() {
         style={{ marginBottom: 16 }}
         message={
           canReviewFlag
-            ? '您是空间/平台管理员，可审批开发提交的发布申请；通过后系统将自动执行：Dolphin 发布、脚本锁定、Flink 提交、API 上线/下线等。'
+            ? '您是空间/平台管理员，可审批开发提交的发布申请；通过后系统将自动执行：生产调度发布、脚本锁定、Flink 提交、API 上线/下线等。'
             : '普通开发提交发布申请后，需空间管理员或平台管理员审批通过，才会发布到生产环境（含 GIDO Batch / Stream / Serve）。'
         }
       />

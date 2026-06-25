@@ -43,7 +43,9 @@
 
 ### GIDO Batch · 离线开发与治理
 
-SQL 开发、工作流 DAG、DolphinScheduler 调度、数据集成、运维中心、发布审批，以及数据字典 / 探查 / 质量治理。
+SQL 开发、工作流 DAG、**GIDO 实例中心**（DolphinScheduler 为隐藏执行引擎）、数据集成、运维中心、**告警中心**（邮件/Webhook/飞书/企微）、发布审批，以及数据字典 / 探查 / 质量治理。
+
+> 调度架构说明：[docs/SCHEDULER_INTEGRATION.md](docs/SCHEDULER_INTEGRATION.md) · 告警通知：[docs/ALERT_NOTIFICATION.md](docs/ALERT_NOTIFICATION.md)
 
 ![GIDO Batch](docs/screenshots/03-batch-studio.png)
 
@@ -164,15 +166,15 @@ bash scripts/reset-gido-docker.sh   # 端口冲突时清理
        ┌─────────────────┼─────────────────┐
        ▼                 ▼                 ▼
  DolphinScheduler   Flink Operator      Apache Kafka
-   (Batch 调度)     + Paimon / CDC         (可选)
-                    + S3 制品 / 仓库
+ (隐藏执行引擎)      + Paimon / CDC         (可选)
+   Batch 调度        + S3 制品 / 仓库
 ```
 
 | 层级 | 技术 |
 |------|------|
 | 前端 | React · Vite · Ant Design |
 | 后端 | FastAPI · PostgreSQL · boto3（S3 制品） |
-| 调度 | Apache DolphinScheduler（Compose 全栈 / 外置） |
+| 调度 | Apache DolphinScheduler（**GIDO 为运维面**，DS 不对终端用户暴露） |
 | 流计算 | **Flink Operator 1.15** · Flink **2.0.1** · Paimon · MySQL CDC |
 | 对象存储 | AWS S3（EKS 生产：制品 / checkpoint / Paimon warehouse） |
 | 消息 | Apache Kafka（Compose 全栈） |
@@ -210,6 +212,9 @@ gido/                         # 仓库根
 |------|------|
 | [docs/PRODUCT_OVERVIEW.md](docs/PRODUCT_OVERVIEW.md) | **产品截图与 5 分钟体验指南** |
 | [docs/PRODUCT_MATURITY.md](docs/PRODUCT_MATURITY.md) | **功能完整度**（Batch / Stream / Serve 与部署对照） |
+| [docs/SCHEDULER_INTEGRATION.md](docs/SCHEDULER_INTEGRATION.md) | **Batch 调度架构**（实例中心 + DS 隐藏引擎） |
+| [docs/ALERT_NOTIFICATION.md](docs/ALERT_NOTIFICATION.md) | **告警中心**与多渠道通知配置 |
+| [docs/GITHUB_RELEASE_CHECKLIST.md](docs/GITHUB_RELEASE_CHECKLIST.md) | **GitHub 公开发布检查清单** |
 | [docs/CDC_PAIMON_EKS.md](docs/CDC_PAIMON_EKS.md) | **EKS 生产**：CDC→Paimon、S3 制品库、IRSA |
 | [docs/FLINK_ARCHITECTURE.md](docs/FLINK_ARCHITECTURE.md) | Flink Operator 与遗留 Session 架构 |
 | [k8s/README.md](k8s/README.md) | Kind / K3s 部署与分层镜像 |
@@ -224,7 +229,7 @@ gido/                         # 仓库根
 
 ## 贡献与许可证
 
-欢迎 Issue 与 Pull Request。源代码采用 **[Apache License 2.0](LICENSE)**；「玑渡 / GIDO / Logo」使用规范见 [TRADEMARK.md](TRADEMARK.md)。
+欢迎 Issue 与 Pull Request。源代码采用 **[Apache License 2.0](LICENSE)**；「玑渡 / GIDO / Logo」使用规范见 [TRADEMARK.md](TRADEMARK.md)。开源发布与合规自查见 [gido/docs/OPEN_SOURCE.md](gido/docs/OPEN_SOURCE.md)、[docs/GITHUB_RELEASE_CHECKLIST.md](docs/GITHUB_RELEASE_CHECKLIST.md)。
 
 ---
 

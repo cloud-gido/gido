@@ -26,6 +26,203 @@ def migrate_dw_users_avatar(engine: Engine) -> None:
             conn.execute(text("ALTER TABLE dw_users ADD COLUMN avatar VARCHAR(256)"))
 
 
+def migrate_scheduler_engine_fields(engine: Engine) -> None:
+    """调度引擎抽象字段：GIDO 持有定义/实例，Dolphin 仅作为隐藏执行引擎。"""
+    insp = inspect(engine)
+    table_cols = {
+        table: {c["name"] for c in insp.get_columns(table)}
+        for table in (
+            "dw_workflows",
+            "dw_workflow_instances",
+            "dw_node_instances",
+            "dw_backfill_requests",
+            "dw_alert_events",
+            "dw_alert_notification_configs",
+        )
+        if insp.has_table(table)
+    }
+
+    def add_column(conn, table: str, name: str, ddl: str) -> None:
+        if table in table_cols and name not in table_cols.get(table, set()):
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+
+    with engine.begin() as conn:
+        add_column(conn, "dw_workflows", "scheduler_engine", "VARCHAR(32)")
+        add_column(conn, "dw_workflows", "scheduler_definition_id", "VARCHAR(128)")
+        add_column(conn, "dw_workflows", "scheduler_project_id", "VARCHAR(128)")
+        add_column(conn, "dw_workflows", "status", "VARCHAR(32)")
+        add_column(conn, "dw_workflows", "active_version_id", "INTEGER")
+        add_column(conn, "dw_workflow_instances", "job_version_id", "INTEGER")
+        add_column(conn, "dw_workflow_instances", "backfill_request_id", "INTEGER")
+        add_column(conn, "dw_workflow_instances", "scheduler_engine", "VARCHAR(32)")
+        add_column(conn, "dw_workflow_instances", "scheduler_project_id", "VARCHAR(128)")
+        add_column(conn, "dw_workflow_instances", "scheduler_definition_id", "VARCHAR(128)")
+        add_column(conn, "dw_workflow_instances", "scheduler_definition_version", "INTEGER")
+        add_column(conn, "dw_workflow_instances", "scheduler_instance_id", "VARCHAR(128)")
+        add_column(conn, "dw_workflow_instances", "scheduler_run_key", "VARCHAR(128)")
+        add_column(conn, "dw_workflow_instances", "scheduler_state_raw", "VARCHAR(128)")
+        add_column(conn, "dw_workflow_instances", "scheduler_error", "TEXT")
+        add_column(conn, "dw_workflow_instances", "last_synced_at", "TIMESTAMP")
+        add_column(conn, "dw_node_instances", "scheduler_engine", "VARCHAR(32)")
+        add_column(conn, "dw_node_instances", "scheduler_project_id", "VARCHAR(128)")
+        add_column(conn, "dw_node_instances", "scheduler_definition_id", "VARCHAR(128)")
+        add_column(conn, "dw_node_instances", "scheduler_instance_id", "VARCHAR(128)")
+        add_column(conn, "dw_node_instances", "scheduler_task_instance_id", "VARCHAR(128)")
+        add_column(conn, "dw_node_instances", "scheduler_task_code", "VARCHAR(128)")
+        add_column(conn, "dw_node_instances", "scheduler_state_raw", "VARCHAR(128)")
+        add_column(conn, "dw_node_instances", "scheduler_error", "TEXT")
+        add_column(conn, "dw_node_instances", "last_synced_at", "TIMESTAMP")
+        add_column(conn, "dw_backfill_requests", "total_instances", "INTEGER")
+        add_column(conn, "dw_backfill_requests", "succeeded_instances", "INTEGER")
+        add_column(conn, "dw_backfill_requests", "failed_instances", "INTEGER")
+        add_column(conn, "dw_backfill_requests", "running_instances", "INTEGER")
+        add_column(conn, "dw_backfill_requests", "submit_mode", "VARCHAR(32)")
+        add_column(conn, "dw_backfill_requests", "failure_reason", "TEXT")
+        add_column(conn, "dw_alert_events", "severity", "VARCHAR(16)")
+        add_column(conn, "dw_alert_events", "dedupe_key", "VARCHAR(256)")
+        add_column(conn, "dw_alert_events", "assignee_id", "INTEGER")
+        add_column(conn, "dw_alert_events", "assignee_group", "VARCHAR(128)")
+        add_column(conn, "dw_alert_events", "notification_status", "VARCHAR(32)")
+        if not insp.has_table("dw_alert_notification_configs"):
+            conn.execute(text(
+                "CREATE TABLE dw_alert_notification_configs ("
+                "workspace_id INTEGER PRIMARY KEY, "
+                "enabled BOOLEAN DEFAULT FALSE NOT NULL, "
+                "min_severity VARCHAR(16) DEFAULT 'error' NOT NULL, "
+                "email_enabled BOOLEAN DEFAULT FALSE NOT NULL, "
+                "email_to TEXT, "
+                "smtp_host VARCHAR(256), "
+                "smtp_port INTEGER, "
+                "smtp_user VARCHAR(256), "
+                "smtp_password TEXT, "
+                "smtp_from VARCHAR(256), "
+                "smtp_tls BOOLEAN DEFAULT FALSE NOT NULL, "
+                "webhook_enabled BOOLEAN DEFAULT FALSE NOT NULL, "
+                "webhook_url TEXT, "
+                "lark_enabled BOOLEAN DEFAULT FALSE NOT NULL, "
+                "lark_webhook_url TEXT, "
+                "wecom_enabled BOOLEAN DEFAULT FALSE NOT NULL, "
+                "wecom_webhook_url TEXT, "
+                "updated_at TIMESTAMP, "
+                "updated_by INTEGER"
+                ")"
+            ))
+
+        if insp.has_table("dw_workflows"):
+            conn.execute(text("UPDATE dw_workflows SET scheduler_engine = 'dolphin' WHERE scheduler_engine IS NULL"))
+            conn.execute(text("UPDATE dw_workflows SET status = CASE WHEN scheduler_definition_id IS NULL THEN 'draft' ELSE 'published' END WHERE status IS NULL"))
+        if insp.has_table("dw_workflow_instances"):
+            conn.execute(text("UPDATE dw_workflow_instances SET scheduler_engine = 'dolphin' WHERE scheduler_engine IS NULL"))
+        if insp.has_table("dw_node_instances"):
+            conn.execute(text("UPDATE dw_node_instances SET scheduler_engine = 'dolphin' WHERE scheduler_engine IS NULL"))
+        if insp.has_table("dw_backfill_requests"):
+            conn.execute(text("UPDATE dw_backfill_requests SET total_instances = 0 WHERE total_instances IS NULL"))
+            conn.execute(text("UPDATE dw_backfill_requests SET succeeded_instances = 0 WHERE succeeded_instances IS NULL"))
+            conn.execute(text("UPDATE dw_backfill_requests SET failed_instances = 0 WHERE failed_instances IS NULL"))
+            conn.execute(text("UPDATE dw_backfill_requests SET running_instances = 0 WHERE running_instances IS NULL"))
+            conn.execute(text("UPDATE dw_backfill_requests SET submit_mode = 'daily' WHERE submit_mode IS NULL"))
+        if insp.has_table("dw_alert_events"):
+            conn.execute(text("UPDATE dw_alert_events SET severity = COALESCE(severity, level, 'warning') WHERE severity IS NULL"))
+            conn.execute(text("UPDATE dw_alert_events SET notification_status = 'pending' WHERE notification_status IS NULL"))
+        if insp.has_table("dw_workflow_instances"):
+            if insp.has_table("dw_job_versions"):
+                if engine.dialect.name == "postgresql":
+                    conn.execute(text(
+                        "UPDATE dw_workflow_instances wi SET "
+                        "scheduler_project_id = COALESCE(wi.scheduler_project_id, jv.scheduler_project_id), "
+                        "scheduler_definition_id = COALESCE(wi.scheduler_definition_id, jv.scheduler_definition_id), "
+                        "scheduler_definition_version = COALESCE(wi.scheduler_definition_version, jv.version_no) "
+                        "FROM dw_job_versions jv WHERE wi.job_version_id = jv.id"
+                    ))
+                else:
+                    conn.execute(text(
+                        "UPDATE dw_workflow_instances SET "
+                        "scheduler_project_id = COALESCE(scheduler_project_id, (SELECT scheduler_project_id FROM dw_job_versions WHERE id = dw_workflow_instances.job_version_id)), "
+                        "scheduler_definition_id = COALESCE(scheduler_definition_id, (SELECT scheduler_definition_id FROM dw_job_versions WHERE id = dw_workflow_instances.job_version_id)), "
+                        "scheduler_definition_version = COALESCE(scheduler_definition_version, (SELECT version_no FROM dw_job_versions WHERE id = dw_workflow_instances.job_version_id)) "
+                        "WHERE job_version_id IS NOT NULL"
+                    ))
+            concat_expr = (
+                "COALESCE(scheduler_engine, '') || ':' || COALESCE(scheduler_project_id, '') || ':' || "
+                "COALESCE(scheduler_definition_id, '') || ':' || COALESCE(scheduler_instance_id, '')"
+            )
+            if engine.dialect.name == "mysql":
+                concat_expr = (
+                    "CONCAT(COALESCE(scheduler_engine, ''), ':', COALESCE(scheduler_project_id, ''), ':', "
+                    "COALESCE(scheduler_definition_id, ''), ':', COALESCE(scheduler_instance_id, ''))"
+                )
+            conn.execute(text(
+                "UPDATE dw_workflow_instances SET scheduler_run_key = "
+                f"COALESCE(scheduler_run_key, {concat_expr}) "
+                "WHERE scheduler_instance_id IS NOT NULL"
+            ))
+        if insp.has_table("dw_node_instances") and insp.has_table("dw_workflow_instances"):
+            if engine.dialect.name == "postgresql":
+                conn.execute(text(
+                    "UPDATE dw_node_instances ni SET "
+                    "scheduler_project_id = COALESCE(ni.scheduler_project_id, wi.scheduler_project_id), "
+                    "scheduler_definition_id = COALESCE(ni.scheduler_definition_id, wi.scheduler_definition_id), "
+                    "scheduler_instance_id = COALESCE(ni.scheduler_instance_id, wi.scheduler_instance_id) "
+                    "FROM dw_workflow_instances wi WHERE ni.workflow_instance_id = wi.id"
+                ))
+            else:
+                conn.execute(text(
+                    "UPDATE dw_node_instances SET "
+                    "scheduler_project_id = COALESCE(scheduler_project_id, (SELECT scheduler_project_id FROM dw_workflow_instances WHERE id = dw_node_instances.workflow_instance_id)), "
+                    "scheduler_definition_id = COALESCE(scheduler_definition_id, (SELECT scheduler_definition_id FROM dw_workflow_instances WHERE id = dw_node_instances.workflow_instance_id)), "
+                    "scheduler_instance_id = COALESCE(scheduler_instance_id, (SELECT scheduler_instance_id FROM dw_workflow_instances WHERE id = dw_node_instances.workflow_instance_id)) "
+                    "WHERE workflow_instance_id IS NOT NULL"
+                ))
+        try:
+            if insp.has_table("dw_workflows"):
+                if engine.dialect.name == "postgresql":
+                    conn.execute(text(
+                        "UPDATE dw_workflows SET "
+                        "scheduler_definition_id = COALESCE(scheduler_definition_id, dag_config->>'ds_process_code'), "
+                        "scheduler_project_id = COALESCE(scheduler_project_id, dag_config->>'ds_project_code') "
+                        "WHERE dag_config IS NOT NULL"
+                    ))
+                elif engine.dialect.name == "mysql":
+                    conn.execute(text(
+                        "UPDATE dw_workflows SET "
+                        "scheduler_definition_id = COALESCE(scheduler_definition_id, JSON_UNQUOTE(JSON_EXTRACT(dag_config, '$.ds_process_code'))), "
+                        "scheduler_project_id = COALESCE(scheduler_project_id, JSON_UNQUOTE(JSON_EXTRACT(dag_config, '$.ds_project_code'))) "
+                        "WHERE dag_config IS NOT NULL"
+                    ))
+                elif engine.dialect.name == "sqlite":
+                    conn.execute(text(
+                        "UPDATE dw_workflows SET "
+                        "scheduler_definition_id = COALESCE(scheduler_definition_id, json_extract(dag_config, '$.ds_process_code')), "
+                        "scheduler_project_id = COALESCE(scheduler_project_id, json_extract(dag_config, '$.ds_project_code')) "
+                        "WHERE dag_config IS NOT NULL"
+                    ))
+        except Exception:
+            # 旧 SQLite 未启用 JSON1 或部分方言 JSON 函数不可用时，不阻断启动；业务层仍会回退 dag_config。
+            pass
+        try:
+            if insp.has_table("dw_workflow_instances"):
+                if engine.dialect.name == "postgresql":
+                    conn.execute(text(
+                        "UPDATE dw_workflow_instances SET scheduler_instance_id = "
+                        "COALESCE(scheduler_instance_id, substring(trigger_type from 'ds:([0-9]+)')) "
+                        "WHERE trigger_type LIKE '%ds:%'"
+                    ))
+                elif engine.dialect.name == "mysql":
+                    conn.execute(text(
+                        "UPDATE dw_workflow_instances SET scheduler_instance_id = "
+                        "COALESCE(scheduler_instance_id, SUBSTRING_INDEX(SUBSTRING_INDEX(trigger_type, 'ds:', -1), '|', 1)) "
+                        "WHERE trigger_type LIKE '%ds:%'"
+                    ))
+                elif engine.dialect.name == "sqlite":
+                    conn.execute(text(
+                        "UPDATE dw_workflow_instances SET scheduler_instance_id = "
+                        "COALESCE(scheduler_instance_id, substr(trigger_type, instr(trigger_type, 'ds:') + 3)) "
+                        "WHERE trigger_type LIKE '%ds:%'"
+                    ))
+        except Exception:
+            pass
+
+
 def migrate_schema(engine: Engine) -> None:
     """SQLite：为已存在的 dw_users 表补齐 role_id 列。"""
     if engine.dialect.name != "sqlite":
