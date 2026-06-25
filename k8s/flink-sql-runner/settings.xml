@@ -1,12 +1,7 @@
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
-  <!--
-    Docker / GitHub Actions 默认走 Maven Central（稳定、全球可用）。
-    Maven 对同一 mirrorOf 只使用第一个 mirror，不会自动 failover。
-    国内本地构建可选用 settings.aliyun.xml：
-      docker build --build-arg MAVEN_SETTINGS=settings.aliyun.xml ...
-  -->
+  <!-- Default: Maven Central for Docker and GitHub Actions. China local: see settings.aliyun.xml -->
   <mirrors>
     <mirror>
       <id>maven-central</id>
