@@ -993,6 +993,31 @@ def migrate_dw_flink_operator_profiles_jm_gateway_dns_ip(engine: Engine) -> None
             )
 
 
+def migrate_dw_flink_operator_profiles_jm_gateway_port(engine: Engine) -> None:
+    """Operator Profile：JM 网关 nginx/Service/Ingress 端口（Profile UI 配置，空则代码默认 8080）。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_flink_operator_profiles"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_flink_operator_profiles")}
+    if "flink_operator_jm_gateway_port" in cols:
+        return
+    with engine.begin() as conn:
+        if engine.dialect.name == "mysql":
+            conn.execute(
+                text(
+                    "ALTER TABLE dw_flink_operator_profiles "
+                    "ADD COLUMN flink_operator_jm_gateway_port INT NULL"
+                )
+            )
+        else:
+            conn.execute(
+                text(
+                    "ALTER TABLE dw_flink_operator_profiles "
+                    "ADD COLUMN flink_operator_jm_gateway_port INTEGER NULL"
+                )
+            )
+
+
 def migrate_dw_streaming_jobs_flink_operator_profile(engine: Engine) -> None:
     """实时作业可选绑定 Flink Operator 集群；提交后持久化目标 namespace / 镜像。"""
     insp = inspect(engine)

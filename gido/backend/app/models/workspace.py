@@ -349,6 +349,7 @@ class FlinkOperatorProfile(Base):
     flink_operator_jm_gateway_namespace = Column(String(256), nullable=True)
     flink_operator_jm_gateway_ingress_class = Column(String(128), nullable=True)
     flink_operator_jm_gateway_dns_ip = Column(String(64), nullable=True)
+    flink_operator_jm_gateway_port = Column(Integer, nullable=True)
     flink_operator_jm_gateway_status = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -4,7 +4,7 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Alert, Button, Descriptions, Drawer, Form, Input, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Descriptions, Drawer, Form, Input, InputNumber, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, Typography, message,
 } from 'antd'
 import { ClusterOutlined, DeleteOutlined, EditOutlined, MinusCircleOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
@@ -48,6 +48,7 @@ type OperatorProfile = {
   flink_operator_jm_gateway_namespace?: string | null
   flink_operator_jm_gateway_ingress_class?: string | null
   flink_operator_jm_gateway_dns_ip?: string | null
+  flink_operator_jm_gateway_port?: number | null
   flink_operator_jm_gateway_status?: Record<string, unknown> | null
   effective?: Record<string, unknown>
 }
@@ -165,6 +166,7 @@ export default function OperatorClustersPage() {
         { label: 'Flink 2.2.1', image: '', flink_version: 'v2_2', is_default: true },
       ],
       flink_operator_jm_gateway_enabled: false,
+      flink_operator_jm_gateway_port: 8080,
     })
     setDrawerOpen(true)
   }
@@ -208,6 +210,7 @@ export default function OperatorClustersPage() {
       flink_operator_jm_gateway_namespace: row.flink_operator_jm_gateway_namespace ?? '',
       flink_operator_jm_gateway_ingress_class: row.flink_operator_jm_gateway_ingress_class ?? '',
       flink_operator_jm_gateway_dns_ip: row.flink_operator_jm_gateway_dns_ip ?? '',
+      flink_operator_jm_gateway_port: row.flink_operator_jm_gateway_port ?? 8080,
     })
     setDrawerOpen(true)
   }
@@ -676,6 +679,13 @@ export default function OperatorClustersPage() {
             extra="CoreDNS/kube-dns 的 ClusterIP，如 10.96.0.10。自动探测失败时必填；查询：kubectl -n kube-system get svc kube-dns coredns"
           >
             <Input placeholder="10.96.0.10" />
+          </Form.Item>
+          <Form.Item
+            name="flink_operator_jm_gateway_port"
+            label="网关端口"
+            extra="gido-jm-gw nginx/Service/Ingress backend 端口（默认 8080）。防火墙仅开放 8081 时填 8081；`jm_rest_template` 会同步写入对应 URL 端口。"
+          >
+            <InputNumber min={1} max={65535} placeholder="8080" style={{ width: '100%' }} />
           </Form.Item>
 
           <div style={{ fontWeight: 600, margin: '16px 0 12px' }}>高级</div>

@@ -169,14 +169,11 @@
 | `flink_operator_jm_gateway_host` | Ingress host（如 `jm-gw.flink.cluster-a.internal`）。留空时用 `GIDO_FLINK_OPERATOR_JM_GATEWAY_HOST_SUFFIX` 自动生成。 |
 | `flink_operator_jm_gateway_namespace` | 网关资源 ns，默认 `gido-flink-gateway`。 |
 | `flink_operator_jm_gateway_ingress_class` | IngressClass，默认 `nginx`。 |
+| `flink_operator_jm_gateway_dns_ip` | CoreDNS/kube-dns ClusterIP（nginx resolver）；自动探测失败时必填。 |
+| `flink_operator_jm_gateway_port` | gido-jm-gw 监听/Service/Ingress backend 端口；在 Operator 集群 UI 配置，未填默认 `8080`。`8080`/`80`/`443` 时 `jm_rest_template` 不写 URL 端口（经 Ingress 80）；如 `8081` 则写入 `:8081`。 |
 | `flink_operator_jm_gateway_status` | 只读：部署结果、生效 `jm_rest_template`、LB 地址。 |
 
-平台变量：`GIDO_FLINK_OPERATOR_JM_GATEWAY_*`；浏览器 UI 须 `GIDO_FLINK_OPERATOR_UI_PROXY_ENABLED=true`。集群侧 RBAC：`k8s/gido-jm-gateway-rbac.yaml`。手动部署：`POST .../flink-operator-profiles/{id}/provision-jm-gateway`。
-
-| 平台变量 | 默认 | 说明 |
-|----------|------|------|
-| `FLINK_OPERATOR_JM_GATEWAY_PORT` | `8080` | gido-jm-gw nginx/Service/Ingress backend 端口 |
-| `FLINK_OPERATOR_JM_GATEWAY_URL_PORT` | （空） | Backend `jm_rest_template` URL 端口；空且 PORT 为 8080 时不写端口（Ingress 80）；PORT=8081 时自动写 `:8081` |
+平台变量：`GIDO_FLINK_OPERATOR_JM_GATEWAY_*`（不含端口；端口仅 Profile UI）；浏览器 UI 须 `GIDO_FLINK_OPERATOR_UI_PROXY_ENABLED=true`。集群侧 RBAC：`k8s/gido-jm-gateway-rbac.yaml`。手动部署：`POST .../flink-operator-profiles/{id}/provision-jm-gateway`。
 
 ### `flink_operator_checkpoint_dir`（Checkpoint 目录）
 

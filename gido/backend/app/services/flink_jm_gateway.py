@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 GATEWAY_LABEL = "gido.io/component"
 GATEWAY_LABEL_VALUE = "flink-jm-gateway"
+DEFAULT_JM_GATEWAY_PORT = 8080
 MANAGED_BY_LABEL = "gido.io/managed-by"
 MANAGED_BY_VALUE = "gido"
 
@@ -50,21 +51,17 @@ def gateway_resource_name(profile_id: int) -> str:
     return f"gido-jm-gw-{int(profile_id)}"
 
 
-def _gateway_listen_port() -> int:
-    p = int(getattr(settings, "FLINK_OPERATOR_JM_GATEWAY_PORT", 8080) or 8080)
-    return max(1, min(65535, p))
-
-
-def _gateway_url_port() -> Optional[int]:
-    """Backend 访问 jm_rest_template 时 URL 上的端口；None 表示省略（走 Ingress 80/443）。"""
-    raw = getattr(settings, "FLINK_OPERATOR_JM_GATEWAY_URL_PORT", None)
+def _gateway_listen_port(profile: Any = None) -> int:
+    raw = getattr(profile, "flink_operator_jm_gateway_port", None) if profile is not None else None
     if raw is not None and str(raw).strip() != "":
-        p = max(1, min(65535, int(raw)))
-        if p in (80, 443):
-            return None
-        return p
-    listen = _gateway_listen_port()
-    if listen in (80, 443):
+        return max(1, min(65535, int(raw)))
+    return DEFAULT_JM_GATEWAY_PORT
+
+
+def _gateway_url_port(profile: Any = None) -> Optional[int]:
+    """Backend 访问 jm_rest_template 时 URL 上的端口；None 表示省略（Ingress 80/443 或内部 8080）。"""
+    listen = _gateway_listen_port(profile)
+    if listen in (80, 443, DEFAULT_JM_GATEWAY_PORT):
         return None
     return listen
 
@@ -79,12 +76,12 @@ def _host_without_port(host: str) -> str:
     return h
 
 
-def jm_rest_template_for_gateway_host(host: str) -> str:
+def jm_rest_template_for_gateway_host(host: str, profile: Any = None) -> str:
     base = (host or "").strip().rstrip("/")
     if not base:
         raise ValueError("JM 网关 host 不能为空")
     host_part = _host_without_port(base)
-    url_port = _gateway_url_port()
+    url_port = _gateway_url_port(profile)
     if not base.startswith("http://") and not base.startswith("https://"):
         if url_port is not None:
             base = f"http://{host_part}:{url_port}"
@@ -238,8 +235,10 @@ def _nginx_configmap_body(
     cluster_domain: str,
     dns_resolver: str,
     labels: Dict[str, str],
+    *,
+    profile: Any = None,
 ) -> Dict[str, Any]:
-    listen_port = _gateway_listen_port()
+    listen_port = _gateway_listen_port(profile)
     conf = _NGINX_CONF_TEMPLATE.format(
         cluster_domain=cluster_domain,
         dns_resolver=dns_resolver,
@@ -253,10 +252,10 @@ def _nginx_configmap_body(
     }
 
 
-def _deployment_body(name: str, namespace: str, labels: Dict[str, str]) -> Dict[str, Any]:
+def _deployment_body(name: str, namespace: str, labels: Dict[str, str], *, profile: Any = None) -> Dict[str, Any]:
     image = (settings.FLINK_OPERATOR_JM_GATEWAY_IMAGE or "nginx:1.27-alpine").strip()
     replicas = max(1, int(getattr(settings, "FLINK_OPERATOR_JM_GATEWAY_REPLICAS", 2) or 2))
-    listen_port = _gateway_listen_port()
+    listen_port = _gateway_listen_port(profile)
     return {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -304,8 +303,8 @@ def _deployment_body(name: str, namespace: str, labels: Dict[str, str]) -> Dict[
     }
 
 
-def _service_body(name: str, namespace: str, labels: Dict[str, str]) -> Dict[str, Any]:
-    listen_port = _gateway_listen_port()
+def _service_body(name: str, namespace: str, labels: Dict[str, str], *, profile: Any = None) -> Dict[str, Any]:
+    listen_port = _gateway_listen_port(profile)
     return {
         "apiVersion": "v1",
         "kind": "Service",
@@ -324,11 +323,13 @@ def _ingress_body(
     host: str,
     ingress_class: str,
     labels: Dict[str, str],
+    *,
+    profile: Any = None,
 ) -> Dict[str, Any]:
     host_clean = _host_without_port(
         host.replace("https://", "").replace("http://", "").split("/")[0].strip()
     )
-    listen_port = _gateway_listen_port()
+    listen_port = _gateway_listen_port(profile)
     annotations = {
         "nginx.ingress.kubernetes.io/proxy-read-timeout": "300",
         "nginx.ingress.kubernetes.io/proxy-send-timeout": "300",
@@ -442,10 +443,10 @@ def provision_jm_gateway(
     _ensure_namespace(core_v1, gw_ns, {MANAGED_BY_LABEL: MANAGED_BY_VALUE})
 
     dns_resolver = _cluster_dns_resolver_ip(core_v1, cluster_domain, dns_override=dns_override)
-    cm_body = _nginx_configmap_body(name, gw_ns, cluster_domain, dns_resolver, labels)
-    dep_body = _deployment_body(name, gw_ns, labels)
-    svc_body = _service_body(name, gw_ns, labels)
-    ing_body = _ingress_body(name, gw_ns, host, ingress_class, labels)
+    cm_body = _nginx_configmap_body(name, gw_ns, cluster_domain, dns_resolver, labels, profile=profile)
+    dep_body = _deployment_body(name, gw_ns, labels, profile=profile)
+    svc_body = _service_body(name, gw_ns, labels, profile=profile)
+    ing_body = _ingress_body(name, gw_ns, host, ingress_class, labels, profile=profile)
 
     _create_or_replace_object(
         core_v1,
@@ -477,8 +478,8 @@ def provision_jm_gateway(
     )
 
     lb_hint = _ingress_load_balancer_host(ingress)
-    listen_port = _gateway_listen_port()
-    jm_tpl = jm_rest_template_for_gateway_host(host)
+    listen_port = _gateway_listen_port(profile)
+    jm_tpl = jm_rest_template_for_gateway_host(host, profile)
     now = datetime.now(timezone.utc).isoformat()
     return {
         "ready": True,
@@ -488,7 +489,7 @@ def provision_jm_gateway(
         "ingress_class": ingress_class,
         "jm_rest_template": jm_tpl,
         "gateway_port": listen_port,
-        "gateway_url_port": _gateway_url_port(),
+        "gateway_url_port": _gateway_url_port(profile),
         "ingress_load_balancer": lb_hint,
         "dns_resolver": dns_resolver,
         "resources": {

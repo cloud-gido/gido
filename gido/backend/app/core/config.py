@@ -170,10 +170,6 @@ class Settings(BaseSettings):
     FLINK_OPERATOR_JM_GATEWAY_INGRESS_CLASS: str = "nginx"
     FLINK_OPERATOR_JM_GATEWAY_IMAGE: str = "nginx:1.27-alpine"
     FLINK_OPERATOR_JM_GATEWAY_REPLICAS: int = 2
-    # gido-jm-gw nginx/Service/Ingress backend 端口（默认 8080；与 Flink JM 8081 无关）
-    FLINK_OPERATOR_JM_GATEWAY_PORT: int = 8080
-    # Backend jm_rest_template URL 端口；None 时 80/443 省略，否则非 80/443 用 GATEWAY_PORT
-    FLINK_OPERATOR_JM_GATEWAY_URL_PORT: Optional[int] = None
     # nginx resolver：默认自动读 kube-system/kube-dns|coredns ClusterIP；无法探测时手动指定
     FLINK_OPERATOR_JM_GATEWAY_DNS_IP: Optional[str] = None
     # 未填 Profile host 时生成 jm-gw-{slug}-p{id}.{suffix}

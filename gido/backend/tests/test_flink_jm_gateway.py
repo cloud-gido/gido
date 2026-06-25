@@ -16,18 +16,16 @@ def test_jm_rest_template_for_gateway_host():
     )
 
 
-def test_jm_rest_template_includes_nonstandard_port(monkeypatch):
-    monkeypatch.setattr(gw.settings, "FLINK_OPERATOR_JM_GATEWAY_PORT", 8081)
-    monkeypatch.setattr(gw.settings, "FLINK_OPERATOR_JM_GATEWAY_URL_PORT", None)
-    assert gw.jm_rest_template_for_gateway_host("jm-gw.example.internal") == (
+def test_jm_rest_template_includes_nonstandard_port():
+    profile = SimpleNamespace(flink_operator_jm_gateway_port=8081)
+    assert gw.jm_rest_template_for_gateway_host("jm-gw.example.internal", profile) == (
         "http://jm-gw.example.internal:8081/jm/{namespace}/{deployment_name}"
     )
 
 
-def test_jm_rest_template_url_port_override(monkeypatch):
-    monkeypatch.setattr(gw.settings, "FLINK_OPERATOR_JM_GATEWAY_PORT", 8081)
-    monkeypatch.setattr(gw.settings, "FLINK_OPERATOR_JM_GATEWAY_URL_PORT", 80)
-    assert gw.jm_rest_template_for_gateway_host("jm-gw.example.internal") == (
+def test_jm_rest_template_omits_standard_http_port():
+    profile = SimpleNamespace(flink_operator_jm_gateway_port=80)
+    assert gw.jm_rest_template_for_gateway_host("jm-gw.example.internal", profile) == (
         "http://jm-gw.example.internal/jm/{namespace}/{deployment_name}"
     )
 
@@ -59,11 +57,18 @@ def test_nginx_config_contains_cluster_domain():
     assert "/jm/" in conf
 
 
-def test_nginx_config_custom_listen_port(monkeypatch):
-    monkeypatch.setattr(gw.settings, "FLINK_OPERATOR_JM_GATEWAY_PORT", 8081)
-    body = gw._nginx_configmap_body("gido-jm-gw-1", "gido-flink-gateway", "cluster.local", "10.96.0.10", {})
+def test_nginx_config_custom_listen_port():
+    profile = SimpleNamespace(flink_operator_jm_gateway_port=8081)
+    body = gw._nginx_configmap_body(
+        "gido-jm-gw-1", "gido-flink-gateway", "cluster.local", "10.96.0.10", {}, profile=profile,
+    )
     conf = body["data"][gw._NGINX_CONF_KEY]
     assert "listen 8081;" in conf
+
+
+def test_gateway_listen_port_default_without_profile():
+    assert gw._gateway_listen_port() == gw.DEFAULT_JM_GATEWAY_PORT
+    assert gw._gateway_listen_port(SimpleNamespace(flink_operator_jm_gateway_port=None)) == 8080
 
 
 def test_cluster_dns_resolver_ip_from_coredns(monkeypatch):
