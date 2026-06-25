@@ -1,0 +1,52 @@
+# GIDO Backend 在目标 Flink 集群部署 JM Ingress 网关所需的 RBAC
+# 由集群管理员 apply 一次；若 Backend 使用集群外 kubeconfig，绑定到对应 User/SA。
+#
+#   kubectl apply -f k8s/gido-jm-gateway-rbac.yaml
+#
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gido-flink-gateway
+  labels:
+    gido.io/managed-by: gido
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gido-jm-gateway-admin
+  namespace: gido-flink-gateway
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gido-jm-gateway-admin
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "create", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["configmaps", "services"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gido-jm-gateway-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gido-jm-gateway-admin
+subjects:
+  - kind: ServiceAccount
+    name: gido-jm-gateway-admin
+    namespace: gido-flink-gateway
+  # 若 Backend 使用 kubeconfig 中的用户身份，可改为：
+  # - kind: User
+  #   name: gido-backend
+  #   apiGroup: rbac.authorization.k8s.io

@@ -78,9 +78,19 @@ def resolve_job_jm_rest(
     deployment_name: str,
     namespace: Optional[str] = None,
     stored: Optional[str] = None,
+    runtime_ctx: Optional["OperatorRuntimeContext"] = None,
 ) -> str:
-    ns = (namespace or settings.FLINK_OPERATOR_NAMESPACE or settings.FLINK_K8S_NAMESPACE or "flink").strip()
-    jm = resolve_operator_jm_rest(deployment_name, ns, job_id=job_id, deadline_seconds=12.0)
+    from app.services.operator_runtime import OperatorRuntimeContext
+
+    ctx = runtime_ctx or OperatorRuntimeContext.from_settings()
+    ns = (namespace or ctx.namespace or settings.FLINK_OPERATOR_NAMESPACE or settings.FLINK_K8S_NAMESPACE or "flink").strip()
+    jm = resolve_operator_jm_rest(
+        deployment_name,
+        ns,
+        job_id=job_id,
+        deadline_seconds=12.0,
+        runtime_ctx=ctx,
+    )
     if not jm:
         jm = (stored or "").strip().rstrip("/")
     if not jm:
@@ -130,8 +140,15 @@ def proxy_flink_ui_request(
     method: str,
     query_string: str,
     incoming_headers: Dict[str, str],
+    runtime_ctx: Optional["OperatorRuntimeContext"] = None,
 ) -> Tuple[int, Dict[str, str], bytes]:
-    jm_base = resolve_job_jm_rest(job_id, deployment_name, namespace, stored_jm_rest)
+    jm_base = resolve_job_jm_rest(
+        job_id,
+        deployment_name,
+        namespace,
+        stored_jm_rest,
+        runtime_ctx=runtime_ctx,
+    )
     proxy_prefix = operator_ui_proxy_prefix(job_id)
     path = (subpath or "").lstrip("/")
     upstream = f"{jm_base}/{path}" if path else f"{jm_base}/"

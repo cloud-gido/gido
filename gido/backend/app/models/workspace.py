@@ -343,6 +343,12 @@ class FlinkOperatorProfile(Base):
     flink_operator_s3_endpoint_url = Column(String(1024), nullable=True)
     # JAR/SQL 制品 S3 前缀（NULL 表示沿用平台 FLINK_OPERATOR_JAR_S3_PREFIX）
     flink_operator_jar_s3_prefix = Column(String(1024), nullable=True)
+    # JM Ingress 网关（GIDO 自动部署 nginx + Ingress，转发各 *-rest Service）
+    flink_operator_jm_gateway_enabled = Column(Boolean, default=False, nullable=False)
+    flink_operator_jm_gateway_host = Column(String(512), nullable=True)
+    flink_operator_jm_gateway_namespace = Column(String(256), nullable=True)
+    flink_operator_jm_gateway_ingress_class = Column(String(128), nullable=True)
+    flink_operator_jm_gateway_status = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)

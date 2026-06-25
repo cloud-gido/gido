@@ -4,7 +4,7 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Alert, Button, Descriptions, Drawer, Form, Input, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, message,
+  Alert, Button, Descriptions, Drawer, Form, Input, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, Typography, message,
 } from 'antd'
 import { ClusterOutlined, DeleteOutlined, EditOutlined, MinusCircleOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
@@ -43,6 +43,11 @@ type OperatorProfile = {
   flink_operator_s3_region?: string | null
   flink_operator_s3_endpoint_url?: string | null
   flink_operator_jar_s3_prefix?: string | null
+  flink_operator_jm_gateway_enabled?: boolean
+  flink_operator_jm_gateway_host?: string | null
+  flink_operator_jm_gateway_namespace?: string | null
+  flink_operator_jm_gateway_ingress_class?: string | null
+  flink_operator_jm_gateway_status?: Record<string, unknown> | null
   effective?: Record<string, unknown>
 }
 
@@ -52,6 +57,8 @@ const DEFAULT_FLINK_VERSION_OPTIONS = [
   { label: 'v1_20（Flink 1.20.x）', value: 'v1_20' },
   { label: 'v1_17（Flink 1.17.x）', value: 'v1_17' },
 ]
+
+const { Text } = Typography
 
 function apiErrorMessage(e: any, fallback: string): string {
   const detail = e?.response?.data?.detail ?? e?.message
@@ -109,6 +116,7 @@ export default function OperatorClustersPage() {
   const [editingId, setEditingId] = useState<number | null>(null)
   const [submitLoading, setSubmitLoading] = useState(false)
   const [versionOptions, setVersionOptions] = useState(DEFAULT_FLINK_VERSION_OPTIONS)
+  const [provisionLoadingId, setProvisionLoadingId] = useState<number | null>(null)
   const [form] = Form.useForm()
 
   useEffect(() => {
@@ -155,6 +163,7 @@ export default function OperatorClustersPage() {
       flink_operator_runtime_images: [
         { label: 'Flink 2.2.1', image: '', flink_version: 'v2_2', is_default: true },
       ],
+      flink_operator_jm_gateway_enabled: false,
     })
     setDrawerOpen(true)
   }
@@ -193,6 +202,10 @@ export default function OperatorClustersPage() {
       flink_operator_s3_region: row.flink_operator_s3_region ?? row.effective?.s3_region ?? '',
       flink_operator_s3_endpoint_url: row.flink_operator_s3_endpoint_url ?? row.effective?.s3_endpoint_url ?? '',
       flink_operator_jar_s3_prefix: row.flink_operator_jar_s3_prefix ?? row.effective?.jar_s3_prefix ?? '',
+      flink_operator_jm_gateway_enabled: Boolean(row.flink_operator_jm_gateway_enabled),
+      flink_operator_jm_gateway_host: row.flink_operator_jm_gateway_host ?? '',
+      flink_operator_jm_gateway_namespace: row.flink_operator_jm_gateway_namespace ?? '',
+      flink_operator_jm_gateway_ingress_class: row.flink_operator_jm_gateway_ingress_class ?? '',
     })
     setDrawerOpen(true)
   }
@@ -266,6 +279,19 @@ export default function OperatorClustersPage() {
     }
   }
 
+  const handleProvisionGateway = async (row: OperatorProfile) => {
+    setProvisionLoadingId(row.id)
+    try {
+      await streamingApi.provisionOperatorJmGateway(row.id)
+      message.success('JM Ingress 网关已部署/更新')
+      await load()
+    } catch (e: any) {
+      message.error(apiErrorMessage(e, 'JM 网关部署失败'))
+    } finally {
+      setProvisionLoadingId(null)
+    }
+  }
+
   const columns = [
     {
       title: '名称',
@@ -313,13 +339,32 @@ export default function OperatorClustersPage() {
       ),
     },
     {
+      title: 'JM 网关',
+      width: 120,
+      render: (_: unknown, row: OperatorProfile) => {
+        const st = row.flink_operator_jm_gateway_status as { ready?: boolean; host?: string } | null | undefined
+        if (!row.flink_operator_jm_gateway_enabled) return <Text type="secondary">未启用</Text>
+        if (st?.ready) return <Tag color="success">已就绪</Tag>
+        return <Tag color="warning">待部署</Tag>
+      },
+    },
+    {
       title: '操作',
-      width: 160,
+      width: 220,
       render: (_: unknown, row: OperatorProfile) => (
-        <Space>
+        <Space wrap>
           {canWrite ? (
             <>
               <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(row)}>编辑</Button>
+              {row.flink_operator_jm_gateway_enabled ? (
+                <Button
+                  size="small"
+                  loading={provisionLoadingId === row.id}
+                  onClick={() => handleProvisionGateway(row)}
+                >
+                  部署网关
+                </Button>
+              ) : null}
               <Popconfirm
                 title="删除该 Operator 集群？"
                 description="仍有作业绑定时无法删除，请先在作业开发中解除绑定。"
@@ -377,6 +422,18 @@ export default function OperatorClustersPage() {
                 <div style={{ padding: '8px 0' }}>
                   {row.description ? (
                     <p style={{ marginBottom: 12, color: '#64748b' }}>{row.description}</p>
+                  ) : null}
+                  {row.flink_operator_jm_gateway_status ? (
+                    <Alert
+                      type={(row.flink_operator_jm_gateway_status as { ready?: boolean }).ready ? 'success' : 'warning'}
+                      showIcon
+                      style={{ marginBottom: 12 }}
+                      message="JM Ingress 网关"
+                      description={
+                        String((row.flink_operator_jm_gateway_status as { message?: string }).message || '')
+                        || JSON.stringify(row.flink_operator_jm_gateway_status)
+                      }
+                    />
                   ) : null}
                   <div style={{ marginBottom: 8, fontWeight: 500 }}>生效配置（Profile + 平台默认）</div>
                   <EffectiveBlock effective={row.effective} />
@@ -575,11 +632,48 @@ export default function OperatorClustersPage() {
             <Input placeholder="多个 Secret 用英文逗号分隔" />
           </Form.Item>
 
+          <div style={{ fontWeight: 600, margin: '16px 0 12px' }}>JM Ingress 网关（跨集群 UI）</div>
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message="保存后 GIDO 将在目标集群自动创建 Namespace、nginx、Service、Ingress，并按作业动态转发 *-rest Service。须配置 Kube Context / kubeconfig，且 Backend RBAC 见 k8s/gido-jm-gateway-rbac.yaml。平台须开启 GIDO_FLINK_OPERATOR_UI_PROXY_ENABLED=true。"
+          />
+          <Form.Item
+            name="flink_operator_jm_gateway_enabled"
+            label="自动部署 JM Ingress 网关"
+            valuePropName="checked"
+            extra="启用后保存即部署；JM REST 模板将自动写入网关地址（可覆盖下方手动模板）。"
+          >
+            <Switch />
+          </Form.Item>
+          <Form.Item
+            name="flink_operator_jm_gateway_host"
+            label="网关 Host"
+            extra="Ingress 规则 host，如 jm-gw.flink.cluster-a.internal。留空则使用平台 GIDO_FLINK_OPERATOR_JM_GATEWAY_HOST_SUFFIX 生成。"
+          >
+            <Input placeholder="jm-gw.flink.cluster-a.internal" />
+          </Form.Item>
+          <Form.Item
+            name="flink_operator_jm_gateway_namespace"
+            label="网关安装命名空间"
+            extra="默认 gido-flink-gateway（平台 GIDO_FLINK_OPERATOR_JM_GATEWAY_NAMESPACE）。"
+          >
+            <Input placeholder="gido-flink-gateway" />
+          </Form.Item>
+          <Form.Item
+            name="flink_operator_jm_gateway_ingress_class"
+            label="Ingress Class"
+            extra="与集群 Ingress Controller 一致，如 nginx、nginx-internal。"
+          >
+            <Input placeholder="nginx" />
+          </Form.Item>
+
           <div style={{ fontWeight: 600, margin: '16px 0 12px' }}>高级</div>
           <Form.Item
             name="flink_operator_jm_rest_template"
             label="JM REST 模板"
-            extra="Backend 查状态/取消/UI 用的 JM REST URL。占位符 {deployment_name}、{namespace}。同集群默认集群 DNS。"
+            extra="Backend 查状态/取消/UI 用的 JM REST URL。启用网关后通常自动填充；占位符 {deployment_name}、{namespace}。"
           >
             <Input placeholder="http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081" />
           </Form.Item>

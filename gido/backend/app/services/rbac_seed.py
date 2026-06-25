@@ -916,6 +916,58 @@ def migrate_dw_flink_operator_profiles_runtime_images(engine: Engine) -> None:
             )
 
 
+def migrate_dw_flink_operator_profiles_jm_gateway(engine: Engine) -> None:
+    """Operator Profile：JM Ingress 网关自动部署字段。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_flink_operator_profiles"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_flink_operator_profiles")}
+    additions = [
+        ("flink_operator_jm_gateway_enabled", "BOOLEAN NOT NULL DEFAULT FALSE"),
+        ("flink_operator_jm_gateway_host", "VARCHAR(512) NULL"),
+        ("flink_operator_jm_gateway_namespace", "VARCHAR(256) NULL"),
+        ("flink_operator_jm_gateway_ingress_class", "VARCHAR(128) NULL"),
+        ("flink_operator_jm_gateway_status", "JSON NULL"),
+    ]
+    with engine.begin() as conn:
+        for name, ddl in additions:
+            if name in cols:
+                continue
+            if engine.dialect.name == "mysql":
+                if name == "flink_operator_jm_gateway_enabled":
+                    conn.execute(
+                        text(
+                            "ALTER TABLE dw_flink_operator_profiles "
+                            "ADD COLUMN flink_operator_jm_gateway_enabled TINYINT(1) NOT NULL DEFAULT 0"
+                        )
+                    )
+                elif name == "flink_operator_jm_gateway_status":
+                    conn.execute(
+                        text(
+                            "ALTER TABLE dw_flink_operator_profiles "
+                            "ADD COLUMN flink_operator_jm_gateway_status JSON NULL"
+                        )
+                    )
+                else:
+                    conn.execute(text(f"ALTER TABLE dw_flink_operator_profiles ADD COLUMN {name} {ddl.split(' NULL')[0]} NULL"))
+            else:
+                if name == "flink_operator_jm_gateway_status":
+                    if engine.dialect.name == "postgresql":
+                        conn.execute(
+                            text(
+                                f"ALTER TABLE dw_flink_operator_profiles ADD COLUMN {name} JSONB NULL"
+                            )
+                        )
+                    else:
+                        conn.execute(
+                            text(
+                                f"ALTER TABLE dw_flink_operator_profiles ADD COLUMN {name} TEXT NULL"
+                            )
+                        )
+                else:
+                    conn.execute(text(f"ALTER TABLE dw_flink_operator_profiles ADD COLUMN {name} {ddl}"))
+
+
 def migrate_dw_streaming_jobs_flink_operator_profile(engine: Engine) -> None:
     """实时作业可选绑定 Flink Operator 集群；提交后持久化目标 namespace / 镜像。"""
     insp = inspect(engine)

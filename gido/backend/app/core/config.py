@@ -165,6 +165,13 @@ class Settings(BaseSettings):
     FLINK_OPERATOR_BROWSER_JM_BASE: Optional[str] = None
     # 经 GIDO Backend 反向代理 Flink Web UI（集群内 Backend 调 JM，浏览器只访问 GIDO /api/.../flink-ui）
     FLINK_OPERATOR_UI_PROXY_ENABLED: bool = False
+    # 按 Operator Profile 自动部署 JM Ingress 网关（nginx + Ingress → 各 *-rest Service）
+    FLINK_OPERATOR_JM_GATEWAY_NAMESPACE: str = "gido-flink-gateway"
+    FLINK_OPERATOR_JM_GATEWAY_INGRESS_CLASS: str = "nginx"
+    FLINK_OPERATOR_JM_GATEWAY_IMAGE: str = "nginx:1.27-alpine"
+    FLINK_OPERATOR_JM_GATEWAY_REPLICAS: int = 2
+    # 未填 Profile host 时生成 jm-gw-{slug}-p{id}.{suffix}
+    FLINK_OPERATOR_JM_GATEWAY_HOST_SUFFIX: Optional[str] = None
     # 仅本机 Kind/Mac 开发：为 true 时在 UI 展示 kubectl port-forward 提示
     FLINK_OPERATOR_DEV_LOCAL: bool = False
     # 本机开发：GIDO 自动为每个 Operator 作业 kubectl port-forward（默认随 DEV_LOCAL 开启）

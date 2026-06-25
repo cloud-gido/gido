@@ -159,7 +159,19 @@
 | **占位符** | `{deployment_name}`：FlinkDeployment 名（如 `gido-sql-w1-42`）；`{namespace}`：提交命名空间 |
 | **继承默认** | 空 → `FLINK_OPERATOR_JM_REST_TEMPLATE` → `http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081` |
 | **对应 .env** | `GIDO_FLINK_OPERATOR_JM_REST_TEMPLATE` |
-| **生产建议** | Backend 与 Flink **同集群**时用集群 DNS（上式）；跨集群或本机 Kind 可能配合 NodePort / port-forward（见 `FLINK_OPERATOR_DEV_LOCAL` 等平台变量，**不在 Profile 表单**）。 |
+| **生产建议** | Backend 与 Flink **同集群**时用集群 DNS（上式）；跨集群启用 **JM Ingress 网关**（见下）自动写入网关 URL。 |
+
+### JM Ingress 网关（`flink_operator_jm_gateway_*`）
+
+| 字段 | 说明 |
+|------|------|
+| `flink_operator_jm_gateway_enabled` | 为 `true` 时，保存 Profile 或调用部署 API 后，GIDO 在目标集群创建 nginx + Ingress，按路径 `/jm/{namespace}/{deployment_name}` 转发各 `*-rest` Service。 |
+| `flink_operator_jm_gateway_host` | Ingress host（如 `jm-gw.flink.cluster-a.internal`）。留空时用 `GIDO_FLINK_OPERATOR_JM_GATEWAY_HOST_SUFFIX` 自动生成。 |
+| `flink_operator_jm_gateway_namespace` | 网关资源 ns，默认 `gido-flink-gateway`。 |
+| `flink_operator_jm_gateway_ingress_class` | IngressClass，默认 `nginx`。 |
+| `flink_operator_jm_gateway_status` | 只读：部署结果、生效 `jm_rest_template`、LB 地址。 |
+
+平台变量：`GIDO_FLINK_OPERATOR_JM_GATEWAY_*`；浏览器 UI 须 `GIDO_FLINK_OPERATOR_UI_PROXY_ENABLED=true`。集群侧 RBAC：`k8s/gido-jm-gateway-rbac.yaml`。手动部署：`POST .../flink-operator-profiles/{id}/provision-jm-gateway`。
 
 ### `flink_operator_checkpoint_dir`（Checkpoint 目录）
 

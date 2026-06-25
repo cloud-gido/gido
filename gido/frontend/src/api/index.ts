@@ -264,6 +264,8 @@ export const streamingApi = {
   createOperatorProfile: (data: any) => request.post('/streaming/flink-operator-profiles', data),
   updateOperatorProfile: (id: number, data: any) => request.put(`/streaming/flink-operator-profiles/${id}`, data),
   deleteOperatorProfile: (id: number) => request.delete(`/streaming/flink-operator-profiles/${id}`),
+  provisionOperatorJmGateway: (id: number) =>
+    request.post(`/streaming/flink-operator-profiles/${id}/provision-jm-gateway`),
   listJobs: (workspaceId: number) => request.get('/streaming/jobs', { params: { workspace_id: workspaceId } }),
   createJob: (data: any) => request.post('/streaming/jobs', data),
   copyJob: (id: number, data?: { name?: string }) => request.post(`/streaming/jobs/${id}/copy`, data || {}),

@@ -2115,6 +2115,10 @@ _FLINK_OPERATOR_PROFILE_FIELDS = (
     "flink_operator_s3_region",
     "flink_operator_s3_endpoint_url",
     "flink_operator_jar_s3_prefix",
+    "flink_operator_jm_gateway_enabled",
+    "flink_operator_jm_gateway_host",
+    "flink_operator_jm_gateway_namespace",
+    "flink_operator_jm_gateway_ingress_class",
 )
 
 
@@ -2149,6 +2153,10 @@ class FlinkOperatorProfileCreate(BaseModel):
     flink_operator_s3_region: Optional[str] = None
     flink_operator_s3_endpoint_url: Optional[str] = None
     flink_operator_jar_s3_prefix: Optional[str] = None
+    flink_operator_jm_gateway_enabled: bool = False
+    flink_operator_jm_gateway_host: Optional[str] = None
+    flink_operator_jm_gateway_namespace: Optional[str] = None
+    flink_operator_jm_gateway_ingress_class: Optional[str] = None
 
 
 class FlinkOperatorProfileUpdate(BaseModel):
@@ -2174,6 +2182,10 @@ class FlinkOperatorProfileUpdate(BaseModel):
     flink_operator_s3_region: Optional[str] = None
     flink_operator_s3_endpoint_url: Optional[str] = None
     flink_operator_jar_s3_prefix: Optional[str] = None
+    flink_operator_jm_gateway_enabled: Optional[bool] = None
+    flink_operator_jm_gateway_host: Optional[str] = None
+    flink_operator_jm_gateway_namespace: Optional[str] = None
+    flink_operator_jm_gateway_ingress_class: Optional[str] = None
 
 
 def _normalize_s3_auth_mode(value: Optional[str]) -> Optional[str]:
@@ -2212,6 +2224,11 @@ def _flink_operator_profile_public(p: FlinkOperatorProfile) -> dict:
         "flink_operator_s3_region": p.flink_operator_s3_region,
         "flink_operator_s3_endpoint_url": p.flink_operator_s3_endpoint_url,
         "flink_operator_jar_s3_prefix": p.flink_operator_jar_s3_prefix,
+        "flink_operator_jm_gateway_enabled": bool(getattr(p, "flink_operator_jm_gateway_enabled", False)),
+        "flink_operator_jm_gateway_host": getattr(p, "flink_operator_jm_gateway_host", None),
+        "flink_operator_jm_gateway_namespace": getattr(p, "flink_operator_jm_gateway_namespace", None),
+        "flink_operator_jm_gateway_ingress_class": getattr(p, "flink_operator_jm_gateway_ingress_class", None),
+        "flink_operator_jm_gateway_status": getattr(p, "flink_operator_jm_gateway_status", None),
         "created_at": p.created_at,
         "updated_at": p.updated_at,
     }
@@ -2350,6 +2367,37 @@ def _operator_runtime_ctx_for_job(db: Session, job: StreamingJob):
         raise HTTPException(status_code=400, detail=str(ex))
 
 
+def _persist_jm_gateway_provision(db: Session, profile: FlinkOperatorProfile) -> FlinkOperatorProfile:
+    """在 Profile 目标集群部署 JM Ingress 网关，并回写 jm_rest_template 与状态。"""
+    from app.services.flink_jm_gateway import provision_jm_gateway_for_profile
+
+    try:
+        status = provision_jm_gateway_for_profile(db, profile)
+        profile.flink_operator_jm_gateway_status = status
+        jm_tpl = (status.get("jm_rest_template") or "").strip()
+        if jm_tpl:
+            profile.flink_operator_jm_rest_template = jm_tpl
+        profile.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(profile)
+    except Exception as ex:
+        logger.warning("JM 网关部署失败 profile_id=%s: %s", profile.id, ex, exc_info=True)
+        profile.flink_operator_jm_gateway_status = {
+            "ready": False,
+            "message": str(ex),
+        }
+        profile.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(profile)
+    return profile
+
+
+def _maybe_provision_jm_gateway_after_profile_save(db: Session, profile: FlinkOperatorProfile) -> FlinkOperatorProfile:
+    if not bool(getattr(profile, "flink_operator_jm_gateway_enabled", False)):
+        return profile
+    return _persist_jm_gateway_provision(db, profile)
+
+
 @router.get("/flink-operator-profiles")
 def list_flink_operator_profiles(
     workspace_id: int = Query(...),
@@ -2430,6 +2478,7 @@ def create_flink_operator_profile(
     db.add(p)
     db.commit()
     db.refresh(p)
+    p = _maybe_provision_jm_gateway_after_profile_save(db, p)
     return _flink_operator_profile_effective(db, p)
 
 
@@ -2490,6 +2539,36 @@ def update_flink_operator_profile(
     p.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(p)
+    gateway_touched = (
+        "flink_operator_jm_gateway_enabled" in patch
+        or "flink_operator_jm_gateway_host" in patch
+        or "flink_operator_jm_gateway_namespace" in patch
+        or "flink_operator_jm_gateway_ingress_class" in patch
+        or "flink_k8s_context" in patch
+        or "flink_k8s_kubeconfig_path" in patch
+        or "flink_k8s_cluster_domain" in patch
+    )
+    if gateway_touched and bool(getattr(p, "flink_operator_jm_gateway_enabled", False)):
+        p = _maybe_provision_jm_gateway_after_profile_save(db, p)
+    return _flink_operator_profile_effective(db, p)
+
+
+@router.post("/flink-operator-profiles/{profile_id}/provision-jm-gateway")
+def provision_flink_operator_jm_gateway(
+    profile_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """在目标集群（重新）部署 JM Ingress 网关：Namespace、nginx、Service、Ingress。"""
+    p = db.query(FlinkOperatorProfile).filter(FlinkOperatorProfile.id == profile_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="配置不存在")
+    assert_workspace_data_capability(db, current_user, p.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
+    p.flink_operator_jm_gateway_enabled = True
+    p = _persist_jm_gateway_provision(db, p)
+    status = getattr(p, "flink_operator_jm_gateway_status", None) or {}
+    if not status.get("ready"):
+        raise HTTPException(status_code=502, detail=status.get("message") or "JM 网关部署失败")
     return _flink_operator_profile_effective(db, p)
 
 
@@ -3623,7 +3702,19 @@ def proxy_operator_flink_ui(
     if not dep:
         raise HTTPException(status_code=400, detail="非 Flink Operator 作业")
 
-    ns = (settings.FLINK_OPERATOR_NAMESPACE or settings.FLINK_K8S_NAMESPACE or "flink").strip()
+    op_ctx = None
+    if getattr(job, "flink_operator_profile_id", None):
+        try:
+            op_ctx = _operator_runtime_ctx_for_job(db, job)
+        except HTTPException:
+            raise
+        except Exception:
+            logger.debug("UI 代理解析 Operator Profile 失败 job_id=%s", job_id, exc_info=True)
+    ns = (
+        op_ctx.namespace
+        if op_ctx
+        else (settings.FLINK_OPERATOR_NAMESPACE or settings.FLINK_K8S_NAMESPACE or "flink").strip()
+    )
     qs = str(request.url.query) if request.url.query else ""
     status_code, headers, body = proxy_flink_ui_request(
         job_id=job_id,
@@ -3634,6 +3725,7 @@ def proxy_operator_flink_ui(
         method=request.method,
         query_string=qs,
         incoming_headers=dict(request.headers),
+        runtime_ctx=op_ctx,
     )
     if request.method.upper() == "HEAD":
         return Response(status_code=status_code, headers=headers)
