@@ -173,6 +173,11 @@
 
 平台变量：`GIDO_FLINK_OPERATOR_JM_GATEWAY_*`；浏览器 UI 须 `GIDO_FLINK_OPERATOR_UI_PROXY_ENABLED=true`。集群侧 RBAC：`k8s/gido-jm-gateway-rbac.yaml`。手动部署：`POST .../flink-operator-profiles/{id}/provision-jm-gateway`。
 
+| 平台变量 | 默认 | 说明 |
+|----------|------|------|
+| `FLINK_OPERATOR_JM_GATEWAY_PORT` | `8080` | gido-jm-gw nginx/Service/Ingress backend 端口 |
+| `FLINK_OPERATOR_JM_GATEWAY_URL_PORT` | （空） | Backend `jm_rest_template` URL 端口；空且 PORT 为 8080 时不写端口（Ingress 80）；PORT=8081 时自动写 `:8081` |
+
 ### `flink_operator_checkpoint_dir`（Checkpoint 目录）
 
 | 项 | 说明 |
