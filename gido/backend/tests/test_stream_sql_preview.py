@@ -117,6 +117,8 @@ SELECT * FROM t;
     assert "sa-east-1" in props
     shell = _preview_shell(sql, 50)
     assert "java -Dfs.s3a.aws.credentials.provider=" in shell
+    assert "/tmp/gido-hadoop-conf/core-site.xml" in shell
+    assert "/tmp/gido-hadoop-conf:/opt/flink/usrlib/sql-runner.jar" in shell
 
 
 def test_preview_irsa_uses_runtime_s3_warehouse_without_literal_path(monkeypatch):
@@ -139,6 +141,27 @@ SELECT * FROM paimon_users_s3;
     props = _preview_java_sys_props(script)
     assert "WebIdentityTokenCredentialsProvider" in script
     assert "WebIdentityTokenCredentialsProvider" in props
+
+
+def test_preview_shell_writes_core_site_for_fs_props(monkeypatch):
+    from app.core.config import settings
+    from app.services.stream_sql_preview import _prepare_preview_script, _preview_shell
+
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True)
+    monkeypatch.setattr(
+        settings,
+        "FLINK_OPERATOR_S3_CREDENTIALS_PROVIDER",
+        "com.amazonaws.auth.WebIdentityTokenCredentialsProvider",
+    )
+    monkeypatch.setattr(settings, "GIDO_ARTIFACT_S3_REGION", "sa-east-1")
+    sql = """
+SET 'execution.runtime-mode' = 'batch';
+CREATE TABLE t (id BIGINT) WITH ('connector'='paimon', 'path'='s3a://bucket/demo/t');
+SELECT * FROM t;
+"""
+    shell = _preview_shell(_prepare_preview_script(sql), 10)
+    assert "GIDO_PREVIEW_HADOOP_CONF: core-site.xml=set" in shell
+    assert "/tmp/gido-hadoop-conf:" in shell
 
 
 def test_aws_env_irsa_region_from_settings(monkeypatch):

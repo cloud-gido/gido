@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import json
 import logging
 import re
@@ -116,11 +117,46 @@ def _preview_java_sys_props(script: str) -> str:
     return " ".join(flags)
 
 
+def _preview_hadoop_fs_props(script: str) -> Dict[str, str]:
+    props: Dict[str, str] = {}
+    for match in _SQL_SET_PATTERN.finditer(script or ""):
+        key = match.group(1).strip()
+        if key.startswith("fs."):
+            props[key] = match.group(2)
+    return props
+
+
+def _core_site_xml(props: Dict[str, str]) -> str:
+    lines = ['<?xml version="1.0" encoding="UTF-8"?>', "<configuration>"]
+    for key, value in props.items():
+        lines.append(
+            "  <property><name>"
+            + html.escape(key, quote=True)
+            + "</name><value>"
+            + html.escape(value or "", quote=True)
+            + "</value></property>"
+        )
+    lines.append("</configuration>")
+    return "\n".join(lines) + "\n"
+
+
 def _preview_shell(script: str, limit: int) -> str:
     """将 SQL 以 base64 写入 Pod 内临时文件，避免 ConfigMap 挂载竞态。"""
     encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
     java_opts = _preview_java_sys_props(script)
     java_cmd = f"java {java_opts}" if java_opts else "java"
+    hadoop_props = _preview_hadoop_fs_props(script)
+    hadoop_conf_bootstrap = ""
+    classpath = "/opt/flink/usrlib/sql-runner.jar:/opt/flink/lib/*"
+    if hadoop_props:
+        core_site = base64.b64encode(_core_site_xml(hadoop_props).encode("utf-8")).decode("ascii")
+        hadoop_conf_bootstrap = (
+            "mkdir -p /tmp/gido-hadoop-conf\n"
+            f"echo '{core_site}' | base64 -d > /tmp/gido-hadoop-conf/core-site.xml\n"
+            "export HADOOP_CONF_DIR=/tmp/gido-hadoop-conf\n"
+            "echo 'GIDO_PREVIEW_HADOOP_CONF: core-site.xml=set'\n"
+        )
+        classpath = "/tmp/gido-hadoop-conf:" + classpath
     irsa_debug = ""
     if java_opts:
         irsa_debug = (
@@ -133,8 +169,9 @@ def _preview_shell(script: str, limit: int) -> str:
     return (
         "set -euo pipefail\n"
         f"echo '{encoded}' | base64 -d > /tmp/gido-preview.sql\n"
+        f"{hadoop_conf_bootstrap}"
         f"{irsa_debug}"
-        f"{java_cmd} -cp '/opt/flink/usrlib/sql-runner.jar:/opt/flink/lib/*' "
+        f"{java_cmd} -cp '{classpath}' "
         "com.gido.flink.SqlRunner "
         f"file:///tmp/gido-preview.sql --preview {limit}\n"
     )
@@ -380,7 +417,13 @@ def run_stream_sql_preview(sql: str, *, limit: int = 100) -> Dict[str, Any]:
             except ApiException:
                 time.sleep(2)
         if failed:
-            err = (logs or "")[-3000:] or "预览作业失败（无日志）"
+            diagnostic = "\n".join(
+                line
+                for line in (logs or "").splitlines()
+                if line.startswith("GIDO_PREVIEW_IRSA:") or line.startswith("GIDO_PREVIEW_HADOOP_CONF:")
+            )
+            tail = (logs or "")[-3000:] or "预览作业失败（无日志）"
+            err = f"{diagnostic}\n{tail}" if diagnostic else tail
             raise HTTPException(status_code=400, detail=f"预览 SQL 执行失败：\n{err}")
 
         parsed = _parse_preview_json(logs or "")
