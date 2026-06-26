@@ -119,6 +119,28 @@ SELECT * FROM t;
     assert "java -Dfs.s3a.aws.credentials.provider=" in shell
 
 
+def test_preview_irsa_uses_runtime_s3_warehouse_without_literal_path(monkeypatch):
+    from app.core.config import settings
+    from app.services.stream_sql_preview import _prepare_preview_script, _preview_java_sys_props
+
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True)
+    monkeypatch.setattr(
+        settings,
+        "FLINK_OPERATOR_S3_CREDENTIALS_PROVIDER",
+        "com.amazonaws.auth.WebIdentityTokenCredentialsProvider",
+    )
+    monkeypatch.setattr(settings, "GIDO_ARTIFACT_S3_REGION", "sa-east-1")
+    monkeypatch.setattr(settings, "PAIMON_WAREHOUSE_DEFAULT", "s3a://bucket/flink/paimon-warehouse")
+    sql = """
+SET 'execution.runtime-mode' = 'batch';
+SELECT * FROM paimon_users_s3;
+"""
+    script = _prepare_preview_script(sql)
+    props = _preview_java_sys_props(script)
+    assert "WebIdentityTokenCredentialsProvider" in script
+    assert "WebIdentityTokenCredentialsProvider" in props
+
+
 def test_aws_env_irsa_region_from_settings(monkeypatch):
     from app.core.config import settings
 

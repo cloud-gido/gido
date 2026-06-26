@@ -91,8 +91,8 @@ def _paimon_volume_mounts() -> tuple[List[dict], List[dict]]:
 def _preview_uses_irsa(script: str) -> bool:
     if not getattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True):
         return False
-    if not _script_uses_s3(script):
-        return False
+    # 预览 SQL 可能只写 SELECT 表名，真实 s3a 路径来自 Paimon 表元数据/catalog/默认 warehouse。
+    # 因此在 EKS IRSA 模式下，只要没有显式静态 AK/SK，就提前注入 WebIdentity。
     return not _sql_has_static_s3_keys(script)
 
 
@@ -175,8 +175,6 @@ def _prepare_preview_script(sql: str) -> str:
     """EKS IRSA：无静态 AK/SK 时注入 WebIdentity；本地 SQL 显式 AK/SK 时保留不动。"""
     statements = parse_stream_preview_statements(sql)
     script = ";\n".join(statements) + ";\n"
-    if not _script_uses_s3(script):
-        return script
     if not getattr(settings, "FLINK_OPERATOR_S3_USE_IRSA", True):
         return script
     if _sql_has_static_s3_keys(script):
