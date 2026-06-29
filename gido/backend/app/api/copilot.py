@@ -94,7 +94,6 @@ def delete_session(session_id: str, current_user: User = Depends(get_current_use
 @router.post("/chat")
 def copilot_chat(
     body: CopilotChatIn,
-    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
