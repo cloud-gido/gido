@@ -65,6 +65,15 @@ class Settings(BaseSettings):
     # 仅用于本地排障：启动时把 admin 密码设为该明文；用完后务必从 .env 删除
     RESET_ADMIN_PASSWORD: Optional[str] = None
 
+    # 玑渡 Copilot（默认 UI 开启；未配置 API Key 时接口返回友好提示）
+    COPILOT_LLM_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    COPILOT_LLM_MODEL: str = "qwen-max"
+    COPILOT_LLM_API_KEY: Optional[str] = None
+    COPILOT_MAX_TOOL_ROUNDS: int = 3
+    COPILOT_RATE_LIMIT_PER_MINUTE: int = 30
+    COPILOT_SESSION_TTL_HOURS: int = 72
+    COPILOT_PROBE_DEFAULT_LIMIT: int = 500
+
     # Flink JobManager REST（overview / jobs / jars）；留空则仅依赖「系统管理 → 集成」库内配置或启动时注入
     FLINK_URL: Optional[str] = None
     # Flink SQL Gateway REST（/v1/sessions）；留空则仅依赖集成页或环境注入
@@ -209,6 +218,10 @@ class Settings(BaseSettings):
         ):
             raise ValueError(infra_db_env_partial_error_message())
         return self.DATABASE_URL
+
+    @property
+    def copilot_configured(self) -> bool:
+        return bool(self.COPILOT_LLM_API_KEY and str(self.COPILOT_LLM_API_KEY).strip())
 
 
 settings = Settings()

@@ -98,6 +98,22 @@ export default function ProbePage() {
   }, [wsId])
 
   useEffect(() => {
+    const pending = sessionStorage.getItem('gido_copilot_sql')
+    if (!pending || !wsId) return
+    sessionStorage.removeItem('gido_copilot_sql')
+    setProbeState(prev => {
+      const id = prev.activeScriptId
+      if (!id) return prev
+      const next = {
+        ...prev,
+        scripts: prev.scripts.map(s => (s.id === id ? { ...s, sql: pending } : s)),
+      }
+      saveProbeState(wsId, next)
+      return next
+    })
+  }, [wsId])
+
+  useEffect(() => {
     if (!wsId) return
     const t = window.setTimeout(() => saveProbeState(wsId, probeState), 280)
     return () => window.clearTimeout(t)

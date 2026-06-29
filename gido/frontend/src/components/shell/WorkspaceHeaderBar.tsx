@@ -14,6 +14,7 @@ import { can, isPlatformAdmin, P } from '../../perm'
 import ProductSwitcher from '../ProductSwitcher'
 import type { ProductId } from '../../routes'
 import UserAccountMenu from '../UserAccountMenu'
+import CopilotHost from '../copilot/CopilotHost'
 
 type Props = {
   product: ProductId
@@ -84,7 +85,10 @@ export default function WorkspaceHeaderBar({
           </Button>
         )}
       </div>
-      <UserAccountMenu />
+      <div className="dw-header-right" style={{ display: 'flex', alignItems: 'center' }}>
+        <CopilotHost workspaceId={currentWorkspace?.id} />
+        <UserAccountMenu />
+      </div>
     </div>
   )
 }

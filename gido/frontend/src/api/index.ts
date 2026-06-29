@@ -328,3 +328,6 @@ export const dataServiceApi = {
     request.get('/data-service/logs', { params: { workspace_id: workspaceId, ...params } }),
   previewWizardSql: (data: any) => request.post('/data-service/wizard/preview-sql', data),
 }
+
+export { copilotApi, copilotChatStream } from './copilot'
+export type { CopilotStatus, CopilotChatResponse, CopilotQueryResult } from './copilot'

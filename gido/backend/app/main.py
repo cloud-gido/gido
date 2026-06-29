@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import Base, engine
-from app.api import auth, workspace, workspace_settings, workspace_variables, datasource, studio, workflow, integration, datamap, quality, operation, probe
+from app.api import auth, workspace, workspace_settings, workspace_variables, datasource, studio, workflow, integration, datamap, quality, operation, probe, copilot
 from app.api import scheduler as scheduler_api
 from app.api import audit
 from app.api import streaming
@@ -229,6 +229,7 @@ app.include_router(data_service.router, prefix="/api")
 app.include_router(data_service_open.open_router, prefix="/api")
 app.include_router(approval.router, prefix="/api")
 app.include_router(alert.router, prefix="/api")
+app.include_router(copilot.router, prefix="/api")
 
 
 @app.get("/")
