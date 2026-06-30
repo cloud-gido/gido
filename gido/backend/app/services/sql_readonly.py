@@ -194,6 +194,18 @@ def parse_readonly_statements(sql: str) -> List[str]:
     return [assert_readonly_statement(p) for p in parts]
 
 
+def apply_readonly_row_limit(stmt: str, lim: int) -> str:
+    """在只读语句末尾追加 LIMIT，避免子查询包装导致 ORDER BY 被优化器丢弃。"""
+    core = (stmt or "").strip().rstrip(";").strip()
+    if not core:
+        raise HTTPException(status_code=400, detail="SQL 不能为空")
+    cleaned = _strip_sql_comments(core)
+    if re.search(r"\bLIMIT\s+\d", cleaned, re.IGNORECASE):
+        return core
+    cap = min(max(int(lim), 1), 10000)
+    return f"{core} LIMIT {cap}"
+
+
 def column_types_from_description(ds_type: str, description: Optional[Sequence]) -> List[str]:
     """从 DB-API cursor.description 提取列类型展示名。"""
     if not description:

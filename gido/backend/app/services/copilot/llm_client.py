@@ -12,10 +12,16 @@ from app.core.config import settings
 
 
 class LlmClient:
-    def __init__(self) -> None:
-        self.base_url = settings.COPILOT_LLM_BASE_URL.rstrip("/")
-        self.model = settings.COPILOT_LLM_MODEL
-        self.api_key = (settings.COPILOT_LLM_API_KEY or "").strip()
+    def __init__(
+        self,
+        *,
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ) -> None:
+        self.base_url = (base_url or settings.COPILOT_LLM_BASE_URL).rstrip("/")
+        self.model = (model or settings.COPILOT_LLM_MODEL).strip()
+        self.api_key = (api_key if api_key is not None else settings.COPILOT_LLM_API_KEY or "").strip()
 
     @property
     def configured(self) -> bool:

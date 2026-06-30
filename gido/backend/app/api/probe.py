@@ -15,7 +15,7 @@ from app.core import perm_codes as PC
 from app.models.workspace import DataSource, User
 from app.services.rbac import assert_workspace_data_capability, require_datasource_row
 from app.services.datasource_mysql_user import mysql_protocol_connect_user
-from app.services.sql_readonly import parse_readonly_statements, result_set_from_cursor
+from app.services.sql_readonly import apply_readonly_row_limit, parse_readonly_statements, result_set_from_cursor
 
 router = APIRouter(prefix="/probe", tags=["数据探查"])
 
@@ -42,7 +42,7 @@ def _execute_one(ds: DataSource, stmt: str, lim: int) -> Dict[str, Any]:
         )
         try:
             cur = conn.cursor()
-            cur.execute(f"SELECT * FROM ({stmt}) AS _dw_probe_sub LIMIT %s", (lim,))
+            cur.execute(apply_readonly_row_limit(stmt, lim))
             rows = cur.fetchall()
             base = result_set_from_cursor(lt, cur.description, rows, lim)
             base["sql"] = stmt
@@ -66,7 +66,7 @@ def _execute_one(ds: DataSource, stmt: str, lim: int) -> Dict[str, Any]:
         )
         try:
             cur = conn.cursor()
-            cur.execute("SELECT * FROM (" + stmt + ") AS _dw_probe_sub LIMIT %s", (lim,))
+            cur.execute(apply_readonly_row_limit(stmt, lim))
             rows = cur.fetchall()
             base = result_set_from_cursor(lt, cur.description, rows, lim)
             base["sql"] = stmt

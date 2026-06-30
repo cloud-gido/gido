@@ -6,7 +6,7 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import { Alert, Button, Card, Form, Input, Select, Space, Switch, Tabs, Table, Modal, message } from 'antd'
-import { ApiOutlined, DatabaseOutlined, ExperimentOutlined, KeyOutlined, PlusOutlined } from '@ant-design/icons'
+import { ApiOutlined, CommentOutlined, DatabaseOutlined, ExperimentOutlined, KeyOutlined, PlusOutlined } from '@ant-design/icons'
 import { useAppStore } from '../store'
 import { datasourceApi, workspaceApi } from '../api'
 
@@ -18,8 +18,10 @@ export default function WorkspaceSettingsPage() {
   const [datasources, setDatasources] = useState<any[]>([])
   const [defaultsForm] = Form.useForm()
   const [dolphinForm] = Form.useForm()
+  const [copilotForm] = Form.useForm()
   const [flinkForm] = Form.useForm()
   const [dolphinMeta, setDolphinMeta] = useState<any>(null)
+  const [copilotMeta, setCopilotMeta] = useState<any>(null)
   const [loading, setLoading] = useState(false)
   const [variables, setVariables] = useState<any[]>([])
   const [varModalOpen, setVarModalOpen] = useState(false)
@@ -36,10 +38,11 @@ export default function WorkspaceSettingsPage() {
     if (!wsId) return
     setLoading(true)
     try {
-      const [ds, def, dol]: any[] = await Promise.all([
+      const [ds, def, dol, cop]: any[] = await Promise.all([
         datasourceApi.list(wsId),
         workspaceApi.getDefaults(wsId),
         workspaceApi.getDolphin(wsId),
+        workspaceApi.getCopilot(wsId).catch(() => null),
       ])
       setDatasources(Array.isArray(ds) ? ds : [])
       defaultsForm.setFieldsValue({
@@ -54,6 +57,14 @@ export default function WorkspaceSettingsPage() {
         ds_project_name: dol.override_project_name ?? dol.effective_project_name,
         ds_token: '',
       })
+      if (cop) {
+        setCopilotMeta(cop)
+        copilotForm.setFieldsValue({
+          copilot_llm_base_url: cop.override_base_url ?? '',
+          copilot_llm_model: cop.override_model ?? cop.effective_model ?? '',
+          copilot_llm_api_key: '',
+        })
+      }
       try {
         const fl: any = await workspaceApi.getFlink(wsId)
         flinkForm.setFieldsValue(fl.override || {})
@@ -108,6 +119,26 @@ export default function WorkspaceSettingsPage() {
     if (!wsId) return
     const r: any = await workspaceApi.testDolphin(wsId)
     if (r?.ok) message.success(r.message || '连接成功')
+    else message.error(r?.message || '连接失败')
+  }
+
+  const saveCopilot = async () => {
+    if (!wsId) return
+    const v = await copilotForm.validateFields()
+    const body: Record<string, unknown> = {
+      copilot_llm_base_url: v.copilot_llm_base_url || null,
+      copilot_llm_model: v.copilot_llm_model || null,
+    }
+    if (v.copilot_llm_api_key) body.copilot_llm_api_key = v.copilot_llm_api_key
+    await workspaceApi.putCopilot(wsId, body)
+    message.success('本空间 Copilot 配置已保存')
+    await loadAll()
+  }
+
+  const testCopilot = async () => {
+    if (!wsId) return
+    const r: any = await workspaceApi.testCopilot(wsId)
+    if (r?.ok) message.success(r.message || '连通正常')
     else message.error(r?.message || '连接失败')
   }
 
@@ -252,6 +283,52 @@ export default function WorkspaceSettingsPage() {
                     </Button>
                     <Button icon={<ExperimentOutlined />} onClick={testDolphin}>
                       测试连接
+                    </Button>
+                  </Space>
+                </Form>
+              </Card>
+            ),
+          },
+          {
+            key: 'copilot',
+            label: (
+              <span>
+                <CommentOutlined /> Copilot
+              </span>
+            ),
+            children: (
+              <Card loading={loading}>
+                {copilotMeta && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    message={`当前生效：${copilotMeta.effective_model || '—'} · ${copilotMeta.effective_base_url || '—'}（来源：${copilotMeta.effective_source}）`}
+                  />
+                )}
+                <Form form={copilotForm} layout="vertical">
+                  <Form.Item
+                    name="copilot_llm_base_url"
+                    label="API Base URL"
+                    extra="OpenAI 兼容端点，如 https://dashscope.aliyuncs.com/compatible-mode/v1 或百炼工作空间地址"
+                  >
+                    <Input placeholder="留空沿用全局/环境变量" />
+                  </Form.Item>
+                  <Form.Item name="copilot_llm_model" label="模型名称">
+                    <Input placeholder="qwen-plus / qwen-max" />
+                  </Form.Item>
+                  <Form.Item
+                    name="copilot_llm_api_key"
+                    label="API Key（留空不修改）"
+                  >
+                    <Input.Password placeholder={copilotMeta?.api_key_masked ? `已配置 ${copilotMeta.api_key_masked}` : 'sk-...'} />
+                  </Form.Item>
+                  <Space>
+                    <Button type="primary" onClick={saveCopilot}>
+                      保存
+                    </Button>
+                    <Button icon={<ExperimentOutlined />} onClick={testCopilot}>
+                      测试连通
                     </Button>
                   </Space>
                 </Form>

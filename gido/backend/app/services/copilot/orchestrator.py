@@ -16,11 +16,21 @@ from app.services.copilot.llm_client import LlmClient
 from app.services.copilot.prompts import SYSTEM_PROMPT
 from app.services.copilot.session_store import session_store
 from app.services.copilot.tools import TOOL_DEFINITIONS, run_tool, tool_result_for_llm
+from app.services.copilot_runtime import CopilotRuntimeConfig, get_copilot_runtime
 
 
 class CopilotOrchestrator:
-    def __init__(self) -> None:
-        self.llm = LlmClient()
+    def __init__(self, runtime: Optional[CopilotRuntimeConfig] = None) -> None:
+        if runtime:
+            self.llm = LlmClient(
+                base_url=runtime.base_url,
+                model=runtime.model,
+                api_key=runtime.api_key,
+            )
+            self._runtime = runtime
+        else:
+            self.llm = LlmClient()
+            self._runtime = None
 
     def _build_messages(self, history: List[Dict[str, Any]], user_message: str, datasource_id: Optional[int]) -> List[Dict[str, Any]]:
         ctx = f"当前工作空间已选数据源 ID: {datasource_id}" if datasource_id else "当前未选择数据源，执行 SQL 前请提示用户选择"
@@ -76,7 +86,7 @@ class CopilotOrchestrator:
                         "session_id": sid,
                         "question": user_message[:500],
                         "sql": last_sql,
-                        "model": settings.COPILOT_LLM_MODEL,
+                        "model": self.llm.model,
                         "latency_ms": int((time.time() - t0) * 1000),
                         "tool_calls": len(tool_trace),
                     },

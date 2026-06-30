@@ -4,7 +4,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Drawer, Input, Select, Space, Spin, Table, Typography, message } from 'antd'
-import { CopyOutlined, ExperimentOutlined, RobotOutlined, SendOutlined } from '@ant-design/icons'
+import { CopyOutlined, CommentOutlined, ExperimentOutlined, SendOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { copilotApi, copilotChatStream, type CopilotQueryResult, type CopilotStatus } from '../../api/copilot'
 import { datasourceApi } from '../../api'
@@ -47,10 +47,10 @@ export default function CopilotDrawer({ open, onClose, workspaceId }: Props) {
 
   useEffect(() => {
     if (!open) return
-    copilotApi.status().then(setStatus).catch(() => {
+    copilotApi.status(workspaceId).then(setStatus).catch(() => {
       setStatus({ configured: false, model: '', base_url: '', message: '无法获取 Copilot 状态' })
     })
-  }, [open])
+  }, [open, workspaceId])
 
   useEffect(() => {
     if (!open || !workspaceId) {
@@ -181,12 +181,10 @@ export default function CopilotDrawer({ open, onClose, workspaceId }: Props) {
     <Drawer
       title={(
         <Space>
-          <RobotOutlined />
+          <CommentOutlined style={{ color: '#6366f1', fontSize: 15 }} />
           <span>玑渡 Copilot</span>
-          {status && (
-            <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-              {status.configured ? status.model : '待配置 LLM'}
-            </Text>
+          {status?.configured && (
+            <span className="copilot-model-tag">{status.model}</span>
           )}
         </Space>
       )}
@@ -200,7 +198,7 @@ export default function CopilotDrawer({ open, onClose, workspaceId }: Props) {
       <div className="copilot-drawer-body">
         {!status?.configured && (
           <div className="copilot-config-hint">
-            {status?.message || '管理员请在环境变量 COPILOT_LLM_API_KEY 中配置通义 DashScope 或 OpenAI 兼容 API Key。'}
+            {status?.message || '请在「空间设置 → Copilot」或「系统管理 → 平台集成」中配置 LLM API Key。'}
           </div>
         )}
 

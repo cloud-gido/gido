@@ -273,3 +273,78 @@ def put_ws_flink(
     db.commit()
     refresh_flink_client(db, ws_id)
     return _flink_out(db, ws_id)
+
+
+class WorkspaceCopilotOut(BaseModel):
+    effective_base_url: str
+    effective_model: str
+    effective_api_key_configured: bool
+    effective_source: str
+
+    override_base_url: Optional[str] = None
+    override_model: Optional[str] = None
+    api_key_configured_in_db: bool
+    api_key_masked: Optional[str] = None
+
+
+class WorkspaceCopilotUpdate(BaseModel):
+    copilot_llm_base_url: Optional[str] = None
+    copilot_llm_model: Optional[str] = None
+    copilot_llm_api_key: Optional[str] = Field(default=None, description="不传不更新；空串清空")
+
+
+def _copilot_out(db: Session, ws_id: int) -> WorkspaceCopilotOut:
+    from app.services.copilot_runtime import get_copilot_runtime
+
+    row = ensure_workspace_platform_row(db, ws_id)
+    eff = get_copilot_runtime(db, ws_id)
+    return WorkspaceCopilotOut(
+        effective_base_url=eff.base_url,
+        effective_model=eff.model,
+        effective_api_key_configured=bool(eff.api_key),
+        effective_source=eff.source,
+        override_base_url=row.copilot_llm_base_url,
+        override_model=row.copilot_llm_model,
+        api_key_configured_in_db=bool(row.copilot_llm_api_key and str(row.copilot_llm_api_key).strip()),
+        api_key_masked=_mask_token(row.copilot_llm_api_key),
+    )
+
+
+@router.get("/{ws_id}/settings/copilot", response_model=WorkspaceCopilotOut)
+def get_ws_copilot(ws_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    assert_workspace_access(db, current_user, ws_id)
+    return _copilot_out(db, ws_id)
+
+
+@router.put("/{ws_id}/settings/copilot", response_model=WorkspaceCopilotOut)
+def put_ws_copilot(
+    ws_id: int,
+    body: WorkspaceCopilotUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    assert_can_edit_workspace_metadata(db, current_user, ws_id)
+    row = ensure_workspace_platform_row(db, ws_id)
+    data = body.model_dump(exclude_unset=True)
+    if "copilot_llm_base_url" in data:
+        row.copilot_llm_base_url = (data["copilot_llm_base_url"] or "").strip() or None
+    if "copilot_llm_model" in data:
+        row.copilot_llm_model = (data["copilot_llm_model"] or "").strip() or None
+    if "copilot_llm_api_key" in data:
+        t = data["copilot_llm_api_key"]
+        if t is None:
+            pass
+        elif t == "":
+            row.copilot_llm_api_key = None
+        else:
+            row.copilot_llm_api_key = str(t).strip()
+    db.commit()
+    return _copilot_out(db, ws_id)
+
+
+@router.post("/{ws_id}/settings/copilot/test")
+def test_ws_copilot(ws_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    assert_can_edit_workspace_metadata(db, current_user, ws_id)
+    from app.services.copilot_runtime import get_copilot_runtime, test_copilot_runtime
+
+    return test_copilot_runtime(get_copilot_runtime(db, ws_id))

@@ -4,7 +4,7 @@
  */
 import { useEffect, useState } from 'react'
 import { Button, Tooltip } from 'antd'
-import { RobotOutlined } from '@ant-design/icons'
+import { CommentOutlined } from '@ant-design/icons'
 import { copilotApi, type CopilotStatus } from '../../api/copilot'
 import CopilotDrawer from './CopilotDrawer'
 import './copilot.css'
@@ -18,8 +18,8 @@ export default function CopilotHost({ workspaceId }: Props) {
   const [status, setStatus] = useState<CopilotStatus | null>(null)
 
   useEffect(() => {
-    copilotApi.status().then(setStatus).catch(() => null)
-  }, [open])
+    copilotApi.status(workspaceId).then(setStatus).catch(() => null)
+  }, [open, workspaceId])
 
   const toggle = () => {
     setOpen(prev => {
@@ -29,22 +29,21 @@ export default function CopilotHost({ workspaceId }: Props) {
     })
   }
 
-  const dotClass = status?.configured ? 'copilot-dot--ok' : 'copilot-dot--warn'
-  const tip = status?.configured
+  const ready = status?.configured
+  const tip = ready
     ? `玑渡 Copilot · ${status.model}`
-    : (status?.message || '玑渡 Copilot · 待配置 LLM')
+    : (status?.message || '玑渡 Copilot · 待配置模型')
 
   return (
     <>
       <Tooltip title={tip}>
         <Button
           type="text"
-          className="copilot-launcher dw-link-quiet"
-          icon={<RobotOutlined />}
+          className={`copilot-launcher dw-link-quiet${ready ? ' copilot-launcher--ready' : ''}`}
+          icon={<CommentOutlined className="copilot-launcher__icon" />}
           onClick={toggle}
         >
-          <span className={`copilot-dot ${dotClass}`} aria-hidden />
-          玑渡 Copilot
+          Copilot
         </Button>
       </Tooltip>
       <CopilotDrawer

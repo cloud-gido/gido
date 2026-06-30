@@ -48,6 +48,10 @@ export const workspaceApi = {
   putDolphin: (workspaceId: number, data: Record<string, unknown>) =>
     request.put(`/workspaces/${workspaceId}/settings/dolphin`, data),
   testDolphin: (workspaceId: number) => request.post(`/workspaces/${workspaceId}/settings/dolphin/test`),
+  getCopilot: (workspaceId: number) => request.get(`/workspaces/${workspaceId}/settings/copilot`),
+  putCopilot: (workspaceId: number, data: Record<string, unknown>) =>
+    request.put(`/workspaces/${workspaceId}/settings/copilot`, data),
+  testCopilot: (workspaceId: number) => request.post(`/workspaces/${workspaceId}/settings/copilot/test`),
   getFlink: (workspaceId: number) => request.get(`/workspaces/${workspaceId}/settings/flink`),
   putFlink: (workspaceId: number, data: Record<string, unknown>) =>
     request.put(`/workspaces/${workspaceId}/settings/flink`, data),
@@ -268,6 +272,10 @@ export const adminApi = {
   testFlinkIntegration: () => request.post('/admin/integration/flink/test'),
   flinkDeployHint: () => request.post('/admin/integration/flink/deploy-hint'),
   resetFlinkIntegration: () => request.post('/admin/integration/flink/reset-overrides'),
+  getCopilotIntegration: () => request.get('/admin/integration/copilot'),
+  putCopilotIntegration: (data: Record<string, unknown>) => request.put('/admin/integration/copilot', data),
+  testCopilotIntegration: () => request.post('/admin/integration/copilot/test'),
+  resetCopilotIntegration: () => request.post('/admin/integration/copilot/reset-overrides'),
   /** 拦截器返回 res.data；responseType text 时实为 string，此处断言供 tsc 通过 */
   flinkSqlGatewayK8sYml: (): Promise<string> =>
     request.get('/admin/integration/flink/sql-gateway-k8s-yml', { responseType: 'text' as const }) as Promise<string>,

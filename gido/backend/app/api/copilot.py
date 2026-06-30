@@ -7,7 +7,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -18,6 +18,7 @@ from app.core.security import get_current_user
 from app.models.workspace import User
 from app.services.copilot.orchestrator import CopilotOrchestrator
 from app.services.copilot.session_store import session_store
+from app.services.copilot_runtime import get_copilot_runtime
 
 router = APIRouter(prefix="/copilot", tags=["玑渡 Copilot"])
 
@@ -44,22 +45,29 @@ def _check_rate_limit(user_id: int) -> None:
         bucket.append(now)
 
 
-def _require_configured() -> None:
-    if not settings.copilot_configured:
+def _require_configured(db: Session, workspace_id: Optional[int]) -> None:
+    cfg = get_copilot_runtime(db, workspace_id)
+    if not cfg.api_key:
         raise HTTPException(
             status_code=503,
-            detail="Copilot 尚未配置 LLM API Key，请联系管理员在环境变量 COPILOT_LLM_API_KEY 或 Doppler 中配置",
+            detail="Copilot 尚未配置 LLM API Key，请在「空间设置 → Copilot」或「系统管理 → 平台集成」中配置",
         )
 
 
 @router.get("/status")
-def copilot_status(current_user: User = Depends(get_current_user)):
-    configured = settings.copilot_configured
+def copilot_status(
+    workspace_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cfg = get_copilot_runtime(db, workspace_id)
+    configured = bool(cfg.api_key)
     return {
         "configured": configured,
-        "model": settings.COPILOT_LLM_MODEL,
-        "base_url": settings.COPILOT_LLM_BASE_URL,
-        "message": None if configured else "请联系管理员配置 COPILOT_LLM_API_KEY（通义 DashScope 或 OpenAI 兼容端点）",
+        "model": cfg.model,
+        "base_url": cfg.base_url,
+        "source": cfg.source,
+        "message": None if configured else "请在空间设置或平台集成中配置 Copilot LLM API Key",
     }
 
 
@@ -98,8 +106,9 @@ def copilot_chat(
     current_user: User = Depends(get_current_user),
 ):
     _check_rate_limit(current_user.id)
-    _require_configured()
-    orch = CopilotOrchestrator()
+    _require_configured(db, body.workspace_id)
+    runtime = get_copilot_runtime(db, body.workspace_id)
+    orch = CopilotOrchestrator(runtime)
     if body.stream:
         gen = orch.run_chat_stream(
             db,

@@ -8,6 +8,7 @@ export type CopilotStatus = {
   configured: boolean
   model: string
   base_url: string
+  source?: string
   message: string | null
 }
 
@@ -40,7 +41,8 @@ const apiOrigin = (import.meta.env.VITE_API_ORIGIN as string | undefined)?.repla
 const chatUrl = apiOrigin ? `${apiOrigin}/api/copilot/chat` : '/api/copilot/chat'
 
 export const copilotApi = {
-  status: (): Promise<CopilotStatus> => request.get('/copilot/status'),
+  status: (workspaceId?: number): Promise<CopilotStatus> =>
+    request.get('/copilot/status', { params: workspaceId ? { workspace_id: workspaceId } : {} }),
   listSessions: (workspaceId?: number) =>
     request.get('/copilot/sessions', { params: workspaceId ? { workspace_id: workspaceId } : {} }),
   getSession: (sessionId: string) => request.get(`/copilot/sessions/${sessionId}`),

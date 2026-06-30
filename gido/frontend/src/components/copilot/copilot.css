@@ -1,23 +1,40 @@
 .copilot-launcher {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  margin-right: 8px;
+  gap: 5px;
+  margin-right: 6px;
+  padding: 2px 8px !important;
+  height: 28px !important;
+  border-radius: 14px !important;
+  color: var(--dw-text-muted, #8c8c8c) !important;
+  border: 1px solid transparent;
+  transition: color 0.2s, background 0.2s, border-color 0.2s;
 }
 
-.copilot-launcher .copilot-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
+.copilot-launcher:hover {
+  color: var(--dw-text, #595959) !important;
+  background: rgba(99, 102, 241, 0.06) !important;
+  border-color: rgba(99, 102, 241, 0.12);
 }
 
-.copilot-launcher .copilot-dot--ok {
-  background: #52c41a;
+.copilot-launcher--ready {
+  color: #6366f1 !important;
 }
 
-.copilot-launcher .copilot-dot--warn {
-  background: #faad14;
+.copilot-launcher--ready:hover {
+  color: #4f46e5 !important;
+  background: rgba(99, 102, 241, 0.08) !important;
+}
+
+.copilot-launcher__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.88;
 }
 
 .copilot-drawer-body {
@@ -100,10 +117,16 @@
 }
 
 .copilot-config-hint {
-  background: #fffbe6;
-  border: 1px solid #ffe58f;
+  background: #f8f9ff;
+  border: 1px solid #e8eaff;
   border-radius: 8px;
   padding: 12px;
   font-size: 13px;
-  color: #614700;
+  color: #5c5f7a;
+}
+
+.copilot-model-tag {
+  font-size: 11px;
+  color: #8b8fa8;
+  font-weight: 400;
 }

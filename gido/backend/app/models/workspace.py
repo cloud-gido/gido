@@ -441,10 +441,10 @@ class WorkspacePlatformIntegration(Base):
     flink_k8s_apiserver_fallback_url = Column(String(512), nullable=True)
     flink_k8s_jm_rpc_host = Column(String(512), nullable=True)
     flink_k8s_sql_gateway_rest_host = Column(String(512), nullable=True)
+    copilot_llm_base_url = Column(String(512), nullable=True)
+    copilot_llm_model = Column(String(128), nullable=True)
+    copilot_llm_api_key = Column(Text, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
-# ==================== 平台集成（全局回退，id=1；新部署建议用工作空间级配置） ====================
 
 
 class PlatformIntegration(Base):
@@ -471,10 +471,13 @@ class PlatformIntegration(Base):
     flink_k8s_apiserver_fallback_url = Column(String(512), nullable=True)
     flink_k8s_jm_rpc_host = Column(String(512), nullable=True)
     flink_k8s_sql_gateway_rest_host = Column(String(512), nullable=True)
+    copilot_llm_base_url = Column(String(512), nullable=True)
+    copilot_llm_model = Column(String(128), nullable=True)
+    copilot_llm_api_key = Column(Text, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-# ==================== 数据质量 ====================
+# ==================== 平台集成（全局回退，id=1；新部署建议用工作空间级配置） ====================
 
 class QualityRule(Base):
     __tablename__ = "dw_quality_rules"

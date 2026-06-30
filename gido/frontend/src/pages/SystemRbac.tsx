@@ -10,7 +10,7 @@ import {
 } from 'antd'
 import {
   PlusOutlined, ReloadOutlined, EditOutlined, DeleteOutlined, UserAddOutlined, ApiOutlined, ExperimentOutlined,
-  ThunderboltOutlined, FileTextOutlined, TeamOutlined, DownloadOutlined,
+  ThunderboltOutlined, FileTextOutlined, TeamOutlined, DownloadOutlined, CommentOutlined,
 } from '@ant-design/icons'
 import { adminApi, authApi, workspaceApi } from '../api'
 import { useAppStore } from '../store'
@@ -47,6 +47,9 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
   const [flinkForm] = Form.useForm()
   const [flinkLoading, setFlinkLoading] = useState(false)
   const [flinkMeta, setFlinkMeta] = useState<any>(null)
+  const [copilotForm] = Form.useForm()
+  const [copilotLoading, setCopilotLoading] = useState(false)
+  const [copilotMeta, setCopilotMeta] = useState<any>(null)
   const [deployModal, setDeployModal] = useState(false)
   const [deployHint, setDeployHint] = useState<any>(null)
 
@@ -215,6 +218,28 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
     if (canIntegrationRead) loadFlink()
   }, [canIntegrationRead])
 
+  const loadCopilot = async () => {
+    if (!canIntegrationRead) return
+    setCopilotLoading(true)
+    try {
+      const c: any = await adminApi.getCopilotIntegration()
+      setCopilotMeta(c)
+      copilotForm.setFieldsValue({
+        copilot_llm_base_url: c.override_base_url ?? '',
+        copilot_llm_model: c.override_model ?? '',
+        copilot_llm_api_key: '',
+      })
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '加载 Copilot 配置失败')
+    } finally {
+      setCopilotLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (canIntegrationRead) loadCopilot()
+  }, [canIntegrationRead])
+
   const saveDolphin = async () => {
     const v = await dolphinForm.validateFields()
     try {
@@ -328,6 +353,42 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
       await adminApi.resetFlinkIntegration()
       message.success('已清空 Flink 库覆盖项')
       await loadFlink()
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '重置失败')
+    }
+  }
+
+  const saveCopilot = async () => {
+    const v = await copilotForm.validateFields()
+    try {
+      const body: Record<string, unknown> = {
+        copilot_llm_base_url: v.copilot_llm_base_url || null,
+        copilot_llm_model: v.copilot_llm_model || null,
+      }
+      if (v.copilot_llm_api_key) body.copilot_llm_api_key = v.copilot_llm_api_key
+      await adminApi.putCopilotIntegration(body)
+      message.success('Copilot 全局配置已保存')
+      await loadCopilot()
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '保存失败')
+    }
+  }
+
+  const testCopilot = async () => {
+    try {
+      const r: any = await adminApi.testCopilotIntegration()
+      if (r?.ok) message.success(r.message || '连通正常')
+      else message.error(r?.message || '连接失败')
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '测试失败')
+    }
+  }
+
+  const resetCopilot = async () => {
+    try {
+      await adminApi.resetCopilotIntegration()
+      message.success('已清空 Copilot 库覆盖项')
+      await loadCopilot()
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '重置失败')
     }
@@ -826,6 +887,59 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
     </div>
   )
 
+  const copilotPanel = (
+    <div style={{ maxWidth: 880 }}>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="全局 Copilot LLM 配置（回退项）"
+        description="各工作空间可在「空间设置 → Copilot」覆盖本配置。留空表示沿用环境变量 COPILOT_LLM_*；API Key 不填则不修改库中已存值。"
+      />
+      <Descriptions size="small" bordered column={1} style={{ marginBottom: 16 }}>
+        <Descriptions.Item label="当前生效">
+          {copilotMeta?.effective_model || '—'} · {copilotMeta?.effective_base_url || '—'}
+          {copilotMeta?.effective_source === 'database' ? '（来自库覆盖）' : '（来自环境变量）'}
+        </Descriptions.Item>
+        <Descriptions.Item label="环境变量基线">
+          {copilotMeta?.env_model || '—'} · {copilotMeta?.env_base_url || '—'}
+        </Descriptions.Item>
+        <Descriptions.Item label="库中 API Key">
+          {copilotMeta?.api_key_configured_in_db
+            ? (copilotMeta?.api_key_masked || '已配置')
+            : '未在库中配置（沿用环境变量）'}
+        </Descriptions.Item>
+      </Descriptions>
+      <Form form={copilotForm} layout="vertical" disabled={!canIntegrationWrite}>
+        <Form.Item name="copilot_llm_base_url" label="API Base URL（可选覆盖）">
+          <Input placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
+        </Form.Item>
+        <Form.Item name="copilot_llm_model" label="模型名称（可选覆盖）">
+          <Input placeholder="qwen-plus" />
+        </Form.Item>
+        <Form.Item name="copilot_llm_api_key" label="API Key（可选）" tooltip="仅保存时填写才会更新；留空表示保持原样">
+          <Input.Password placeholder="不修改请留空" autoComplete="off" />
+        </Form.Item>
+      </Form>
+      <Space wrap>
+        {canIntegrationWrite && (
+          <Button type="primary" icon={<CommentOutlined />} onClick={saveCopilot} loading={copilotLoading}>
+            保存配置
+          </Button>
+        )}
+        <Button icon={<ExperimentOutlined />} onClick={testCopilot} loading={copilotLoading}>
+          测试连通
+        </Button>
+        {canIntegrationWrite && (
+          <Popconfirm title="确定清空库中 Copilot 覆盖项？" onConfirm={resetCopilot}>
+            <Button danger loading={copilotLoading}>清空覆盖（回退 .env）</Button>
+          </Popconfirm>
+        )}
+        <Button onClick={loadCopilot} loading={copilotLoading}>刷新</Button>
+      </Space>
+    </div>
+  )
+
   if (view === 'integration') {
     if (!canIntegrationRead) {
       return <Card>无权访问平台集成</Card>
@@ -836,6 +950,7 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
           items={[
             { key: 'dolphin', label: 'DolphinScheduler', children: dolphinPanel },
             { key: 'flink', label: 'Apache Flink', children: flinkPanel },
+            { key: 'copilot', label: '玑渡 Copilot', children: copilotPanel },
           ]}
         />
       </div>
@@ -1054,6 +1169,7 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
           items={[
             { key: 'dolphin', label: 'DolphinScheduler', children: dolphinPanel },
             { key: 'flink', label: 'Apache Flink', children: flinkPanel },
+            { key: 'copilot', label: '玑渡 Copilot', children: copilotPanel },
           ]}
         />
       ),

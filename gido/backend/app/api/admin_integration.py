@@ -470,3 +470,100 @@ def reset_flink_overrides(db: Session = Depends(get_db), _: User = Depends(get_c
     db.commit()
     refresh_flink_client(db)
     return _flink_integration_out(db)
+
+
+class CopilotIntegrationOut(BaseModel):
+    effective_base_url: str
+    effective_model: str
+    effective_api_key_configured: bool
+    effective_source: str  # environment | database
+
+    override_base_url: Optional[str] = None
+    override_model: Optional[str] = None
+    api_key_configured_in_db: bool
+    api_key_masked: Optional[str] = None
+
+    env_base_url: str
+    env_model: str
+    env_api_key_configured: bool
+
+
+class CopilotIntegrationUpdate(BaseModel):
+    copilot_llm_base_url: Optional[str] = None
+    copilot_llm_model: Optional[str] = None
+    copilot_llm_api_key: Optional[str] = Field(default=None, description="不传不更新；空串清空")
+
+
+def _copilot_integration_out(db: Session) -> CopilotIntegrationOut:
+    from app.core.config import settings
+    from app.services.copilot_runtime import get_copilot_runtime
+
+    row = ensure_platform_integration_row(db)
+    eff = get_copilot_runtime(db)
+    from_db = bool(
+        (row.copilot_llm_base_url and str(row.copilot_llm_base_url).strip())
+        or (row.copilot_llm_model and str(row.copilot_llm_model).strip())
+        or (row.copilot_llm_api_key and str(row.copilot_llm_api_key).strip())
+    )
+    return CopilotIntegrationOut(
+        effective_base_url=eff.base_url,
+        effective_model=eff.model,
+        effective_api_key_configured=bool(eff.api_key),
+        effective_source="database" if from_db else "environment",
+        override_base_url=row.copilot_llm_base_url,
+        override_model=row.copilot_llm_model,
+        api_key_configured_in_db=bool(row.copilot_llm_api_key and str(row.copilot_llm_api_key).strip()),
+        api_key_masked=_mask_token(row.copilot_llm_api_key),
+        env_base_url=settings.COPILOT_LLM_BASE_URL,
+        env_model=settings.COPILOT_LLM_MODEL,
+        env_api_key_configured=bool(settings.COPILOT_LLM_API_KEY and str(settings.COPILOT_LLM_API_KEY).strip()),
+    )
+
+
+@router.get("/copilot", response_model=CopilotIntegrationOut, dependencies=[Depends(require_platform_manager)])
+def get_copilot_integration(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    return _copilot_integration_out(db)
+
+
+@router.put("/copilot", response_model=CopilotIntegrationOut, dependencies=[Depends(require_platform_manager)])
+def put_copilot_integration(
+    body: CopilotIntegrationUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    row = ensure_platform_integration_row(db)
+    data = body.model_dump(exclude_unset=True)
+    if "copilot_llm_base_url" in data:
+        row.copilot_llm_base_url = (data["copilot_llm_base_url"] or "").strip() or None
+    if "copilot_llm_model" in data:
+        row.copilot_llm_model = (data["copilot_llm_model"] or "").strip() or None
+    if "copilot_llm_api_key" in data:
+        t = data["copilot_llm_api_key"]
+        if t is None:
+            pass
+        elif t == "":
+            row.copilot_llm_api_key = None
+        else:
+            row.copilot_llm_api_key = str(t).strip()
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _copilot_integration_out(db)
+
+
+@router.post("/copilot/test", dependencies=[Depends(require_platform_manager)])
+def test_copilot_integration(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> Dict[str, Any]:
+    from app.services.copilot_runtime import get_copilot_runtime, test_copilot_runtime
+
+    return test_copilot_runtime(get_copilot_runtime(db))
+
+
+@router.post("/copilot/reset-overrides", response_model=CopilotIntegrationOut, dependencies=[Depends(require_platform_manager)])
+def reset_copilot_overrides(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    row = ensure_platform_integration_row(db)
+    row.copilot_llm_base_url = None
+    row.copilot_llm_model = None
+    row.copilot_llm_api_key = None
+    db.add(row)
+    db.commit()
+    return _copilot_integration_out(db)

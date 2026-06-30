@@ -339,6 +339,32 @@ def migrate_platform_integration_flink(engine: Engine) -> None:
                     conn.execute(text(f"ALTER TABLE dw_platform_integration ADD COLUMN {name} VARCHAR(512)"))
 
 
+def migrate_platform_integration_copilot(engine: Engine) -> None:
+    """为平台/工作空间集成表补齐 Copilot LLM 可插拔字段（幂等）。"""
+    insp = inspect(engine)
+    copilot_cols = [
+        ("copilot_llm_base_url", "VARCHAR(512) NULL"),
+        ("copilot_llm_model", "VARCHAR(128) NULL"),
+        ("copilot_llm_api_key", "TEXT NULL"),
+    ]
+    for table in ("dw_platform_integration", "dw_workspace_platform_integration"):
+        if not insp.has_table(table):
+            continue
+        cols = {c["name"] for c in insp.get_columns(table)}
+        with engine.begin() as conn:
+            for name, ddl in copilot_cols:
+                if name in cols:
+                    continue
+                if engine.dialect.name == "mysql":
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+                elif name == "copilot_llm_api_key":
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} TEXT"))
+                elif name == "copilot_llm_model":
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} VARCHAR(128)"))
+                else:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} VARCHAR(512)"))
+
+
 def migrate_workspace_owner_members(engine: Engine) -> None:
     """为历史工作空间补一条 owner 的成员行（空间角色 admin），与新建空间行为一致。"""
     insp = inspect(engine)
