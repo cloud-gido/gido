@@ -87,6 +87,40 @@ class DataSourceOut(BaseModel):
         from_attributes = True
 
 
+def _normalize_datasource_fields(
+    ds_type: Optional[str],
+    *,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Doris 无认证 FE 常见：空用户名/密码存为 NULL，连接时由 mysql_protocol_connect_user 用 root。"""
+    t = (ds_type or "").strip().lower()
+    u = (username or "").strip() or None
+    p = (password or "").strip() or None if password is not None else None
+    if t == "doris":
+        return u, p
+    return u if u is not None else username, password
+
+
+def _apply_datasource_update(ds: DataSource, data: Dict[str, Any]) -> None:
+    lt = (ds.ds_type or "").strip().lower()
+    for k, v in data.items():
+        if k == "password":
+            if v is None or v == "":
+                if lt == "doris":
+                    ds.password = None
+                continue
+            ds.password = str(v)
+            continue
+        if k == "username":
+            if lt == "doris":
+                ds.username = (str(v).strip() if v is not None else "") or None
+            else:
+                ds.username = v
+            continue
+        setattr(ds, k, v)
+
+
 def _with_dolphin(db: Session, ds: DataSource, do_push: bool) -> DataSourceOut:
     feed = None
     if do_push:
@@ -109,8 +143,12 @@ def create_datasource(ds_in: DataSourceCreate, db: Session = Depends(get_db), cu
     # 本空间的空间管理员(admin/负责人)；非全权成员需同时具备平台 gido:batch:datasource:write。
     assert_workspace_data_capability(db, current_user, ds_in.workspace_id, "admin", PC.GIDO_BATCH_DATASOURCE_WRITE)
     _assert_jdbc_database_if_needed(ds_in.ds_type, ds_in.database)
-    _assert_jdbc_username_if_needed(ds_in.ds_type, ds_in.username)
-    ds = DataSource(**ds_in.model_dump(), created_by=current_user.id)
+    payload = ds_in.model_dump()
+    u, p = _normalize_datasource_fields(ds_in.ds_type, username=payload.get("username"), password=payload.get("password"))
+    payload["username"] = u
+    payload["password"] = p
+    _assert_jdbc_username_if_needed(ds_in.ds_type, payload.get("username"))
+    ds = DataSource(**payload, created_by=current_user.id)
     db.add(ds)
     db.commit()
     db.refresh(ds)
@@ -132,10 +170,17 @@ def update_datasource(ds_id: int, ds_in: DataSourceUpdate, db: Session = Depends
     if not ds:
         raise HTTPException(status_code=404, detail="数据源不存在")
     assert_workspace_data_capability(db, current_user, ds.workspace_id, "admin", PC.GIDO_BATCH_DATASOURCE_WRITE)
-    for k, v in ds_in.model_dump(exclude_unset=True).items():
-        if k == "password" and (v is None or v == ""):
-            continue
-        setattr(ds, k, v)
+    data = ds_in.model_dump(exclude_unset=True)
+    if "ds_type" in data or "username" in data or "password" in data:
+        eff_type = data.get("ds_type", ds.ds_type)
+        eff_user = data.get("username", ds.username)
+        eff_pass = data.get("password", ds.password) if "password" in data else ds.password
+        u, p = _normalize_datasource_fields(eff_type, username=eff_user, password=eff_pass)
+        if "username" in data or (eff_type or "").lower() == "doris":
+            data["username"] = u
+        if "password" in data:
+            data["password"] = p
+    _apply_datasource_update(ds, data)
     _assert_jdbc_database_if_needed(ds.ds_type, ds.database)
     _assert_jdbc_username_if_needed(ds.ds_type, ds.username)
     db.commit()

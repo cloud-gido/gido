@@ -50,7 +50,7 @@ export default function DatasourcePage() {
         host: detail.host,
         port: detail.port,
         database: detail.database,
-        username: detail.username,
+        username: detail.ds_type === 'doris' ? (detail.username || undefined) : detail.username,
         password: undefined,
       })
       setModalOpen(true)
@@ -86,6 +86,25 @@ export default function DatasourcePage() {
     return e?.message || '保存失败'
   }
 
+  const normalizePayload = (values: Record<string, unknown>, editing: boolean) => {
+    const payload = { ...values }
+    if (payload.ds_type === 'doris') {
+      const u = String(payload.username ?? '').trim()
+      payload.username = u || null
+      const pw = String(payload.password ?? '').trim()
+      if (pw) {
+        payload.password = pw
+      } else if (editing && !u) {
+        payload.password = ''
+      } else {
+        delete payload.password
+      }
+    } else if (!payload.password) {
+      delete payload.password
+    }
+    return payload
+  }
+
   const handleSubmit = async () => {
     try {
       const values = await form.validateFields()
@@ -95,7 +114,7 @@ export default function DatasourcePage() {
       }
       setSubmitLoading(true)
       if (editingId == null) {
-        const created: any = await datasourceApi.create({ ...values, workspace_id: wsId })
+        const created: any = await datasourceApi.create({ ...normalizePayload(values, false), workspace_id: wsId })
         const ds = created?.dolphin_sync as string | undefined | null
         if (typeof ds === 'string' && ds.startsWith('error:')) {
           message.warning(`数据源已保存，但未成功同步 Dolphin：${ds.replace(/^error:/, '').trim()}`)
@@ -105,8 +124,7 @@ export default function DatasourcePage() {
           message.success('创建成功')
         }
       } else {
-        const payload: Record<string, unknown> = { ...values }
-        if (!payload.password) delete payload.password
+        const payload = normalizePayload(values, true)
         const saved: any = await datasourceApi.update(editingId, payload)
         const ds = saved?.dolphin_sync as string | undefined | null
         if (typeof ds === 'string' && ds.startsWith('error:')) {
@@ -198,12 +216,19 @@ export default function DatasourcePage() {
         onCancel={() => { setModalOpen(false); setEditingId(null); form.resetFields() }}
         destroyOnClose
       >
-        <Form form={form} layout="vertical">
-          <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input /></Form.Item>
+        <Form form={form} layout="vertical" autoComplete="off">
+          <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input autoComplete="off" /></Form.Item>
           <Form.Item name="ds_type" label="类型" rules={[{ required: true }]}>
-            <Select options={DS_TYPES.map(t => ({ label: t, value: t }))} />
+            <Select
+              options={DS_TYPES.map(t => ({ label: t, value: t }))}
+              onChange={(t) => {
+                if (t === 'doris') {
+                  form.setFieldsValue({ username: undefined, password: undefined })
+                }
+              }}
+            />
           </Form.Item>
-          <Form.Item name="host" label="Host"><Input /></Form.Item>
+          <Form.Item name="host" label="Host"><Input autoComplete="off" /></Form.Item>
           <Form.Item name="port" label="Port"><InputNumber style={{ width: '100%' }} /></Form.Item>
           <Form.Item
             dependencies={['ds_type']}
@@ -241,16 +266,22 @@ export default function DatasourcePage() {
                 },
               }),
             ]}
-            extra="Doris：可不填（与 Studio 试跑一致）；同步 Dolphin 时以 root 占位。MySQL/PG：必填。"
+            extra="Doris：勿填 GIDO 登录账号；无认证 FE 请留空（连接时自动用 root）。MySQL/PG：必填。"
           >
-            <Input />
+            <Input autoComplete="off" placeholder="Doris 无认证可留空" />
           </Form.Item>
           <Form.Item
             name="password"
             label="密码"
-            extra={editingId != null ? '留空则不修改原密码' : undefined}
+            extra={
+              editingId != null
+                ? (form.getFieldValue('ds_type') === 'doris'
+                  ? 'Doris 无认证：用户名留空保存时将一并清空已存密码（勿用 GIDO 登录密码）'
+                  : '留空则不修改原密码')
+                : 'Doris 无认证请留空；勿使用 GIDO 登录密码'
+            }
           >
-            <Input.Password placeholder={editingId != null ? '不修改请留空' : undefined} />
+            <Input.Password autoComplete="new-password" placeholder={editingId != null ? '不修改请留空' : 'Doris 可留空'} />
           </Form.Item>
         </Form>
       </Modal>
