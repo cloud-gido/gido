@@ -137,10 +137,10 @@ class DSClient:
 
     def _post(self, path: str, data: dict = None, json: dict = None) -> dict:
         if json is not None:
-            r = requests.post(f"{self.base}{path}", headers=self.headers, json=json, timeout=10)
+            r = requests.post(f"{self.base}{path}", headers=self.headers, json=json, timeout=30)
         else:
-            # DS 3.x 大部分接口用 query 参数（form-urlencoded）
-            r = requests.post(f"{self.base}{path}", headers=self.headers, params=data, timeout=10)
+            # DS 3.x @RequestParam 读 form body；用 params= 会把 taskDefinitionJson 等塞进 URL，大 SQL 触发 431
+            r = requests.post(f"{self.base}{path}", headers=self.headers, data=data, timeout=30)
         _raise_for_ds_http(r)
         resp = r.json()
         if resp.get("code") != 0:
@@ -148,7 +148,7 @@ class DSClient:
         return resp
 
     def _put(self, path: str, data: dict = None) -> dict:
-        r = requests.put(f"{self.base}{path}", headers=self.headers, params=data, timeout=10)
+        r = requests.put(f"{self.base}{path}", headers=self.headers, data=data, timeout=30)
         _raise_for_ds_http(r)
         resp = r.json()
         if resp.get("code") != 0:
