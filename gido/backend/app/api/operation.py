@@ -5,7 +5,7 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, desc, func
+from sqlalchemy import desc, func
 from typing import Optional
 from datetime import datetime, timedelta
 from app.core.database import get_db
@@ -32,11 +32,6 @@ def _safe_refresh_ds_running(db: Session, workspace_id: int) -> None:
         refresh_running_ds_instances_for_workspace(db, workspace_id, limit=35)
     except Exception:
         _log.warning("refresh_running_ds_instances_for_workspace failed ws=%s", workspace_id, exc_info=True)
-
-
-def _exclude_manual_dev_filter():
-    """新实例中心默认展示 GIDO 工作流实例；保留旧参数但不再按 manual 过滤生产实例。"""
-    return WorkflowInstance.id < 0
 
 
 def _require_workflow_instance(
@@ -66,7 +61,8 @@ def get_overview(
     workspace_id: int,
     include_manual_development_runs: bool = Query(
         False,
-        description="兼容旧参数；新实例中心默认展示 GIDO 工作流实例",
+        description="已废弃：实例中心仅展示生产工作流实例；开发/探查请到运行历史",
+        deprecated=True,
     ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -81,8 +77,6 @@ def get_overview(
     _safe_refresh_ds_running(db, workspace_id)
     today_start = datetime.combine(datetime.utcnow().date(), datetime.min.time())
     q = db.query(WorkflowInstance).join(Workflow).filter(Workflow.workspace_id == workspace_id)
-    if not include_manual_development_runs:
-        q = q.filter(~_exclude_manual_dev_filter())
     total = q.count()
     today = q.filter(WorkflowInstance.created_at >= today_start).count()
     running = q.filter(WorkflowInstance.status == "running").count()
@@ -144,7 +138,11 @@ def list_all_instances(
     status: Optional[str] = None,
     business_date: Optional[str] = None,
     today_only: bool = Query(False, description="仅 created_at ≥ 当日 0 点(UTC) 的实例，与概览「今日实例」一致"),
-    include_manual_development_runs: bool = Query(False, description="兼容旧参数；新实例中心默认展示 GIDO 工作流实例"),
+    include_manual_development_runs: bool = Query(
+        False,
+        description="已废弃：实例中心仅展示生产工作流实例",
+        deprecated=True,
+    ),
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
@@ -153,8 +151,6 @@ def list_all_instances(
     assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_BATCH_OPERATION_READ)
     _safe_refresh_ds_running(db, workspace_id)
     q = db.query(WorkflowInstance).join(Workflow).filter(Workflow.workspace_id == workspace_id)
-    if not include_manual_development_runs:
-        q = q.filter(~_exclude_manual_dev_filter())
     if status:
         q = q.filter(WorkflowInstance.status == status)
     if business_date:
@@ -224,74 +220,52 @@ def list_node_instances(
     workspace_id: int,
     status: Optional[str] = None,
     workflow_instance_id: Optional[int] = Query(None, description="仅某工作流实例下的节点行（下钻）"),
-    include_manual_development_runs: bool = Query(False, description="是否包含立即运行对应节点行（默认 false）"),
+    include_manual_development_runs: bool = Query(
+        False,
+        description="已废弃：开发试跑请到运行历史",
+        deprecated=True,
+    ),
     page: int = 1,
     page_size: int = 20,
-    include_studio_runs: bool = Query(False, description="为 true 时包含数据开发单节点试跑（兼容旧运维视图，默认 false）"),
+    include_studio_runs: bool = Query(
+        False,
+        description="已废弃：实例中心仅展示生产工作流节点；开发试跑请到运行历史",
+        deprecated=True,
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """节点级运行明细。默认仅工作流实例下的节点运行；可选包含 Studio 试跑以做对照/排障。"""
+    """节点级运行明细：仅工作流实例下的生产节点运行。"""
     assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_BATCH_OPERATION_READ)
     _safe_refresh_ds_running(db, workspace_id)
     if workflow_instance_id is not None:
         refresh_ds_workflow_instance_from_dolphin(db, workspace_id, workflow_instance_id)
-    if include_studio_runs:
-        q = db.query(NodeInstance).join(TaskNode).join(Workflow, TaskNode.workspace_id == Workflow.workspace_id).filter(
-            TaskNode.workspace_id == workspace_id
-        )
-        if not include_manual_development_runs:
-            allowed_wf = (
-                db.query(WorkflowInstance.id)
-                .join(Workflow)
-                .filter(Workflow.workspace_id == workspace_id, ~_exclude_manual_dev_filter())
-            )
-            q = q.filter(
-                or_(
-                    NodeInstance.workflow_instance_id.is_(None),
-                    NodeInstance.workflow_instance_id.in_(allowed_wf),
-                )
-            )
-    else:
-        q = (
-            db.query(NodeInstance)
-            .join(TaskNode, NodeInstance.node_id == TaskNode.id)
-            .join(WorkflowInstance, NodeInstance.workflow_instance_id == WorkflowInstance.id)
-            .filter(TaskNode.workspace_id == workspace_id, NodeInstance.workflow_instance_id.isnot(None))
-        )
-        if not include_manual_development_runs:
-            q = q.filter(~_exclude_manual_dev_filter())
+    q = (
+        db.query(NodeInstance)
+        .join(TaskNode, NodeInstance.node_id == TaskNode.id)
+        .join(WorkflowInstance, NodeInstance.workflow_instance_id == WorkflowInstance.id)
+        .filter(TaskNode.workspace_id == workspace_id, NodeInstance.workflow_instance_id.isnot(None))
+    )
     if workflow_instance_id is not None:
         q = q.filter(NodeInstance.workflow_instance_id == workflow_instance_id)
     if status:
         q = q.filter(NodeInstance.status == status)
     total = q.count()
-    if include_studio_runs:
-        instances = (
-            q.order_by(
-                desc(func.coalesce(NodeInstance.started_at, NodeInstance.finished_at)),
-                desc(NodeInstance.id),
-            )
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-            .all()
+    instances = (
+        q.order_by(
+            desc(
+                func.coalesce(
+                    WorkflowInstance.started_at,
+                    NodeInstance.started_at,
+                    WorkflowInstance.created_at,
+                )
+            ),
+            desc(NodeInstance.id),
         )
-    else:
-        instances = (
-            q.order_by(
-                desc(
-                    func.coalesce(
-                        WorkflowInstance.started_at,
-                        NodeInstance.started_at,
-                        WorkflowInstance.created_at,
-                    )
-                ),
-                desc(NodeInstance.id),
-            )
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-            .all()
-        )
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
     result = []
     context = None
     if workflow_instance_id is not None:
@@ -546,7 +520,6 @@ def get_alerts(workspace_id: int, db: Session = Depends(get_db), current_user: U
         Workflow.workspace_id == workspace_id,
         WorkflowInstance.status == "failed",
         WorkflowInstance.created_at >= datetime.utcnow() - timedelta(hours=24),
-        ~_exclude_manual_dev_filter(),
     ).all()
     alerts = []
     for inst in failed:

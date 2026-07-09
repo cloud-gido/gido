@@ -15,6 +15,7 @@ export const R = {
     probe: '/gido/batch/probe',
     quality: '/gido/batch/quality',
     integration: '/gido/batch/integration',
+    runHistory: '/gido/batch/run-history',
     operation: '/gido/batch/operation',
     alert: '/gido/batch/alert',
     approval: '/gido/batch/approval',

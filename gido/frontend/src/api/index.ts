@@ -207,6 +207,13 @@ export const operationApi = {
   alerts: (workspaceId: number) => request.get('/operation/alerts', { params: { workspace_id: workspaceId } }),
 }
 
+// 运行历史（数据开发试跑 / 数据探查）
+export const adhocRunsApi = {
+  list: (workspaceId: number, params?: Record<string, unknown>) =>
+    request.get('/adhoc-runs', { params: { workspace_id: workspaceId, ...params } }),
+  get: (id: number) => request.get(`/adhoc-runs/${id}`),
+}
+
 // 告警中心
 export const alertApi = {
   list: (workspaceId: number, params?: Record<string, unknown>) =>

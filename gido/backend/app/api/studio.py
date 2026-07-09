@@ -476,6 +476,33 @@ def run_node(node_id: int, script_content: Optional[str] = None, db: Session = D
     instance.finished_at = datetime.utcnow()
     db.commit()
     log_action(db, current_user.id, "run", "node", node.id, node.name, node.workspace_id)
+
+    try:
+        from app.services.adhoc_run_store import save_adhoc_run
+
+        err = None
+        if status == "failed" and log_lines:
+            err = next((ln for ln in reversed(log_lines) if "[ERROR]" in ln), log_lines[-1])
+        save_adhoc_run(
+            db,
+            workspace_id=node.workspace_id,
+            source="studio",
+            triggered_by=current_user.id,
+            status=status,
+            sql_text=node.script_content,
+            datasource_id=node.datasource_id,
+            object_name=node.name,
+            node_id=node.id,
+            node_instance_id=instance.id,
+            error_message=err,
+            log_content=instance.log_content,
+            result=result_data if isinstance(result_data, dict) else None,
+            started_at=instance.started_at,
+            finished_at=instance.finished_at,
+        )
+    except Exception:
+        pass
+
     return {"instance_id": instance.id, "status": status, "log": instance.log_content, "result": result_data}
 
 

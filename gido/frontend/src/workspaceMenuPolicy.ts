@@ -16,12 +16,13 @@ const DEVELOPER_PATHS: string[] = [
   R.batch.probe,
   R.batch.quality,
   R.batch.integration,
+  R.batch.runHistory,
   R.batch.operation,
   R.batch.approval,
   R.batch.datasource,
 ]
 
-const VIEWER_PATHS: string[] = [R.batch.probe, R.batch.datamap]
+const VIEWER_PATHS: string[] = [R.batch.probe, R.batch.datamap, R.batch.runHistory]
 
 const ADMIN_EXTRA_PATHS: string[] = [R.batch.workspaceSettings]
 
@@ -35,6 +36,10 @@ export function pathsAllowedForWorkspaceRole(role: WorkspaceMemberRole | null | 
 export function workspaceRoleAllowsPath(role: WorkspaceMemberRole | null | undefined, path: string): boolean {
   if (path === R.batch.admin || path === R.batch.systemIntegration) return false
   if (path === R.batch.legacyService) return false
+  const normalized = path.replace(/\/+$/, '')
+  if (normalized.startsWith(R.batch.runHistory)) {
+    return pathsAllowedForWorkspaceRole(role).includes(R.batch.runHistory)
+  }
   return pathsAllowedForWorkspaceRole(role).includes(path)
 }
 
@@ -80,6 +85,13 @@ export function canAccessBatchPath(
   if (isPlatformAdmin(user)) return true
   const path = pathname.replace(/\/+$/, '') || R.batch.root
 
+  if (path === R.batch.runHistory || path.startsWith(`${R.batch.runHistory}/`)) {
+    return canSeeBatchMenu(user, workspace, R.batch.runHistory, [
+      P.GIDO_BATCH_STUDIO_READ,
+      P.GIDO_BATCH_PROBE_READ,
+    ])
+  }
+
   const routePerm: Record<string, PermGate> = {
     [R.batch.studio]: P.GIDO_BATCH_STUDIO_READ,
     [R.batch.workflow]: P.GIDO_BATCH_WORKFLOW_READ,
@@ -87,6 +99,7 @@ export function canAccessBatchPath(
     [R.batch.probe]: P.GIDO_BATCH_PROBE_READ,
     [R.batch.quality]: P.GIDO_BATCH_QUALITY_READ,
     [R.batch.integration]: P.GIDO_BATCH_INTEGRATION_READ,
+    [R.batch.runHistory]: [P.GIDO_BATCH_STUDIO_READ, P.GIDO_BATCH_PROBE_READ],
     [R.batch.operation]: P.GIDO_BATCH_OPERATION_READ,
     [R.batch.approval]: P.GIDO_BATCH_OPERATION_READ,
     [R.batch.datasource]: P.GIDO_BATCH_DATASOURCE_READ,

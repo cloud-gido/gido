@@ -10,7 +10,7 @@ import {
   CodeOutlined, DatabaseOutlined, ApartmentOutlined, SafetyOutlined,
   MonitorOutlined, ApiOutlined, SwapOutlined, BellOutlined,
   SettingOutlined, FolderAddOutlined, TeamOutlined, DeploymentUnitOutlined,
-  ExperimentOutlined, PartitionOutlined, AuditOutlined,
+  ExperimentOutlined, PartitionOutlined, AuditOutlined, HistoryOutlined,
 } from '@ant-design/icons'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import ProductBrandBlock from './ProductBrandBlock'
@@ -34,6 +34,7 @@ const MENU_GROUPS: { label: string; items: MenuItemDef[] }[] = [
       { key: R.batch.studio, icon: <CodeOutlined />, label: '数据开发', perm: P.GIDO_BATCH_STUDIO_READ },
       { key: R.batch.workflow, icon: <ApartmentOutlined />, label: '工作流', perm: P.GIDO_BATCH_WORKFLOW_READ },
       { key: R.batch.integration, icon: <SwapOutlined />, label: '数据集成', perm: P.GIDO_BATCH_INTEGRATION_READ },
+      { key: R.batch.runHistory, icon: <HistoryOutlined />, label: '运行历史', perm: [P.GIDO_BATCH_STUDIO_READ, P.GIDO_BATCH_PROBE_READ] },
       { key: R.batch.operation, icon: <MonitorOutlined />, label: '实例中心', perm: P.GIDO_BATCH_OPERATION_READ },
       { key: R.batch.alert, icon: <BellOutlined />, label: '告警中心', perm: P.GIDO_BATCH_OPERATION_READ },
       { key: R.batch.approval, icon: <AuditOutlined />, label: '发布审批', perm: P.GIDO_BATCH_OPERATION_READ },
@@ -105,7 +106,11 @@ export default function MainLayout() {
         <Menu
           theme="dark"
           mode="inline"
-          selectedKeys={[location.pathname]}
+          selectedKeys={[
+            location.pathname.startsWith(R.batch.runHistory)
+              ? R.batch.runHistory
+              : location.pathname,
+          ]}
           openKeys={systemMenuOpenKeys}
           onOpenChange={keys => setSystemMenuOpenKeys(keys as string[])}
           items={menuItems}

@@ -90,6 +90,9 @@ def probe_query(
     statements = parse_readonly_statements(body.sql)
     lim = min(max(body.limit, 1), 10000)
 
+    from datetime import datetime
+
+    started_at = datetime.utcnow()
     results: List[Dict[str, Any]] = []
     errors: List[Optional[str]] = []
     for idx, stmt in enumerate(statements):
@@ -117,7 +120,12 @@ def probe_query(
             errors.append(str(e)[:2000])
 
     last_ok = next((r for r in reversed(results) if not r.get("error")), results[-1] if results else None)
-    return {
+    finished_at = datetime.utcnow()
+    has_errors = any(errors)
+    has_success = any(r for r in results if not r.get("error"))
+    status = "success" if has_success else "failed"
+
+    payload = {
         "statement_count": len(statements),
         "statements": results,
         "columns": last_ok.get("columns") if last_ok else [],
@@ -125,5 +133,38 @@ def probe_query(
         "rows": last_ok.get("rows") if last_ok else [],
         "total": last_ok.get("total", 0) if last_ok else 0,
         "truncated": bool(last_ok.get("truncated")) if last_ok else False,
-        "has_errors": any(errors),
+        "has_errors": has_errors,
     }
+
+    try:
+        from app.services.adhoc_run_store import save_adhoc_run
+
+        err_msg = next((e for e in reversed(errors) if e), None)
+        result_preview = None
+        if last_ok and not last_ok.get("error"):
+            result_preview = {
+                "columns": last_ok.get("columns") or [],
+                "column_types": last_ok.get("column_types") or [],
+                "rows": last_ok.get("rows") or [],
+                "total": last_ok.get("total", 0),
+                "truncated": bool(last_ok.get("truncated")),
+            }
+        save_adhoc_run(
+            db,
+            workspace_id=body.workspace_id,
+            source="probe",
+            triggered_by=current_user.id,
+            status=status,
+            sql_text=body.sql,
+            datasource_id=body.datasource_id,
+            object_name=ds.name,
+            error_message=err_msg,
+            log_content=None,
+            result=result_preview,
+            started_at=started_at,
+            finished_at=finished_at,
+        )
+    except Exception:
+        pass
+
+    return payload

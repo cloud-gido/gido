@@ -345,6 +345,29 @@ class SyncRecord(Base):
     finished_at = Column(DateTime)
 
 
+class AdhocRun(Base):
+    """数据开发试跑 / 数据探查的交互式执行记录（非生产调度实例）。"""
+    __tablename__ = "dw_adhoc_runs"
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("dw_workspaces.id"), nullable=False, index=True)
+    source = Column(String(32), nullable=False, index=True)  # studio | probe
+    triggered_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True, index=True)
+    datasource_id = Column(Integer, ForeignKey("dw_datasources.id"), nullable=True)
+    object_name = Column(String(256), nullable=True)
+    node_id = Column(Integer, ForeignKey("dw_task_nodes.id"), nullable=True)
+    node_instance_id = Column(Integer, ForeignKey("dw_node_instances.id"), nullable=True)
+    sql_text = Column(Text, nullable=True)
+    status = Column(String(32), default="success", index=True)  # success/failed/running
+    error_message = Column(Text, nullable=True)
+    log_content = Column(Text, nullable=True)
+    result_preview = Column(JSON, nullable=True)
+    rows_returned = Column(Integer, default=0)
+    duration_ms = Column(Integer, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 # ==================== 数据地图 ====================
 
 class MetaTable(Base):

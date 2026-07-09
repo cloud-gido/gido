@@ -17,6 +17,8 @@ import ProbePage from './pages/Probe'
 import QualityPage from './pages/Quality'
 import IntegrationPage from './pages/Integration'
 import OperationPage from './pages/Operation'
+import RunHistoryPage from './pages/RunHistory'
+import RunHistoryDetailPage from './pages/RunHistoryDetail'
 import AlertCenterPage from './pages/AlertCenter'
 import ApprovalPage from './pages/Approval'
 import DatasourcePage from './pages/Datasource'
@@ -76,6 +78,8 @@ export default function App() {
             <Route path="probe" element={<RequireGidoBatchRoute><ProbePage /></RequireGidoBatchRoute>} />
             <Route path="quality" element={<RequireGidoBatchRoute><QualityPage /></RequireGidoBatchRoute>} />
             <Route path="integration" element={<RequireGidoBatchRoute><IntegrationPage /></RequireGidoBatchRoute>} />
+            <Route path="run-history" element={<RequireGidoBatchRoute><RunHistoryPage /></RequireGidoBatchRoute>} />
+            <Route path="run-history/:id" element={<RequireGidoBatchRoute><RunHistoryDetailPage /></RequireGidoBatchRoute>} />
             <Route path="operation" element={<RequireGidoBatchRoute><OperationPage /></RequireGidoBatchRoute>} />
             <Route path="alert" element={<RequireGidoBatchRoute><AlertCenterPage /></RequireGidoBatchRoute>} />
             <Route path="approval" element={<RequireGidoBatchRoute><ApprovalPage /></RequireGidoBatchRoute>} />

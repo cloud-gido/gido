@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import Base, engine
-from app.api import auth, workspace, workspace_settings, workspace_variables, datasource, studio, workflow, integration, datamap, quality, operation, probe, copilot
+from app.api import auth, workspace, workspace_settings, workspace_variables, datasource, studio, workflow, integration, datamap, quality, operation, probe, copilot, adhoc_runs
 from app.api import scheduler as scheduler_api
 from app.api import audit
 from app.api import streaming
@@ -25,7 +25,7 @@ from app.api import admin_rbac, admin_integration
 from app.api import data_service, data_service_open
 from app.api import alert, approval
 from app.models import rbac_models  # noqa: F401  — 注册 RBAC 表
-from app.models.workspace import PlatformIntegration, FlinkSessionProfile, WorkspacePlatformIntegration, PublishApproval, WorkspaceVariable  # noqa: F401
+from app.models.workspace import PlatformIntegration, FlinkSessionProfile, WorkspacePlatformIntegration, PublishApproval, WorkspaceVariable, AdhocRun  # noqa: F401
 from app.models import data_service as data_service_models  # noqa: F401
 
 Base.metadata.create_all(bind=engine)
@@ -221,6 +221,7 @@ app.include_router(integration.router, prefix="/api")
 app.include_router(datamap.router, prefix="/api")
 app.include_router(quality.router, prefix="/api")
 app.include_router(operation.router, prefix="/api")
+app.include_router(adhoc_runs.router, prefix="/api")
 app.include_router(probe.router, prefix="/api")
 app.include_router(scheduler_api.router, prefix="/api")
 app.include_router(audit.router, prefix="/api")

@@ -5,9 +5,9 @@
  * @date 2026-06-05
  */
 import { useState, useEffect, type ReactNode } from 'react'
-import { Table, Tag, Button, Space, Drawer, Row, Col, Statistic, Select, message, Alert, Switch, Tooltip, Card, Descriptions } from 'antd'
+import { Table, Tag, Button, Space, Drawer, Row, Col, Statistic, Select, message, Alert, Tooltip, Card, Descriptions } from 'antd'
 import { ReloadOutlined, StopOutlined, FileTextOutlined, UnorderedListOutlined, AuditOutlined } from '@ant-design/icons'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { operationApi, schedulerApi } from '../api'
 import { useAppStore } from '../store'
 import { formatInTimeZone } from '../utils/datetime'
@@ -39,8 +39,6 @@ export default function OperationPage() {
     schedulerUrl?: string | null
   }>({})
   const [page, setPage] = useState(1)
-  /** 默认 false：仅工作流实例；开启后与旧版一致包含 Studio 单节点试跑，便于回归对照 */
-  const [includeStudioRuns, setIncludeStudioRuns] = useState(false)
   const [syncingSchedulerMeta, setSyncingSchedulerMeta] = useState(false)
   /** 概览数字为工作流实例级；与下方节点表切换 */
   const [listMode, setListMode] = useState<ListMode>('workflows')
@@ -49,13 +47,10 @@ export default function OperationPage() {
   /** 节点表：仅某工作流实例 */
   const [workflowInstanceScope, setWorkflowInstanceScope] = useState<number | undefined>()
   const [drilldownContext, setDrilldownContext] = useState<any>(null)
-  /** 兼容开关：新实例中心默认展示 GIDO 工作流实例 */
-  const [includeManualDevRuns, setIncludeManualDevRuns] = useState(false)
 
   const load = async () => {
     if (!wsId) return
-    const manualParam = { include_manual_development_runs: includeManualDevRuns }
-    const ov: any = await operationApi.overview(wsId, manualParam)
+    const ov: any = await operationApi.overview(wsId)
     setOverview(ov)
     let inst: any
     if (listMode === 'workflows') {
@@ -64,7 +59,6 @@ export default function OperationPage() {
         page_size: 20,
         status: statusFilter || undefined,
         today_only: todayOnlyWorkflows ? true : undefined,
-        ...manualParam,
       })
       setDrilldownContext(null)
     } else {
@@ -72,8 +66,6 @@ export default function OperationPage() {
         status: statusFilter,
         page,
         page_size: 20,
-        include_studio_runs: includeStudioRuns,
-        ...manualParam,
       }
       if (workflowInstanceScope != null) {
         nparams.workflow_instance_id = workflowInstanceScope
@@ -85,7 +77,7 @@ export default function OperationPage() {
     setTotal(inst.total)
   }
 
-  useEffect(() => { load() }, [wsId, statusFilter, page, includeStudioRuns, listMode, todayOnlyWorkflows, workflowInstanceScope, includeManualDevRuns])
+  useEffect(() => { load() }, [wsId, statusFilter, page, listMode, todayOnlyWorkflows, workflowInstanceScope])
 
   const showLog = async (niId: number) => {
     const res: any = await operationApi.getLog(niId)
@@ -383,27 +375,14 @@ export default function OperationPage() {
       <Alert
         type="info"
         showIcon
+        closable
         style={{ marginBottom: 16 }}
-        message={
-          includeStudioRuns
-            ? '当前已开启「包含开发试跑」，列表会同时显示 Studio 单节点运行记录，便于开发排查。'
-            : '默认展示工作流实例，一行代表一次运行；点击「节点明细」后进入该实例的节点运行视图。'
-        }
+        message="仅展示已上线工作流的生产运行实例"
         description={
-          <div>
-            <div style={{ marginBottom: 8 }}>
-              顶部统计与列表围绕 GIDO 工作流实例展开，包括周期、手动、重跑和补数；列表按<strong>开始时间从新到旧</strong>排序。
-            </div>
-            <div style={{ marginBottom: 8 }}>
-              外层表负责实例级运维：停止、刷新、重跑、查看当前/失败节点；节点级重试和日志只在实例下钻页处理。
-            </div>
-            <div style={{ marginBottom: 8 }}>
-              已发布生产版本的工作流可使用「同步调度实例」，或由后台轮询把执行引擎上的运行写回 GIDO 实例中心。
-            </div>
-            <div>
-              从工作流实例下钻到节点明细时，会自动向调度引擎拉取该实例的工作流与任务时间，并显示实例上下文。
-            </div>
-          </div>
+          <span>
+            调度、补数与运维重跑请在本页查看。数据开发试跑与数据探查查询请到{' '}
+            <Link to={R.batch.runHistory}>运行历史</Link>。
+          </span>
         }
       />
       <Row gutter={16} style={{ marginBottom: 24 }}>
@@ -499,18 +478,6 @@ export default function OperationPage() {
           onChange={v => { setStatusFilter(v); setPage(1) }}
           options={['running', 'success', 'failed', 'pending', 'killed'].map(s => ({ label: s, value: s }))}
         />
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-          <Switch checked={includeManualDevRuns} onChange={v => { setIncludeManualDevRuns(v); setPage(1) }} />
-          显示开发立即运行
-        </span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-          <Switch
-            checked={includeStudioRuns}
-            disabled={listMode === 'workflows' || workflowInstanceScope != null}
-            onChange={v => { setIncludeStudioRuns(v); setPage(1) }}
-          />
-          <span style={{ color: listMode === 'workflows' || workflowInstanceScope != null ? '#999' : undefined }}>包含开发试跑</span>
-        </span>
         <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
         <Button loading={syncingSchedulerMeta} onClick={handleSyncSchedulerMeta}>同步调度实例</Button>
       </div>
