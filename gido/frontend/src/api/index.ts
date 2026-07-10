@@ -91,7 +91,11 @@ export const studioApi = {
     request.patch(`/studio/nodes/${id}/folder`, { folder_id }),
   reorderNodes: (workspace_id: number, folder_id: number | null, node_ids: number[]) =>
     request.put('/studio/nodes/reorder', { workspace_id, folder_id, node_ids }),
-  runNode: (id: number, scriptContent?: string) => request.post(`/studio/nodes/${id}/run`, null, { params: scriptContent !== undefined ? { script_content: scriptContent } : {} }),
+  runNode: (id: number, scriptContent?: string) =>
+    request.post(
+      `/studio/nodes/${id}/run`,
+      scriptContent !== undefined ? { script_content: scriptContent } : {},
+    ),
   getInstances: (id: number) => request.get(`/studio/nodes/${id}/instances`),
   getHistory: (id: number) => request.get(`/studio/nodes/${id}/history`),
   rollback: (id: number, historyId: number) => request.post(`/studio/nodes/${id}/history/${historyId}/rollback`),
@@ -341,7 +345,16 @@ export const dataServiceApi = {
     request.get('/data-service/stats', { params: { workspace_id: workspaceId, days } }),
   logs: (workspaceId: number, params?: { api_id?: number; limit?: number }) =>
     request.get('/data-service/logs', { params: { workspace_id: workspaceId, ...params } }),
-  previewWizardSql: (data: any) => request.post('/data-service/wizard/preview-sql', data),
+  previewWizardSql: (data: { wizard_config: any; params?: any[] }) =>
+    request.post('/data-service/wizard/preview-sql', data),
+  listTables: (datasourceId: number, keyword?: string) =>
+    request.get(`/data-service/datasources/${datasourceId}/tables`, {
+      params: { keyword: keyword || '' },
+    }),
+  listColumns: (datasourceId: number, tableName: string) =>
+    request.get(`/data-service/datasources/${datasourceId}/columns`, {
+      params: { table_name: tableName },
+    }),
 }
 
 export { copilotApi, copilotChatStream } from './copilot'

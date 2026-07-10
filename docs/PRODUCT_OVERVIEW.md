@@ -138,7 +138,7 @@ cp .env.example .env
 - [README](../README.md) — 仓库主文档
 - [PRODUCT_MATURITY.md](./PRODUCT_MATURITY.md) — 功能完整度与部署边界
 - [部署 SOP](../gido/docs/DEPLOYMENT_SOP.md) — 从 Git 到生产
-- [GitHub](https://github.com/cloud-gido/gido) · [Gitee 镜像](https://gitee.com/bigdata_troy/gido)
+- [GitHub](https://github.com/cloud-gido/gido) · [Gitee 镜像](https://gitee.com/gidocloud/gido)
 
 ---
 

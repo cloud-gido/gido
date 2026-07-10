@@ -10,7 +10,7 @@
   <a href="https://github.com/cloud-gido/gido/actions/workflows/ci.yml"><img src="https://github.com/cloud-gido/gido/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://flink.apache.org/"><img src="https://img.shields.io/badge/Flink-2.0.1-blue.svg" alt="Flink" /></a>
   <a href="https://kafka.apache.org/"><img src="https://img.shields.io/badge/Kafka-7.5.0-green.svg" alt="Kafka" /></a>
-  <a href="https://gitee.com/bigdata_troy/gido"><img src="https://img.shields.io/badge/Gitee-镜像-C71D23.svg" alt="Gitee" /></a>
+  <a href="https://gitee.com/gidocloud/gido"><img src="https://img.shields.io/badge/Gitee-镜像-C71D23.svg" alt="Gitee" /></a>
 </p>
 
 ![GIDO 登录页](docs/screenshots/01-login.png)
@@ -238,4 +238,4 @@ gido/                         # 仓库根
 - Troy · [troyzhujingbin@163.com](mailto:troyzhujingbin@163.com)
 - Chenghap · [chenghap0712@gmail.com](mailto:chenghap0712@gmail.com)
 
-[GitHub Issues](https://github.com/cloud-gido/gido/issues) · [Gitee 镜像](https://gitee.com/bigdata_troy/gido)
+[GitHub Issues](https://github.com/cloud-gido/gido/issues) · [Gitee 镜像](https://gitee.com/gidocloud/gido)

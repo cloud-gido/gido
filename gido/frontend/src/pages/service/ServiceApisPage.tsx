@@ -20,9 +20,30 @@ import PublishApprovalModal from '../../components/PublishApprovalModal'
 import { approvalPendingKey } from '../../approvalLabels'
 import { useServiceData, useWorkspaceId } from './ServiceContext'
 import { STATUS_COLOR, formatApiError } from './shared'
+import ApiWizardBuilder, { type WizardConfig, type WizardParam } from './ApiWizardBuilder'
 
 const { TextArea } = Input
 const { Text, Paragraph } = Typography
+
+function parseWizardConfig(raw: any): WizardConfig | null {
+  if (!raw) return null
+  let o: any = raw
+  if (typeof raw === 'string') {
+    try {
+      o = JSON.parse(raw)
+    } catch {
+      return null
+    }
+  }
+  if (typeof o !== 'object') return null
+  const fieldsRaw = Array.isArray(o.fields) ? o.fields : []
+  const fields = fieldsRaw.filter((f: string) => f && f !== '*')
+  return {
+    table: o.table || '',
+    fields,
+    filters: Array.isArray(o.filters) ? o.filters : [],
+  }
+}
 
 export default function ServiceApisPage() {
   const wsId = useWorkspaceId()
@@ -60,6 +81,9 @@ export default function ServiceApisPage() {
   const [apiModal, setApiModal] = useState(false)
   const [editingApi, setEditingApi] = useState<any>(null)
   const [apiForm] = Form.useForm()
+  const modeWatch = Form.useWatch('mode', apiForm)
+  const datasourceWatch = Form.useWatch('datasource_id', apiForm)
+  const [wizardConfig, setWizardConfig] = useState<WizardConfig>({ table: '', fields: [], filters: [] })
   const [testDrawer, setTestDrawer] = useState(false)
   const [testTarget, setTestTarget] = useState<any>(null)
   const [testParams, setTestParams] = useState('{}')
@@ -75,8 +99,9 @@ export default function ServiceApisPage() {
   const openCreateApi = () => {
     setEditingApi(null)
     apiForm.resetFields()
+    setWizardConfig({ table: '', fields: [], filters: [] })
     apiForm.setFieldsValue({
-      mode: 'sql',
+      mode: 'wizard',
       http_method: 'GET',
       pagination_enabled: true,
       page_size_default: 20,
@@ -85,26 +110,47 @@ export default function ServiceApisPage() {
       cache_ttl_seconds: 0,
       max_rows: 10000,
       params: [],
+      sql_template: '',
     })
     setApiModal(true)
   }
 
   const openEditApi = (row: any) => {
     setEditingApi(row)
+    const wizard = parseWizardConfig(row.wizard_config) || { table: '', fields: [], filters: [] }
+    setWizardConfig(wizard)
     apiForm.setFieldsValue({
       ...row,
-      wizard_config: row.wizard_config && typeof row.wizard_config === 'object'
-        ? JSON.stringify(row.wizard_config, null, 2)
-        : row.wizard_config,
       params: row.params || [],
     })
     setApiModal(true)
+  }
+
+  const handleWizardChange = (cfg: WizardConfig, params: WizardParam[], sqlPreview: string) => {
+    setWizardConfig(cfg)
+    apiForm.setFieldsValue({
+      params,
+      sql_template: sqlPreview.startsWith('--') ? apiForm.getFieldValue('sql_template') : sqlPreview,
+    })
+  }
+
+  const handleUpgradeToSql = (sql: string, params: WizardParam[]) => {
+    apiForm.setFieldsValue({
+      mode: 'sql',
+      sql_template: sql,
+      params,
+    })
+    message.success('已切换为 SQL 模式，可继续编辑模板')
   }
 
   const saveApi = async () => {
     try {
       const v = await apiForm.validateFields()
       if (!wsId) return
+      if (v.mode === 'wizard' && !wizardConfig.table) {
+        message.error('请选择数据表')
+        return
+      }
       const payload: any = {
         name: v.name,
         description: v.description,
@@ -118,7 +164,7 @@ export default function ServiceApisPage() {
         timeout_seconds: v.timeout_seconds,
         cache_ttl_seconds: v.cache_ttl_seconds,
         max_rows: v.max_rows,
-        params: (v.params || []).map((p: any) => ({
+        params: (v.params || []).map((p: any, i: number) => ({
           name: p.name,
           param_in: p.param_in || 'query',
           data_type: p.data_type || 'string',
@@ -126,15 +172,21 @@ export default function ServiceApisPage() {
           default_value: p.default_value,
           description: p.description,
           validator_regex: p.validator_regex,
-          sort_order: p.sort_order,
+          sort_order: p.sort_order ?? i,
         })),
       }
       if (v.mode === 'wizard') {
-        if (typeof v.wizard_config === 'string' && v.wizard_config.trim()) {
-          payload.wizard_config = JSON.parse(v.wizard_config)
-        } else if (v.wizard_config && typeof v.wizard_config === 'object') {
-          payload.wizard_config = v.wizard_config
+        payload.wizard_config = {
+          table: wizardConfig.table,
+          fields: wizardConfig.fields?.length ? wizardConfig.fields : ['*'],
+          filters: (wizardConfig.filters || []).map(f => ({
+            column: f.column,
+            op: f.op || '=',
+            param: f.param,
+          })),
         }
+      } else {
+        payload.wizard_config = null
       }
       if (editingApi) {
         await dataServiceApi.updateApi(editingApi.id, payload)
@@ -235,7 +287,10 @@ export default function ServiceApisPage() {
   const apiColumns = useMemo(() => [
     { title: '名称', dataIndex: 'name', width: 140, ellipsis: true },
     { title: 'API Code', dataIndex: 'api_code', width: 120 },
-    { title: '模式', dataIndex: 'mode', width: 72, render: (m: string) => <Tag>{m}</Tag> },
+    {
+      title: '模式', dataIndex: 'mode', width: 88,
+      render: (m: string) => <Tag color={m === 'wizard' ? 'blue' : 'default'}>{m === 'wizard' ? '可视化' : m === 'sql' ? 'SQL' : m}</Tag>,
+    },
     {
       title: '状态', dataIndex: 'status', width: 88,
       render: (s: string) => <Tag color={STATUS_COLOR[s] || 'default'}>{s === 'online' ? '已上线' : s === 'offline' ? '已下线' : '草稿'}</Tag>,
@@ -306,7 +361,7 @@ export default function ServiceApisPage() {
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>API 开发</h2>
-          <Text type="secondary">定义 SQL 模板、参数与发布策略，发布后可通过开放网关对外调用</Text>
+          <Text type="secondary">可视化选表生成 API，或手写 SQL 模板；发布后可通过开放网关对外调用</Text>
         </div>
         {canWrite && (
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreateApi}>新建 API</Button>
@@ -315,7 +370,15 @@ export default function ServiceApisPage() {
 
       <Table dataSource={apis} columns={apiColumns} rowKey="id" loading={loading} scroll={{ x: 1100 }} size="middle" />
 
-      <Modal title={editingApi ? `编辑 API - ${editingApi.name}` : '新建 API'} open={apiModal} onOk={saveApi} onCancel={() => setApiModal(false)} width={820} okText="保存">
+      <Modal
+        title={editingApi ? `编辑 API - ${editingApi.name}` : '新建 API'}
+        open={apiModal}
+        onOk={saveApi}
+        onCancel={() => setApiModal(false)}
+        width={modeWatch === 'wizard' ? 980 : 820}
+        okText="保存"
+        destroyOnClose
+      >
         <Form form={apiForm} layout="vertical">
           {!editingApi && (
             <Form.Item name="api_code" label="API Code（小写+下划线，发布后路径的一部分）" rules={[{ required: true }]}>
@@ -325,28 +388,47 @@ export default function ServiceApisPage() {
           <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="description" label="描述"><TextArea rows={2} /></Form.Item>
           <Space wrap style={{ width: '100%' }}>
-            <Form.Item name="mode" label="创建模式" style={{ width: 160 }}>
-              <Select options={[{ value: 'sql', label: 'SQL 脚本' }, { value: 'wizard', label: '向导模式' }]} />
+            <Form.Item name="mode" label="创建模式" style={{ width: 180 }}>
+              <Select options={[
+                { value: 'wizard', label: '可视化选表' },
+                { value: 'sql', label: 'SQL 脚本' },
+              ]} />
             </Form.Item>
             <Form.Item name="http_method" label="HTTP 方法" style={{ width: 120 }}>
               <Select options={[{ value: 'GET' }, { value: 'POST' }]} />
             </Form.Item>
             <Form.Item name="datasource_id" label="数据源" rules={[{ required: true }]}>
-              <Select style={{ width: 220 }} options={datasources.map(d => ({ value: d.id, label: d.name }))} placeholder="选择数据源" />
+              <Select
+                style={{ width: 220 }}
+                options={datasources.map(d => ({ value: d.id, label: d.name }))}
+                placeholder="选择数据源"
+                onChange={() => {
+                  if (apiForm.getFieldValue('mode') === 'wizard') {
+                    setWizardConfig({ table: '', fields: [], filters: [] })
+                    apiForm.setFieldsValue({ params: [] })
+                  }
+                }}
+              />
             </Form.Item>
           </Space>
-          <Form.Item noStyle shouldUpdate={(p, c) => p.mode !== c.mode}>
-            {({ getFieldValue }) => getFieldValue('mode') === 'wizard' ? (
-              <Form.Item name="wizard_config" label="向导配置（JSON）">
-                <TextArea rows={4} placeholder='{"table":"your_table","fields":["col1"],"filters":[]}' />
-              </Form.Item>
-            ) : (
-              <Form.Item name="sql_template" label="SQL 模板（参数用 :param_name）" rules={[{ required: true }]}>
-                <TextArea rows={6} placeholder="SELECT * FROM db.table WHERE id = :id" />
-              </Form.Item>
-            )}
-          </Form.Item>
-          <Divider orientation="left" plain>请求参数</Divider>
+
+          {modeWatch === 'wizard' ? (
+            <>
+              <Divider orientation="left" plain>可视化配置</Divider>
+              <ApiWizardBuilder
+                datasourceId={datasourceWatch}
+                value={wizardConfig}
+                onChange={handleWizardChange}
+                onUpgradeToSql={handleUpgradeToSql}
+              />
+            </>
+          ) : (
+            <Form.Item name="sql_template" label="SQL 模板（参数用 :param_name）" rules={[{ required: true }]}>
+              <TextArea rows={6} placeholder="SELECT * FROM db.table WHERE id = :id" />
+            </Form.Item>
+          )}
+
+          <Divider orientation="left" plain>请求参数{modeWatch === 'wizard' ? '（由过滤条件自动生成，可微调）' : ''}</Divider>
           <Form.List name="params">
             {(fields, { add, remove }) => (
               <>
@@ -371,7 +453,9 @@ export default function ServiceApisPage() {
                     <Button type="link" danger onClick={() => remove(name)}>删</Button>
                   </Space>
                 ))}
-                <Button type="dashed" onClick={() => add()} block>+ 添加参数</Button>
+                {modeWatch !== 'wizard' && (
+                  <Button type="dashed" onClick={() => add()} block>+ 添加参数</Button>
+                )}
               </>
             )}
           </Form.List>

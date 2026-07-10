@@ -34,6 +34,7 @@ from app.services.data_api_engine import (
     new_trace_id,
     wizard_to_sql,
 )
+from app.services.integration_runtime import list_columns, list_tables
 from app.services.rbac import assert_workspace_data_capability, require_datasource_row
 from app.services.publish_approval import assert_can_publish_production
 from app.services.data_service_publish import execute_data_api_offline, execute_data_api_publish
@@ -42,6 +43,15 @@ router = APIRouter(prefix="/data-service", tags=["数据服务"])
 logger = logging.getLogger(__name__)
 
 _API_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,62}$")
+
+
+def _require_service_datasource(db: Session, user: User, datasource_id: int) -> DataSource:
+    """数据服务场景下读元数据：走 GIDO_SERVICE_*，不强制集成/数据源读权限。"""
+    ds = db.query(DataSource).filter(DataSource.id == datasource_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="数据源不存在")
+    assert_workspace_data_capability(db, user, ds.workspace_id, "viewer", PC.GIDO_SERVICE_READ)
+    return ds
 
 
 class ApiParamIn(BaseModel):
@@ -78,6 +88,7 @@ class DataApiCreateIn(BaseModel):
 class DataApiUpdateIn(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    mode: Optional[str] = None
     http_method: Optional[str] = None
     datasource_id: Optional[int] = None
     sql_template: Optional[str] = None
@@ -628,7 +639,44 @@ class WizardPreviewIn(BaseModel):
     params: List[ApiParamIn] = []
 
 
+@router.get("/datasources/{datasource_id}/tables")
+def service_datasource_tables(
+    datasource_id: int,
+    keyword: str = Query("", max_length=128),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """可视化向导：列出数据源表（服务权限，不依赖集成模块）。"""
+    ds = _require_service_datasource(db, current_user, datasource_id)
+    try:
+        return {"tables": list_tables(ds, keyword)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("list tables failed ds=%s", datasource_id)
+        raise HTTPException(status_code=500, detail=f"加载表列表失败: {e}")
+
+
+@router.get("/datasources/{datasource_id}/columns")
+def service_datasource_columns(
+    datasource_id: int,
+    table_name: str = Query(..., min_length=1, max_length=256),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """可视化向导：列出表字段。"""
+    ds = _require_service_datasource(db, current_user, datasource_id)
+    try:
+        return {"columns": list_columns(ds, table_name)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("list columns failed ds=%s table=%s", datasource_id, table_name)
+        raise HTTPException(status_code=500, detail=f"加载字段失败: {e}")
+
+
 @router.post("/wizard/preview-sql")
 def preview_wizard_sql(body: WizardPreviewIn, current_user: User = Depends(get_current_user)):
+    _ = current_user  # 需登录；配置本身不含敏感连接信息
     params = [DataApiParam(name=p.name, data_type=p.data_type, required=p.required) for p in body.params]
     return {"sql_template": wizard_to_sql(body.wizard_config, params)}

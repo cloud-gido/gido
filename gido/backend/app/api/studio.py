@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # @author felixzhu
 # @date 2026-06-05
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, field_validator
 from typing import Optional, Any, Dict, List
@@ -434,16 +434,26 @@ def publish_node(node_id: int, db: Session = Depends(get_db), current_user: User
     return {"message": msg, "node": _serialize_task_node(db, node)}
 
 
+class RunNodeBody(BaseModel):
+    """POST /studio/nodes/{id}/run：大段 SQL/脚本请放 JSON body，勿用 query（易超长、被代理截断或写入访问日志）。"""
+    script_content: Optional[str] = None
+
+
 @router.post("/nodes/{node_id}/run")
-def run_node(node_id: int, script_content: Optional[str] = None, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def run_node(
+    node_id: int,
+    body: RunNodeBody = Body(default_factory=RunNodeBody),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     node = db.query(TaskNode).filter(TaskNode.id == node_id).first()
     if not node:
         raise HTTPException(status_code=404, detail="节点不存在")
     assert_workspace_data_capability(db, current_user, node.workspace_id, "developer", PC.GIDO_BATCH_STUDIO_RUN)
 
-    # 用传入的最新内容覆盖，不需要先保存
-    if script_content is not None:
-        node.script_content = script_content
+    # 用传入的最新内容覆盖，不需要先保存（调度器可不传 body，沿用库内脚本）
+    if body.script_content is not None:
+        node.script_content = body.script_content
 
     instance = NodeInstance(node_id=node_id, status="running", started_at=datetime.utcnow())
     db.add(instance)

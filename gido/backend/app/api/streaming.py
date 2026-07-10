@@ -2364,17 +2364,15 @@ def unlock_streaming_job(job_id: int, db: Session = Depends(get_db), current_use
 @router.post("/jobs/{job_id}/submit")
 def submit_job(
     job_id: int,
-    script_content: Optional[str] = Query(None, description="兼容旧客户端；请优先使用 JSON body"),
     body: SubmitJobBody = Body(default_factory=SubmitJobBody),
     db: Session = Depends(get_db_flink),
     current_user: User = Depends(get_current_user),
 ):
-    """提交任务到 Flink"""
+    """提交任务到 Flink（大段 SQL 仅接受 JSON body，勿用 query）。"""
     job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_RUN)
     assert_can_publish_production(db, current_user, job.workspace_id)
-    incoming = body.script_content if body.script_content is not None else script_content
     try:
-        return execute_streaming_job_submit(db, job, current_user, script_content=incoming)
+        return execute_streaming_job_submit(db, job, current_user, script_content=body.script_content)
     except HTTPException:
         raise
     except Exception as e:
