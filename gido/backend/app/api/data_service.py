@@ -321,6 +321,10 @@ def update_api(
 def delete_api(api_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     api = _require_api(db, api_id, current_user)
     assert_workspace_data_capability(db, current_user, api.workspace_id, "developer", PC.GIDO_SERVICE_WRITE)
+    # 调用日志 / 授权外键未必带 ON DELETE CASCADE（历史库），先显式清理再删 API
+    db.query(DataApiInvocationLog).filter(DataApiInvocationLog.api_id == api_id).delete(synchronize_session=False)
+    db.query(ConsumerAppApiGrant).filter(ConsumerAppApiGrant.api_id == api_id).delete(synchronize_session=False)
+    db.query(DataApiParam).filter(DataApiParam.api_id == api_id).delete(synchronize_session=False)
     db.delete(api)
     db.commit()
     return {"ok": True}

@@ -341,10 +341,14 @@ export default function ServiceApisPage() {
             setDocDrawer(true)
           }}>文档</Button>
           {canWrite && (
-            <Popconfirm title="删除 API？" onConfirm={async () => {
-              await dataServiceApi.deleteApi(row.id)
-              message.success('已删除')
-              refreshAll()
+            <Popconfirm title="删除 API？关联授权与调用日志将一并清理" onConfirm={async () => {
+              try {
+                await dataServiceApi.deleteApi(row.id)
+                message.success('已删除')
+                refreshAll()
+              } catch (e: any) {
+                message.error(formatApiError(e, '删除失败'))
+              }
             }}>
               <Button size="small" danger>删除</Button>
             </Popconfirm>
