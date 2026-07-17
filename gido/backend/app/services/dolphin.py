@@ -480,7 +480,13 @@ class DSClient:
                     f"-H 'Authorization: Bearer {_s.INTERNAL_TOKEN}' || exit 1"
                 )
             elif node_type == "PYTHON":
-                raw_script = script or "echo done"
+                # 回调 GIDO 执行（注入 gido_job + 数据源），不在 Worker 上跑明文脚本
+                from app.core.config import settings as _s
+                raw_script = (
+                    f"curl -s -f -X POST http://gido-backend:8001/api/studio/internal/nodes/{n['node_id']}/run "
+                    f"-H 'Content-Type: application/json' "
+                    f"-H 'Authorization: Bearer {_s.INTERNAL_TOKEN}' || exit 1"
+                )
             elif node_type == "SYNC":
                 from app.core.config import settings as _s
                 node_params = n.get("params") or {}

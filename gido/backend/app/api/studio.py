@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # @author felixzhu
 # @date 2026-06-05
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, field_validator
 from typing import Optional, Any, Dict, List
@@ -23,6 +23,7 @@ from app.services.rbac import (
 from app.services.audit import log_action
 from app.core.config import settings
 from app.services.publish_approval import assert_can_publish_production
+from app.services.python_job_runner import run_python_node
 
 # 协作编辑锁过期时间（秒），过期后他人可直接占用或抢锁
 EDIT_LOCK_TTL_SECONDS = 30 * 60
@@ -467,7 +468,7 @@ def run_node(
 
             log_lines, result_data = run_sql_with_result(node, db, resolve_date_expr=_resolve_date_expr)
         elif node.node_type == "PYTHON":
-            log_lines = _run_python(node)
+            log_lines = _run_python(node, db)
         elif node.node_type == "SHELL":
             log_lines = _run_shell(node)
         elif node.node_type == "SYNC":
@@ -579,20 +580,48 @@ def _run_sql(node: TaskNode, db: Session, bizdate: str = None) -> list:
     return logs
 
 
-def _run_python(node: TaskNode) -> list:
-    import subprocess, tempfile, os
-    logs = []
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-        f.write(node.script_content or "")
-        tmp_path = f.name
+def _run_python(node: TaskNode, db: Session) -> list:
+    """执行 PYTHON 节点：注入 gido_job SDK 与数据源上下文。"""
+    return run_python_node(node, db)
+
+
+@router.post("/internal/nodes/{node_id}/run")
+def internal_run_python_node(
+    node_id: int,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """供 Dolphin SHELL 回调执行 PYTHON 节点；Bearer 须为 INTERNAL_TOKEN。"""
+    token = (authorization or "").replace("Bearer ", "").strip()
+    if not settings.INTERNAL_TOKEN or token != settings.INTERNAL_TOKEN:
+        raise HTTPException(status_code=401, detail="无效的内部令牌")
+    node = db.query(TaskNode).filter(TaskNode.id == node_id).first()
+    if not node:
+        raise HTTPException(status_code=404, detail="节点不存在")
+    if node.node_type != "PYTHON":
+        raise HTTPException(status_code=400, detail=f"节点类型为 {node.node_type}，仅支持 PYTHON")
+
+    instance = NodeInstance(node_id=node_id, status="running", started_at=datetime.utcnow())
+    db.add(instance)
+    db.commit()
+    db.refresh(instance)
+
+    log_lines: List[str] = []
+    status = "success"
     try:
-        result = subprocess.run(["python3", tmp_path], capture_output=True, text=True, timeout=300)
-        logs.append(result.stdout or "")
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr)
-    finally:
-        os.unlink(tmp_path)
-    return logs
+        log_lines = _run_python(node, db)
+    except Exception as e:
+        status = "failed"
+        log_lines.append(f"[ERROR] {str(e)}")
+
+    instance.status = status
+    instance.log_content = "\n".join(log_lines)
+    instance.finished_at = datetime.utcnow()
+    db.commit()
+
+    if status != "success":
+        raise HTTPException(status_code=500, detail=instance.log_content or "PYTHON 节点执行失败")
+    return {"instance_id": instance.id, "status": status, "log": instance.log_content}
 
 
 def _run_shell(node: TaskNode) -> list:

@@ -428,7 +428,7 @@ export default function StudioPage() {
 
   // 运行（直接用编辑器最新内容，不需要先保存）
   const dsResolve = useMemo(() => {
-    if (!activeNode || activeNode.node_type !== 'SQL') return null
+    if (!activeNode || (activeNode.node_type !== 'SQL' && activeNode.node_type !== 'PYTHON')) return null
     return resolveDatasourceForRun(
       activeNode.datasource_id,
       currentWorkspace,
@@ -441,6 +441,9 @@ export default function StudioPage() {
     if (activeNode.node_type === 'SQL' && !dsResolve?.effectiveId) {
       message.warning('请先在「空间设置」配置默认数据源，或在节点「配置」中单独指定')
       return
+    }
+    if (activeNode.node_type === 'PYTHON' && !dsResolve?.effectiveId) {
+      message.warning('未配置数据源时 job.execute 将失败；请绑定节点数据源或设置空间默认（仅 writelog 可继续）')
     }
     const latestScript = dirtyMap[activeTabId!] ?? activeNode.script_content ?? ''
     setRunningId(activeNode.id)
@@ -622,14 +625,22 @@ export default function StudioPage() {
     values.script_content = values.node_type === 'SQL'
       ? '-- 在此编写 SQL\nSELECT 1'
       : values.node_type === 'PYTHON'
-        ? '# 在此编写 Python\nprint("hello gido")'
+        ? [
+            'from gido_job import job',
+            '',
+            'job.writelog("start")',
+            'rows = job.execute("SELECT 1 AS n")',
+            'job.writelog(f"rows={len(rows)}")',
+            'for r in rows:',
+            '    job.writelog(r)',
+          ].join('\n')
         : values.node_type === 'SYNC'
           ? '{"sync_task_id": null}'
           : '#!/bin/bash\necho "hello gido"'
     if (values.node_type === 'SYNC') {
       values.params = { sync_task_id: null }
     }
-    if (values.node_type === 'SQL' && !values.datasource_id) {
+    if ((values.node_type === 'SQL' || values.node_type === 'PYTHON') && !values.datasource_id) {
       delete values.datasource_id
     }
     const node: any = await studioApi.createNode(values)
@@ -717,7 +728,7 @@ export default function StudioPage() {
       values.params = { sync_task_id: values.sync_task_id }
       delete values.sync_task_id
     }
-    if (activeNode.node_type === 'SQL') {
+    if (activeNode.node_type === 'SQL' || activeNode.node_type === 'PYTHON') {
       values.datasource_id = values.datasource_id ?? null
     }
     try {
@@ -1094,20 +1105,20 @@ export default function StudioPage() {
               >
                 保存{isDirty ? ' *' : ''}
               </Button>
-              {activeNode?.node_type === 'SQL' && dsResolve && (
-                <>
-                  <Button icon={<FormatPainterOutlined />} onClick={() => void handleFormat()} size="small" disabled={activeNode.is_locked}>格式化</Button>
-                  <Tag
-                    color={dsResolve.effectiveId ? (dsResolve.source === 'explicit' ? 'purple' : 'blue') : 'red'}
-                    title={
-                      dsResolve.source === 'explicit'
-                        ? '此节点在「配置」中单独指定了数据源，不随空间默认变更'
-                        : '未单独指定，运行时使用空间设置中的默认数据源'
-                    }
-                  >
-                    {datasourceTagText(dsResolve)}
-                  </Tag>
-                </>
+              {activeNode?.node_type === 'SQL' && (
+                <Button icon={<FormatPainterOutlined />} onClick={() => void handleFormat()} size="small" disabled={activeNode.is_locked}>格式化</Button>
+              )}
+              {(activeNode?.node_type === 'SQL' || activeNode?.node_type === 'PYTHON') && dsResolve && (
+                <Tag
+                  color={dsResolve.effectiveId ? (dsResolve.source === 'explicit' ? 'purple' : 'blue') : 'red'}
+                  title={
+                    dsResolve.source === 'explicit'
+                      ? '此节点在「配置」中单独指定了数据源，不随空间默认变更'
+                      : '未单独指定，运行时使用空间设置中的默认数据源'
+                  }
+                >
+                  {datasourceTagText(dsResolve)}
+                </Tag>
               )}
               <Button
                 icon={<CloudUploadOutlined />}
@@ -1360,14 +1371,18 @@ export default function StudioPage() {
           <Form.Item name="name" label="节点名称" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
-          {activeNode?.node_type === 'SQL' && (
+          {(activeNode?.node_type === 'SQL' || activeNode?.node_type === 'PYTHON') && (
             <Form.Item
               name="datasource_id"
               label="数据源（可选）"
               extra={
-                currentWorkspace?.default_datasource_id
-                  ? '不选则继承空间默认；选定后该节点固定此数据源（不随空间默认变更）'
-                  : '请先在「空间设置」配置默认数据源'
+                activeNode?.node_type === 'PYTHON'
+                  ? (currentWorkspace?.default_datasource_id
+                    ? 'PYTHON 用 gido_job.execute 读库；不选则继承空间默认'
+                    : 'PYTHON 用 gido_job.execute 读库；请先在「空间设置」配置默认数据源或在此指定')
+                  : (currentWorkspace?.default_datasource_id
+                    ? '不选则继承空间默认；选定后该节点固定此数据源（不随空间默认变更）'
+                    : '请先在「空间设置」配置默认数据源')
               }
             >
               <Select

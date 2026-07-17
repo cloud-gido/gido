@@ -55,7 +55,7 @@ def _run_workflow_job(workflow_id: int):
                     logs = _run_sql(node, db)
                     auto_parse_lineage(node, db)
                 elif node.node_type == "PYTHON":
-                    logs = _run_python(node)
+                    logs = _run_python(node, db)
                 elif node.node_type == "SHELL":
                     logs = _run_shell(node)
                 elif node.node_type == "SYNC":
