@@ -19,6 +19,7 @@ if _JOB_LIB not in sys.path:
 
 from gido_job.context import ENV_CONTEXT_FILE, load_job_context, mysql_protocol_user
 from gido_job.job import GidoJob
+from gido_job.macros import resolve_date_expr, substitute_sql_macros
 from app.services.python_job_runner import _PYTHON_JOB_LIB, datasource_to_job_context
 
 
@@ -133,3 +134,25 @@ def test_subprocess_can_import_gido_job():
     )
     assert result.returncode == 0, result.stderr
     assert "ok-from-sdk" in result.stdout
+
+
+def test_resolve_date_expr_offset_with_space():
+    assert resolve_date_expr("$[yyyy-MM-dd -3]", "2026-07-17") == "2026-07-14"
+    assert resolve_date_expr("$[yyyy-MM-dd-3]", "2026-07-17") == "2026-07-14"
+
+
+def test_substitute_sql_macros_bizdate_and_bracket():
+    sql = (
+        "select count(distinct if(first_login_date='$[yyyy-MM-dd -3]',did,null)) "
+        "from t where d='${bizdate}'"
+    )
+    out = substitute_sql_macros(sql, bizdate="2026-07-17", tz_name="Asia/Shanghai")
+    assert "'2026-07-14'" in out
+    assert "'2026-07-17'" in out
+    assert "$[" not in out
+    assert "${bizdate}" not in out
+
+
+def test_substitute_sql_macros_never_raises():
+    # 畸形宏保留原文，不抛错
+    assert substitute_sql_macros("select '$[not-a-valid'") == "select '$[not-a-valid'"

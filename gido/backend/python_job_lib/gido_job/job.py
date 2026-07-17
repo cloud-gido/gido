@@ -7,6 +7,7 @@ import sys
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 from gido_job.context import load_job_context, mysql_protocol_user
+from gido_job.macros import substitute_sql_macros
 
 
 class GidoJob:
@@ -28,6 +29,7 @@ class GidoJob:
     ) -> List[Dict[str, Any]]:
         """对绑定数据源执行 SQL。
 
+        - 自动展开 ``$[yyyy-MM-dd-1]`` / ``${bizdate}`` / 空间变量（与 SQL 节点一致）
         - SELECT / 有结果集：返回 ``list[dict]``
         - DML / DDL：返回 ``[]``，影响行数写入 ``last_rowcount`` 并 writelog
         """
@@ -36,6 +38,12 @@ class GidoJob:
             raise ValueError("execute(sql) 的 sql 不能为空")
 
         ctx = self._ensure_context()
+        stmt = substitute_sql_macros(
+            stmt,
+            bizdate=ctx.get("bizdate"),
+            tz_name=str(ctx.get("timezone") or "Asia/Shanghai"),
+            variables=ctx.get("variables") if isinstance(ctx.get("variables"), dict) else None,
+        )
         ds_type = (ctx.get("ds_type") or "").strip().lower()
         if ds_type in ("mysql", "doris"):
             return self._execute_mysql(ctx, stmt, params)

@@ -9,6 +9,7 @@ import os
 import stat
 import subprocess
 import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -35,6 +36,45 @@ def datasource_to_job_context(ds: Any) -> Dict[str, Any]:
         "database": ds.database or "",
         "username": mysql_protocol_connect_user(ds),
         "password": ds.password or "",
+    }
+
+
+def _macro_context(db: Any, node: Any) -> Dict[str, Any]:
+    """时区 / bizdate / 空间变量 / 节点 params，供 gido_job.execute 宏展开。"""
+    from app.core.config import settings
+    from app.models.workspace import Workspace
+    from app.services.workspace_variables import load_workspace_variable_map
+
+    ws = db.query(Workspace).filter(Workspace.id == int(node.workspace_id)).first()
+    tz_name = (ws.timezone if ws and ws.timezone else None) or getattr(
+        settings, "DEFAULT_TIMEZONE", None
+    ) or "Asia/Shanghai"
+    try:
+        import pytz
+
+        now_local = datetime.now(pytz.timezone(tz_name))
+    except Exception:
+        now_local = datetime.now()
+
+    biz = now_local.strftime("%Y-%m-%d")
+    variables: Dict[str, str] = {}
+    try:
+        variables.update(load_workspace_variable_map(db, int(node.workspace_id), "batch"))
+    except Exception as e:
+        logger.warning("加载空间变量失败: %s", e)
+
+    params = getattr(node, "params", None) or {}
+    if isinstance(params, dict):
+        for k, v in params.items():
+            if k is None:
+                continue
+            variables[str(k)] = "" if v is None else str(v)
+
+    return {
+        "timezone": tz_name,
+        "bizdate": biz,
+        "yesterday": (now_local - timedelta(days=1)).strftime("%Y-%m-%d"),
+        "variables": variables,
     }
 
 
@@ -65,6 +105,15 @@ def run_python_node(node: Any, db: Any, *, timeout_seconds: Optional[int] = None
     script_path: Optional[str] = None
     logs: List[str] = []
 
+    ctx: Dict[str, Any] = {}
+    try:
+        ctx.update(_macro_context(db, node))
+    except Exception as e:
+        logger.warning("宏上下文构建失败: %s", e)
+        ctx.setdefault("timezone", "Asia/Shanghai")
+        ctx.setdefault("bizdate", datetime.now().strftime("%Y-%m-%d"))
+        ctx.setdefault("variables", {})
+
     ds_id = resolve_datasource_id(
         db,
         workspace_id=node.workspace_id,
@@ -78,7 +127,7 @@ def run_python_node(node: Any, db: Any, *, timeout_seconds: Optional[int] = None
                 explicit_datasource_id=node.datasource_id,
                 role="PYTHON 节点数据源",
             )
-            ctx_path = _write_context_file(datasource_to_job_context(ds))
+            ctx.update(datasource_to_job_context(ds))
             logs.append(f"[INFO] 已注入数据源「{ds.name}」({ds.ds_type}) 供 gido_job.execute 使用")
         except Exception as e:
             logger.warning("PYTHON 节点数据源注入跳过: %s", e)
@@ -89,6 +138,8 @@ def run_python_node(node: Any, db: Any, *, timeout_seconds: Optional[int] = None
             "请在节点配置或空间设置中指定数据源。"
         )
 
+    ctx_path = _write_context_file(ctx)
+
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
         f.write(node.script_content or "")
         script_path = f.name
@@ -96,8 +147,7 @@ def run_python_node(node: Any, db: Any, *, timeout_seconds: Optional[int] = None
     env = os.environ.copy()
     pp = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = _PYTHON_JOB_LIB + (os.pathsep + pp if pp else "")
-    if ctx_path:
-        env["GIDO_JOB_CONTEXT_FILE"] = ctx_path
+    env["GIDO_JOB_CONTEXT_FILE"] = ctx_path
 
     try:
         result = subprocess.run(
@@ -111,7 +161,9 @@ def run_python_node(node: Any, db: Any, *, timeout_seconds: Optional[int] = None
             logs.append(result.stdout.rstrip("\n"))
         if result.returncode != 0:
             err = (result.stderr or "").strip() or f"python3 exit {result.returncode}"
-            raise RuntimeError(err)
+            # 失败时保留已写出的 stdout（writelog），避免只剩 [ERROR]
+            detail = "\n".join([x for x in logs if x] + [err])
+            raise RuntimeError(detail)
     finally:
         if script_path:
             try:
