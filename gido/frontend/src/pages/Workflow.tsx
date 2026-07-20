@@ -5,7 +5,6 @@
  * @date 2026-06-05
  */
 import { useState, useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
 import {
   Table, Button, Modal, Form, Input, Select, Tag, Space, message,
   Drawer, DatePicker, Tooltip, Popconfirm, Tabs, Alert
@@ -18,9 +17,9 @@ import {
 import { workflowApi, studioApi, approvalApi } from '../api'
 import { useAppStore } from '../store'
 import { formatInTimeZone } from '../utils/datetime'
-import { R } from '../routes'
 import { isWorkspaceAdmin } from '../perm'
 import DAGEditor, { DAGEditorRef } from '../components/DAGEditor'
+import NodeConfigModal from '../components/NodeConfigModal'
 import CronBuilder from '../components/CronBuilder'
 import { useResizableTableColumns } from '../hooks/useResizableTableColumns'
 
@@ -36,11 +35,10 @@ const WORKFLOW_STATUS: Record<string, { label: string; color: string; desc: stri
 }
 
 export default function WorkflowPage() {
-  const { currentWorkspace, user, setPendingOpenNodeId } = useAppStore()
+  const { currentWorkspace, user } = useAppStore()
   const wsId = currentWorkspace?.id
   const canPublishDirect = isWorkspaceAdmin(user, currentWorkspace)
   const displayTz = currentWorkspace?.timezone || 'Asia/Shanghai'
-  const navigate = useNavigate()
   const [workflows, setWorkflows] = useState<any[]>([])
   const [nodes, setNodes] = useState<any[]>([])
   const [modalOpen, setModalOpen] = useState(false)
@@ -59,6 +57,8 @@ export default function WorkflowPage() {
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set())
   const [approvalModal, setApprovalModal] = useState<any>(null)
   const [approvalNote, setApprovalNote] = useState('')
+  const [nodeConfigId, setNodeConfigId] = useState<number | null>(null)
+  const [nodeConfigOpen, setNodeConfigOpen] = useState(false)
 
   const load = async () => {
     if (!wsId) return
@@ -93,21 +93,33 @@ export default function WorkflowPage() {
   }
 
   const handleSave = async () => {
-    const values = await form.validateFields()
-    values.workspace_id = wsId
-    const fromEditor = dagEditorRef.current?.getDAG() ?? dagConfig
-    // 编辑器只产出 nodes/edges；调度映射绑定生产版本，不写进草稿 DAG。
-    const prevDag = editingWf?.dag_config || {}
-    values.dag_config = { ...prevDag, ...fromEditor }
-    if (editingWf) {
-      await workflowApi.update(editingWf.id, values)
-      message.success('更新成功')
-    } else {
-      await workflowApi.create(values)
-      message.success('创建成功')
+    try {
+      const values = await form.validateFields()
+      values.workspace_id = wsId
+      if (values.schedule_type !== 'cron') {
+        values.cron_expression = null
+      }
+      const fromEditor = dagEditorRef.current?.getDAG() ?? dagConfig
+      // 编辑器只产出 nodes/edges；调度映射绑定生产版本，不写进草稿 DAG。
+      const prevDag = editingWf?.dag_config || {}
+      values.dag_config = { ...prevDag, ...fromEditor }
+      if (editingWf) {
+        await workflowApi.update(editingWf.id, values)
+        message.success('更新成功')
+      } else {
+        await workflowApi.create(values)
+        message.success('创建成功')
+      }
+      setModalOpen(false)
+      load()
+    } catch (e: any) {
+      if (e?.errorFields) return // 表单校验失败，antd 已高亮
+      const d = e?.response?.data?.detail
+      const msg = Array.isArray(d)
+        ? d.map((x: any) => x.msg || JSON.stringify(x)).join('; ')
+        : (typeof d === 'string' ? d : e?.message || '保存失败')
+      message.error(msg)
     }
-    setModalOpen(false)
-    load()
   }
 
   const handleRun = async (wf: any) => {
@@ -456,7 +468,8 @@ export default function WorkflowPage() {
         open={modalOpen}
         onOk={handleSave}
         onCancel={() => setModalOpen(false)}
-        width={900}
+        width={1080}
+        styles={{ body: { maxHeight: 'calc(100vh - 160px)', overflowY: 'auto' } }}
         okText="保存"
       >
         <Tabs items={[
@@ -476,11 +489,30 @@ export default function WorkflowPage() {
                       { label: '手动触发', value: 'manual' },
                       { label: 'Cron 定时', value: 'cron' }
                     ]}
-                    onChange={v => setScheduleType(v)}
+                    onChange={v => {
+                      setScheduleType(v)
+                      if (v !== 'cron') {
+                        form.setFieldValue('cron_expression', null)
+                      }
+                    }}
                   />
                 </Form.Item>
                 {scheduleType === 'cron' && (
-                  <Form.Item name="cron_expression" label="调度时间">
+                  <Form.Item
+                    name="cron_expression"
+                    label="调度时间"
+                    rules={[
+                      { required: true, message: '请配置 Cron 调度表达式' },
+                      {
+                        validator: async (_, v) => {
+                          const parts = String(v || '').trim().split(/\s+/).filter(Boolean)
+                          if (parts.length !== 5) {
+                            throw new Error('Cron 须为 5 段：分 时 日 月 周，例如 0 2 * * *')
+                          }
+                        },
+                      },
+                    ]}
+                  >
                     <CronBuilder />
                   </Form.Item>
                 )}
@@ -495,7 +527,7 @@ export default function WorkflowPage() {
                   type="info"
                   showIcon
                   style={{ marginBottom: 12 }}
-                  message="添加节点后拖拽排版，从端口拖线表示依赖；点击「保存」写入 GIDO 工作流定义。"
+                  message="添加节点后拖拽排版，从端口可连多个上下游；双击节点可在弹窗中改配置（与数据开发同步）。DEPENDENT 可等待其他工作流成功。"
                 />
                 <DAGEditor
                   ref={dagEditorRef}
@@ -503,8 +535,8 @@ export default function WorkflowPage() {
                   value={dagConfig}
                   onChange={setDagConfig}
                   onNodeDoubleClick={(nodeId) => {
-                    setPendingOpenNodeId(nodeId)
-                    navigate(R.batch.studio)
+                    setNodeConfigId(nodeId)
+                    setNodeConfigOpen(true)
                   }}
                 />
               </div>
@@ -512,6 +544,22 @@ export default function WorkflowPage() {
           }
         ]} />
       </Modal>
+
+      {wsId != null && (
+        <NodeConfigModal
+          open={nodeConfigOpen}
+          nodeId={nodeConfigId}
+          workspaceId={wsId}
+          releaseOnClose
+          onClose={() => {
+            setNodeConfigOpen(false)
+            setNodeConfigId(null)
+          }}
+          onSaved={(updated) => {
+            setNodes(prev => prev.map(n => (n.id === updated.id ? { ...n, ...updated } : n)))
+          }}
+        />
+      )}
 
       {/* 运行历史 */}
       <Drawer

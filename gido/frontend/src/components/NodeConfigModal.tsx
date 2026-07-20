@@ -1,0 +1,438 @@
+/**
+ * Copyright 2026 玑渡 GIDO Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * 节点配置弹窗（数据开发 / 工作流 DAG 共用）。
+ * 保存走同一 studio API；协作编辑锁与数据开发共享。
+ */
+import { useEffect, useState, useCallback, useRef } from 'react'
+import { Modal, Form, Input, Select, Tag, Button, Space, message, Spin, Radio, Card } from 'antd'
+import { LockOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons'
+import { studioApi, datasourceApi, integrationApi, workflowApi } from '../api'
+import { useAppStore } from '../store'
+import { resolveDatasourceForRun } from '../utils/workspaceDatasource'
+import {
+  DEPENDENT_DATE_OPTIONS,
+  dependentFormToParams,
+  dependentParamsToForm,
+} from '../utils/dependentParams'
+
+export type StudioNode = Record<string, any>
+
+interface NodeConfigModalProps {
+  open: boolean
+  nodeId: number | null
+  workspaceId: number
+  /** 关闭时是否释放本会话占用的编辑锁（工作流侧建议 true；Studio 已占锁时 false） */
+  releaseOnClose?: boolean
+  onClose: () => void
+  onSaved?: (node: StudioNode) => void
+  /** 可选：由 Studio 注入，与页面内锁状态保持一致 */
+  ensureEditLock?: (opts?: { silent?: boolean }) => Promise<boolean>
+}
+
+function normalizeFormValues(node: StudioNode) {
+  const vals: any = { ...node }
+  const p = vals.params
+  if (p == null || p === '') {
+    vals.params = ''
+  } else if (typeof p === 'object' && !Array.isArray(p)) {
+    vals.params = JSON.stringify(p, null, 2)
+  } else if (typeof p === 'string') {
+    vals.params = p
+  } else {
+    vals.params = String(p)
+  }
+  if (vals.node_type === 'SYNC') {
+    let syncId = null
+    if (typeof node.params === 'object' && node.params && !Array.isArray(node.params)) {
+      syncId = node.params.sync_task_id
+    } else if (typeof vals.params === 'string') {
+      try { syncId = JSON.parse(vals.params).sync_task_id } catch { /* ignore */ }
+    }
+    vals.sync_task_id = syncId
+  }
+  if (vals.node_type === 'DEPENDENT') {
+    const depForm = dependentParamsToForm(node.params)
+    vals.relation = depForm.relation
+    vals.depend_items = depForm.depend_items
+  }
+  return vals
+}
+
+export default function NodeConfigModal({
+  open,
+  nodeId,
+  workspaceId,
+  releaseOnClose = true,
+  onClose,
+  onSaved,
+  ensureEditLock,
+}: NodeConfigModalProps) {
+  const currentWorkspace = useAppStore(s => s.currentWorkspace)
+  const [form] = Form.useForm()
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [node, setNode] = useState<StudioNode | null>(null)
+  const [datasources, setDatasources] = useState<any[]>([])
+  const [integrationTasks, setIntegrationTasks] = useState<any[]>([])
+  const [workflows, setWorkflows] = useState<any[]>([])
+  const [holdsLock, setHoldsLock] = useState(false)
+  const holdsLockRef = useRef(false)
+  holdsLockRef.current = holdsLock
+  const acquiredHereRef = useRef(false)
+
+  const dsResolve = node && (node.node_type === 'SQL' || node.node_type === 'PYTHON')
+    ? resolveDatasourceForRun(node.datasource_id, currentWorkspace, datasources)
+    : null
+
+  const refreshNode = useCallback(async () => {
+    if (!nodeId) return null
+    const n: any = await studioApi.getNode(nodeId)
+    setNode(n)
+    form.setFieldsValue(normalizeFormValues(n))
+    return n as StudioNode
+  }, [nodeId, form])
+
+  const tryAcquire = useCallback(async (force = false, silent = false): Promise<boolean> => {
+    if (!nodeId) return false
+    if (ensureEditLock && !force) {
+      const ok = await ensureEditLock({ silent })
+      if (ok) {
+        setHoldsLock(true)
+        return true
+      }
+      // fall through to direct API (force steal or ensure failed)
+    }
+    try {
+      const res: any = await studioApi.acquireEditLock(nodeId, force || undefined)
+      setNode(res.node)
+      setHoldsLock(true)
+      acquiredHereRef.current = true
+      return true
+    } catch (e: any) {
+      setHoldsLock(false)
+      if (!silent) {
+        if (e?.response?.status === 409) {
+          message.warning(e?.response?.data?.detail || '节点正由他人编辑')
+        } else if (e?.response?.status !== 401) {
+          message.error(e?.response?.data?.detail || '无法获取编辑锁')
+        }
+      }
+      return false
+    }
+  }, [nodeId, ensureEditLock])
+
+  useEffect(() => {
+    if (!open || !nodeId || !workspaceId) return
+    let cancelled = false
+    ;(async () => {
+      setLoading(true)
+      acquiredHereRef.current = false
+      setHoldsLock(false)
+      try {
+        const [n, ds, tasks, wfs]: any = await Promise.all([
+          studioApi.getNode(nodeId),
+          datasourceApi.list(workspaceId),
+          integrationApi.listTasks(workspaceId).catch(() => []),
+          workflowApi.list(workspaceId).catch(() => []),
+        ])
+        if (cancelled) return
+        setNode(n)
+        setDatasources(ds || [])
+        setIntegrationTasks(Array.isArray(tasks) ? tasks : (tasks?.items || []))
+        setWorkflows(Array.isArray(wfs) ? wfs : [])
+        form.setFieldsValue(normalizeFormValues(n))
+        if (!n.is_locked) {
+          await tryAcquire(false, true)
+        }
+      } catch (e: any) {
+        if (!cancelled) message.error(e?.response?.data?.detail || '加载节点失败')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [open, nodeId, workspaceId, form, tryAcquire])
+
+  const handleClose = async () => {
+    if (releaseOnClose && acquiredHereRef.current && nodeId && holdsLockRef.current) {
+      try {
+        await studioApi.releaseEditLock(nodeId)
+      } catch { /* ignore */ }
+      acquiredHereRef.current = false
+      setHoldsLock(false)
+    }
+    onClose()
+  }
+
+  const handleSteal = () => {
+    Modal.confirm({
+      title: '抢锁编辑',
+      content: `当前编辑锁由「${node?.edit_lock_username || '其他用户'}」持有，确定抢占？`,
+      okText: '抢锁',
+      onOk: async () => {
+        const ok = await tryAcquire(true, false)
+        if (ok) message.success('已抢占编辑锁')
+      },
+    })
+  }
+
+  const handleOk = async () => {
+    if (!node || !nodeId) return
+    if (node.is_locked) {
+      message.warning('脚本已锁定（发布治理），无法修改配置；请先在数据开发中解锁')
+      return
+    }
+    let ok = holdsLock
+    if (!ok) ok = await tryAcquire(false, true)
+    if (!ok) {
+      message.warning('请先获取编辑锁后再保存；若由他人占用请使用「抢锁」')
+      return
+    }
+    const values = await form.validateFields()
+    const raw = values.params
+    if (raw === undefined || raw === null) {
+      values.params = null
+    } else if (typeof raw === 'string') {
+      const s = raw.trim()
+      if (s === '') {
+        values.params = null
+      } else {
+        try {
+          const parsed = JSON.parse(s)
+          if (parsed !== null && (typeof parsed !== 'object' || Array.isArray(parsed))) {
+            message.error('自定义变量须为键值对对象 {...}，不能是数组或纯字符串')
+            return
+          }
+          values.params = parsed
+        } catch {
+          values.params = s
+        }
+      }
+    }
+    if (values.timeout_seconds === '' || values.timeout_seconds === undefined) {
+      values.timeout_seconds = null
+    }
+    if (values.retry_times === '' || values.retry_times === undefined) {
+      values.retry_times = null
+    }
+    if (node.node_type === 'SYNC') {
+      if (!values.sync_task_id) {
+        message.error('请选择要绑定的数据集成任务')
+        return
+      }
+      values.params = { sync_task_id: values.sync_task_id }
+      delete values.sync_task_id
+    }
+    if (node.node_type === 'DEPENDENT') {
+      try {
+        values.params = dependentFormToParams(values)
+      } catch (e: any) {
+        message.error(e?.message || '请配置依赖项')
+        return
+      }
+      delete values.relation
+      delete values.depend_items
+      delete values.depend_workflow_id
+      delete values.date_value
+    }
+    if (node.node_type === 'SQL' || node.node_type === 'PYTHON') {
+      values.datasource_id = values.datasource_id ?? null
+    }
+    setSaving(true)
+    try {
+      const updated: any = await studioApi.updateNode(nodeId, { ...node, ...values, workspace_id: workspaceId })
+      setNode(updated)
+      message.success('配置已保存')
+      onSaved?.(updated)
+      await handleClose()
+    } catch (e: any) {
+      const d = e?.response?.data?.detail
+      const msg = Array.isArray(d)
+        ? d.map((x: any) => x.msg || JSON.stringify(x)).join('; ')
+        : (typeof d === 'string' ? d : e?.message || '保存失败')
+      message.error(msg)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const readOnly = Boolean(node?.is_locked) || (!holdsLock && Boolean(node?.edit_lock_user_id))
+
+  return (
+    <Modal
+      title={
+        <Space>
+          <span>节点配置</span>
+          {node && <Tag>{node.node_type}</Tag>}
+          {node?.is_locked && <Tag color="orange">已锁定</Tag>}
+          {node?.edit_lock_username && (
+            <Tag color={holdsLock ? 'green' : 'gold'}>
+              编辑锁 {node.edit_lock_username}{holdsLock ? '（我）' : ''}
+            </Tag>
+          )}
+        </Space>
+      }
+      open={open}
+      onOk={() => void handleOk()}
+      onCancel={() => void handleClose()}
+      confirmLoading={saving}
+      okButtonProps={{ disabled: Boolean(node?.is_locked) }}
+      okText="保存"
+      width={640}
+      destroyOnClose
+      zIndex={2200}
+      footer={(_, { OkBtn, CancelBtn }) => (
+        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+          <span>
+            {!node?.is_locked && !holdsLock && node?.edit_lock_username && (
+              <Button size="small" danger icon={<LockOutlined />} onClick={handleSteal}>抢锁</Button>
+            )}
+          </span>
+          <Space>
+            <CancelBtn />
+            <OkBtn />
+          </Space>
+        </Space>
+      )}
+    >
+      <Spin spinning={loading}>
+        <Form form={form} layout="vertical" style={{ marginTop: 8 }} disabled={Boolean(node?.is_locked)}>
+          <Form.Item name="name" label="节点名称" rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+          {(node?.node_type === 'SQL' || node?.node_type === 'PYTHON') && (
+            <Form.Item
+              name="datasource_id"
+              label="数据源（可选）"
+              extra={
+                node?.node_type === 'PYTHON'
+                  ? (currentWorkspace?.default_datasource_id
+                    ? 'PYTHON 用 gido_job.execute 读库；不选则继承空间默认'
+                    : '请先在「空间设置」配置默认数据源或在此指定')
+                  : (currentWorkspace?.default_datasource_id
+                    ? '不选则继承空间默认；选定后该节点固定此数据源'
+                    : '请先在「空间设置」配置默认数据源')
+              }
+            >
+              <Select
+                allowClear
+                placeholder={
+                  dsResolve?.source === 'workspace' && dsResolve.effective
+                    ? `继承空间默认：${dsResolve.effective.name}`
+                    : '继承空间默认'
+                }
+                options={datasources.map((d: any) => ({ label: `${d.name} (${d.ds_type})`, value: d.id }))}
+              />
+            </Form.Item>
+          )}
+          {node?.node_type === 'SYNC' && (
+            <Form.Item name="sync_task_id" label="绑定的数据集成任务" rules={[{ required: true }]}>
+              <Select
+                placeholder="选择同步任务"
+                options={integrationTasks.map((t: any) => ({
+                  label: `${t.name} (#${t.id}, ${t.sync_mode})`,
+                  value: t.id,
+                }))}
+              />
+            </Form.Item>
+          )}
+          {node?.node_type === 'DEPENDENT' && (
+            <>
+              <Form.Item
+                name="relation"
+                label="多依赖关系"
+                initialValue="AND"
+                extra="同一节点内多条依赖按 AND/OR 组合；发布到 Dolphin 后按调度窗口内最近成功实例判断（非「窗口内全部成功」）"
+              >
+                <Radio.Group
+                  options={[
+                    { label: '全部满足 (AND)', value: 'AND' },
+                    { label: '任一满足 (OR)', value: 'OR' },
+                  ]}
+                />
+              </Form.Item>
+              <Form.List name="depend_items" initialValue={[{ depend_workflow_id: null, date_value: 'today' }]}>
+                {(fields, { add, remove }) => (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+                    {fields.map((field, idx) => (
+                      <Card
+                        key={field.key}
+                        size="small"
+                        title={`依赖项 ${idx + 1}`}
+                        extra={
+                          fields.length > 1 ? (
+                            <Button
+                              type="text"
+                              danger
+                              size="small"
+                              icon={<DeleteOutlined />}
+                              onClick={() => remove(field.name)}
+                            />
+                          ) : null
+                        }
+                      >
+                        <Form.Item
+                          {...field}
+                          name={[field.name, 'depend_workflow_id']}
+                          label="依赖的工作流"
+                          rules={[{ required: true, message: '请选择工作流' }]}
+                          style={{ marginBottom: 8 }}
+                        >
+                          <Select
+                            showSearch
+                            optionFilterProp="label"
+                            placeholder="选择同空间工作流"
+                            options={workflows.map((w: any) => ({
+                              label: `${w.name} (#${w.id})${w.scheduler_definition_id ? '' : ' · 未发布'}`,
+                              value: w.id,
+                            }))}
+                          />
+                        </Form.Item>
+                        <Form.Item
+                          {...field}
+                          name={[field.name, 'date_value']}
+                          label="依赖时段"
+                          rules={[{ required: true }]}
+                          style={{ marginBottom: 0 }}
+                          initialValue="today"
+                        >
+                          <Select options={DEPENDENT_DATE_OPTIONS.map(o => ({ label: o.label, value: o.value }))} />
+                        </Form.Item>
+                      </Card>
+                    ))}
+                    <Button type="dashed" onClick={() => add({ depend_workflow_id: null, date_value: 'today' })} block icon={<PlusOutlined />}>
+                      添加依赖项
+                    </Button>
+                  </div>
+                )}
+              </Form.List>
+              <div style={{ color: '#999', fontSize: 12, marginBottom: 12 }}>
+                若上游是小时调度、下游要等齐当天，建议依赖日终收口工作流，或配置 last24Hours 等时段（仍按最近成功实例，非全部实例）。
+              </div>
+            </>
+          )}
+          <Form.Item name="timeout_seconds" label="超时时间（秒）">
+            <Input type="number" />
+          </Form.Item>
+          <Form.Item name="retry_times" label="失败重试次数">
+            <Input type="number" />
+          </Form.Item>
+          {node?.node_type !== 'DEPENDENT' && (
+            <Form.Item
+              name="params"
+              label="自定义变量（对象）"
+              tooltip={'标准 JSON 用双引号；含时间宏的键会同步到 Dolphin 全局参数'}
+            >
+              <Input.TextArea rows={3} placeholder={'{"xx": "yy"}'} disabled={readOnly && !holdsLock} />
+            </Form.Item>
+          )}
+          <div style={{ color: '#999', fontSize: 12 }}>
+            与数据开发共用同一节点与编辑锁；脚本内容请在「数据开发」中编辑。
+          </div>
+        </Form>
+      </Spin>
+    </Modal>
+  )
+}

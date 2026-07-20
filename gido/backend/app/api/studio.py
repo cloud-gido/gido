@@ -218,8 +218,14 @@ def create_node(node_in: NodeCreate, db: Session = Depends(get_db), current_user
         ds = require_datasource_row(db, current_user, node_in.datasource_id)
         if ds.workspace_id != node_in.workspace_id:
             raise HTTPException(status_code=400, detail="数据源不属于该工作空间")
+    payload = node_in.model_dump()
+    if (payload.get("node_type") or "").upper() == "DEPENDENT":
+        from app.services.workflow_dependent import normalize_dependent_params
+        payload["params"] = normalize_dependent_params(payload.get("params"))
+        if not (payload.get("script_content") or "").strip():
+            payload["script_content"] = "# DEPENDENT：等待其他工作流成功（无脚本）\n"
     node = TaskNode(
-        **node_in.model_dump(),
+        **payload,
         sort_order=_next_sort_order(db, node_in.workspace_id, node_in.folder_id),
         created_by=current_user.id,
         owner_id=current_user.id,
@@ -334,6 +340,12 @@ def update_node(node_id: int, node_in: NodeCreate, db: Session = Depends(get_db)
         ds = require_datasource_row(db, current_user, patch["datasource_id"])
         if ds.workspace_id != node.workspace_id:
             raise HTTPException(status_code=400, detail="数据源不属于该节点所在工作空间")
+    eff_type = (patch.get("node_type") or node.node_type or "").upper()
+    if eff_type == "DEPENDENT" and ("params" in patch or (node.node_type or "").upper() == "DEPENDENT"):
+        from app.services.workflow_dependent import normalize_dependent_params
+        base_params = node.params if isinstance(node.params, dict) else {}
+        merged = {**base_params, **(patch.get("params") or {})}
+        patch["params"] = normalize_dependent_params(merged)
     for k, v in patch.items():
         setattr(node, k, v)
     node.updated_at = datetime.utcnow()
@@ -476,6 +488,11 @@ def run_node(
             log_lines, status, _meta = run_sync_for_node_blocking(
                 db, node, trigger_type="studio", timeout_seconds=node.timeout_seconds or 3600
             )
+        elif node.node_type == "DEPENDENT":
+            from app.services.workflow_dependent import check_dependent_local
+            ok, log_lines = check_dependent_local(db, node)
+            if not ok:
+                status = "failed"
         else:
             log_lines = [f"[INFO] 节点类型 {node.node_type} 执行完成"]
     except Exception as e:

@@ -479,6 +479,94 @@ class DSClient:
                     f"-H 'Content-Type: application/json' "
                     f"-H 'Authorization: Bearer {_s.INTERNAL_TOKEN}' || exit 1"
                 )
+            elif node_type == "DEPENDENT":
+                from app.models.workspace import Workflow as WfModel
+                from app.services.workflow_dependent import (
+                    build_dependent_task_params,
+                    normalize_dependent_params,
+                )
+
+                dep_cfg = normalize_dependent_params(n.get("params") or {})
+                dep_items = dep_cfg.get("depend_items") or []
+                if not dep_items or not any(it.get("depend_workflow_id") for it in dep_items):
+                    raise ValueError(
+                        f"DEPENDENT 节点 node_id={n.get('node_id')} 未配置依赖工作流"
+                    )
+
+                ds_items: list = []
+                desc_parts: list = []
+                first_wf_id = None
+                first_def_code = None
+                for it in dep_items:
+                    dep_wf_id = it.get("depend_workflow_id")
+                    if not dep_wf_id:
+                        raise ValueError(
+                            f"DEPENDENT 节点 node_id={n.get('node_id')} 存在未选择工作流的依赖项"
+                        )
+                    target_wf = (
+                        db.query(WfModel).filter(WfModel.id == int(dep_wf_id)).first() if db else None
+                    )
+                    if not target_wf:
+                        raise ValueError(f"DEPENDENT 依赖的工作流不存在 id={dep_wf_id}")
+                    def_code: Optional[int] = None
+                    raw_def = (target_wf.scheduler_definition_id or "").strip()
+                    if raw_def:
+                        try:
+                            def_code = int(raw_def)
+                        except ValueError:
+                            def_code = None
+                    if def_code is None:
+                        found = self._find_process_code(project_code, target_wf.name)
+                        if found is None:
+                            raise ValueError(
+                                f"被依赖工作流「{target_wf.name}」尚未发布到 Dolphin，"
+                                f"请先发布该工作流再发布当前工作流"
+                            )
+                        def_code = int(found)
+                    ds_items.append(
+                        {
+                            "definition_code": int(def_code),
+                            "cycle": it.get("cycle") or "day",
+                            "date_value": it.get("date_value") or "today",
+                        }
+                    )
+                    desc_parts.append(f"#{dep_wf_id} {target_wf.name}({it.get('date_value')})")
+                    if first_wf_id is None:
+                        first_wf_id = int(dep_wf_id)
+                        first_def_code = int(def_code)
+
+                task_defs.append({
+                    "code": task_code,
+                    "name": n.get("name", f"node_{n['node_id']}"),
+                    "description": f"DEPENDENT → {' | '.join(desc_parts)}",
+                    "taskType": "DEPENDENT",
+                    "isCache": "NO",
+                    "taskParams": build_dependent_task_params(
+                        project_code=int(project_code),
+                        items=ds_items,
+                        relation=str(dep_cfg.get("relation") or "AND"),
+                    ),
+                    "flag": "YES",
+                    "taskPriority": "MEDIUM",
+                    "workerGroup": "default",
+                    "environmentCode": -1,
+                    "failRetryTimes": n.get("retry_times", 0),
+                    "failRetryInterval": 1,
+                    "timeoutFlag": "CLOSE",
+                    "timeout": n.get("timeout_seconds", 3600) // 60,
+                    "delayTime": 0,
+                    "cpuQuota": -1,
+                    "memoryMax": -1,
+                    "taskExecuteType": "BATCH",
+                })
+                diag_row["ds_task_type"] = "DEPENDENT"
+                diag_row["depend_workflow_id"] = first_wf_id
+                diag_row["depend_definition_code"] = first_def_code
+                diag_row["depend_relation"] = dep_cfg.get("relation") or "AND"
+                diag_row["depend_item_count"] = len(ds_items)
+                sync_diag.append(diag_row)
+                continue
+
             elif node_type == "PYTHON":
                 # 回调 GIDO 执行（注入 gido_job + 数据源），不在 Worker 上跑明文脚本
                 from app.core.config import settings as _s

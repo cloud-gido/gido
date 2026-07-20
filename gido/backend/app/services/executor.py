@@ -78,6 +78,13 @@ def _executor_loop():
                             )
                             if st != "success":
                                 raise RuntimeError("\n".join(logs))
+                        elif node.node_type == "DEPENDENT":
+                            from app.services.workflow_dependent import check_dependent_local
+                            ok, logs = check_dependent_local(
+                                db, node, business_date=getattr(inst, "business_date", None)
+                            )
+                            if not ok:
+                                raise RuntimeError("\n".join(logs))
                         else:
                             logs = [f"[INFO] {node.name} 执行完成"]
                         ni.status = "success"

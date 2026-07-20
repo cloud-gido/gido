@@ -94,6 +94,7 @@ class NodeType(str, enum.Enum):
     SHELL = "SHELL"
     SYNC = "SYNC"
     VIRTUAL = "VIRTUAL"
+    DEPENDENT = "DEPENDENT"  # 跨工作流依赖（映射 Dolphin DEPENDENT）
 
 
 class TaskNode(Base):

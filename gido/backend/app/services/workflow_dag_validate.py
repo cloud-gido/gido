@@ -88,7 +88,9 @@ def _dag_has_cycle(node_ids: List[int], edges: List[Dict[str, Any]]) -> bool:
 
 
 def validate_workflow_publishable(db: Session, wf: Workflow) -> None:
-    """发布到调度引擎前：DAG 结构 + 节点归属。"""
+    """发布到调度引擎前：DAG 结构 + 节点归属 + DEPENDENT 跨工作流依赖。"""
+    from app.services.workflow_dependent import validate_dag_dependent_nodes
+
     assert_cron_when_scheduled(wf.schedule_type, wf.cron_expression)
     dag = wf.dag_config or {}
     validate_dag_structure(dag)
@@ -100,6 +102,8 @@ def validate_workflow_publishable(db: Session, wf: Workflow) -> None:
             raise ValueError(f"节点不存在: id={nid}")
         if node.workspace_id != wf.workspace_id:
             raise ValueError(f"节点 {nid} 不属于当前工作流所在工作空间")
+
+    validate_dag_dependent_nodes(db, wf, require_published_target=True)
 
 
 def merge_dag_graph_into_config(wf: Workflow, graph: Dict[str, Any]) -> Dict[str, Any]:

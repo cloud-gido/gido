@@ -18,7 +18,7 @@ import {
 } from '@ant-design/icons'
 import Editor from '@monaco-editor/react'
 import { format as sqlFormat } from 'sql-formatter'
-import { studioApi, datasourceApi, integrationApi, approvalApi } from '../api'
+import { studioApi, datasourceApi, approvalApi, workflowApi } from '../api'
 import { BRAND } from '../branding'
 import { useAppStore } from '../store'
 import { isWorkspaceAdmin } from '../perm'
@@ -40,10 +40,13 @@ import {
 import QueryResultPanel from '../components/QueryResultPanel'
 import { exportRowsToCsv } from '../utils/csvExport'
 import { mergeColumnOrderWithKeys, pruneWidths } from '../utils/resultTableMeta'
+import NodeConfigModal from '../components/NodeConfigModal'
 
-const NODE_TYPES = ['SQL', 'PYTHON', 'SHELL', 'SYNC', 'VIRTUAL']
-const LANG_MAP: Record<string, string> = { SQL: 'sql', PYTHON: 'python', SHELL: 'shell', SYNC: 'json' }
-const TYPE_COLOR: Record<string, string> = { SQL: 'blue', PYTHON: 'green', SHELL: 'orange', SYNC: 'purple', VIRTUAL: 'default' }
+const NODE_TYPES = ['SQL', 'PYTHON', 'SHELL', 'SYNC', 'VIRTUAL', 'DEPENDENT']
+const LANG_MAP: Record<string, string> = { SQL: 'sql', PYTHON: 'python', SHELL: 'shell', SYNC: 'json', DEPENDENT: 'plaintext' }
+const TYPE_COLOR: Record<string, string> = {
+  SQL: 'blue', PYTHON: 'green', SHELL: 'orange', SYNC: 'purple', VIRTUAL: 'default', DEPENDENT: 'magenta',
+}
 
 /** 按工作区记住上次打开的脚本，下次进入数据开发自动打开（避免默认黑屏空编辑器） */
 const LAST_STUDIO_NODE_KEY = 'gido.studio.lastNodeByWorkspace'
@@ -145,12 +148,11 @@ export default function StudioPage() {
   const [folderForm] = Form.useForm()
   const [folderParentId, setFolderParentId] = useState<number | null>(null)
 
-  // 节点配置抽屉
+  // 节点配置弹窗（与工作流 DAG 共用 NodeConfigModal）
   const [configModal, setConfigModal] = useState(false)
-  const [configForm] = Form.useForm()
   const [historyModal, setHistoryModal] = useState(false)
   const [historyList, setHistoryList] = useState<any[]>([])
-  const [integrationTasks, setIntegrationTasks] = useState<any[]>([])
+  const [workflows, setWorkflows] = useState<any[]>([])
   /** 当前用户是否持有各节点的协作编辑锁（与发布锁定 is_locked 独立） */
   const [editLockHeld, setEditLockHeld] = useState<Record<number, boolean>>({})
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set())
@@ -159,26 +161,23 @@ export default function StudioPage() {
 
   const load = async () => {
     if (!wsId) return
-    const [n, d, f, pendingRes]: any = await Promise.all([
+    const [n, d, f, pendingRes, wfs]: any = await Promise.all([
       studioApi.listNodes(wsId),
       datasourceApi.list(wsId),
       studioApi.listFolders(wsId),
       approvalApi.list(wsId, { status: 'pending', page_size: 200 }),
+      workflowApi.list(wsId).catch(() => []),
     ])
     setNodes(sortNodesList(n as unknown as any[]))
     setDatasources(d as unknown as any[])
     setFolders(f as unknown as any[])
+    setWorkflows(Array.isArray(wfs) ? wfs : [])
     setPendingKeys(
       new Set((pendingRes?.items || []).map((i: any) => `${i.resource_type}:${i.resource_id}:${i.action}`)),
     )
   }
 
   useEffect(() => { load() }, [wsId])
-
-  useEffect(() => {
-    if (!wsId) return
-    integrationApi.listTasks(wsId).then((t: any) => setIntegrationTasks(Array.isArray(t) ? t : [])).catch(() => setIntegrationTasks([]))
-  }, [wsId])
 
   const openNode = useCallback((node: any) => {
     setOpenTabs(prev => (prev.find(t => t.id === node.id) ? prev : [...prev, node]))
@@ -636,9 +635,22 @@ export default function StudioPage() {
           ].join('\n')
         : values.node_type === 'SYNC'
           ? '{"sync_task_id": null}'
-          : '#!/bin/bash\necho "hello gido"'
+          : values.node_type === 'DEPENDENT'
+            ? '# DEPENDENT：等待其他工作流成功（无脚本，请在节点配置中选择依赖工作流）\n'
+            : values.node_type === 'VIRTUAL'
+              ? '# VIRTUAL\n'
+              : '#!/bin/bash\necho "hello gido"'
     if (values.node_type === 'SYNC') {
       values.params = { sync_task_id: null }
+    }
+    if (values.node_type === 'DEPENDENT') {
+      values.params = {
+        relation: 'AND',
+        depend_items: [{ depend_workflow_id: null, cycle: 'day', date_value: 'today' }],
+        depend_workflow_id: null,
+        cycle: 'day',
+        date_value: 'today',
+      }
     }
     if ((values.node_type === 'SQL' || values.node_type === 'PYTHON') && !values.datasource_id) {
       delete values.datasource_id
@@ -652,98 +664,10 @@ export default function StudioPage() {
     message.success('创建成功')
   }
 
-  // 打开节点配置（params 在接口里可能是 object；部分库/驱动也可能是 JSON 字符串，不能当成「无」而清空）
+  // 打开节点配置（与工作流 DAG 共用 NodeConfigModal）
   const openConfig = () => {
     if (!activeNode) return
-    const vals = { ...activeNode }
-    const p = vals.params
-    if (p == null || p === '') {
-      vals.params = ''
-    } else if (typeof p === 'object' && !Array.isArray(p)) {
-      vals.params = JSON.stringify(p, null, 2)
-    } else if (typeof p === 'string') {
-      vals.params = p
-    } else {
-      vals.params = String(p)
-    }
-    if (vals.node_type === 'SYNC' && typeof vals.params === 'object' && vals.params?.sync_task_id != null) {
-      vals.sync_task_id = vals.params.sync_task_id
-    } else if (vals.node_type === 'SYNC' && typeof vals.params === 'string') {
-      try {
-        const o = JSON.parse(vals.params)
-        vals.sync_task_id = o.sync_task_id
-      } catch { /* ignore */ }
-    }
-    configForm.setFieldsValue(vals)
     setConfigModal(true)
-  }
-
-  const handleSaveConfig = async () => {
-    if (!activeNode) return
-    if (activeNode.is_locked) {
-      message.warning('脚本已锁定，无法修改配置')
-      return
-    }
-    let ok = activeTabId != null && editLockHeld[activeTabId] === true
-    if (!ok) {
-      ok = await requestEditLockOnInteraction({ silent: true })
-    }
-    if (!ok) {
-      message.warning('请先点击脚本编辑区获取编辑锁后再保存配置；若当前由他人占用请使用「抢锁编辑」')
-      return
-    }
-    const values = await configForm.validateFields()
-    const raw = values.params
-    if (raw === undefined || raw === null) {
-      values.params = null
-    } else if (typeof raw === 'string') {
-      const s = raw.trim()
-      if (s === '') {
-        values.params = null
-      } else {
-        try {
-          const parsed = JSON.parse(s)
-          if (parsed !== null && (typeof parsed !== 'object' || Array.isArray(parsed))) {
-            message.error('自定义变量须为键值对对象 {...}，不能是数组或纯字符串')
-            return
-          }
-          values.params = parsed
-        } catch {
-          // 如 {'xx':'yy'} 非标准 JSON，交给后端用 ast.literal_eval 解析
-          values.params = s
-        }
-      }
-    }
-    if (values.timeout_seconds === '' || values.timeout_seconds === undefined) {
-      values.timeout_seconds = null
-    }
-    if (values.retry_times === '' || values.retry_times === undefined) {
-      values.retry_times = null
-    }
-    if (activeNode.node_type === 'SYNC') {
-      if (!values.sync_task_id) {
-        message.error('请选择要绑定的数据集成任务')
-        return
-      }
-      values.params = { sync_task_id: values.sync_task_id }
-      delete values.sync_task_id
-    }
-    if (activeNode.node_type === 'SQL' || activeNode.node_type === 'PYTHON') {
-      values.datasource_id = values.datasource_id ?? null
-    }
-    try {
-      const updated: any = await studioApi.updateNode(activeNode.id, { ...activeNode, ...values, workspace_id: wsId })
-      setNodes(prev => prev.map(n => (n.id === activeNode.id ? { ...n, ...updated } : n)))
-      setOpenTabs(prev => prev.map(t => (t.id === activeNode.id ? { ...t, ...updated } : t)))
-      setConfigModal(false)
-      message.success('配置已保存')
-    } catch (e: any) {
-      const d = e?.response?.data?.detail
-      const msg = Array.isArray(d)
-        ? d.map((x: any) => x.msg || JSON.stringify(x)).join('; ')
-        : (typeof d === 'string' ? d : e?.message || '保存失败')
-      message.error(msg)
-    }
   }
 
   const openHistory = async () => {
@@ -990,6 +914,30 @@ export default function StudioPage() {
         </div>
       )
     }
+    if (activeNode?.node_type === 'DEPENDENT') {
+      const p = (activeNode.params && typeof activeNode.params === 'object') ? activeNode.params : {}
+      const items = Array.isArray(p.depend_items) && p.depend_items.length
+        ? p.depend_items
+        : [{ depend_workflow_id: p.depend_workflow_id, date_value: p.date_value || 'today', cycle: p.cycle || 'day' }]
+      const preview = {
+        relation: p.relation || 'AND',
+        depend_items: items.map((it: any) => ({
+          depend_workflow_id: it.depend_workflow_id ?? null,
+          depend_workflow_name: workflows.find((w: any) => w.id === it.depend_workflow_id)?.name || null,
+          cycle: it.cycle || 'day',
+          date_value: it.date_value || 'today',
+        })),
+      }
+      return (
+        <div style={{ padding: 16, color: '#666', fontSize: 13, lineHeight: 1.6, overflow: 'auto', height: '100%' }}>
+          <p><strong>DEPENDENT 节点</strong>：等待同空间其他工作流整流程在指定时段成功，无需编写脚本。</p>
+          <p>在「配置」里可添加多条依赖（AND/OR）与丰富时段；发布前请先发布被依赖工作流。生产侧按 Dolphin 窗口内最近成功实例判断。</p>
+          <pre style={{ background: '#f5f5f5', padding: 12, borderRadius: 4, marginTop: 8 }}>
+            {JSON.stringify(preview, null, 2)}
+          </pre>
+        </div>
+      )
+    }
     return (
       <Editor
         key={activeTabId ?? 0}
@@ -1005,7 +953,7 @@ export default function StudioPage() {
     )
   }
 
-  const editorCaptureProps = activeNode?.node_type === 'SYNC'
+  const editorCaptureProps = (activeNode?.node_type === 'SYNC' || activeNode?.node_type === 'DEPENDENT')
     ? {}
     : { onPointerDownCapture: handleEditorAreaPointerDown, onFocusCapture: handleEditorAreaFocusCapture }
 
@@ -1365,66 +1313,23 @@ export default function StudioPage() {
         ))}
       </Modal>
 
-      {/* 节点配置弹窗 */}
-      <Modal title="节点配置" open={configModal} onOk={handleSaveConfig} onCancel={() => setConfigModal(false)} width={480}>
-        <Form form={configForm} layout="vertical" style={{ marginTop: 16 }}>
-          <Form.Item name="name" label="节点名称" rules={[{ required: true }]}>
-            <Input />
-          </Form.Item>
-          {(activeNode?.node_type === 'SQL' || activeNode?.node_type === 'PYTHON') && (
-            <Form.Item
-              name="datasource_id"
-              label="数据源（可选）"
-              extra={
-                activeNode?.node_type === 'PYTHON'
-                  ? (currentWorkspace?.default_datasource_id
-                    ? 'PYTHON 用 gido_job.execute 读库；不选则继承空间默认'
-                    : 'PYTHON 用 gido_job.execute 读库；请先在「空间设置」配置默认数据源或在此指定')
-                  : (currentWorkspace?.default_datasource_id
-                    ? '不选则继承空间默认；选定后该节点固定此数据源（不随空间默认变更）'
-                    : '请先在「空间设置」配置默认数据源')
-              }
-            >
-              <Select
-                allowClear
-                placeholder={
-                  dsResolve?.source === 'workspace' && dsResolve.effective
-                    ? `继承空间默认：${dsResolve.effective.name}`
-                    : '继承空间默认'
-                }
-                options={datasources.map((d: any) => ({ label: `${d.name} (${d.ds_type})`, value: d.id }))}
-              />
-            </Form.Item>
-          )}
-          {activeNode?.node_type === 'SYNC' && (
-            <Form.Item name="sync_task_id" label="绑定的数据集成任务" rules={[{ required: true }]}>
-              <Select
-                placeholder="选择同步任务"
-                options={integrationTasks.map((t: any) => ({
-                  label: `${t.name} (#${t.id}, ${t.sync_mode})`,
-                  value: t.id,
-                }))}
-              />
-            </Form.Item>
-          )}
-          <Form.Item name="timeout_seconds" label="超时时间（秒）">
-            <Input type="number" />
-          </Form.Item>
-          <Form.Item name="retry_times" label="失败重试次数">
-            <Input type="number" />
-          </Form.Item>
-          <Form.Item
-            name="params"
-            label="自定义变量（对象）"
-            tooltip={'标准 JSON 用双引号；含 $[yyyy-MM-dd-1] 等时间宏的键会同步到 Dolphin 全局参数（值里任意位置有 $[...] 即可，如 {"xx":"$[yyyy-MM-dd-1]"} 或 {"xx":"xx:$[yyyy-MM-dd-1]"}）'}
-          >
-            <Input.TextArea rows={3} placeholder={'{"xx": "yy"}'} />
-          </Form.Item>
-          <div style={{ color: '#999', fontSize: 12, marginTop: -8 }}>
-            调度配置在《工作流管理》中设置
-          </div>
-        </Form>
-      </Modal>
+      {wsId != null && (
+        <NodeConfigModal
+          open={configModal}
+          nodeId={activeNode?.id ?? null}
+          workspaceId={wsId}
+          releaseOnClose={false}
+          ensureEditLock={requestEditLockOnInteraction}
+          onClose={() => setConfigModal(false)}
+          onSaved={(updated) => {
+            setNodes(prev => prev.map(n => (n.id === updated.id ? { ...n, ...updated } : n)))
+            setOpenTabs(prev => prev.map(t => (t.id === updated.id ? { ...t, ...updated } : t)))
+            if (updated.edit_lock_user_id) {
+              setEditLockHeld(prev => ({ ...prev, [updated.id]: true }))
+            }
+          }}
+        />
+      )}
 
       <Modal
         title={`提交发布审批 — ${activeNode?.name || ''}`}
