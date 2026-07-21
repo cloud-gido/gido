@@ -13,6 +13,7 @@ if _JOB_LIB not in sys.path:
 
 from app.services.business_date import (
     bizdate_and_yesterday,
+    complement_schedule_time_for_dolphin,
     normalize_business_date,
     schedule_time_for_dolphin,
 )
@@ -31,6 +32,13 @@ def test_normalize_business_date_variants():
 def test_schedule_time_for_dolphin_pads_midnight():
     assert schedule_time_for_dolphin("2026-07-14") == "2026-07-14 00:00:00"
     assert schedule_time_for_dolphin("2026-07-14 12:30:00") == "2026-07-14 00:00:00"
+
+
+def test_complement_schedule_time_is_start_end_pair():
+    assert (
+        complement_schedule_time_for_dolphin("2026-07-14")
+        == "2026-07-14 00:00:00,2026-07-14 00:00:00"
+    )
 
 
 def test_bizdate_and_yesterday_relative():

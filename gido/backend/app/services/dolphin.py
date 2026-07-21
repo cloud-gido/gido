@@ -704,14 +704,36 @@ class DSClient:
 
     # ==================== 执行 ====================
 
-    def run_process(self, project_code: int, process_code: int,
-                    business_date: str = None, cron_expr: str = None) -> int:
-        """触发一次流程执行，返回 DS processInstanceId"""
-        import time
-        from app.services.business_date import schedule_time_for_dolphin
+    def run_process(
+        self,
+        project_code: int,
+        process_code: int,
+        business_date: str = None,
+        cron_expr: str = None,
+        *,
+        complement: bool = False,
+    ) -> int:
+        """触发一次流程执行，返回 DS processInstanceId。
 
-        # 补数据传入 YYYY-MM-DD 时须补全为 yyyy-MM-dd HH:mm:ss，否则 DS 宏相对墙钟展开
-        schedule_time = schedule_time_for_dolphin(business_date)
+        - 普通运行：``START_PROCESS``
+        - 补数据：须 ``COMPLEMENT_DATA`` + ``scheduleTime=start,end``，否则调度时间为空、
+          时间宏按墙钟展开（表现为多天补数都变成「昨天」）。
+        """
+        import time
+        from app.services.business_date import (
+            complement_schedule_time_for_dolphin,
+            schedule_time_for_dolphin,
+        )
+
+        if complement:
+            if not (business_date or "").strip():
+                raise ValueError("补数据须指定 business_date")
+            schedule_time = complement_schedule_time_for_dolphin(business_date)
+            exec_type = "COMPLEMENT_DATA"
+        else:
+            schedule_time = schedule_time_for_dolphin(business_date)
+            exec_type = "START_PROCESS"
+
         before_ids: set[int] = set()
         try:
             for row in self.list_process_instances(
@@ -722,23 +744,26 @@ class DSClient:
                     before_ids.add(int(rid))
         except Exception:
             before_ids = set()
-        resp = self._post(f"/projects/{project_code}/executors/start-process-instance", data={
-            "processDefinitionCode": process_code,
+        # form 字段须为字符串；None 会被 requests 丢掉或序列化异常
+        payload = {
+            "processDefinitionCode": str(process_code),
             "scheduleTime": schedule_time,
             "failureStrategy": "CONTINUE",
             "warningType": "NONE",
-            "warningGroupId": 0,
-            "execType": "START_PROCESS",
+            "warningGroupId": "0",
+            "execType": exec_type,
             "startNodeList": "",
             "taskDependType": "TASK_POST",
             "runMode": "RUN_MODE_SERIAL",
             "processInstancePriority": "MEDIUM",
             "workerGroup": "default",
-            "environmentCode": -1,
-            "startParams": None,
-            "expectedParallelismNumber": None,
-            "dryRun": 0,
-        })
+            "environmentCode": "-1",
+            "dryRun": "0",
+        }
+        resp = self._post(
+            f"/projects/{project_code}/executors/start-process-instance",
+            data=payload,
+        )
         # DS 3.2.x may return a command/code from start-process-instance, not the
         # workflow instance id. Poll the instance list and return the newly created id.
         instance_id: Optional[int] = None
@@ -762,7 +787,13 @@ class DSClient:
             time.sleep(0.25)
         if instance_id is None:
             instance_id = unwrap_ds_numeric(resp["data"], keys=("id", "code"))
-        logger.info(f"DS 流程实例已触发: processCode={process_code} instanceId={instance_id}")
+        logger.info(
+            "DS 流程实例已触发: processCode=%s instanceId=%s execType=%s scheduleTime=%s",
+            process_code,
+            instance_id,
+            exec_type,
+            schedule_time,
+        )
         return instance_id
 
     def get_instance_status(self, project_code: int, instance_id: int) -> dict:

@@ -534,7 +534,12 @@ def rerun_instance(wf_id: int, inst_id: int, db: Session = Depends(get_db), curr
         refresh_ds_client(db, wf.workspace_id)
         try:
             engine = get_scheduler_engine(version.scheduler_engine or "dolphin")
-            ref = engine.trigger(str(project_code), str(process_code), business_date=inst.business_date)
+            ref = engine.trigger(
+                str(project_code),
+                str(process_code),
+                business_date=inst.business_date,
+                complement=(inst.trigger_type or "") == "backfill",
+            )
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"生产调度重跑失败: {e}")
         inst.status = "running"
@@ -612,7 +617,13 @@ def batch_run_workflow(
         while current <= end:
             bd = current.strftime("%Y-%m-%d")
             try:
-                ref = engine.trigger(str(project_code), str(process_code), business_date=bd)
+                # 必须走 Dolphin COMPLEMENT_DATA，否则调度时间为空、宏全按墙钟「昨天」
+                ref = engine.trigger(
+                    str(project_code),
+                    str(process_code),
+                    business_date=bd,
+                    complement=True,
+                )
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"生产调度补数据失败 ({bd}): {e}")
             db.add(WorkflowInstance(

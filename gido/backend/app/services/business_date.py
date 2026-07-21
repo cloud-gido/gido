@@ -34,14 +34,25 @@ def normalize_business_date(value: Optional[str]) -> Optional[str]:
 
 
 def schedule_time_for_dolphin(business_date: Optional[str] = None) -> str:
-    """生成 Dolphin ``scheduleTime``（``yyyy-MM-dd HH:mm:ss``）。
+    """生成单点 ``scheduleTime``（``yyyy-MM-dd HH:mm:ss``）。
 
-    补数据传入的业务日补 ``00:00:00``；未传则用当前墙钟时间。
+    业务日补 ``00:00:00``；未传则用当前墙钟时间。
     """
     bd = normalize_business_date(business_date)
     if bd:
         return f"{bd} 00:00:00"
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def complement_schedule_time_for_dolphin(business_date: str) -> str:
+    """Dolphin ``COMPLEMENT_DATA`` 单日补数的 scheduleTime。
+
+    DS 3.2 要求 ``start,end`` 形式；单日用同一天两次，例如
+    ``2026-07-14 00:00:00,2026-07-14 00:00:00``。
+    仅用 ``START_PROCESS`` + 单点时间时，UI「调度时间」常为空，宏退回墙钟。
+    """
+    t = schedule_time_for_dolphin(business_date)
+    return f"{t},{t}"
 
 
 def bizdate_and_yesterday(

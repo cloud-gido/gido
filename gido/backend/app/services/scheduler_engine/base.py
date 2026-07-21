@@ -49,7 +49,14 @@ class SchedulerEngine(Protocol):
     def resume_schedule(self, project_id: str, definition_id: str) -> int:
         ...
 
-    def trigger(self, project_id: str, definition_id: str, *, business_date: Optional[str] = None) -> SchedulerInstanceRef:
+    def trigger(
+        self,
+        project_id: str,
+        definition_id: str,
+        *,
+        business_date: Optional[str] = None,
+        complement: bool = False,
+    ) -> SchedulerInstanceRef:
         ...
 
     def stop_instance(self, project_id: str, instance_id: str) -> None:

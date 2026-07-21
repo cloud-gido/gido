@@ -38,8 +38,20 @@ class DolphinSchedulerEngine:
     def resume_schedule(self, project_id: str, definition_id: str) -> int:
         return ds_client.online_schedules(int(project_id), int(definition_id))
 
-    def trigger(self, project_id: str, definition_id: str, *, business_date: Optional[str] = None) -> SchedulerInstanceRef:
-        instance_id = ds_client.run_process(int(project_id), int(definition_id), business_date)
+    def trigger(
+        self,
+        project_id: str,
+        definition_id: str,
+        *,
+        business_date: Optional[str] = None,
+        complement: bool = False,
+    ) -> SchedulerInstanceRef:
+        instance_id = ds_client.run_process(
+            int(project_id),
+            int(definition_id),
+            business_date,
+            complement=complement,
+        )
         return SchedulerInstanceRef(engine=self.name, instance_id=str(instance_id))
 
     def stop_instance(self, project_id: str, instance_id: str) -> None:
