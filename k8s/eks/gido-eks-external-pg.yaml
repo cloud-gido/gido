@@ -65,6 +65,8 @@ data:
   FLINK_OPERATOR_AUTO_UI_TUNNEL: "false"
   FLINK_OPERATOR_JM_REST_TEMPLATE: "http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081"
   FLINK_OPERATOR_JAR_HTTP_BASE: "http://backend.CHANGE_ME_GIDO_NAMESPACE.svc.cluster.local:8001"
+  # Dolphin Worker 须能访问；与上项通常相同（如 http://backend.bigdata.svc.cluster.local:8001）
+  GIDO_DS_CALLBACK_BASE_URL: "http://backend.CHANGE_ME_GIDO_NAMESPACE.svc.cluster.local:8001"
   FLINK_OPERATOR_SQL_RUNNER_JAR_URI: "local:///opt/flink/usrlib/sql-runner.jar"
   FLINK_OPERATOR_SQL_RUNNER_ENTRY_CLASS: "com.gido.flink.SqlRunner"
   FLINK_OPERATOR_JM_MEMORY: "2048m"

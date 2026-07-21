@@ -30,6 +30,37 @@ def _value_contains_ds_time_macro(v: Any) -> bool:
     return bool(_DS_TIME_MACRO.search(str(v).strip()))
 
 
+def ds_callback_base_url() -> str:
+    """Dolphin Worker 回调 GIDO 的 HTTP 基址（无尾斜杠）。
+
+    优先级：``GIDO_DS_CALLBACK_BASE_URL`` → ``FLINK_OPERATOR_JAR_HTTP_BASE`` → 本地默认。
+    """
+    for raw in (
+        getattr(settings, "GIDO_DS_CALLBACK_BASE_URL", None),
+        getattr(settings, "FLINK_OPERATOR_JAR_HTTP_BASE", None),
+    ):
+        base = (raw or "").strip().rstrip("/")
+        if base:
+            return base
+    return "http://gido-backend:8001"
+
+
+def _ds_callback_curl(path: str, *, json_body: Optional[str] = None) -> str:
+    """生成 Worker 上执行的 curl（Bearer = INTERNAL_TOKEN）。"""
+    from app.core.config import settings as _s
+
+    url = f"{ds_callback_base_url()}{path}"
+    parts = [
+        f"curl -s -f -X POST {url}",
+        "-H 'Content-Type: application/json'",
+        f"-H 'Authorization: Bearer {_s.INTERNAL_TOKEN}'",
+    ]
+    if json_body is not None:
+        parts.append(f"-d '{json_body}'")
+    parts.append("|| exit 1")
+    return " ".join(parts)
+
+
 def unwrap_ds_numeric(val, *, keys=("id", "code")):
     """
     DolphinScheduler 不同版本 `data` 可能是裸数字，也可能是 {{ id }} / {{ code }}。
@@ -473,13 +504,10 @@ class DSClient:
             elif node_type == "SQL" and diag_row.get("reason") is None:
                 diag_row["reason"] = "未能注册 Dolphin SQL 任务（见上文数据源同步日志）"
             if node_type == "SQL":
-                from app.core.config import settings as _s
                 # $[yyyy-MM-dd] 由 DS 按 scheduleTime 展开，保证补数据每日业务日不同
-                raw_script = (
-                    f"curl -s -f -X POST http://gido-backend:8001/api/studio/internal/nodes/{n['node_id']}/run "
-                    f"-H 'Content-Type: application/json' "
-                    f"-H 'Authorization: Bearer {_s.INTERNAL_TOKEN}' "
-                    f"-d '{{\"bizdate\":\"$[yyyy-MM-dd]\"}}' || exit 1"
+                raw_script = _ds_callback_curl(
+                    f"/api/studio/internal/nodes/{n['node_id']}/run",
+                    json_body='{"bizdate":"$[yyyy-MM-dd]"}',
                 )
             elif node_type == "DEPENDENT":
                 from app.models.workspace import Workflow as WfModel
@@ -571,22 +599,16 @@ class DSClient:
 
             elif node_type == "PYTHON":
                 # 回调 GIDO 执行（注入 gido_job + 数据源），不在 Worker 上跑明文脚本
-                from app.core.config import settings as _s
                 # $[yyyy-MM-dd] 由 DS 按 scheduleTime 展开，保证补数据每日业务日不同
-                raw_script = (
-                    f"curl -s -f -X POST http://gido-backend:8001/api/studio/internal/nodes/{n['node_id']}/run "
-                    f"-H 'Content-Type: application/json' "
-                    f"-H 'Authorization: Bearer {_s.INTERNAL_TOKEN}' "
-                    f"-d '{{\"bizdate\":\"$[yyyy-MM-dd]\"}}' || exit 1"
+                raw_script = _ds_callback_curl(
+                    f"/api/studio/internal/nodes/{n['node_id']}/run",
+                    json_body='{"bizdate":"$[yyyy-MM-dd]"}',
                 )
             elif node_type == "SYNC":
-                from app.core.config import settings as _s
                 node_params = n.get("params") or {}
                 sync_tid = node_params.get("sync_task_id") or ""
-                raw_script = (
-                    f"curl -s -f -X POST http://gido-backend:8001/api/integration/internal/tasks/{sync_tid}/run "
-                    f"-H 'Content-Type: application/json' "
-                    f"-H 'Authorization: Bearer {_s.INTERNAL_TOKEN}' || exit 1"
+                raw_script = _ds_callback_curl(
+                    f"/api/integration/internal/tasks/{sync_tid}/run",
                 )
             else:
                 raw_script = script or "echo done"

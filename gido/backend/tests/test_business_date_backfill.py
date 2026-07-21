@@ -34,11 +34,12 @@ def test_schedule_time_for_dolphin_pads_midnight():
     assert schedule_time_for_dolphin("2026-07-14 12:30:00") == "2026-07-14 00:00:00"
 
 
-def test_complement_schedule_time_is_start_end_pair():
-    assert (
-        complement_schedule_time_for_dolphin("2026-07-14")
-        == "2026-07-14 00:00:00,2026-07-14 00:00:00"
-    )
+def test_complement_schedule_time_is_json_date_list():
+    import json
+
+    raw = complement_schedule_time_for_dolphin("2026-07-14")
+    payload = json.loads(raw)
+    assert payload == {"complementScheduleDateList": "2026-07-14 00:00:00"}
 
 
 def test_bizdate_and_yesterday_relative():

@@ -249,14 +249,19 @@ export default function WorkflowPage() {
   const handleBatchRun = async () => {
     const values = await batchForm.validateFields()
     const [start, end] = values.date_range
-    const res: any = await workflowApi.batchRun(
-      selectedWf.id,
-      start.format('YYYY-MM-DD'),
-      end.format('YYYY-MM-DD')
-    )
-    message.success(res.message)
-    setBatchModal(false)
-    batchForm.resetFields()
+    try {
+      const res: any = await workflowApi.batchRun(
+        selectedWf.id,
+        start.format('YYYY-MM-DD'),
+        end.format('YYYY-MM-DD')
+      )
+      message.success(res.message)
+      setBatchModal(false)
+      batchForm.resetFields()
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail
+      message.error(typeof detail === 'string' ? detail : '补数据失败')
+    }
   }
 
   const baseColumns = [

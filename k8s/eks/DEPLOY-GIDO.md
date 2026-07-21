@@ -113,6 +113,8 @@ FLINK_OPERATOR_CHECKPOINT_DIR: "s3a://<bucket>/flink/checkpoints"
 FLINK_OPERATOR_SAVEPOINT_DIR: "s3a://<bucket>/flink/savepoints"
 FLINK_OPERATOR_S3_USE_IRSA: "true"
 FLINK_OPERATOR_JAR_HTTP_BASE: "http://backend.gido.svc.cluster.local:8001"
+  # Dolphin Worker 回调：PYTHON / SQL 降级 / SYNC 的 curl 基址（须 Worker 可达）
+  GIDO_DS_CALLBACK_BASE_URL: "http://backend.gido.svc.cluster.local:8001"
 FLINK_OPERATOR_NODE_POOL: "bigdata"   # 多节点池 + taint 时必填
 ```
 

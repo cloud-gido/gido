@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     DS_PROJECT_NAME: str = "GIDO"
     # DS worker 回调 GIDO 时使用的内部 token
     INTERNAL_TOKEN: str = ""
+    # DS Worker 回调 GIDO API 的基址（须 Worker 网络可达）。留空则依次回退
+    # FLINK_OPERATOR_JAR_HTTP_BASE → http://gido-backend:8001
+    # EKS 示例：http://backend.bigdata.svc.cluster.local:8001
+    GIDO_DS_CALLBACK_BASE_URL: Optional[str] = None
     DEFAULT_TIMEZONE: str = "Asia/Shanghai"
 
     # 仅用于本地排障：启动时把 admin 密码设为该明文；用完后务必从 .env 删除

@@ -45,14 +45,28 @@ def schedule_time_for_dolphin(business_date: Optional[str] = None) -> str:
 
 
 def complement_schedule_time_for_dolphin(business_date: str) -> str:
-    """Dolphin ``COMPLEMENT_DATA`` 单日补数的 scheduleTime。
+    """Dolphin ``COMPLEMENT_DATA`` 单日补数的 ``scheduleTime``（JSON 字符串）。
 
-    DS 3.2 要求 ``start,end`` 形式；单日用同一天两次，例如
-    ``2026-07-14 00:00:00,2026-07-14 00:00:00``。
-    仅用 ``START_PROCESS`` + 单点时间时，UI「调度时间」常为空，宏退回墙钟。
+    DS 3.2 ``isValidateScheduleTime`` / ``createComplementCommandList`` 会
+    ``JSONUtils.toMap(scheduleTime)``，必须传 JSON，例如::
+
+        {"complementScheduleDateList":"2026-07-14 00:00:00"}
+
+    或 ``complementStartDate`` + ``complementEndDate``。
+    若传纯文本 ``start,end``（如 ``2026-07-14 00:00:00,2026-07-14 00:00:00``），
+    toMap 失败 → 补数日期非法 → start-process-instance 失败（GIDO 表现为 500）。
+
+    使用 ``complementScheduleDateList``（而非仅 start/end）可在无 cron 调度的
+    手动工作流上仍能生成实例；start/end 依赖调度日历展开，无调度时 listDate 为空。
     """
+    import json
+
     t = schedule_time_for_dolphin(business_date)
-    return f"{t},{t}"
+    return json.dumps(
+        {"complementScheduleDateList": t},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def bizdate_and_yesterday(

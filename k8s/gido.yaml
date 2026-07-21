@@ -64,6 +64,8 @@ data:
   FLINK_OPERATOR_DEV_LOCAL: "false"
   FLINK_OPERATOR_AUTO_UI_TUNNEL: "false"
   FLINK_OPERATOR_JAR_HTTP_BASE: "http://backend.gido.svc.cluster.local:8001"
+  # Dolphin Worker 回调 GIDO（PYTHON/SQL 降级/SYNC）；留空则用上方 JAR_HTTP_BASE
+  GIDO_DS_CALLBACK_BASE_URL: "http://backend.gido.svc.cluster.local:8001"
   FLINK_OPERATOR_IMAGE: "__FLINK_OPERATOR_IMAGE__"
   FLINK_OPERATOR_FLINK_VERSION: "v2_0"
   FLINK_OPERATOR_SERVICE_ACCOUNT: "flink"
