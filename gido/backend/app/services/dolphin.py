@@ -474,10 +474,12 @@ class DSClient:
                 diag_row["reason"] = "未能注册 Dolphin SQL 任务（见上文数据源同步日志）"
             if node_type == "SQL":
                 from app.core.config import settings as _s
+                # $[yyyy-MM-dd] 由 DS 按 scheduleTime 展开，保证补数据每日业务日不同
                 raw_script = (
-                    f"curl -s -f -X POST http://gido-backend:8001/api/studio/nodes/{n['node_id']}/run "
+                    f"curl -s -f -X POST http://gido-backend:8001/api/studio/internal/nodes/{n['node_id']}/run "
                     f"-H 'Content-Type: application/json' "
-                    f"-H 'Authorization: Bearer {_s.INTERNAL_TOKEN}' || exit 1"
+                    f"-H 'Authorization: Bearer {_s.INTERNAL_TOKEN}' "
+                    f"-d '{{\"bizdate\":\"$[yyyy-MM-dd]\"}}' || exit 1"
                 )
             elif node_type == "DEPENDENT":
                 from app.models.workspace import Workflow as WfModel
@@ -570,10 +572,12 @@ class DSClient:
             elif node_type == "PYTHON":
                 # 回调 GIDO 执行（注入 gido_job + 数据源），不在 Worker 上跑明文脚本
                 from app.core.config import settings as _s
+                # $[yyyy-MM-dd] 由 DS 按 scheduleTime 展开，保证补数据每日业务日不同
                 raw_script = (
                     f"curl -s -f -X POST http://gido-backend:8001/api/studio/internal/nodes/{n['node_id']}/run "
                     f"-H 'Content-Type: application/json' "
-                    f"-H 'Authorization: Bearer {_s.INTERNAL_TOKEN}' || exit 1"
+                    f"-H 'Authorization: Bearer {_s.INTERNAL_TOKEN}' "
+                    f"-d '{{\"bizdate\":\"$[yyyy-MM-dd]\"}}' || exit 1"
                 )
             elif node_type == "SYNC":
                 from app.core.config import settings as _s
@@ -703,9 +707,11 @@ class DSClient:
     def run_process(self, project_code: int, process_code: int,
                     business_date: str = None, cron_expr: str = None) -> int:
         """触发一次流程执行，返回 DS processInstanceId"""
-        from datetime import datetime
         import time
-        biz = business_date or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        from app.services.business_date import schedule_time_for_dolphin
+
+        # 补数据传入 YYYY-MM-DD 时须补全为 yyyy-MM-dd HH:mm:ss，否则 DS 宏相对墙钟展开
+        schedule_time = schedule_time_for_dolphin(business_date)
         before_ids: set[int] = set()
         try:
             for row in self.list_process_instances(
@@ -718,7 +724,7 @@ class DSClient:
             before_ids = set()
         resp = self._post(f"/projects/{project_code}/executors/start-process-instance", data={
             "processDefinitionCode": process_code,
-            "scheduleTime": biz,
+            "scheduleTime": schedule_time,
             "failureStrategy": "CONTINUE",
             "warningType": "NONE",
             "warningGroupId": 0,
@@ -1078,13 +1084,14 @@ def _build_ds_global_params(params: dict) -> str:
 
 
 def _rewrite_sql_builtins(sql: str) -> str:
-    """将 GIDO 内置变量映射为 DS 内置变量
-    ${bizdate}   -> ${system.biz.date}   (yyyyMMdd 格式的业务日期前一天)
-    ${yesterday} -> ${system.biz.date}
+    """将 GIDO 内置变量映射为 DS 时间宏（相对 scheduleTime，带横线日期）。
+
+    ${bizdate}   -> $[yyyy-MM-dd]     （调度业务日当天，与本地 Studio 一致）
+    ${yesterday} -> $[yyyy-MM-dd-1]   （业务日前一天；勿再用 system.biz.date）
     """
     import re
-    sql = re.sub(r'\$\{bizdate\}', '${system.biz.date}', sql)
-    sql = re.sub(r'\$\{yesterday\}', '${system.biz.date}', sql)
+    sql = re.sub(r'\$\{bizdate\}', '$[yyyy-MM-dd]', sql)
+    sql = re.sub(r'\$\{yesterday\}', '$[yyyy-MM-dd-1]', sql)
     return sql
 
 

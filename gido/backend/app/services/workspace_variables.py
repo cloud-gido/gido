@@ -59,8 +59,12 @@ def substitute_script_variables(
     except Exception:
         now_local = datetime.now()
 
-    biz = bizdate or now_local.strftime("%Y-%m-%d")
-    yesterday_str = (now_local - timedelta(days=1)).strftime("%Y-%m-%d")
+    from app.services.business_date import bizdate_and_yesterday, normalize_business_date
+
+    biz, yesterday_str = bizdate_and_yesterday(
+        normalize_business_date(bizdate),
+        now=now_local.replace(tzinfo=None),
+    )
     text = script.replace("${bizdate}", biz).replace("${yesterday}", yesterday_str)
 
     merged = load_workspace_variable_map(db, workspace_id, scope)

@@ -64,11 +64,12 @@ def _executor_loop():
                     db.refresh(ni)
 
                     try:
+                        bizdate = getattr(inst, "business_date", None)
                         if node.node_type == "SQL":
-                            logs = _run_sql(node, db)
+                            logs = _run_sql(node, db, bizdate=bizdate)
                             auto_parse_lineage(node, db)
                         elif node.node_type == "PYTHON":
-                            logs = _run_python(node, db)
+                            logs = _run_python(node, db, bizdate=bizdate)
                         elif node.node_type == "SHELL":
                             logs = _run_shell(node)
                         elif node.node_type == "SYNC":

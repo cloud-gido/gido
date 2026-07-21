@@ -9,7 +9,7 @@ import os
 import stat
 import subprocess
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -39,10 +39,11 @@ def datasource_to_job_context(ds: Any) -> Dict[str, Any]:
     }
 
 
-def _macro_context(db: Any, node: Any) -> Dict[str, Any]:
+def _macro_context(db: Any, node: Any, bizdate: Optional[str] = None) -> Dict[str, Any]:
     """时区 / bizdate / 空间变量 / 节点 params，供 gido_job.execute 宏展开。"""
     from app.core.config import settings
     from app.models.workspace import Workspace
+    from app.services.business_date import bizdate_and_yesterday
     from app.services.workspace_variables import load_workspace_variable_map
 
     ws = db.query(Workspace).filter(Workspace.id == int(node.workspace_id)).first()
@@ -56,7 +57,7 @@ def _macro_context(db: Any, node: Any) -> Dict[str, Any]:
     except Exception:
         now_local = datetime.now()
 
-    biz = now_local.strftime("%Y-%m-%d")
+    biz, yesterday = bizdate_and_yesterday(bizdate, now=now_local.replace(tzinfo=None))
     variables: Dict[str, str] = {}
     try:
         variables.update(load_workspace_variable_map(db, int(node.workspace_id), "batch"))
@@ -73,7 +74,7 @@ def _macro_context(db: Any, node: Any) -> Dict[str, Any]:
     return {
         "timezone": tz_name,
         "bizdate": biz,
-        "yesterday": (now_local - timedelta(days=1)).strftime("%Y-%m-%d"),
+        "yesterday": yesterday,
         "variables": variables,
     }
 
@@ -93,13 +94,21 @@ def _write_context_file(ctx: Dict[str, Any]) -> str:
     return path
 
 
-def run_python_node(node: Any, db: Any, *, timeout_seconds: Optional[int] = None) -> List[str]:
+def run_python_node(
+    node: Any,
+    db: Any,
+    *,
+    timeout_seconds: Optional[int] = None,
+    bizdate: Optional[str] = None,
+) -> List[str]:
     """执行 PYTHON 节点脚本；返回日志行列表。"""
+    from app.services.business_date import normalize_business_date
     from app.services.workspace_datasource_policy import load_datasource_for_run, resolve_datasource_id
 
     timeout = timeout_seconds or node.timeout_seconds or 300
     if timeout < 1:
         timeout = 300
+    biz = normalize_business_date(bizdate)
 
     ctx_path: Optional[str] = None
     script_path: Optional[str] = None
@@ -107,12 +116,14 @@ def run_python_node(node: Any, db: Any, *, timeout_seconds: Optional[int] = None
 
     ctx: Dict[str, Any] = {}
     try:
-        ctx.update(_macro_context(db, node))
+        ctx.update(_macro_context(db, node, bizdate=biz))
     except Exception as e:
         logger.warning("宏上下文构建失败: %s", e)
         ctx.setdefault("timezone", "Asia/Shanghai")
-        ctx.setdefault("bizdate", datetime.now().strftime("%Y-%m-%d"))
+        ctx.setdefault("bizdate", biz or datetime.now().strftime("%Y-%m-%d"))
         ctx.setdefault("variables", {})
+    if biz:
+        logs.append(f"[INFO] 业务日 bizdate={ctx.get('bizdate')}（宏相对该日展开）")
 
     ds_id = resolve_datasource_id(
         db,

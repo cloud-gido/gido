@@ -5,9 +5,10 @@
  * 节点配置弹窗（数据开发 / 工作流 DAG 共用）。
  * 保存走同一 studio API；协作编辑锁与数据开发共享。
  */
-import { useEffect, useState, useCallback, useRef } from 'react'
-import { Modal, Form, Input, Select, Tag, Button, Space, message, Spin, Radio, Card } from 'antd'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { Modal, Form, Input, Select, Tag, Button, Space, message, Spin, Radio, Card, Tabs, Descriptions } from 'antd'
 import { LockOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons'
+import Editor from '@monaco-editor/react'
 import { studioApi, datasourceApi, integrationApi, workflowApi } from '../api'
 import { useAppStore } from '../store'
 import { resolveDatasourceForRun } from '../utils/workspaceDatasource'
@@ -16,8 +17,21 @@ import {
   dependentFormToParams,
   dependentParamsToForm,
 } from '../utils/dependentParams'
+import {
+  loadEditorAppearance,
+  monacoEditorOptionsFromAppearance,
+  registerDwMonacoThemes,
+} from '../utils/editorAppearance'
 
 export type StudioNode = Record<string, any>
+
+const SCRIPT_LANG: Record<string, string> = {
+  SQL: 'sql',
+  PYTHON: 'python',
+  SHELL: 'shell',
+}
+
+const SCRIPT_NODE_TYPES = new Set(['SQL', 'PYTHON', 'SHELL'])
 
 interface NodeConfigModalProps {
   open: boolean
@@ -33,6 +47,7 @@ interface NodeConfigModalProps {
 
 function normalizeFormValues(node: StudioNode) {
   const vals: any = { ...node }
+  vals.script_content = node.script_content ?? ''
   const p = vals.params
   if (p == null || p === '') {
     vals.params = ''
@@ -85,6 +100,39 @@ export default function NodeConfigModal({
   const dsResolve = node && (node.node_type === 'SQL' || node.node_type === 'PYTHON')
     ? resolveDatasourceForRun(node.datasource_id, currentWorkspace, datasources)
     : null
+
+  const editorAppearance = useMemo(() => loadEditorAppearance(), [])
+  const showScriptEditor = Boolean(node && SCRIPT_NODE_TYPES.has(node.node_type))
+  const scriptContent = Form.useWatch('script_content', form) ?? ''
+  const syncTaskId = Form.useWatch('sync_task_id', form)
+  const dependRelation = Form.useWatch('relation', form)
+  const dependItems = Form.useWatch('depend_items', form)
+
+  const selectedSyncTask = useMemo(
+    () => integrationTasks.find((t: any) => t.id === syncTaskId) || null,
+    [integrationTasks, syncTaskId],
+  )
+
+  const dependentPreview = useMemo(() => {
+    const items = Array.isArray(dependItems) && dependItems.length
+      ? dependItems
+      : [{ depend_workflow_id: null, date_value: 'today' }]
+    return {
+      relation: dependRelation || 'AND',
+      depend_items: items.map((it: any) => ({
+        depend_workflow_id: it?.depend_workflow_id ?? null,
+        depend_workflow_name: workflows.find((w: any) => w.id === it?.depend_workflow_id)?.name || null,
+        cycle: it?.cycle || 'day',
+        date_value: it?.date_value || 'today',
+      })),
+    }
+  }, [dependRelation, dependItems, workflows])
+
+  const primaryTabLabel = node?.node_type === 'SYNC'
+    ? '同步任务'
+    : node?.node_type === 'DEPENDENT'
+      ? '依赖配置'
+      : '脚本'
 
   const refreshNode = useCallback(async () => {
     if (!nodeId) return null
@@ -240,11 +288,16 @@ export default function NodeConfigModal({
     if (node.node_type === 'SQL' || node.node_type === 'PYTHON') {
       values.datasource_id = values.datasource_id ?? null
     }
+    if (SCRIPT_NODE_TYPES.has(node.node_type)) {
+      values.script_content = values.script_content ?? ''
+    } else {
+      delete values.script_content
+    }
     setSaving(true)
     try {
       const updated: any = await studioApi.updateNode(nodeId, { ...node, ...values, workspace_id: workspaceId })
       setNode(updated)
-      message.success('配置已保存')
+      message.success('已保存')
       onSaved?.(updated)
       await handleClose()
     } catch (e: any) {
@@ -259,6 +312,7 @@ export default function NodeConfigModal({
   }
 
   const readOnly = Boolean(node?.is_locked) || (!holdsLock && Boolean(node?.edit_lock_user_id))
+  const scriptReadOnly = Boolean(node?.is_locked) || !holdsLock
 
   return (
     <Modal
@@ -280,7 +334,8 @@ export default function NodeConfigModal({
       confirmLoading={saving}
       okButtonProps={{ disabled: Boolean(node?.is_locked) }}
       okText="保存"
-      width={640}
+      width={920}
+      styles={{ body: { maxHeight: 'min(78vh, 820px)', overflowY: 'auto' } }}
       destroyOnClose
       zIndex={2200}
       footer={(_, { OkBtn, CancelBtn }) => (
@@ -299,137 +354,230 @@ export default function NodeConfigModal({
     >
       <Spin spinning={loading}>
         <Form form={form} layout="vertical" style={{ marginTop: 8 }} disabled={Boolean(node?.is_locked)}>
-          <Form.Item name="name" label="节点名称" rules={[{ required: true }]}>
+          <Form.Item name="name" label="节点名称" rules={[{ required: true }]} style={{ marginBottom: 12 }}>
             <Input />
           </Form.Item>
-          {(node?.node_type === 'SQL' || node?.node_type === 'PYTHON') && (
-            <Form.Item
-              name="datasource_id"
-              label="数据源（可选）"
-              extra={
-                node?.node_type === 'PYTHON'
-                  ? (currentWorkspace?.default_datasource_id
-                    ? 'PYTHON 用 gido_job.execute 读库；不选则继承空间默认'
-                    : '请先在「空间设置」配置默认数据源或在此指定')
-                  : (currentWorkspace?.default_datasource_id
-                    ? '不选则继承空间默认；选定后该节点固定此数据源'
-                    : '请先在「空间设置」配置默认数据源')
-              }
-            >
-              <Select
-                allowClear
-                placeholder={
-                  dsResolve?.source === 'workspace' && dsResolve.effective
-                    ? `继承空间默认：${dsResolve.effective.name}`
-                    : '继承空间默认'
-                }
-                options={datasources.map((d: any) => ({ label: `${d.name} (${d.ds_type})`, value: d.id }))}
-              />
-            </Form.Item>
-          )}
-          {node?.node_type === 'SYNC' && (
-            <Form.Item name="sync_task_id" label="绑定的数据集成任务" rules={[{ required: true }]}>
-              <Select
-                placeholder="选择同步任务"
-                options={integrationTasks.map((t: any) => ({
-                  label: `${t.name} (#${t.id}, ${t.sync_mode})`,
-                  value: t.id,
-                }))}
-              />
-            </Form.Item>
-          )}
-          {node?.node_type === 'DEPENDENT' && (
-            <>
-              <Form.Item
-                name="relation"
-                label="多依赖关系"
-                initialValue="AND"
-                extra="同一节点内多条依赖按 AND/OR 组合；发布到 Dolphin 后按调度窗口内最近成功实例判断（非「窗口内全部成功」）"
-              >
-                <Radio.Group
-                  options={[
-                    { label: '全部满足 (AND)', value: 'AND' },
-                    { label: '任一满足 (OR)', value: 'OR' },
-                  ]}
-                />
-              </Form.Item>
-              <Form.List name="depend_items" initialValue={[{ depend_workflow_id: null, date_value: 'today' }]}>
-                {(fields, { add, remove }) => (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
-                    {fields.map((field, idx) => (
-                      <Card
-                        key={field.key}
-                        size="small"
-                        title={`依赖项 ${idx + 1}`}
+          <Tabs
+            defaultActiveKey="primary"
+            items={[
+              {
+                key: 'primary',
+                label: primaryTabLabel,
+                children: (
+                  <div>
+                    {(node?.node_type === 'SQL' || node?.node_type === 'PYTHON') && (
+                      <Form.Item
+                        name="datasource_id"
+                        label="数据源（可选）"
                         extra={
-                          fields.length > 1 ? (
-                            <Button
-                              type="text"
-                              danger
-                              size="small"
-                              icon={<DeleteOutlined />}
-                              onClick={() => remove(field.name)}
-                            />
-                          ) : null
+                          node?.node_type === 'PYTHON'
+                            ? (currentWorkspace?.default_datasource_id
+                              ? 'PYTHON 用 gido_job.execute 读库；不选则继承空间默认'
+                              : '请先在「空间设置」配置默认数据源或在此指定')
+                            : (currentWorkspace?.default_datasource_id
+                              ? '不选则继承空间默认；选定后该节点固定此数据源'
+                              : '请先在「空间设置」配置默认数据源')
                         }
                       >
+                        <Select
+                          allowClear
+                          placeholder={
+                            dsResolve?.source === 'workspace' && dsResolve.effective
+                              ? `继承空间默认：${dsResolve.effective.name}`
+                              : '继承空间默认'
+                          }
+                          options={datasources.map((d: any) => ({ label: `${d.name} (${d.ds_type})`, value: d.id }))}
+                        />
+                      </Form.Item>
+                    )}
+                    {showScriptEditor && (
+                      <Form.Item
+                        name="script_content"
+                        label="脚本内容"
+                        extra={node?.node_type === 'PYTHON'
+                          ? '与数据开发同一脚本；可用 gido_job.execute / writelog'
+                          : '与数据开发同一脚本，保存后写入版本历史'}
+                      >
+                        <div style={{ border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden' }}>
+                          <Editor
+                            height={360}
+                            language={SCRIPT_LANG[node!.node_type] || 'plaintext'}
+                            theme={editorAppearance.theme}
+                            beforeMount={registerDwMonacoThemes}
+                            value={scriptContent}
+                            onChange={(v) => {
+                              if (scriptReadOnly) return
+                              form.setFieldsValue({ script_content: v ?? '' })
+                            }}
+                            options={{
+                              ...monacoEditorOptionsFromAppearance(editorAppearance),
+                              readOnly: scriptReadOnly,
+                              minimap: { enabled: false },
+                              scrollBeyondLastLine: false,
+                            }}
+                          />
+                        </div>
+                      </Form.Item>
+                    )}
+                    {node?.node_type === 'SYNC' && (
+                      <>
                         <Form.Item
-                          {...field}
-                          name={[field.name, 'depend_workflow_id']}
-                          label="依赖的工作流"
-                          rules={[{ required: true, message: '请选择工作流' }]}
-                          style={{ marginBottom: 8 }}
+                          name="sync_task_id"
+                          label="绑定的数据集成任务"
+                          rules={[{ required: true, message: '请选择同步任务' }]}
+                          extra="SYNC 节点执行所选集成任务；任务定义在「数据集成」中维护，此处完成绑定即可"
                         >
                           <Select
                             showSearch
                             optionFilterProp="label"
-                            placeholder="选择同空间工作流"
-                            options={workflows.map((w: any) => ({
-                              label: `${w.name} (#${w.id})${w.scheduler_definition_id ? '' : ' · 未发布'}`,
-                              value: w.id,
+                            placeholder="选择同步任务"
+                            options={integrationTasks.map((t: any) => ({
+                              label: `${t.name} (#${t.id}, ${t.sync_mode})`,
+                              value: t.id,
                             }))}
                           />
                         </Form.Item>
+                        {selectedSyncTask ? (
+                          <Card size="small" title="任务详情" style={{ marginBottom: 12 }}>
+                            <Descriptions size="small" column={1}>
+                              <Descriptions.Item label="名称">{selectedSyncTask.name}</Descriptions.Item>
+                              <Descriptions.Item label="模式">{selectedSyncTask.sync_mode}</Descriptions.Item>
+                              <Descriptions.Item label="ID">#{selectedSyncTask.id}</Descriptions.Item>
+                              <Descriptions.Item label="源表">
+                                #{selectedSyncTask.src_datasource_id} / {selectedSyncTask.src_table || '—'}
+                              </Descriptions.Item>
+                              <Descriptions.Item label="目标表">
+                                #{selectedSyncTask.dst_datasource_id} / {selectedSyncTask.dst_table || '—'}
+                              </Descriptions.Item>
+                            </Descriptions>
+                          </Card>
+                        ) : (
+                          <div style={{ color: '#999', fontSize: 12, marginBottom: 12 }}>
+                            选择任务后可在此查看摘要；完整映射仍在「数据集成」编辑。
+                          </div>
+                        )}
+                        <div style={{ color: '#666', fontSize: 12, marginBottom: 4 }}>节点参数预览</div>
+                        <pre style={{ background: '#f5f5f5', padding: 12, borderRadius: 4, fontSize: 12, margin: 0 }}>
+                          {JSON.stringify({ sync_task_id: syncTaskId ?? null }, null, 2)}
+                        </pre>
+                      </>
+                    )}
+                    {node?.node_type === 'DEPENDENT' && (
+                      <>
                         <Form.Item
-                          {...field}
-                          name={[field.name, 'date_value']}
-                          label="依赖时段"
-                          rules={[{ required: true }]}
-                          style={{ marginBottom: 0 }}
-                          initialValue="today"
+                          name="relation"
+                          label="多依赖关系"
+                          initialValue="AND"
+                          extra="同一节点内多条依赖按 AND/OR 组合；发布到 Dolphin 后按调度窗口内最近成功实例判断（非「窗口内全部成功」）"
                         >
-                          <Select options={DEPENDENT_DATE_OPTIONS.map(o => ({ label: o.label, value: o.value }))} />
+                          <Radio.Group
+                            options={[
+                              { label: '全部满足 (AND)', value: 'AND' },
+                              { label: '任一满足 (OR)', value: 'OR' },
+                            ]}
+                          />
                         </Form.Item>
-                      </Card>
-                    ))}
-                    <Button type="dashed" onClick={() => add({ depend_workflow_id: null, date_value: 'today' })} block icon={<PlusOutlined />}>
-                      添加依赖项
-                    </Button>
+                        <Form.List name="depend_items" initialValue={[{ depend_workflow_id: null, date_value: 'today' }]}>
+                          {(fields, { add, remove }) => (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+                              {fields.map((field, idx) => (
+                                <Card
+                                  key={field.key}
+                                  size="small"
+                                  title={`依赖项 ${idx + 1}`}
+                                  extra={
+                                    fields.length > 1 ? (
+                                      <Button
+                                        type="text"
+                                        danger
+                                        size="small"
+                                        icon={<DeleteOutlined />}
+                                        onClick={() => remove(field.name)}
+                                      />
+                                    ) : null
+                                  }
+                                >
+                                  <Form.Item
+                                    {...field}
+                                    name={[field.name, 'depend_workflow_id']}
+                                    label="依赖的工作流"
+                                    rules={[{ required: true, message: '请选择工作流' }]}
+                                    style={{ marginBottom: 8 }}
+                                  >
+                                    <Select
+                                      showSearch
+                                      optionFilterProp="label"
+                                      placeholder="选择同空间工作流"
+                                      options={workflows.map((w: any) => ({
+                                        label: `${w.name} (#${w.id})${w.scheduler_definition_id ? '' : ' · 未发布'}`,
+                                        value: w.id,
+                                      }))}
+                                    />
+                                  </Form.Item>
+                                  <Form.Item
+                                    {...field}
+                                    name={[field.name, 'date_value']}
+                                    label="依赖时段"
+                                    rules={[{ required: true }]}
+                                    style={{ marginBottom: 0 }}
+                                    initialValue="today"
+                                  >
+                                    <Select options={DEPENDENT_DATE_OPTIONS.map(o => ({ label: o.label, value: o.value }))} />
+                                  </Form.Item>
+                                </Card>
+                              ))}
+                              <Button type="dashed" onClick={() => add({ depend_workflow_id: null, date_value: 'today' })} block icon={<PlusOutlined />}>
+                                添加依赖项
+                              </Button>
+                            </div>
+                          )}
+                        </Form.List>
+                        <div style={{ color: '#999', fontSize: 12, marginBottom: 12 }}>
+                          若上游是小时调度、下游要等齐当天，建议依赖日终收口工作流，或配置 last24Hours 等时段（仍按最近成功实例，非全部实例）。
+                        </div>
+                        <div style={{ color: '#666', fontSize: 12, marginBottom: 4 }}>节点参数预览</div>
+                        <pre style={{ background: '#f5f5f5', padding: 12, borderRadius: 4, fontSize: 12, margin: 0 }}>
+                          {JSON.stringify(dependentPreview, null, 2)}
+                        </pre>
+                      </>
+                    )}
                   </div>
-                )}
-              </Form.List>
-              <div style={{ color: '#999', fontSize: 12, marginBottom: 12 }}>
-                若上游是小时调度、下游要等齐当天，建议依赖日终收口工作流，或配置 last24Hours 等时段（仍按最近成功实例，非全部实例）。
-              </div>
-            </>
-          )}
-          <Form.Item name="timeout_seconds" label="超时时间（秒）">
-            <Input type="number" />
-          </Form.Item>
-          <Form.Item name="retry_times" label="失败重试次数">
-            <Input type="number" />
-          </Form.Item>
-          {node?.node_type !== 'DEPENDENT' && (
-            <Form.Item
-              name="params"
-              label="自定义变量（对象）"
-              tooltip={'标准 JSON 用双引号；含时间宏的键会同步到 Dolphin 全局参数'}
-            >
-              <Input.TextArea rows={3} placeholder={'{"xx": "yy"}'} disabled={readOnly && !holdsLock} />
-            </Form.Item>
-          )}
-          <div style={{ color: '#999', fontSize: 12 }}>
-            与数据开发共用同一节点与编辑锁；脚本内容请在「数据开发」中编辑。
+                ),
+              },
+              {
+                key: 'runtime',
+                label: '运行参数',
+                children: (
+                  <div>
+                    <Form.Item name="timeout_seconds" label="超时时间（秒）">
+                      <Input type="number" />
+                    </Form.Item>
+                    <Form.Item name="retry_times" label="失败重试次数">
+                      <Input type="number" />
+                    </Form.Item>
+                    {SCRIPT_NODE_TYPES.has(node?.node_type) && (
+                      <Form.Item
+                        name="params"
+                        label="自定义变量（对象）"
+                        tooltip={'标准 JSON 用双引号；含时间宏的键会同步到 Dolphin 全局参数'}
+                      >
+                        <Input.TextArea rows={4} placeholder={'{"xx": "yy"}'} disabled={readOnly && !holdsLock} />
+                      </Form.Item>
+                    )}
+                    {(node?.node_type === 'SYNC' || node?.node_type === 'DEPENDENT') && (
+                      <div style={{ color: '#999', fontSize: 12 }}>
+                        {node.node_type === 'SYNC'
+                          ? 'SYNC 的业务参数即绑定的同步任务（见「同步任务」页），此处只调超时与重试。'
+                          : 'DEPENDENT 的业务参数即依赖项配置（见「依赖配置」页），此处只调超时与重试。'}
+                      </div>
+                    )}
+                  </div>
+                ),
+              },
+            ]}
+          />
+          <div style={{ color: '#999', fontSize: 12, marginTop: 8 }}>
+            与「数据开发」共用同一节点与编辑锁；各类型节点均可在此完成主内容与运行参数编辑。
           </div>
         </Form>
       </Spin>

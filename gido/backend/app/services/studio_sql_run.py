@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -87,11 +87,15 @@ def run_sql_with_result(
 
     from app.services.workspace_variables import substitute_script_variables
 
-    script = substitute_script_variables(
-        db, int(node.workspace_id), node.script_content or "", "batch", bizdate=bizdate
+    from app.services.business_date import bizdate_and_yesterday, normalize_business_date
+
+    biz, yesterday_str = bizdate_and_yesterday(
+        normalize_business_date(bizdate),
+        now=now_local.replace(tzinfo=None),
     )
-    biz = bizdate or now_local.strftime("%Y-%m-%d")
-    yesterday_str = (now_local - timedelta(days=1)).strftime("%Y-%m-%d")
+    script = substitute_script_variables(
+        db, int(node.workspace_id), node.script_content or "", "batch", bizdate=biz
+    )
     script = script.replace("${bizdate}", biz).replace("${yesterday}", yesterday_str)
 
     if node.params and isinstance(node.params, dict):

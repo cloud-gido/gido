@@ -417,11 +417,12 @@ def run_workflow(wf_id: int, business_date: Optional[str] = None, db: Session = 
         db.refresh(ni)
         try:
             from app.api.studio import _run_sql, _run_python, _run_shell
+            bizdate = getattr(instance, "business_date", None)
             if node.node_type == "SQL":
-                logs = _run_sql(node, db)
+                logs = _run_sql(node, db, bizdate=bizdate)
                 auto_parse_lineage(node, db)
             elif node.node_type == "PYTHON":
-                logs = _run_python(node, db)
+                logs = _run_python(node, db, bizdate=bizdate)
             elif node.node_type == "SHELL":
                 logs = _run_shell(node)
             elif node.node_type == "SYNC":

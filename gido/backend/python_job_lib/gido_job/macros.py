@@ -82,8 +82,15 @@ def substitute_sql_macros(
         except Exception:
             now_local = datetime.now()
 
-        biz = (bizdate or "").strip() or now_local.strftime("%Y-%m-%d")
-        yesterday_str = (now_local - timedelta(days=1)).strftime("%Y-%m-%d")
+        # yesterday 相对 bizdate，而非墙钟「今天」
+        raw_biz = (bizdate or "").strip()
+        try:
+            base = datetime.strptime(raw_biz, "%Y-%m-%d") if raw_biz else now_local.replace(tzinfo=None)
+            biz = base.strftime("%Y-%m-%d")
+        except ValueError:
+            base = now_local.replace(tzinfo=None)
+            biz = base.strftime("%Y-%m-%d")
+        yesterday_str = (base - timedelta(days=1)).strftime("%Y-%m-%d")
         text = sql.replace("${bizdate}", biz).replace("${yesterday}", yesterday_str)
 
         for key, raw in (variables or {}).items():

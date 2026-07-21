@@ -450,6 +450,7 @@ def publish_node(node_id: int, db: Session = Depends(get_db), current_user: User
 class RunNodeBody(BaseModel):
     """POST /studio/nodes/{id}/run：大段 SQL/脚本请放 JSON body，勿用 query（易超长、被代理截断或写入访问日志）。"""
     script_content: Optional[str] = None
+    bizdate: Optional[str] = None  # YYYY-MM-DD；补数据/调度回调传入，宏相对该日展开
 
 
 @router.post("/nodes/{node_id}/run")
@@ -459,6 +460,8 @@ def run_node(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    from app.services.business_date import normalize_business_date
+
     node = db.query(TaskNode).filter(TaskNode.id == node_id).first()
     if not node:
         raise HTTPException(status_code=404, detail="节点不存在")
@@ -467,6 +470,7 @@ def run_node(
     # 用传入的最新内容覆盖，不需要先保存（调度器可不传 body，沿用库内脚本）
     if body.script_content is not None:
         node.script_content = body.script_content
+    bizdate = normalize_business_date(body.bizdate)
 
     instance = NodeInstance(node_id=node_id, status="running", started_at=datetime.utcnow())
     db.add(instance)
@@ -478,9 +482,11 @@ def run_node(
         if node.node_type == "SQL":
             from app.services.studio_sql_run import run_sql_with_result
 
-            log_lines, result_data = run_sql_with_result(node, db, resolve_date_expr=_resolve_date_expr)
+            log_lines, result_data = run_sql_with_result(
+                node, db, bizdate, resolve_date_expr=_resolve_date_expr
+            )
         elif node.node_type == "PYTHON":
-            log_lines = _run_python(node, db)
+            log_lines = _run_python(node, db, bizdate=bizdate)
         elif node.node_type == "SHELL":
             log_lines = _run_shell(node)
         elif node.node_type == "SYNC":
@@ -567,8 +573,11 @@ def _resolve_date_expr(expr: str, bizdate: str = None, tz_name: str = "Asia/Shan
         inner = inner[:offset_match.start()]
 
     if bizdate:
+        from app.services.business_date import normalize_business_date
+
+        bd = normalize_business_date(bizdate)
         try:
-            base_date = dt.datetime.strptime(bizdate, "%Y-%m-%d")
+            base_date = dt.datetime.strptime(bd or "", "%Y-%m-%d")
         except ValueError:
             base_date = now.replace(tzinfo=None)
     else:
@@ -597,26 +606,39 @@ def _run_sql(node: TaskNode, db: Session, bizdate: str = None) -> list:
     return logs
 
 
-def _run_python(node: TaskNode, db: Session) -> list:
+def _run_python(node: TaskNode, db: Session, bizdate: str = None) -> list:
     """执行 PYTHON 节点：注入 gido_job SDK 与数据源上下文。"""
-    return run_python_node(node, db)
+    return run_python_node(node, db, bizdate=bizdate)
 
 
 @router.post("/internal/nodes/{node_id}/run")
-def internal_run_python_node(
+def internal_run_node(
     node_id: int,
+    body: RunNodeBody = Body(default_factory=RunNodeBody),
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ):
-    """供 Dolphin SHELL 回调执行 PYTHON 节点；Bearer 须为 INTERNAL_TOKEN。"""
+    """供 Dolphin SHELL 回调执行节点；Bearer 须为 INTERNAL_TOKEN。
+
+    支持 PYTHON / SQL（降级 SHELL 回调）。body.bizdate 由 DS 展开 ``$[yyyy-MM-dd]`` 传入。
+    """
+    from app.services.business_date import normalize_business_date
+
     token = (authorization or "").replace("Bearer ", "").strip()
     if not settings.INTERNAL_TOKEN or token != settings.INTERNAL_TOKEN:
         raise HTTPException(status_code=401, detail="无效的内部令牌")
     node = db.query(TaskNode).filter(TaskNode.id == node_id).first()
     if not node:
         raise HTTPException(status_code=404, detail="节点不存在")
-    if node.node_type != "PYTHON":
-        raise HTTPException(status_code=400, detail=f"节点类型为 {node.node_type}，仅支持 PYTHON")
+    if node.node_type not in ("PYTHON", "SQL"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"节点类型为 {node.node_type}，内部回调仅支持 PYTHON / SQL",
+        )
+
+    bizdate = normalize_business_date(body.bizdate)
+    if body.script_content is not None:
+        node.script_content = body.script_content
 
     instance = NodeInstance(node_id=node_id, status="running", started_at=datetime.utcnow())
     db.add(instance)
@@ -626,7 +648,10 @@ def internal_run_python_node(
     log_lines: List[str] = []
     status = "success"
     try:
-        log_lines = _run_python(node, db)
+        if node.node_type == "SQL":
+            log_lines = _run_sql(node, db, bizdate=bizdate)
+        else:
+            log_lines = _run_python(node, db, bizdate=bizdate)
     except Exception as e:
         status = "failed"
         log_lines.append(f"[ERROR] {str(e)}")
@@ -637,7 +662,10 @@ def internal_run_python_node(
     db.commit()
 
     if status != "success":
-        raise HTTPException(status_code=500, detail=instance.log_content or "PYTHON 节点执行失败")
+        raise HTTPException(
+            status_code=500,
+            detail=instance.log_content or f"{node.node_type} 节点执行失败",
+        )
     return {"instance_id": instance.id, "status": status, "log": instance.log_content}
 
 
