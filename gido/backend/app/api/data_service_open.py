@@ -6,19 +6,25 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
-from app.models.data_service import ConsumerApp, ConsumerAppApiGrant, DataApi, DataApiInvocationLog
+from app.models.data_service import ConsumerApp, DataApi, DataApiInvocationLog
 from app.services.data_api_engine import (
     check_ip_whitelist,
     check_rate_limit,
     execute_data_api,
-    new_trace_id,
     verify_app_secret,
+)
+from app.services.data_api_response import (
+    new_trace_id,
+    open_error_envelope,
+    open_success_envelope,
+    pop_pagination_params,
 )
 
 open_router = APIRouter(prefix="/open/v1", tags=["数据服务-开放网关"])
@@ -55,6 +61,17 @@ def _auth_app(
     return app
 
 
+def _error_response(exc: HTTPException, *, trace_id: Optional[str] = None) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=open_error_envelope(
+            str(exc.detail),
+            http_status=exc.status_code,
+            trace_id=trace_id,
+        ),
+    )
+
+
 def _invoke_api(
     db: Session,
     api: DataApi,
@@ -62,9 +79,9 @@ def _invoke_api(
     raw_params: Dict[str, Any],
     request: Request,
     *,
-    page_no: int = 1,
+    page: int = 1,
     page_size: Optional[int] = None,
-) -> dict:
+) -> Union[dict, JSONResponse]:
     from app.models.workspace import DataSource
 
     if api.status != "online":
@@ -87,13 +104,14 @@ def _invoke_api(
     err_msg = None
     result: dict = {}
     row_count = 0
+    http_exc: Optional[HTTPException] = None
     try:
-        result = execute_data_api(db, api, ds, raw_params, page_no=page_no, page_size=page_size)
-        row_count = len(result.get("rows") or [])
+        result = execute_data_api(db, api, ds, raw_params, page_no=page, page_size=page_size)
+        row_count = len(result.get("list") or [])
     except HTTPException as e:
         status = e.status_code
         err_msg = str(e.detail)
-        raise
+        http_exc = e
     finally:
         latency = (time.time() - t0) * 1000
         db.add(
@@ -114,7 +132,9 @@ def _invoke_api(
         )
         db.commit()
 
-    return {"trace_id": trace, "data": result}
+    if http_exc is not None:
+        return _error_response(http_exc, trace_id=trace)
+    return open_success_envelope(trace, result)
 
 
 @open_router.get("/ws/{workspace_id}/{api_code}")
@@ -125,35 +145,35 @@ async def invoke_data_api(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    app_key = request.headers.get("x-app-key") or request.headers.get("X-App-Key")
-    app_secret = request.headers.get("x-app-secret") or request.headers.get("X-App-Secret")
-    if not app_key or not app_secret:
-        raise HTTPException(status_code=401, detail="缺少 X-App-Key / X-App-Secret 请求头")
+    try:
+        app_key = request.headers.get("x-app-key") or request.headers.get("X-App-Key")
+        app_secret = request.headers.get("x-app-secret") or request.headers.get("X-App-Secret")
+        if not app_key or not app_secret:
+            raise HTTPException(status_code=401, detail="缺少 X-App-Key / X-App-Secret 请求头")
 
-    app = _auth_app(db, workspace_id, app_key.strip(), app_secret.strip(), _client_ip(request))
+        app = _auth_app(db, workspace_id, app_key.strip(), app_secret.strip(), _client_ip(request))
 
-    api = (
-        db.query(DataApi)
-        .options(joinedload(DataApi.params))
-        .filter(DataApi.workspace_id == workspace_id, DataApi.api_code == api_code.lower())
-        .first()
-    )
-    if not api:
-        raise HTTPException(status_code=404, detail="API 不存在")
+        api = (
+            db.query(DataApi)
+            .options(joinedload(DataApi.params))
+            .filter(DataApi.workspace_id == workspace_id, DataApi.api_code == api_code.lower())
+            .first()
+        )
+        if not api:
+            raise HTTPException(status_code=404, detail="API 不存在")
 
-    raw_params: Dict[str, Any] = {}
-    if request.method == "GET":
-        raw_params = dict(request.query_params)
-    else:
-        try:
-            body = await request.json()
-            if isinstance(body, dict):
-                raw_params = body
-        except Exception:
+        raw_params: Dict[str, Any] = {}
+        if request.method == "GET":
             raw_params = dict(request.query_params)
+        else:
+            try:
+                body = await request.json()
+                if isinstance(body, dict):
+                    raw_params = dict(body)
+            except Exception:
+                raw_params = dict(request.query_params)
 
-    page_no = int(raw_params.pop("page_no", raw_params.pop("pageNo", 1)) or 1)
-    page_size_raw = raw_params.pop("page_size", raw_params.pop("pageSize", None))
-    page_size = int(page_size_raw) if page_size_raw not in (None, "") else None
-
-    return _invoke_api(db, api, app, raw_params, request, page_no=page_no, page_size=page_size)
+        page, page_size = pop_pagination_params(raw_params)
+        return _invoke_api(db, api, app, raw_params, request, page=page, page_size=page_size)
+    except HTTPException as e:
+        return _error_response(e)

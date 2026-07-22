@@ -11,7 +11,6 @@ import re
 import secrets
 import threading
 import time
-import uuid
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -21,8 +20,16 @@ from sqlalchemy.orm import Session
 from app.core.security import verify_password, get_password_hash
 from app.models.data_service import ConsumerApp, DataApi, DataApiParam
 from app.models.workspace import DataSource
+from app.services.data_api_response import (  # noqa: F401 — re-export for callers
+    build_list_page_data,
+    new_trace_id,
+    open_error_envelope,
+    open_success_envelope,
+    pop_pagination_params,
+    rows_to_object_list,
+)
 from app.services.datasource_mysql_user import mysql_protocol_connect_user
-from app.services.sql_readonly import assert_readonly_statement, json_cell_value, result_set_from_cursor
+from app.services.sql_readonly import assert_readonly_statement, result_set_from_cursor
 
 _PARAM_RE = re.compile(r":([a-zA-Z_][a-zA-Z0-9_]*)")
 
@@ -174,7 +181,13 @@ def bind_params(api: DataApi, raw_params: Dict[str, Any], sql: str = "") -> Dict
         if p.name not in bound:
             bound[p.name] = _coerce_param_value(p, raw_params.get(p.name))
 
-    allowed = set(param_defs.keys()) | sql_names | {"page_no", "page_size", "pageNo", "pageSize"}
+    allowed = set(param_defs.keys()) | sql_names | {
+        "page",
+        "page_no",
+        "pageNo",
+        "pageSize",
+        "page_size",
+    }
     unknown = set(raw_params.keys()) - allowed
     if unknown:
         raise HTTPException(status_code=400, detail=f"未知参数: {', '.join(sorted(unknown))}")
@@ -389,20 +402,15 @@ def execute_data_api(
     cols = base.get("columns") or []
     masked_rows = apply_response_mask(base.get("rows") or [], cols, api.response_fields)
 
-    result = {
-        "columns": cols,
-        "column_types": base.get("column_types") or [],
-        "rows": masked_rows,
-        "total": base.get("total", 0),
-        "truncated": base.get("truncated", False),
-        "page_no": pg_no,
-        "page_size": pg_sz,
-        "cache_hit": False,
-    }
+    result = build_list_page_data(
+        columns=cols,
+        rows=masked_rows,
+        total=int(base.get("total") or 0),
+        page=pg_no,
+        page_size=pg_sz,
+        truncated=bool(base.get("truncated", False)),
+        cache_hit=False,
+    )
     if cache_key:
         _cache_set(cache_key, result, api.cache_ttl_seconds)
     return result
-
-
-def new_trace_id() -> str:
-    return uuid.uuid4().hex

@@ -31,9 +31,9 @@ from app.services.data_api_engine import (
     bind_params,
     execute_data_api,
     generate_app_credentials,
-    new_trace_id,
     wizard_to_sql,
 )
+from app.services.data_api_response import new_trace_id
 from app.services.integration_runtime import list_columns, list_tables
 from app.services.rbac import assert_workspace_data_capability, require_datasource_row
 from app.services.publish_approval import assert_can_publish_production
@@ -104,9 +104,21 @@ class DataApiUpdateIn(BaseModel):
 
 
 class ApiTestIn(BaseModel):
+    """控制台试跑入参。分页优先 ``page`` / ``pageSize``。"""
+
     params: Dict[str, Any] = {}
-    page_no: int = Field(default=1, ge=1)
-    page_size: Optional[int] = Field(default=None, ge=1, le=10000)
+    page: Optional[int] = Field(default=None, ge=1)
+    pageSize: Optional[int] = Field(default=None, ge=1, le=10000)
+    page_no: Optional[int] = Field(default=None, ge=1, description="兼容旧字段，等价于 page")
+    page_size: Optional[int] = Field(default=None, ge=1, le=10000, description="兼容旧字段，等价于 pageSize")
+
+    def resolved_page(self) -> int:
+        return int(self.page or self.page_no or 1)
+
+    def resolved_page_size(self) -> Optional[int]:
+        if self.pageSize is not None:
+            return self.pageSize
+        return self.page_size
 
 
 class ConsumerAppCreateIn(BaseModel):
@@ -364,8 +376,8 @@ def test_api(
             api,
             ds,
             body.params,
-            page_no=body.page_no,
-            page_size=body.page_size,
+            page_no=body.resolved_page(),
+            page_size=body.resolved_page_size(),
             skip_cache=True,
         )
         latency = (time.time() - t0) * 1000
@@ -377,13 +389,20 @@ def test_api(
                 http_method="TEST",
                 request_params=body.params,
                 status_code=200,
-                row_count=len(result.get("rows") or []),
+                row_count=len(result.get("list") or []),
                 latency_ms=latency,
                 cache_hit=False,
             )
         )
         db.commit()
-        return {"trace_id": trace, "latency_ms": round(latency, 2), "data": result}
+        return {
+            "code": 0,
+            "success": True,
+            "message": "success",
+            "trace_id": trace,
+            "latency_ms": round(latency, 2),
+            "data": result,
+        }
     except HTTPException as e:
         latency = (time.time() - t0) * 1000
         logger.warning("data-service test failed api_id=%s status=%s detail=%s", api_id, e.status_code, e.detail)
@@ -425,30 +444,92 @@ def export_openapi(api_id: int, db: Session = Depends(get_db), current_user: Use
     api = _require_api(db, api_id, current_user)
     params_schema = {
         "type": "object",
-        "properties": {},
+        "properties": {
+            "page": {"type": "integer", "minimum": 1, "default": 1, "description": "页码"},
+            "pageSize": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": api.page_size_max or 1000,
+                "default": api.page_size_default or 20,
+                "description": "每页条数",
+            },
+        },
         "required": [],
     }
     for p in api.params or []:
         params_schema["properties"][p.name] = {"type": p.data_type or "string", "description": p.description or ""}
         if p.required:
             params_schema["required"].append(p.name)
+
+    success_schema = {
+        "type": "object",
+        "properties": {
+            "code": {"type": "integer", "example": 0},
+            "success": {"type": "boolean", "example": True},
+            "message": {"type": "string", "example": "success"},
+            "trace_id": {"type": "string"},
+            "data": {
+                "type": "object",
+                "properties": {
+                    "list": {"type": "array", "items": {"type": "object"}},
+                    "total": {"type": "integer"},
+                    "page": {"type": "integer"},
+                    "pageSize": {"type": "integer"},
+                    "totalPages": {"type": "integer"},
+                    "truncated": {"type": "boolean"},
+                    "cache_hit": {"type": "boolean"},
+                },
+            },
+        },
+    }
     path = f"/open/v1/ws/{api.workspace_id}/{api.api_code}"
+    method = (api.http_method or "get").lower()
+    operation: Dict[str, Any] = {
+        "summary": api.name,
+        "description": api.description or "",
+        "parameters": [
+            {
+                "name": "X-App-Key",
+                "in": "header",
+                "required": True,
+                "schema": {"type": "string"},
+            },
+            {
+                "name": "X-App-Secret",
+                "in": "header",
+                "required": True,
+                "schema": {"type": "string"},
+            },
+        ],
+        "responses": {
+            "200": {
+                "description": "成功",
+                "content": {"application/json": {"schema": success_schema}},
+            },
+            "401": {"description": "鉴权失败"},
+            "403": {"description": "未授权或 IP 不在白名单"},
+            "404": {"description": "API 不存在或未上线"},
+        },
+    }
+    if method == "get":
+        for name, schema in params_schema["properties"].items():
+            operation["parameters"].append(
+                {
+                    "name": name,
+                    "in": "query",
+                    "required": name in params_schema["required"],
+                    "schema": schema,
+                }
+            )
+    else:
+        operation["requestBody"] = {
+            "required": True,
+            "content": {"application/json": {"schema": params_schema}},
+        }
     return {
         "openapi": "3.0.3",
         "info": {"title": api.name, "description": api.description or "", "version": str(api.version or 1)},
-        "paths": {
-            path: {
-                (api.http_method or "get").lower(): {
-                    "summary": api.name,
-                    "parameters": [
-                        {"name": p.name, "in": "query", "required": p.required, "schema": {"type": p.data_type or "string"}}
-                        for p in (api.params or [])
-                        if (p.param_in or "query") == "query"
-                    ],
-                    "responses": {"200": {"description": "OK"}},
-                }
-            }
-        },
+        "paths": {path: {method: operation}},
     }
 
 

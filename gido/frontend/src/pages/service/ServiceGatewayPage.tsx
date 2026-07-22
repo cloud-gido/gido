@@ -38,22 +38,35 @@ export default function ServiceGatewayPage() {
   -H "X-App-Key: YOUR_APP_KEY" \\
   -H "X-App-Secret: YOUR_APP_SECRET" \\
   --data-urlencode "fixture_id=FX001" \\
-  --data-urlencode "page_no=1" \\
-  --data-urlencode "page_size=20"`}</pre>
-        <Paragraph type="secondary">GET 参数放 query；POST 可放 JSON body。分页参数：<Text code>page_no</Text>、<Text code>page_size</Text>。</Paragraph>
+  --data-urlencode "page=1" \\
+  --data-urlencode "pageSize=20"`}</pre>
+        <Paragraph type="secondary">
+          GET 参数放 query；POST 可放 JSON body。分页参数：<Text code>page</Text>、<Text code>pageSize</Text>。
+        </Paragraph>
       </Card>
 
       <Card title="响应格式">
         <pre style={{ background: '#f8fafc', padding: 12, borderRadius: 8, fontSize: 12 }}>{`{
+  "code": 0,
+  "success": true,
+  "message": "success",
   "trace_id": "...",
   "data": {
-    "columns": ["col1", "col2"],
-    "rows": [[...], [...]],
-    "page_no": 1,
-    "page_size": 20,
+    "list": [
+      { "col1": "...", "col2": "..." }
+    ],
+    "total": 100,
+    "page": 1,
+    "pageSize": 20,
+    "totalPages": 5,
+    "truncated": false,
     "cache_hit": false
   }
 }`}</pre>
+        <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
+          失败时仍返回同一信封：<Text code>code</Text> 为 HTTP 状态码，<Text code>success: false</Text>，
+          <Text code>data: null</Text>，<Text code>message</Text> 为错误说明。
+        </Paragraph>
       </Card>
 
       <Card title={`已上线 API（${onlineApis.length}）`} style={{ marginTop: 16 }}>

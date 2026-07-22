@@ -480,9 +480,21 @@ export default function ServiceApisPage() {
         {testError && <Alert type="error" showIcon message={testError} style={{ marginTop: 16 }} />}
         {testResult && (
           <div style={{ marginTop: 16 }}>
-            <Text>TraceId: {testResult.trace_id} · {testResult.latency_ms}ms</Text>
+            <Text>
+              TraceId: {testResult.trace_id} · {testResult.latency_ms}ms
+              {testResult.success != null ? ` · code=${testResult.code}` : ''}
+            </Text>
             <pre style={{ marginTop: 8, background: '#f5f5f5', padding: 12, maxHeight: 360, overflow: 'auto', fontSize: 12 }}>
-              {JSON.stringify(testResult.data, null, 2)}
+              {JSON.stringify(
+                {
+                  code: testResult.code,
+                  success: testResult.success,
+                  message: testResult.message,
+                  data: testResult.data,
+                },
+                null,
+                2,
+              )}
             </pre>
           </div>
         )}
