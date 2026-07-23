@@ -104,18 +104,22 @@ class DataApiUpdateIn(BaseModel):
 
 
 class ApiTestIn(BaseModel):
-    """控制台试跑入参。分页优先 ``page`` / ``pageSize``。"""
+    """控制台试跑入参。分页对齐阿里云：``PageNumber`` / ``PageSize``。"""
 
     params: Dict[str, Any] = {}
-    page: Optional[int] = Field(default=None, ge=1)
-    pageSize: Optional[int] = Field(default=None, ge=1, le=10000)
-    page_no: Optional[int] = Field(default=None, ge=1, description="兼容旧字段，等价于 page")
-    page_size: Optional[int] = Field(default=None, ge=1, le=10000, description="兼容旧字段，等价于 pageSize")
+    PageNumber: Optional[int] = Field(default=None, ge=1)
+    PageSize: Optional[int] = Field(default=None, ge=1, le=10000)
+    page: Optional[int] = Field(default=None, ge=1, description="兼容别名，等价于 PageNumber")
+    pageSize: Optional[int] = Field(default=None, ge=1, le=10000, description="兼容别名，等价于 PageSize")
+    page_no: Optional[int] = Field(default=None, ge=1, description="兼容别名，等价于 PageNumber")
+    page_size: Optional[int] = Field(default=None, ge=1, le=10000, description="兼容别名，等价于 PageSize")
 
     def resolved_page(self) -> int:
-        return int(self.page or self.page_no or 1)
+        return int(self.PageNumber or self.page or self.page_no or 1)
 
     def resolved_page_size(self) -> Optional[int]:
+        if self.PageSize is not None:
+            return self.PageSize
         if self.pageSize is not None:
             return self.pageSize
         return self.page_size
@@ -445,8 +449,13 @@ def export_openapi(api_id: int, db: Session = Depends(get_db), current_user: Use
     params_schema = {
         "type": "object",
         "properties": {
-            "page": {"type": "integer", "minimum": 1, "default": 1, "description": "页码"},
-            "pageSize": {
+            "PageNumber": {
+                "type": "integer",
+                "minimum": 1,
+                "default": 1,
+                "description": "页码（阿里云页码分页，从 1 起）",
+            },
+            "PageSize": {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": api.page_size_max or 1000,
@@ -472,10 +481,9 @@ def export_openapi(api_id: int, db: Session = Depends(get_db), current_user: Use
                 "type": "object",
                 "properties": {
                     "list": {"type": "array", "items": {"type": "object"}},
-                    "total": {"type": "integer"},
-                    "page": {"type": "integer"},
-                    "pageSize": {"type": "integer"},
-                    "totalPages": {"type": "integer"},
+                    "TotalCount": {"type": "integer", "description": "匹配总条数"},
+                    "PageNumber": {"type": "integer", "description": "当前页码"},
+                    "PageSize": {"type": "integer", "description": "每页条数"},
                     "truncated": {"type": "boolean"},
                     "cache_hit": {"type": "boolean"},
                 },

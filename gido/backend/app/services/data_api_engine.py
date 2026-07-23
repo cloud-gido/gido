@@ -27,6 +27,7 @@ from app.services.data_api_response import (  # noqa: F401 — re-export for cal
     open_success_envelope,
     pop_pagination_params,
     rows_to_object_list,
+    wrap_count_sql,
 )
 from app.services.datasource_mysql_user import mysql_protocol_connect_user
 from app.services.sql_readonly import assert_readonly_statement, result_set_from_cursor
@@ -182,9 +183,12 @@ def bind_params(api: DataApi, raw_params: Dict[str, Any], sql: str = "") -> Dict
             bound[p.name] = _coerce_param_value(p, raw_params.get(p.name))
 
     allowed = set(param_defs.keys()) | sql_names | {
+        "PageNumber",
+        "pageNumber",
         "page",
         "page_no",
         "pageNo",
+        "PageSize",
         "pageSize",
         "page_size",
     }
@@ -336,19 +340,22 @@ def execute_data_api(
 
     lt = (ds.ds_type or "").lower()
     if lt in ("mysql", "doris"):
-        exec_sql = compile_sql_literals(sql_tpl, bound)
+        base_sql = compile_sql_literals(sql_tpl, bound)
     else:
-        exec_sql = sql_template_to_driver(sql_tpl)
+        base_sql = sql_template_to_driver(sql_tpl)
 
+    pagination_on = bool(api.pagination_enabled)
     exec_sql, pg_no, pg_sz = apply_pagination(
-        exec_sql,
+        base_sql,
         page_no=page_no,
         page_size=ps,
-        enabled=bool(api.pagination_enabled),
+        enabled=pagination_on,
     )
+    count_sql = wrap_count_sql(base_sql) if pagination_on else None
 
     timeout = max(3, min(api.timeout_seconds or 30, 120))
     max_rows = max(1, min(api.max_rows or 10000, 50000))
+    total_count: Optional[int] = None
 
     if lt in ("mysql", "doris"):
         import pymysql
@@ -366,6 +373,10 @@ def execute_data_api(
         )
         try:
             cur = conn.cursor()
+            if count_sql:
+                cur.execute(count_sql)
+                crow = cur.fetchone()
+                total_count = int(crow[0] if crow else 0)
             cur.execute(exec_sql)
             rows = cur.fetchall()
             base = result_set_from_cursor(lt, cur.description, rows, max_rows)
@@ -389,6 +400,10 @@ def execute_data_api(
         )
         try:
             cur = conn.cursor()
+            if count_sql:
+                cur.execute(count_sql, bound)
+                crow = cur.fetchone()
+                total_count = int(crow[0] if crow else 0)
             cur.execute(exec_sql, bound)
             rows = cur.fetchall()
             base = result_set_from_cursor(lt, cur.description, rows, max_rows)
@@ -401,11 +416,13 @@ def execute_data_api(
 
     cols = base.get("columns") or []
     masked_rows = apply_response_mask(base.get("rows") or [], cols, api.response_fields)
+    # 分页开启时 total 必须是全量匹配行数；关闭时沿用本页/截断后的行数
+    total_for_page = total_count if total_count is not None else int(base.get("total") or 0)
 
     result = build_list_page_data(
         columns=cols,
         rows=masked_rows,
-        total=int(base.get("total") or 0),
+        total=total_for_page,
         page=pg_no,
         page_size=pg_sz,
         truncated=bool(base.get("truncated", False)),

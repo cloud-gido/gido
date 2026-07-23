@@ -1,9 +1,8 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
-"""数据服务开放网关响应信封与分页参数（无 DB 依赖，便于单测）。"""
+"""数据服务开放网关响应信封与分页参数（对齐阿里云页码分页，无 DB 依赖）。"""
 from __future__ import annotations
 
-import math
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -27,17 +26,19 @@ def build_list_page_data(
     truncated: bool = False,
     cache_hit: bool = False,
 ) -> Dict[str, Any]:
-    """开放网关 / 试跑共用的 data 载荷（对象数组 + 分页）。"""
-    page = max(1, int(page or 1))
-    page_size = max(1, int(page_size or 20))
-    total_i = max(0, int(total or 0))
-    total_pages = math.ceil(total_i / page_size) if total_i > 0 else 0
+    """开放网关 / 试跑共用的 data 载荷。
+
+    分页字段对齐阿里云 OpenAPI 页码模式：
+    ``PageNumber`` / ``PageSize`` / ``TotalCount``（不返回 TotalPages，由调用方计算）。
+    """
+    page_number = max(1, int(page or 1))
+    page_size_i = max(1, int(page_size or 20))
+    total_count = max(0, int(total or 0))
     return {
         "list": rows_to_object_list(columns, rows),
-        "total": total_i,
-        "page": page,
-        "pageSize": page_size,
-        "totalPages": total_pages,
+        "TotalCount": total_count,
+        "PageNumber": page_number,
+        "PageSize": page_size_i,
         "truncated": bool(truncated),
         "cache_hit": bool(cache_hit),
     }
@@ -70,15 +71,15 @@ def open_error_envelope(
 
 
 def pop_pagination_params(raw_params: Dict[str, Any]) -> Tuple[int, Optional[int]]:
-    """从请求参数中取出分页；支持 page/pageSize（推荐）及 page_no/page_size。"""
+    """取出分页；推荐 ``PageNumber`` / ``PageSize``（阿里云），兼容 page / pageSize 等别名。"""
     page_raw = None
-    for key in ("page", "page_no", "pageNo"):
+    for key in ("PageNumber", "pageNumber", "page", "page_no", "pageNo"):
         if key in raw_params:
             val = raw_params.pop(key)
             if page_raw is None:
                 page_raw = val
     size_raw = None
-    for key in ("pageSize", "page_size"):
+    for key in ("PageSize", "pageSize", "page_size"):
         if key in raw_params:
             val = raw_params.pop(key)
             if size_raw is None:
@@ -86,3 +87,8 @@ def pop_pagination_params(raw_params: Dict[str, Any]) -> Tuple[int, Optional[int
     page = int(page_raw or 1)
     page_size = int(size_raw) if size_raw not in (None, "") else None
     return max(1, page), page_size
+
+
+def wrap_count_sql(sql: str) -> str:
+    """对业务 SQL 包一层 COUNT，用于分页 TotalCount。"""
+    return f"SELECT COUNT(*) AS _dw_api_cnt FROM ({sql.rstrip(';')}) AS _dw_api_cnt_sub"

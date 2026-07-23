@@ -38,10 +38,12 @@ export default function ServiceGatewayPage() {
   -H "X-App-Key: YOUR_APP_KEY" \\
   -H "X-App-Secret: YOUR_APP_SECRET" \\
   --data-urlencode "fixture_id=FX001" \\
-  --data-urlencode "page=1" \\
-  --data-urlencode "pageSize=20"`}</pre>
+  --data-urlencode "PageNumber=1" \\
+  --data-urlencode "PageSize=20"`}</pre>
         <Paragraph type="secondary">
-          GET 参数放 query；POST 可放 JSON body。分页参数：<Text code>page</Text>、<Text code>pageSize</Text>。
+          GET 参数放 query；POST 可放 JSON body。分页对齐阿里云：
+          <Text code>PageNumber</Text>（从 1 起）、<Text code>PageSize</Text>。
+          总页数由调用方计算：<Text code>ceil(TotalCount / PageSize)</Text>。
         </Paragraph>
       </Card>
 
@@ -55,10 +57,9 @@ export default function ServiceGatewayPage() {
     "list": [
       { "col1": "...", "col2": "..." }
     ],
-    "total": 100,
-    "page": 1,
-    "pageSize": 20,
-    "totalPages": 5,
+    "TotalCount": 100,
+    "PageNumber": 1,
+    "PageSize": 20,
     "truncated": false,
     "cache_hit": false
   }
