@@ -30,6 +30,18 @@ def _value_contains_ds_time_macro(v: Any) -> bool:
     return bool(_DS_TIME_MACRO.search(str(v).strip()))
 
 
+def _node_timeout_minutes(node: dict, *, default_seconds: int = 3600) -> int:
+    """DS task timeout 单位为分钟。节点上 timeout_seconds 常为显式 null，不能用 dict.get 默认值。"""
+    raw = node.get("timeout_seconds")
+    if raw is None:
+        raw = default_seconds
+    try:
+        seconds = int(raw)
+    except (TypeError, ValueError):
+        seconds = default_seconds
+    return max(seconds, 0) // 60
+
+
 def ds_callback_base_url() -> str:
     """Dolphin Worker 回调 GIDO 的 HTTP 基址（无尾斜杠）。
 
@@ -481,7 +493,7 @@ class DSClient:
                             "failRetryTimes": n.get("retry_times", 0),
                             "failRetryInterval": 1,
                             "timeoutFlag": "CLOSE",
-                            "timeout": n.get("timeout_seconds", 3600) // 60,
+                            "timeout": _node_timeout_minutes(n),
                             "delayTime": 0,
                             "cpuQuota": -1,
                             "memoryMax": -1,
@@ -583,7 +595,7 @@ class DSClient:
                     "failRetryTimes": n.get("retry_times", 0),
                     "failRetryInterval": 1,
                     "timeoutFlag": "CLOSE",
-                    "timeout": n.get("timeout_seconds", 3600) // 60,
+                    "timeout": _node_timeout_minutes(n),
                     "delayTime": 0,
                     "cpuQuota": -1,
                     "memoryMax": -1,
@@ -631,7 +643,7 @@ class DSClient:
                 "failRetryTimes": n.get("retry_times", 0),
                 "failRetryInterval": 1,
                 "timeoutFlag": "CLOSE",
-                "timeout": n.get("timeout_seconds", 3600) // 60,
+                "timeout": _node_timeout_minutes(n),
                 "delayTime": 0,
                 "cpuQuota": -1,
                 "memoryMax": -1,
