@@ -13,6 +13,16 @@
   background: #fafafa;
 }
 
+.dw-query-result__pager {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 6px 12px 8px;
+  border-top: 1px solid #f0f0f0;
+  background: #fafafa;
+}
+
 /* 主区：内容 + 右纵滚条；底横滚条占满主区宽度 */
 .dw-query-result__viewport {
   flex: 1;

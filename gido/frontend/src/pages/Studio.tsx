@@ -4,7 +4,7 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useState, useEffect, useRef, useCallback, useMemo, type PointerEvent } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, type Key, type PointerEvent } from 'react'
 import {
   Tree, Button, Input, Select, Tag, message, Spin, Tooltip,
   Modal, Form, Dropdown, Tabs, Space, Badge, Table
@@ -14,7 +14,7 @@ import {
   DeleteOutlined, FileOutlined, FolderOutlined, FolderAddOutlined, MoreOutlined,
   LoadingOutlined, CheckCircleOutlined, CloseCircleOutlined,
   ReloadOutlined, SettingOutlined, FormatPainterOutlined, UnlockOutlined,
-  LockOutlined, DownloadOutlined,
+  LockOutlined, DownloadOutlined, MenuFoldOutlined, MenuUnfoldOutlined, AimOutlined,
 } from '@ant-design/icons'
 import Editor from '@monaco-editor/react'
 import { format as sqlFormat } from 'sql-formatter'
@@ -125,6 +125,15 @@ export default function StudioPage() {
   const [editorAppearance, setEditorAppearance] = useState<EditorAppearance>(() => loadEditorAppearance())
   const [openTabs, setOpenTabs] = useState<any[]>([])
   const [activeTabId, setActiveTabId] = useState<number | null>(null)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('gido.studio.sidebarCollapsed') === '1'
+    } catch {
+      return false
+    }
+  })
+  const [treeExpandedKeys, setTreeExpandedKeys] = useState<Key[]>(['root'])
+  const treeExpandedInitRef = useRef(false)
 
   // 编辑器内容（按 nodeId 存储，未保存的修改）
   const [dirtyMap, setDirtyMap] = useState<Record<number, string>>({})
@@ -179,6 +188,43 @@ export default function StudioPage() {
 
   useEffect(() => { load() }, [wsId])
 
+  useEffect(() => {
+    if (!folders.length || treeExpandedInitRef.current) return
+    treeExpandedInitRef.current = true
+    setTreeExpandedKeys(['root', ...folders.map((f: any) => `folder-${f.id}`)])
+  }, [folders])
+
+  const setSidebarCollapsedPersist = (collapsed: boolean) => {
+    setSidebarCollapsed(collapsed)
+    try {
+      localStorage.setItem('gido.studio.sidebarCollapsed', collapsed ? '1' : '0')
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** 展开目录并滚动到当前脚本在树中的位置（类似 DataWorks 定位） */
+  const locateActiveInTree = () => {
+    const node = openTabs.find(t => t.id === activeTabId)
+    if (!node) {
+      message.info('请先打开一个脚本')
+      return
+    }
+    setSidebarCollapsedPersist(false)
+    const folderById = new Map<number, any>(folders.map((f: any) => [f.id, f]))
+    const keys: Key[] = ['root']
+    let fid: number | null | undefined = node.folder_id
+    while (fid != null && folderById.has(fid)) {
+      keys.push(`folder-${fid}`)
+      fid = folderById.get(fid)?.parent_id
+    }
+    setTreeExpandedKeys(prev => Array.from(new Set([...prev, ...keys])))
+    window.setTimeout(() => {
+      const el = document.querySelector('.studio-node-tree .ant-tree-node-selected') as HTMLElement | null
+      el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }, 80)
+  }
+
   const openNode = useCallback((node: any) => {
     setOpenTabs(prev => (prev.find(t => t.id === node.id) ? prev : [...prev, node]))
     setActiveTabId(node.id)
@@ -196,6 +242,7 @@ export default function StudioPage() {
       setLogPanelOpen(false)
       setRunningId(null)
       studioRestoreDoneRef.current = false
+      treeExpandedInitRef.current = false
     }
     prevWsIdRef.current = wsId
   }, [wsId])
@@ -255,24 +302,101 @@ export default function StudioPage() {
     }
   }, [activeTabId])
 
-  // 关闭 tab
-  const closeTab = (nodeId: number) => {
-    if (editLockHeld[nodeId]) {
-      studioApi.releaseEditLock(nodeId).catch(() => {})
-      setEditLockHeld(prev => {
-        const n = { ...prev }
-        delete n[nodeId]
-        return n
-      })
+  // 关闭 tab（支持批量，类似 IDEA）
+  const closeTabsBulk = (ids: number[]) => {
+    if (!ids.length) return
+    const idSet = new Set(ids)
+    ids.forEach(id => {
+      if (editLockHeld[id]) {
+        studioApi.releaseEditLock(id).catch(() => {})
+      }
+    })
+    setEditLockHeld(prev => {
+      const n = { ...prev }
+      ids.forEach(id => { delete n[id] })
+      return n
+    })
+    const prev = openTabs
+    const newTabs = prev.filter(t => !idSet.has(t.id))
+    let nextActive = activeTabId
+    if (activeTabId != null && idSet.has(activeTabId)) {
+      const oldIdx = prev.findIndex(t => t.id === activeTabId)
+      nextActive = null
+      for (let i = oldIdx - 1; i >= 0; i--) {
+        if (!idSet.has(prev[i].id)) {
+          nextActive = prev[i].id
+          break
+        }
+      }
+      if (nextActive == null) {
+        for (let i = oldIdx + 1; i < prev.length; i++) {
+          if (!idSet.has(prev[i].id)) {
+            nextActive = prev[i].id
+            break
+          }
+        }
+      }
     }
-    const idx = openTabs.findIndex(t => t.id === nodeId)
-    const newTabs = openTabs.filter(t => t.id !== nodeId)
     setOpenTabs(newTabs)
-    if (activeTabId === nodeId) {
-      setActiveTabId(newTabs[Math.max(0, idx - 1)]?.id ?? null)
+    if (nextActive !== activeTabId) setActiveTabId(nextActive)
+    setDirtyMap(prevDirty => {
+      const n = { ...prevDirty }
+      ids.forEach(id => { delete n[id] })
+      return n
+    })
+    setResultMap(prev => {
+      const n = { ...prev }
+      ids.forEach(id => { delete n[id] })
+      return n
+    })
+    setLogMap(prev => {
+      const n = { ...prev }
+      ids.forEach(id => { delete n[id] })
+      return n
+    })
+  }
+
+  const closeTab = (nodeId: number) => closeTabsBulk([nodeId])
+
+  const tabContextMenu = (tabId: number) => {
+    const idx = openTabs.findIndex(t => t.id === tabId)
+    const hasLeft = idx > 0
+    const hasRight = idx >= 0 && idx < openTabs.length - 1
+    const hasOthers = openTabs.length > 1
+    return {
+      items: [
+        {
+          key: 'close',
+          label: '关闭',
+          onClick: () => closeTab(tabId),
+        },
+        {
+          key: 'close-others',
+          label: '关闭其他',
+          disabled: !hasOthers,
+          onClick: () => closeTabsBulk(openTabs.filter(t => t.id !== tabId).map(t => t.id)),
+        },
+        {
+          key: 'close-left',
+          label: '关闭左侧',
+          disabled: !hasLeft,
+          onClick: () => closeTabsBulk(openTabs.slice(0, idx).map(t => t.id)),
+        },
+        {
+          key: 'close-right',
+          label: '关闭右侧',
+          disabled: !hasRight,
+          onClick: () => closeTabsBulk(openTabs.slice(idx + 1).map(t => t.id)),
+        },
+        { type: 'divider' as const },
+        {
+          key: 'close-all',
+          label: '全部关闭',
+          disabled: openTabs.length === 0,
+          onClick: () => closeTabsBulk(openTabs.map(t => t.id)),
+        },
+      ],
     }
-    // 清理 dirty
-    setDirtyMap(prev => { const n = { ...prev }; delete n[nodeId]; return n })
   }
 
   // 当前激活节点
@@ -946,7 +1070,40 @@ export default function StudioPage() {
         value={activeScript}
         onChange={!canEdit ? undefined : onEditorChange}
         beforeMount={registerDwMonacoThemes}
-        onMount={(editor) => { editorRef.current = editor }}
+        onMount={(editor) => {
+          editorRef.current = editor
+          // Monaco Find 关闭按钮 title 含 "(Escape)"，Esc 关闭后 Chromium 原生 tooltip 易残影；去掉 title 保留 aria-label
+          const root = editor.getDomNode()
+          const stripFindTitles = () => {
+            root?.querySelectorAll('.find-widget [title], .replace-widget [title]').forEach(el => {
+              const title = el.getAttribute('title') || ''
+              if (!title) return
+              if (!el.getAttribute('aria-label')) {
+                el.setAttribute('aria-label', title.replace(/\s*\([^)]*\)\s*$/, '').trim() || title)
+              }
+              el.removeAttribute('title')
+            })
+          }
+          const mo = new MutationObserver(() => stripFindTitles())
+          if (root) {
+            mo.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['title', 'class'] })
+          }
+          const onKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+              stripFindTitles()
+              const ae = document.activeElement as HTMLElement | null
+              if (ae?.closest?.('.find-widget, .replace-widget')) {
+                ae.blur()
+              }
+            }
+          }
+          window.addEventListener('keydown', onKeyDown, true)
+          editor.onDidDispose(() => {
+            mo.disconnect()
+            window.removeEventListener('keydown', onKeyDown, true)
+          })
+          stripFindTitles()
+        }}
         theme={editorAppearance.theme}
         options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: Boolean(!canEdit) }}
       />
@@ -964,6 +1121,7 @@ export default function StudioPage() {
       defaultWidth={240}
       minWidth={180}
       maxWidth={560}
+      collapsed={sidebarCollapsed}
       style={{ height: 'calc(100vh - 112px)', margin: -24, overflow: 'hidden' }}
       left={(
       <div style={{ display: 'flex', flexDirection: 'column', background: '#fafafa', height: '100%', minHeight: 0 }}>
@@ -976,15 +1134,19 @@ export default function StudioPage() {
             <Tooltip title="新建节点">
               <Button type="text" size="small" icon={<PlusOutlined />} onClick={() => { setCreateFolderId(null); setCreateModal(true) }} />
             </Tooltip>
+            <Tooltip title="隐藏节点列表">
+              <Button type="text" size="small" icon={<MenuFoldOutlined />} onClick={() => setSidebarCollapsedPersist(true)} />
+            </Tooltip>
           </Space>
         </div>
-        <div style={{ flex: 1, overflow: 'auto', padding: '4px 0' }}>
+        <div style={{ flex: 1, overflow: 'auto', padding: '4px 0' }} className="studio-node-tree">
           <Tree
             treeData={buildTree()}
-            defaultExpandAll
             blockNode
             draggable
             onDrop={onTreeDrop}
+            expandedKeys={treeExpandedKeys}
+            onExpand={keys => setTreeExpandedKeys(keys)}
             selectedKeys={activeTabId ? [activeTabId] : []}
             onSelect={(keys, { node }: any) => {
               if (node.data) openNode(node.data)
@@ -999,31 +1161,51 @@ export default function StudioPage() {
 
         {/* Tab 栏 */}
         <div style={{ borderBottom: '1px solid #f0f0f0', background: '#fff', display: 'flex', alignItems: 'center', minHeight: 40, overflowX: 'auto' }}>
+          {sidebarCollapsed && (
+            <Tooltip title="显示节点列表">
+              <Button
+                type="text"
+                size="small"
+                icon={<MenuUnfoldOutlined />}
+                onClick={() => setSidebarCollapsedPersist(false)}
+                style={{ marginLeft: 4, flexShrink: 0 }}
+              />
+            </Tooltip>
+          )}
           {openTabs.map(tab => {
             const dirty = dirtyMap[tab.id] !== undefined
             const isActive = tab.id === activeTabId
             return (
-              <div
-                key={tab.id}
-                onClick={() => setActiveTabId(tab.id)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 6,
-                  padding: '0 14px', height: 40, cursor: 'pointer', whiteSpace: 'nowrap',
-                  borderRight: '1px solid #f0f0f0',
-                  borderBottom: isActive ? '2px solid #1677ff' : '2px solid transparent',
-                  background: isActive ? '#fff' : '#fafafa',
-                  color: isActive ? '#1677ff' : '#666',
-                  fontSize: 13,
-                }}
-              >
-                <Tag color={TYPE_COLOR[tab.node_type]} style={{ margin: 0, fontSize: 11 }}>{tab.node_type}</Tag>
-                <span>{tab.name}</span>
-                {dirty && <span style={{ color: '#faad14', fontSize: 10 }}>●</span>}
-                <CloseCircleOutlined
-                  style={{ fontSize: 12, color: '#999', marginLeft: 2 }}
-                  onClick={e => { e.stopPropagation(); closeTab(tab.id) }}
-                />
-              </div>
+              <Dropdown key={tab.id} trigger={['contextMenu']} menu={tabContextMenu(tab.id)}>
+                <div
+                  onClick={() => setActiveTabId(tab.id)}
+                  onAuxClick={e => {
+                    // 中键关闭（类似浏览器 / IDEA）
+                    if (e.button === 1) {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      closeTab(tab.id)
+                    }
+                  }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    padding: '0 14px', height: 40, cursor: 'pointer', whiteSpace: 'nowrap',
+                    borderRight: '1px solid #f0f0f0',
+                    borderBottom: isActive ? '2px solid #1677ff' : '2px solid transparent',
+                    background: isActive ? '#fff' : '#fafafa',
+                    color: isActive ? '#1677ff' : '#666',
+                    fontSize: 13,
+                  }}
+                >
+                  <Tag color={TYPE_COLOR[tab.node_type]} style={{ margin: 0, fontSize: 11 }}>{tab.node_type}</Tag>
+                  <span>{tab.name}</span>
+                  {dirty && <span style={{ color: '#faad14', fontSize: 10 }}>●</span>}
+                  <CloseCircleOutlined
+                    style={{ fontSize: 12, color: '#999', marginLeft: 2 }}
+                    onClick={e => { e.stopPropagation(); closeTab(tab.id) }}
+                  />
+                </div>
+              </Dropdown>
             )
           })}
           {openTabs.length === 0 && (
@@ -1086,6 +1268,14 @@ export default function StudioPage() {
                 <Button size="small" danger icon={<LockOutlined />} onClick={handleStealEditLock}>抢锁编辑</Button>
               )}
               <Button icon={<SettingOutlined />} onClick={openConfig} size="small">配置</Button>
+              <Button
+                icon={<AimOutlined />}
+                onClick={locateActiveInTree}
+                size="small"
+                title="在节点列表中定位当前脚本"
+              >
+                定位
+              </Button>
               <Button icon={<ReloadOutlined />} onClick={openHistory} size="small">版本历史</Button>
               <div style={{ flex: 1 }} />
               <EditorAppearanceToolbar value={editorAppearance} onChange={setEditorAppearance} />
@@ -1225,7 +1415,7 @@ export default function StudioPage() {
                                   toolbar={(
                                     <div style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                                       <span style={{ color: '#666', fontSize: 12 }}>
-                                        共 <strong>{total}</strong> 行；展示 <strong>{rows.length}</strong> 行（上限 10000）；表头右上角为类型徽章（悬停看完整类型）
+                                        共 <strong>{total}</strong> 行；已返回 <strong>{rows.length}</strong> 行（上限 10000）；结果区分页展示，表头右上角为类型徽章
                                       </span>
                                       <div style={{ flex: 1 }} />
                                       <Button

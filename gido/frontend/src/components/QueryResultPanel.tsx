@@ -5,7 +5,7 @@
  * @date 2026-06-05
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, isValidElement } from 'react'
-import { Table, message } from 'antd'
+import { Pagination, Table, message } from 'antd'
 import type { ColumnType, ColumnsType } from 'antd/es/table'
 import type { QueryRowRec } from './QueryResultTable'
 import { queryResultTableComponents } from './QueryResultTable'
@@ -44,6 +44,11 @@ type Props = {
   dataSource: QueryRowRec[]
   toolbar?: ReactNode
   empty?: ReactNode
+  /** 客户端分页；默认每页 100，避免大结果一次渲染卡死页面。传 false 关闭。 */
+  pagination?: false | {
+    pageSize?: number
+    pageSizeOptions?: string[]
+  }
 }
 
 /**
@@ -51,7 +56,13 @@ type Props = {
  * - 单滚动视口（表头 sticky，横向与数据始终对齐）
  * - 底部固定横滚条、右侧固定纵滚条（与主区双向同步）
  */
-export default function QueryResultPanel({ columns, dataSource, toolbar, empty }: Props) {
+export default function QueryResultPanel({
+  columns,
+  dataSource,
+  toolbar,
+  empty,
+  pagination,
+}: Props) {
   const mainRef = useRef<HTMLDivElement>(null)
   const hTrackRef = useRef<HTMLDivElement>(null)
   const hInnerRef = useRef<HTMLDivElement>(null)
@@ -59,6 +70,23 @@ export default function QueryResultPanel({ columns, dataSource, toolbar, empty }
   const vInnerRef = useRef<HTMLDivElement>(null)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [ctx, setCtx] = useState<CtxMenu | null>(null)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(pagination === false ? 100 : (pagination?.pageSize ?? 100))
+
+  useEffect(() => {
+    setPage(1)
+  }, [dataSource])
+
+  const pagingEnabled = pagination !== false
+  const pageSizeOptions = pagination === false
+    ? []
+    : (pagination?.pageSizeOptions ?? ['50', '100', '200', '500'])
+
+  const pagedData = useMemo(() => {
+    if (!pagingEnabled) return dataSource
+    const start = (page - 1) * pageSize
+    return dataSource.slice(start, start + pageSize)
+  }, [dataSource, pagingEnabled, page, pageSize])
 
   const tableMinWidth = useMemo(() => {
     let w = 40
@@ -140,7 +168,7 @@ export default function QueryResultPanel({ columns, dataSource, toolbar, empty }
       window.clearTimeout(t)
       unbind?.()
     }
-  }, [bindScrollSync, syncScrollbarSizes, dataSource, columns, tableMinWidth])
+  }, [bindScrollSync, syncScrollbarSizes, pagedData, columns, tableMinWidth])
 
   useEffect(() => {
     if (!ctx) return
@@ -222,7 +250,7 @@ export default function QueryResultPanel({ columns, dataSource, toolbar, empty }
             size="small"
             rowKey="_key"
             columns={columnsWithCopy}
-            dataSource={dataSource}
+            dataSource={pagedData}
             pagination={false}
             tableLayout="fixed"
             style={{ minWidth: tableMinWidth }}
@@ -237,6 +265,23 @@ export default function QueryResultPanel({ columns, dataSource, toolbar, empty }
         </div>
         <div className="dw-query-result__corner" aria-hidden />
       </div>
+      {pagingEnabled && dataSource.length > 0 && (
+        <div className="dw-query-result__pager">
+          <Pagination
+            size="small"
+            current={page}
+            pageSize={pageSize}
+            total={dataSource.length}
+            showSizeChanger
+            pageSizeOptions={pageSizeOptions}
+            showTotal={(total, range) => `${range[0]}-${range[1]} / ${total} 行`}
+            onChange={(p, ps) => {
+              setPage(p)
+              setPageSize(ps)
+            }}
+          />
+        </div>
+      )}
       {ctx && (
         <div
           className="dw-query-result__ctx"

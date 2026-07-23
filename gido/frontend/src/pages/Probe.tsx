@@ -4,13 +4,13 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, type Key } from 'react'
 import {
   Button, Select, InputNumber, Alert, Space, message, Tree, Input, Modal, Form, Dropdown, Tooltip, Tabs, Tag,
 } from 'antd'
 import {
   PlayCircleOutlined, DownloadOutlined, PlusOutlined, FolderAddOutlined, FolderOutlined, FileOutlined,
-  MoreOutlined, FormatPainterOutlined,
+  MoreOutlined, FormatPainterOutlined, MenuFoldOutlined, MenuUnfoldOutlined, AimOutlined,
 } from '@ant-design/icons'
 import Editor from '@monaco-editor/react'
 import { format as sqlFormat } from 'sql-formatter'
@@ -82,6 +82,15 @@ export default function ProbePage() {
   const [renamingFolderName, setRenamingFolderName] = useState('')
   const [renamingScriptId, setRenamingScriptId] = useState<string | null>(null)
   const [renamingScriptName, setRenamingScriptName] = useState('')
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('gido.probe.sidebarCollapsed') === '1'
+    } catch {
+      return false
+    }
+  })
+  const [treeExpandedKeys, setTreeExpandedKeys] = useState<Key[]>(['root'])
+  const treeExpandedInitRef = useRef(false)
 
   useEffect(() => {
     if (!wsId) return
@@ -95,7 +104,44 @@ export default function ProbePage() {
       setProbeState(init)
       saveProbeState(wsId, init)
     }
+    treeExpandedInitRef.current = false
   }, [wsId])
+
+  useEffect(() => {
+    if (!probeState.folders.length || treeExpandedInitRef.current) return
+    treeExpandedInitRef.current = true
+    setTreeExpandedKeys(['root', ...probeState.folders.map(f => `folder-${f.id}`)])
+  }, [probeState.folders])
+
+  const setSidebarCollapsedPersist = (collapsed: boolean) => {
+    setSidebarCollapsed(collapsed)
+    try {
+      localStorage.setItem('gido.probe.sidebarCollapsed', collapsed ? '1' : '0')
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const locateActiveInTree = () => {
+    const script = probeState.scripts.find(s => s.id === probeState.activeScriptId)
+    if (!script) {
+      message.info('请先打开一个查询')
+      return
+    }
+    setSidebarCollapsedPersist(false)
+    const folderById = new Map(probeState.folders.map(f => [f.id, f]))
+    const keys: Key[] = ['root']
+    let fid: string | null | undefined = script.folderId
+    while (fid != null && folderById.has(fid)) {
+      keys.push(`folder-${fid}`)
+      fid = folderById.get(fid)?.parentId
+    }
+    setTreeExpandedKeys(prev => Array.from(new Set([...prev, ...keys])))
+    window.setTimeout(() => {
+      const el = document.querySelector('.probe-script-tree .ant-tree-node-selected') as HTMLElement | null
+      el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }, 80)
+  }
 
   useEffect(() => {
     const pending = sessionStorage.getItem('gido_copilot_sql')
@@ -472,7 +518,14 @@ export default function ProbePage() {
 
   const rightPane = (
     <div style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <h2 style={{ margin: '0 0 8px' }}>数据探查</h2>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        {sidebarCollapsed && (
+          <Tooltip title="显示探查目录">
+            <Button type="text" size="small" icon={<MenuUnfoldOutlined />} onClick={() => setSidebarCollapsedPersist(false)} />
+          </Tooltip>
+        )}
+        <h2 style={{ margin: 0 }}>数据探查</h2>
+      </div>
       <Alert
         type="info"
         showIcon
@@ -509,6 +562,14 @@ export default function ProbePage() {
         </Button>
         <Button type="primary" icon={<PlayCircleOutlined />} loading={loading} onClick={run}>
           运行
+        </Button>
+        <Button
+          icon={<AimOutlined />}
+          onClick={locateActiveInTree}
+          disabled={!activeScript}
+          title="在探查目录中定位当前查询"
+        >
+          定位
         </Button>
         {activeStmt && !activeStmt.error && (
           <Button icon={<DownloadOutlined />} onClick={exportCsv}>
@@ -590,6 +651,7 @@ export default function ProbePage() {
         defaultWidth={240}
         minWidth={180}
         maxWidth={520}
+        collapsed={sidebarCollapsed}
         style={{ height: 'calc(100vh - 112px)', margin: -24, overflow: 'hidden' }}
         left={(
           <div style={{ display: 'flex', flexDirection: 'column', background: '#fafafa', height: '100%', minHeight: 0 }}>
@@ -602,13 +664,17 @@ export default function ProbePage() {
                 <Tooltip title="新建查询">
                   <Button type="text" size="small" icon={<PlusOutlined />} onClick={() => addScript(null)} />
                 </Tooltip>
+                <Tooltip title="隐藏探查目录">
+                  <Button type="text" size="small" icon={<MenuFoldOutlined />} onClick={() => setSidebarCollapsedPersist(true)} />
+                </Tooltip>
               </Space>
             </div>
-            <div style={{ flex: 1, overflow: 'auto', padding: '4px 0' }}>
+            <div style={{ flex: 1, overflow: 'auto', padding: '4px 0' }} className="probe-script-tree">
               <Tree
                 treeData={buildTreeData()}
-                defaultExpandAll
                 blockNode
+                expandedKeys={treeExpandedKeys}
+                onExpand={keys => setTreeExpandedKeys(keys)}
                 selectedKeys={activeScript ? [`script-${activeScript.id}`] : []}
                 onSelect={(keys, { node }: any) => {
                   const sid = node?._scriptId as string | undefined

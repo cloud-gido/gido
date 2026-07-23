@@ -7,11 +7,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
   Table, Button, Space, Tag, message, Modal, Form, Input, InputNumber, Select, Upload, Card, Drawer,
-  Divider, Typography, Alert, notification, Collapse, Popconfirm,
+  Divider, Typography, Alert, notification, Collapse, Popconfirm, Tooltip,
 } from 'antd'
 import {
   PlusOutlined, PlayCircleOutlined, StopOutlined, SaveOutlined, ReloadOutlined, UploadOutlined, DeleteOutlined,
   UnlockOutlined, HistoryOutlined, CopyOutlined, SearchOutlined, EditOutlined,
+  MenuFoldOutlined, MenuUnfoldOutlined, AimOutlined,
 } from '@ant-design/icons'
 import Editor from '@monaco-editor/react'
 import { streamingApi, approvalApi } from '../api'
@@ -221,6 +222,13 @@ export default function StreamStudioPage() {
   const [previewLimit, setPreviewLimit] = useState(100)
   const [submitDrawerOpen, setSubmitDrawerOpen] = useState(false)
   const [resultPanelOpen, setResultPanelOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('gido.streamStudio.sidebarCollapsed') === '1'
+    } catch {
+      return false
+    }
+  })
   const [resultPanelHeight, setResultPanelHeight] = useState(() => {
     try {
       const v = Number(localStorage.getItem('gido.streamStudio.resultPanelHeight'))
@@ -264,6 +272,29 @@ export default function StreamStudioPage() {
     document.body.style.userSelect = 'none'
     window.addEventListener('mousemove', onResultResizeMove)
     window.addEventListener('mouseup', onResultResizeUp)
+  }
+
+  const setSidebarCollapsedPersist = (collapsed: boolean) => {
+    setSidebarCollapsed(collapsed)
+    try {
+      localStorage.setItem('gido.streamStudio.sidebarCollapsed', collapsed ? '1' : '0')
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const locateSelectedJob = () => {
+    if (!selected) {
+      message.info('请先选择作业')
+      return
+    }
+    setSidebarCollapsedPersist(false)
+    window.setTimeout(() => {
+      const el = document.querySelector(
+        `.stream-job-list tr[data-stream-job-id="${selected.id}"]`,
+      ) as HTMLElement | null
+      el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }, 80)
   }
 
   const load = useCallback(async (showSpinner = true) => {
@@ -672,10 +703,18 @@ export default function StreamStudioPage() {
       </Paragraph>
 
       <Space style={{ marginBottom: 16 }}>
+        {sidebarCollapsed && (
+          <Tooltip title="显示作业列表">
+            <Button icon={<MenuUnfoldOutlined />} onClick={() => setSidebarCollapsedPersist(false)} />
+          </Tooltip>
+        )}
         <Button type="primary" icon={<PlusOutlined />} onClick={() => { createForm.resetFields(); setCreateOpen(true) }}>
           新建实时作业
         </Button>
         <Button icon={<ReloadOutlined />} onClick={() => load(true)} loading={loading}>刷新</Button>
+        <Button icon={<AimOutlined />} onClick={locateSelectedJob} disabled={!selected} title="在左侧列表中定位当前作业">
+          定位
+        </Button>
       </Space>
 
       <ResizableSidebar
@@ -683,23 +722,33 @@ export default function StreamStudioPage() {
         defaultWidth={360}
         minWidth={260}
         maxWidth={560}
+        collapsed={sidebarCollapsed}
         style={{ minHeight: 560 }}
         left={(
-        <div style={{ height: '100%', minHeight: 560 }}>
-          <Table
-            size="small"
-            rowKey="id"
-            loading={loading}
-            dataSource={jobs}
-            columns={columns}
-            pagination={false}
-            scroll={{ y: 480 }}
-            tableLayout="fixed"
-            onRow={row => ({
-              onClick: () => setSelected(row),
-              style: { cursor: 'pointer', background: selected?.id === row.id ? '#e6f4ff' : undefined },
-            })}
-          />
+        <div style={{ height: '100%', minHeight: 560, display: 'flex', flexDirection: 'column' }} className="stream-job-list">
+          <div style={{ padding: '8px 10px', borderBottom: '1px solid #f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontWeight: 600, fontSize: 13 }}>作业列表</span>
+            <Tooltip title="隐藏作业列表">
+              <Button type="text" size="small" icon={<MenuFoldOutlined />} onClick={() => setSidebarCollapsedPersist(true)} />
+            </Tooltip>
+          </div>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <Table
+              size="small"
+              rowKey="id"
+              loading={loading}
+              dataSource={jobs}
+              columns={columns}
+              pagination={false}
+              scroll={{ y: 440 }}
+              tableLayout="fixed"
+              onRow={row => ({
+                onClick: () => setSelected(row),
+                'data-stream-job-id': String(row.id),
+                style: { cursor: 'pointer', background: selected?.id === row.id ? '#e6f4ff' : undefined },
+              })}
+            />
+          </div>
         </div>
         )}
         right={(

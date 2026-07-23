@@ -14,9 +14,11 @@ type Props = {
   style?: CSSProperties
   left: ReactNode
   right: ReactNode
+  /** 折叠左侧面板（宽度收起，不销毁 left） */
+  collapsed?: boolean
 }
 
-/** 左侧定宽 + 拖拽调整 + 右侧自适应 */
+/** 左侧定宽 + 拖拽调整 + 右侧自适应；可折叠左侧 */
 export default function ResizableSidebar({
   defaultWidth,
   minWidth = 160,
@@ -25,6 +27,7 @@ export default function ResizableSidebar({
   style,
   left,
   right,
+  collapsed = false,
 }: Props) {
   const readStored = () => {
     try {
@@ -79,20 +82,36 @@ export default function ResizableSidebar({
 
   return (
     <div style={{ display: 'flex', ...style }}>
-      <div style={{ width, flexShrink: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>{left}</div>
       <div
-        role="separator"
-        aria-orientation="vertical"
-        onMouseDown={onMouseDown}
         style={{
-          width: 6,
+          width: collapsed ? 0 : width,
           flexShrink: 0,
-          cursor: 'col-resize',
-          background: 'linear-gradient(90deg, #f0f0f0 0, #e8e8e8 50%, #f0f0f0 100%)',
-          borderLeft: '1px solid #e0e0e0',
-          borderRight: '1px solid #e0e0e0',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+          transition: 'width 0.15s ease',
+          opacity: collapsed ? 0 : 1,
+          pointerEvents: collapsed ? 'none' : 'auto',
         }}
-      />
+        aria-hidden={collapsed}
+      >
+        {left}
+      </div>
+      {!collapsed && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          onMouseDown={onMouseDown}
+          style={{
+            width: 6,
+            flexShrink: 0,
+            cursor: 'col-resize',
+            background: 'linear-gradient(90deg, #f0f0f0 0, #e8e8e8 50%, #f0f0f0 100%)',
+            borderLeft: '1px solid #e0e0e0',
+            borderRight: '1px solid #e0e0e0',
+          }}
+        />
+      )}
       <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>{right}</div>
     </div>
   )

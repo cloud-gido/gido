@@ -4,13 +4,15 @@
  * 运行历史详情：SQL + 结果预览
  */
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Card, Descriptions, Space, Tag, Table, Typography, message, Alert } from 'antd'
+import { Button, Card, Descriptions, Space, Tag, Typography, message, Alert } from 'antd'
 import { ArrowLeftOutlined, CopyOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import { adhocRunsApi } from '../api'
 import { useAppStore } from '../store'
 import { formatInTimeZone } from '../utils/datetime'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
+import QueryResultPanel from '../components/QueryResultPanel'
+import { normalizeQueryColumns } from '../utils/queryColumns'
 import { R } from '../routes'
 
 const { Paragraph, Text } = Typography
@@ -50,9 +52,12 @@ export default function RunHistoryDetailPage() {
     if (!preview?.columns?.length) {
       return { dataSource: [] as ReturnType<typeof rowsToRecordDataSource>, tableColumns: buildQueryTableColumns([]) }
     }
+    const columns = preview.columns as string[]
+    const dataSource = rowsToRecordDataSource(columns, preview.rows || [])
+    const colMetas = normalizeQueryColumns(columns, preview.column_types)
     return {
-      dataSource: rowsToRecordDataSource(preview.columns, preview.rows || []),
-      tableColumns: buildQueryTableColumns(preview.columns as string[]),
+      dataSource,
+      tableColumns: buildQueryTableColumns(colMetas, { dataSource }),
     }
   }, [preview])
 
@@ -154,18 +159,23 @@ export default function RunHistoryDetailPage() {
         </Card>
       )}
 
-      <Card title="查询结果" size="small">
+      <Card title="查询结果" size="small" styles={{ body: { padding: 0, minHeight: 280 } }}>
         {preview?.columns?.length ? (
-          <Table
-            size="small"
-            scroll={{ x: true }}
-            pagination={{ pageSize: 50, showSizeChanger: true }}
-            dataSource={tableBundle.dataSource}
-            columns={tableBundle.tableColumns}
-            rowKey={(_, i) => String(i)}
-          />
+          <div style={{ height: 420, display: 'flex', flexDirection: 'column' }}>
+            <QueryResultPanel
+              dataSource={tableBundle.dataSource}
+              columns={tableBundle.tableColumns}
+              toolbar={(
+                <div style={{ padding: '8px 12px', fontSize: 12, color: '#666' }}>
+                  共 <strong>{tableBundle.dataSource.length}</strong> 行
+                  {preview.truncated ? '（已截断预览）' : ''}
+                  ；与数据开发 / 探查共用结果组件
+                </div>
+              )}
+            />
+          </div>
         ) : (
-          <span style={{ color: '#999' }}>无结果集（非查询语句、失败或未返回行）</span>
+          <div style={{ padding: 16, color: '#999' }}>无结果集（非查询语句、失败或未返回行）</div>
         )}
       </Card>
     </div>
