@@ -203,7 +203,7 @@ export default function StudioPage() {
     }
   }
 
-  /** 展开目录并滚动到当前脚本在树中的位置（类似 DataWorks 定位） */
+  /** 展开目录并滚动到当前脚本在树中的位置 */
   const locateActiveInTree = () => {
     const node = openTabs.find(t => t.id === activeTabId)
     if (!node) {
