@@ -44,6 +44,8 @@ import {
   defaultProbeState,
   newProbeId,
 } from '../utils/probeLocalStore'
+import AutosaveStatusHint from '../components/AutosaveStatusHint'
+import { useScriptAutosave } from '../hooks/useScriptAutosave'
 
 export default function ProbePage() {
   const { currentWorkspace } = useAppStore()
@@ -91,6 +93,9 @@ export default function ProbePage() {
   })
   const [treeExpandedKeys, setTreeExpandedKeys] = useState<Key[]>(['root'])
   const treeExpandedInitRef = useRef(false)
+  const [sqlDirty, setSqlDirty] = useState(false)
+  const probeStateRef = useRef(probeState)
+  probeStateRef.current = probeState
 
   useEffect(() => {
     if (!wsId) return
@@ -217,6 +222,22 @@ export default function ProbePage() {
 
   const sql = activeScript?.sql ?? ''
   const limit = activeScript?.limit ?? 500
+
+  useEffect(() => {
+    setSqlDirty(false)
+  }, [probeState.activeScriptId])
+
+  const scriptAutosave = useScriptAutosave({
+    enabled: Boolean(wsId && activeScript),
+    dirty: sqlDirty,
+    value: sql,
+    storageKey: null,
+    persist: async () => {
+      if (!wsId) throw new Error('no workspace')
+      saveProbeState(wsId, probeStateRef.current)
+    },
+    onSynced: () => setSqlDirty(false),
+  })
 
   const probeDsResolve = useMemo(() => {
     if (!activeScript) return null
@@ -560,6 +581,12 @@ export default function ProbePage() {
         <Button icon={<FormatPainterOutlined />} onClick={formatSql} disabled={!sql.trim()}>
           格式化
         </Button>
+        <AutosaveStatusHint
+          visible={Boolean(activeScript)}
+          status={scriptAutosave.status}
+          hint={scriptAutosave.hint}
+          localAuthority
+        />
         <Button type="primary" icon={<PlayCircleOutlined />} loading={loading} onClick={run}>
           运行
         </Button>
@@ -590,7 +617,10 @@ export default function ProbePage() {
               height="100%"
               language="sql"
               value={sql}
-              onChange={v => patchActiveScript({ sql: v || '' })}
+              onChange={v => {
+                patchActiveScript({ sql: v || '' })
+                setSqlDirty(true)
+              }}
               beforeMount={registerDwMonacoThemes}
               theme={editorAppearance.theme}
               options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), minimap: { enabled: false } }}

@@ -22,6 +22,12 @@ import {
   monacoEditorOptionsFromAppearance,
   registerDwMonacoThemes,
 } from '../utils/editorAppearance'
+import AutosaveStatusHint from './AutosaveStatusHint'
+import { useScriptAutosave } from '../hooks/useScriptAutosave'
+import {
+  restoreScriptLocalDraft,
+  scriptDraftStorageKey,
+} from '../utils/scriptLocalDraft'
 
 export type StudioNode = Record<string, any>
 
@@ -93,9 +99,11 @@ export default function NodeConfigModal({
   const [integrationTasks, setIntegrationTasks] = useState<any[]>([])
   const [workflows, setWorkflows] = useState<any[]>([])
   const [holdsLock, setHoldsLock] = useState(false)
+  const [scriptDirty, setScriptDirty] = useState(false)
   const holdsLockRef = useRef(false)
   holdsLockRef.current = holdsLock
   const acquiredHereRef = useRef(false)
+  const nodeRef = useRef<StudioNode | null>(null)
 
   const dsResolve = node && (node.node_type === 'SQL' || node.node_type === 'PYTHON')
     ? resolveDatasourceForRun(node.datasource_id, currentWorkspace, datasources)
@@ -104,6 +112,7 @@ export default function NodeConfigModal({
   const editorAppearance = useMemo(() => loadEditorAppearance(), [])
   const showScriptEditor = Boolean(node && SCRIPT_NODE_TYPES.has(node.node_type))
   const scriptContent = Form.useWatch('script_content', form) ?? ''
+  nodeRef.current = node
   const syncTaskId = Form.useWatch('sync_task_id', form)
   const dependRelation = Form.useWatch('relation', form)
   const dependItems = Form.useWatch('depend_items', form)
@@ -190,7 +199,19 @@ export default function NodeConfigModal({
         setDatasources(ds || [])
         setIntegrationTasks(Array.isArray(tasks) ? tasks : (tasks?.items || []))
         setWorkflows(Array.isArray(wfs) ? wfs : [])
-        form.setFieldsValue(normalizeFormValues(n))
+        const vals = normalizeFormValues(n)
+        const draftKey = scriptDraftStorageKey(`studio.${workspaceId}`, nodeId)
+        const restored = !n.is_locked
+          ? restoreScriptLocalDraft(draftKey, n.script_content ?? '')
+          : null
+        if (restored != null) {
+          vals.script_content = restored
+          setScriptDirty(true)
+          message.info('已恢复本地未同步草稿，持有编辑锁后将自动保存到服务端')
+        } else {
+          setScriptDirty(false)
+        }
+        form.setFieldsValue(vals)
         if (!n.is_locked) {
           await tryAcquire(false, true)
         }
@@ -203,7 +224,36 @@ export default function NodeConfigModal({
     return () => { cancelled = true }
   }, [open, nodeId, workspaceId, form, tryAcquire])
 
+  const modalDraftKey = nodeId != null
+    ? scriptDraftStorageKey(`studio.${workspaceId}`, nodeId)
+    : null
+
+  const scriptAutosave = useScriptAutosave({
+    enabled: Boolean(showScriptEditor && holdsLock && node && !node.is_locked && nodeId),
+    dirty: scriptDirty,
+    value: scriptContent,
+    storageKey: modalDraftKey,
+    persist: async (script) => {
+      if (!nodeId || !nodeRef.current) throw new Error('no node')
+      const n = nodeRef.current
+      const updated: any = await studioApi.saveDraft(nodeId, {
+        workspace_id: workspaceId,
+        name: form.getFieldValue('name') || n.name,
+        node_type: n.node_type,
+        script_content: script,
+      })
+      const merged = { ...n, ...updated, script_content: script }
+      setNode(merged)
+      // 同步父页面节点缓存（Studio 打开的 Tab / Workflow 节点列表），避免关弹窗后仍见旧脚本
+      onSaved?.(merged)
+    },
+    onSynced: () => setScriptDirty(false),
+  })
+
   const handleClose = async () => {
+    if (holdsLockRef.current && scriptDirty) {
+      await scriptAutosave.flush()
+    }
     if (releaseOnClose && acquiredHereRef.current && nodeId && holdsLockRef.current) {
       try {
         await studioApi.releaseEditLock(nodeId)
@@ -211,6 +261,7 @@ export default function NodeConfigModal({
       acquiredHereRef.current = false
       setHoldsLock(false)
     }
+    setScriptDirty(false)
     onClose()
   }
 
@@ -295,9 +346,15 @@ export default function NodeConfigModal({
     }
     setSaving(true)
     try {
-      const updated: any = await studioApi.updateNode(nodeId, { ...node, ...values, workspace_id: workspaceId })
+      const updated: any = await studioApi.updateNode(
+        nodeId,
+        { ...node, ...values, workspace_id: workspaceId },
+        { createHistory: true },
+      )
       setNode(updated)
-      message.success('已保存')
+      setScriptDirty(false)
+      scriptAutosave.markVersionSaved()
+      message.success(SCRIPT_NODE_TYPES.has(node.node_type) ? '已保存并记入版本历史' : '已保存')
       onSaved?.(updated)
       await handleClose()
     } catch (e: any) {
@@ -333,18 +390,23 @@ export default function NodeConfigModal({
       onCancel={() => void handleClose()}
       confirmLoading={saving}
       okButtonProps={{ disabled: Boolean(node?.is_locked) }}
-      okText="保存"
+      okText={showScriptEditor ? '保存版本' : '保存'}
       width={920}
       styles={{ body: { maxHeight: 'min(78vh, 820px)', overflowY: 'auto' } }}
       destroyOnClose
       zIndex={2200}
       footer={(_, { OkBtn, CancelBtn }) => (
         <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-          <span>
+          <Space>
             {!node?.is_locked && !holdsLock && node?.edit_lock_username && (
               <Button size="small" danger icon={<LockOutlined />} onClick={handleSteal}>抢锁</Button>
             )}
-          </span>
+            <AutosaveStatusHint
+              visible={Boolean(showScriptEditor && holdsLock && !node?.is_locked)}
+              status={scriptAutosave.status}
+              hint={scriptAutosave.hint}
+            />
+          </Space>
           <Space>
             <CancelBtn />
             <OkBtn />
@@ -395,8 +457,8 @@ export default function NodeConfigModal({
                         name="script_content"
                         label="脚本内容"
                         extra={node?.node_type === 'PYTHON'
-                          ? '与数据开发同一脚本；可用 gido_job.execute / writelog'
-                          : '与数据开发同一脚本，保存后写入版本历史'}
+                          ? '与数据开发同一脚本；可用 gido_job.execute / writelog；编辑后自动保存草稿，点「保存版本」记入历史'
+                          : '与数据开发同一脚本；编辑后自动保存草稿，点「保存版本」记入历史'}
                       >
                         <div style={{ border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden' }}>
                           <Editor
@@ -408,6 +470,7 @@ export default function NodeConfigModal({
                             onChange={(v) => {
                               if (scriptReadOnly) return
                               form.setFieldsValue({ script_content: v ?? '' })
+                              setScriptDirty(true)
                             }}
                             options={{
                               ...monacoEditorOptionsFromAppearance(editorAppearance),

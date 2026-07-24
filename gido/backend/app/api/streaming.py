@@ -2244,7 +2244,16 @@ def copy_streaming_job(
 
 
 @router.put("/jobs/{job_id}")
-def update_job(job_id: int, job_in: JobUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def update_job(
+    job_id: int,
+    job_in: JobUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    create_history: bool = Query(
+        True,
+        description="是否写入作业版本历史。编辑器自动草稿保存应传 false（与 Studio create_history 对齐）。",
+    ),
+):
     job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_WRITE)
     if getattr(job, "is_locked", False):
         raise HTTPException(status_code=403, detail="作业已锁定，请先解锁后再修改")
@@ -2271,8 +2280,21 @@ def update_job(job_id: int, job_in: JobUpdate, db: Session = Depends(get_db), cu
         "flink_jar_submit_mode",
         "flink_session_profile_id",
     }
-    if watch & set(patch.keys()):
-        _append_streaming_job_history_snapshot(db, job, current_user.id)
+    # 静默草稿不写历史；显式保存且字段确有变化时才快照
+    if create_history and (watch & set(patch.keys())):
+        changed = False
+        for k in watch:
+            if k not in patch:
+                continue
+            if getattr(job, k, None) != patch.get(k):
+                changed = True
+                break
+        if changed:
+            _append_streaming_job_history_snapshot(db, job, current_user.id)
+    if not patch:
+        return _streaming_job_public_dict(db, job)
+    if set(patch.keys()) == {"script_content"} and (patch.get("script_content") or "") == (job.script_content or ""):
+        return _streaming_job_public_dict(db, job)
     for k, v in patch.items():
         setattr(job, k, v)
     job.updated_at = datetime.utcnow()

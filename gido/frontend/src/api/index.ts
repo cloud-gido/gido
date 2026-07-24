@@ -308,7 +308,13 @@ export const streamingApi = {
   listJobs: (workspaceId: number) => request.get('/streaming/jobs', { params: { workspace_id: workspaceId } }),
   createJob: (data: any) => request.post('/streaming/jobs', data),
   copyJob: (id: number, data?: { name?: string }) => request.post(`/streaming/jobs/${id}/copy`, data || {}),
-  updateJob: (id: number, data: any) => request.put(`/streaming/jobs/${id}`, data),
+  /** createHistory=false：静默草稿，不写 streaming job history */
+  updateJob: (id: number, data: any, opts?: { createHistory?: boolean }) =>
+    request.put(`/streaming/jobs/${id}`, data, {
+      params: { create_history: opts?.createHistory !== false },
+    }),
+  saveDraft: (id: number, data: { script_content: string }) =>
+    request.put(`/streaming/jobs/${id}`, data, { params: { create_history: false } }),
   unlockJob: (id: number) => request.post(`/streaming/jobs/${id}/unlock`),
   getJobHistory: (jobId: number) => request.get(`/streaming/jobs/${jobId}/history`),
   rollbackJobHistory: (jobId: number, historyId: number) =>

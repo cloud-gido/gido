@@ -35,6 +35,12 @@ import {
 } from '../utils/editorAppearance'
 import { formatInTimeZone } from '../utils/datetime'
 import { openFlinkConsoleUrl } from '../utils/flinkConsole'
+import AutosaveStatusHint from '../components/AutosaveStatusHint'
+import { useScriptAutosave } from '../hooks/useScriptAutosave'
+import {
+  restoreScriptLocalDraft,
+  scriptDraftStorageKey,
+} from '../utils/scriptLocalDraft'
 
 const { Paragraph, Text } = Typography
 const STREAM_JOB_NAME_RULE = '3-50 位小写字母、数字、短横线，字母开头，字母或数字结尾，例如 s3-copy-users'
@@ -194,6 +200,7 @@ export default function StreamStudioPage() {
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<any | null>(null)
   const [scriptDraft, setScriptDraft] = useState('')
+  const [scriptDirty, setScriptDirty] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [createForm] = Form.useForm()
   const [renameOpen, setRenameOpen] = useState(false)
@@ -357,24 +364,77 @@ export default function StreamStudioPage() {
     }
   }, [wsId, load])
 
+  // 仅切换作业时重置编辑器；静默草稿写回 selected.script_content 时不打断正在编辑的内容
   useEffect(() => {
-    if (selected?.job_type === 'SQL') {
-      setScriptDraft(selected.script_content ?? '')
-      setSqlParallelism(selected.parallelism ?? 1)
-      const sp = selected.streaming_properties
-      if (sp != null && String(sp).trim() !== '') {
-        try {
-          setStreamingPropsJson(JSON.stringify(JSON.parse(String(sp)), null, 2))
-        } catch {
-          setStreamingPropsJson(String(sp))
-        }
-      } else {
-        setStreamingPropsJson('{}')
-      }
-      setOperatorResForm(parseOperatorResForm(sp))
-      setResourceTier(parseResourceTier(sp))
+    if (!selected || selected.job_type !== 'SQL') {
+      setScriptDirty(false)
+      return
     }
-  }, [selected?.id, selected?.script_content, selected?.job_type, selected?.parallelism, selected?.streaming_properties])
+    const key = wsId != null ? scriptDraftStorageKey(`stream.${wsId}`, selected.id) : null
+    const restored = restoreScriptLocalDraft(key, selected.script_content ?? '')
+    if (restored != null) {
+      setScriptDraft(restored)
+      setScriptDirty(true)
+      message.info('已恢复本地未同步草稿，将自动保存到服务端')
+    } else {
+      setScriptDraft(selected.script_content ?? '')
+      setScriptDirty(false)
+    }
+    setSqlParallelism(selected.parallelism ?? 1)
+    const sp = selected.streaming_properties
+    if (sp != null && String(sp).trim() !== '') {
+      try {
+        setStreamingPropsJson(JSON.stringify(JSON.parse(String(sp)), null, 2))
+      } catch {
+        setStreamingPropsJson(String(sp))
+      }
+    } else {
+      setStreamingPropsJson('{}')
+    }
+    setOperatorResForm(parseOperatorResForm(sp))
+    setResourceTier(parseResourceTier(sp))
+  }, [selected?.id, selected?.job_type, wsId])
+
+  const streamDraftKey =
+    wsId != null && selected?.job_type === 'SQL'
+      ? scriptDraftStorageKey(`stream.${wsId}`, selected.id)
+      : null
+
+  const scriptAutosave = useScriptAutosave({
+    enabled: Boolean(wsId && selected?.job_type === 'SQL' && !selected.is_locked),
+    dirty: scriptDirty,
+    value: scriptDraft,
+    storageKey: streamDraftKey,
+    persist: async (script) => {
+      if (!selected) throw new Error('no job')
+      const updated: any = await streamingApi.saveDraft(selected.id, { script_content: script })
+      setSelected((prev: any) => (prev && prev.id === selected.id
+        ? { ...prev, ...updated, script_content: script }
+        : prev))
+      setJobs(prev => prev.map(j => (j.id === selected.id ? { ...j, ...updated, script_content: script } : j)))
+    },
+    onSynced: () => setScriptDirty(false),
+    persistKeepalive: (script) => {
+      if (!selected || !wsId) return
+      const token = localStorage.getItem('token')
+      if (!token) return
+      const apiOrigin = (import.meta.env.VITE_API_ORIGIN as string | undefined)?.replace(/\/$/, '') ?? ''
+      const url = `${apiOrigin || ''}/api/streaming/jobs/${selected.id}?create_history=false`
+      try {
+        fetch(url, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ script_content: script }),
+          keepalive: true,
+        }).catch(() => {})
+      } catch {
+        /* ignore */
+      }
+    },
+  })
 
   useEffect(() => {
     if (selected?.job_type === 'JAR') {
@@ -467,8 +527,10 @@ export default function StreamStudioPage() {
       parallelism: selected.job_type === 'JAR' ? jarForm.parallelism : sqlParallelism,
       ...(selected.job_type === 'SQL' ? { streaming_properties, flink_sql_submit_mode: effectiveSqlMode } : {}),
       ...(selected.job_type === 'JAR' ? { flink_jar_submit_mode: effectiveJarMode, streaming_properties } : {}),
-    })
-    message.success('已保存')
+    }, { createHistory: true })
+    setScriptDirty(false)
+    scriptAutosave.markVersionSaved()
+    message.success(selected.job_type === 'SQL' ? '已保存并记入版本历史' : '已保存')
     await load()
   }
 
@@ -785,7 +847,22 @@ export default function StreamStudioPage() {
                   {selected.is_locked && (
                     <Button icon={<UnlockOutlined />} onClick={handleUnlock}>解锁</Button>
                   )}
-                  <Button icon={<SaveOutlined />} onClick={handleSave} disabled={selected.is_locked}>保存</Button>
+                  <Button
+                    icon={<SaveOutlined />}
+                    onClick={handleSave}
+                    disabled={selected.is_locked}
+                    type={selected.job_type === 'SQL' && scriptDirty ? 'default' : 'text'}
+                    title={selected.job_type === 'SQL'
+                      ? '写入服务端并生成版本历史（自动保存只落草稿、不记版本）'
+                      : '保存作业配置'}
+                  >
+                    {selected.job_type === 'SQL' ? `保存版本${scriptDirty ? ' *' : ''}` : '保存'}
+                  </Button>
+                  <AutosaveStatusHint
+                    visible={selected.job_type === 'SQL' && !selected.is_locked}
+                    status={scriptAutosave.status}
+                    hint={scriptAutosave.hint}
+                  />
                   <Button
                     type="primary"
                     icon={<PlayCircleOutlined />}
@@ -882,7 +959,10 @@ export default function StreamStudioPage() {
                     <Button
                       size="small"
                       disabled={selected.is_locked}
-                      onClick={() => setScriptDraft(cdcPaimonSqlTemplate(flinkRuntime?.paimon_warehouse_default || ''))}
+                      onClick={() => {
+                        setScriptDraft(cdcPaimonSqlTemplate(flinkRuntime?.paimon_warehouse_default || ''))
+                        setScriptDirty(true)
+                      }}
                     >
                       插入 CDC→Paimon 模板
                     </Button>
@@ -895,7 +975,10 @@ export default function StreamStudioPage() {
                         language="sql"
                         theme={editorAppearance.theme}
                         value={scriptDraft}
-                        onChange={selected.is_locked ? undefined : (v => setScriptDraft(v ?? ''))}
+                        onChange={selected.is_locked ? undefined : (v => {
+                          setScriptDraft(v ?? '')
+                          setScriptDirty(true)
+                        })}
                         beforeMount={registerDwMonacoThemes}
                         onMount={ed => { editorRef.current = ed }}
                         options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: Boolean(selected.is_locked), minimap: { enabled: false } }}

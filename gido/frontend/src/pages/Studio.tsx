@@ -15,7 +15,6 @@ import {
   LoadingOutlined, CheckCircleOutlined, CloseCircleOutlined,
   ReloadOutlined, SettingOutlined, FormatPainterOutlined, UnlockOutlined,
   LockOutlined, DownloadOutlined, MenuFoldOutlined, MenuUnfoldOutlined, AimOutlined,
-  CloudSyncOutlined, ExclamationCircleOutlined,
 } from '@ant-design/icons'
 import Editor from '@monaco-editor/react'
 import { format as sqlFormat } from 'sql-formatter'
@@ -26,6 +25,7 @@ import { isWorkspaceAdmin } from '../perm'
 import EditorAppearanceToolbar from '../components/EditorAppearanceToolbar'
 import ResizableSidebar from '../components/ResizableSidebar'
 import ResizableVerticalSplit from '../components/ResizableVerticalSplit'
+import AutosaveStatusHint from '../components/AutosaveStatusHint'
 import {
   registerDwMonacoThemes,
   loadEditorAppearance,
@@ -42,16 +42,14 @@ import QueryResultPanel from '../components/QueryResultPanel'
 import { exportRowsToCsv } from '../utils/csvExport'
 import { mergeColumnOrderWithKeys, pruneWidths } from '../utils/resultTableMeta'
 import NodeConfigModal from '../components/NodeConfigModal'
+import { useScriptAutosave } from '../hooks/useScriptAutosave'
 import {
-  clearStudioLocalDraft,
-  readStudioLocalDraft,
-  writeStudioLocalDraft,
-} from '../utils/studioDraft'
+  clearScriptLocalDraft,
+  restoreScriptLocalDraft,
+  scriptDraftStorageKey,
+} from '../utils/scriptLocalDraft'
 
 const NODE_TYPES = ['SQL', 'PYTHON', 'SHELL', 'SYNC', 'VIRTUAL', 'DEPENDENT']
-/** 服务端静默草稿防抖（ms），对齐 IDE / DataWorks 自动保存体感 */
-const AUTOSAVE_DEBOUNCE_MS = 1600
-type AutosaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error'
 const LANG_MAP: Record<string, string> = { SQL: 'sql', PYTHON: 'python', SHELL: 'shell', SYNC: 'json', DEPENDENT: 'plaintext' }
 const TYPE_COLOR: Record<string, string> = {
   SQL: 'blue', PYTHON: 'green', SHELL: 'orange', SYNC: 'purple', VIRTUAL: 'default', DEPENDENT: 'magenta',
@@ -146,8 +144,6 @@ export default function StudioPage() {
 
   // 编辑器内容（按 nodeId 存储，相对服务端尚未确认的修改）
   const [dirtyMap, setDirtyMap] = useState<Record<number, string>>({})
-  const [autosaveStatus, setAutosaveStatus] = useState<AutosaveStatus>('idle')
-  const [autosaveHint, setAutosaveHint] = useState('')
 
   // 运行状态
   const [runningId, setRunningId] = useState<number | null>(null)
@@ -241,10 +237,10 @@ export default function StudioPage() {
     setActiveTabId(node.id)
     setLogPanelOpen(false)
     if (wsId != null && !node.is_locked) {
-      const draft = readStudioLocalDraft(wsId, node.id)
-      const server = node.script_content ?? ''
-      if (draft && draft.script !== server) {
-        setDirtyMap(prev => (prev[node.id] !== undefined ? prev : { ...prev, [node.id]: draft.script }))
+      const key = scriptDraftStorageKey(`studio.${wsId}`, node.id)
+      const restored = restoreScriptLocalDraft(key, node.script_content ?? '')
+      if (restored != null) {
+        setDirtyMap(prev => (prev[node.id] !== undefined ? prev : { ...prev, [node.id]: restored }))
         message.info('已恢复本地未同步草稿，持有编辑锁后将自动保存到服务端')
       }
     }
@@ -309,10 +305,9 @@ export default function StudioPage() {
   dirtyMapRef.current = dirtyMap
   const openTabsRef = useRef(openTabs)
   openTabsRef.current = openTabs
-  const autosaveSeqRef = useRef(0)
   const flushingRef = useRef<Set<number>>(new Set())
 
-  /** 将某节点脏内容静默写到服务端（不写版本历史）；切换 Tab / 关闭前应先 flush */
+  /** 多 Tab：将指定节点脏内容静默写库（共用 saveDraft API） */
   const flushDraftToServer = useCallback(async (nodeId: number): Promise<boolean> => {
     if (!wsId) return false
     const script = dirtyMapRef.current[nodeId]
@@ -329,7 +324,6 @@ export default function StudioPage() {
         node_type: tab.node_type,
         script_content: script,
       })
-      // 若期间又有新编辑，保留 dirty
       if (dirtyMapRef.current[nodeId] !== script) return true
       setNodes(prev => prev.map(n => (n.id === nodeId ? { ...n, ...updated, script_content: script } : n)))
       setOpenTabs(prev => prev.map(t => (t.id === nodeId ? { ...t, ...updated, script_content: script } : t)))
@@ -338,7 +332,7 @@ export default function StudioPage() {
         delete n[nodeId]
         return n
       })
-      clearStudioLocalDraft(wsId, nodeId)
+      clearScriptLocalDraft(scriptDraftStorageKey(`studio.${wsId}`, nodeId))
       return true
     } catch {
       return false
@@ -347,7 +341,6 @@ export default function StudioPage() {
     }
   }, [wsId])
 
-  /** keepalive 尽力冲刷（刷新/关页），不依赖 React 状态更新 */
   const flushDraftKeepalive = useCallback((nodeId: number) => {
     if (!wsId) return
     const script = dirtyMapRef.current[nodeId]
@@ -355,6 +348,7 @@ export default function StudioPage() {
     if (editLockHeldRef.current[nodeId] !== true) return
     const token = localStorage.getItem('token')
     if (!token) return
+    const tab = openTabsRef.current.find(t => t.id === nodeId)
     const apiOrigin = (import.meta.env.VITE_API_ORIGIN as string | undefined)?.replace(/\/$/, '') ?? ''
     const url = `${apiOrigin || ''}/api/studio/nodes/${nodeId}?create_history=false`
     try {
@@ -366,8 +360,8 @@ export default function StudioPage() {
         },
         body: JSON.stringify({
           workspace_id: wsId,
-          name: openTabsRef.current.find(t => t.id === nodeId)?.name || 'node',
-          node_type: openTabsRef.current.find(t => t.id === nodeId)?.node_type || 'SQL',
+          name: tab?.name || 'node',
+          node_type: tab?.node_type || 'SQL',
           script_content: script,
         }),
         keepalive: true,
@@ -502,6 +496,40 @@ export default function StudioPage() {
     : ''
   const holdsEditLock = activeTabId !== null && editLockHeld[activeTabId] === true
   const canEdit = Boolean(activeNode && !activeNode.is_locked && holdsEditLock)
+  const isDirty = activeTabId !== null && dirtyMap[activeTabId] !== undefined
+  const studioDraftKey =
+    wsId != null && activeTabId != null ? scriptDraftStorageKey(`studio.${wsId}`, activeTabId) : null
+
+  const scriptAutosave = useScriptAutosave({
+    enabled: Boolean(canEdit && activeTabId != null && wsId != null),
+    dirty: isDirty,
+    value: activeScript,
+    storageKey: studioDraftKey,
+    persist: async (script) => {
+      if (!wsId || activeTabId == null || !activeNode) throw new Error('no active node')
+      const updated: any = await studioApi.saveDraft(activeTabId, {
+        workspace_id: wsId,
+        name: activeNode.name,
+        node_type: activeNode.node_type,
+        script_content: script,
+      })
+      if (dirtyMapRef.current[activeTabId] !== script) return
+      setNodes(prev => prev.map(n => (n.id === activeTabId ? { ...n, ...updated, script_content: script } : n)))
+      setOpenTabs(prev => prev.map(t => (t.id === activeTabId ? { ...t, ...updated, script_content: script } : t)))
+    },
+    onSynced: (script) => {
+      if (activeTabId == null) return
+      if (dirtyMapRef.current[activeTabId] !== script) return
+      setDirtyMap(prev => {
+        const n = { ...prev }
+        delete n[activeTabId]
+        return n
+      })
+    },
+    persistKeepalive: () => {
+      if (activeTabId != null) flushDraftKeepalive(activeTabId)
+    },
+  })
 
   const resultColSig =
     activeTabId != null && resultMap[activeTabId]?.columns
@@ -608,17 +636,12 @@ export default function StudioPage() {
     void requestEditLockOnInteraction()
   }, [activeTabId, activeNode, requestEditLockOnInteraction])
 
-  // 编辑器内容变化 → 本地草稿 + 触发防抖自动保存
   const onEditorChange = (val: string | undefined) => {
-    if (activeTabId === null || !canEdit || wsId == null) return
-    const script = val ?? ''
-    setDirtyMap(prev => ({ ...prev, [activeTabId]: script }))
-    writeStudioLocalDraft(wsId, activeTabId, script, activeNode?.updated_at)
-    setAutosaveStatus('pending')
-    setAutosaveHint('')
+    if (activeTabId === null || !canEdit) return
+    setDirtyMap(prev => ({ ...prev, [activeTabId]: val ?? '' }))
   }
 
-  // 显式「保存版本」：写入服务端并生成版本历史（对齐 DataWorks 提交版本语义）
+  // 显式「保存版本」：写入服务端并生成版本历史
   const handleSave = async (): Promise<boolean> => {
     if (!activeNode) return false
     if (activeNode.is_locked) {
@@ -649,50 +672,10 @@ export default function StudioPage() {
     setNodes(prev => prev.map(n => n.id === activeNode.id ? { ...n, ...nu, script_content: script } : n))
     setOpenTabs(prev => prev.map(t => t.id === activeNode.id ? { ...t, ...nu, script_content: script } : t))
     setDirtyMap(prev => { const n = { ...prev }; delete n[activeNode.id]; return n })
-    if (wsId != null) clearStudioLocalDraft(wsId, activeNode.id)
-    setAutosaveStatus('saved')
-    setAutosaveHint('已写入版本历史')
+    scriptAutosave.markVersionSaved()
     message.success('已保存并记入版本历史')
     return true
   }
-
-  // 防抖自动保存到服务端（不写版本历史）
-  useEffect(() => {
-    if (!wsId || activeTabId == null || !canEdit) return
-    const script = dirtyMap[activeTabId]
-    if (script === undefined) return
-    const nodeId = activeTabId
-    const seq = ++autosaveSeqRef.current
-    setAutosaveStatus('pending')
-    const timer = window.setTimeout(() => {
-      void (async () => {
-        if (autosaveSeqRef.current !== seq) return
-        if (dirtyMapRef.current[nodeId] !== script) return
-        if (editLockHeldRef.current[nodeId] !== true) return
-        setAutosaveStatus('saving')
-        const ok = await flushDraftToServer(nodeId)
-        if (autosaveSeqRef.current !== seq) return
-        if (ok && dirtyMapRef.current[nodeId] === undefined) {
-          setAutosaveStatus('saved')
-          setAutosaveHint(new Date().toLocaleTimeString())
-        } else if (!ok) {
-          setAutosaveStatus('error')
-          setAutosaveHint('将保留在本地，网络恢复后重试')
-        }
-      })()
-    }, AUTOSAVE_DEBOUNCE_MS)
-    return () => window.clearTimeout(timer)
-  }, [dirtyMap, activeTabId, canEdit, wsId, flushDraftToServer])
-
-  // 刷新/关闭页面前尽力冲刷当前草稿
-  useEffect(() => {
-    const onBeforeUnload = () => {
-      const id = activeTabIdRef.current
-      if (id != null) flushDraftKeepalive(id)
-    }
-    window.addEventListener('beforeunload', onBeforeUnload)
-    return () => window.removeEventListener('beforeunload', onBeforeUnload)
-  }, [flushDraftKeepalive])
 
   // 运行（直接用编辑器最新内容，不需要先保存）
   const dsResolve = useMemo(() => {
@@ -1169,7 +1152,6 @@ export default function StudioPage() {
   }
 
   const isRunning = activeTabId !== null && runningId === activeTabId
-  const isDirty = activeTabId !== null && dirtyMap[activeTabId] !== undefined
 
   const renderScriptPane = () => {
     if (activeNode?.node_type === 'SYNC') {
@@ -1381,31 +1363,11 @@ export default function StudioPage() {
               >
                 保存版本{isDirty ? ' *' : ''}
               </Button>
-              {canEdit && (
-                <Tooltip
-                  title={
-                    autosaveStatus === 'error'
-                      ? '自动保存失败，内容已缓存在本机；恢复网络后继续编辑即可重试'
-                      : '编辑后约 1.5s 自动同步到服务端（不产生版本历史），刷新页面不丢稿'
-                  }
-                >
-                  <span style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 4,
-                    fontSize: 12, color: autosaveStatus === 'error' ? '#cf1322' : '#8c8c8c',
-                    marginLeft: 4, userSelect: 'none',
-                  }}>
-                    {autosaveStatus === 'saving' && <LoadingOutlined />}
-                    {autosaveStatus === 'saved' && <CloudSyncOutlined style={{ color: '#52c41a' }} />}
-                    {autosaveStatus === 'pending' && <CloudSyncOutlined />}
-                    {autosaveStatus === 'error' && <ExclamationCircleOutlined />}
-                    {autosaveStatus === 'idle' && null}
-                    {autosaveStatus === 'pending' && '待自动保存'}
-                    {autosaveStatus === 'saving' && '正在自动保存…'}
-                    {autosaveStatus === 'saved' && `已自动保存${autosaveHint ? ` ${autosaveHint}` : ''}`}
-                    {autosaveStatus === 'error' && '自动保存失败（本地已保留）'}
-                  </span>
-                </Tooltip>
-              )}
+              <AutosaveStatusHint
+                visible={canEdit}
+                status={scriptAutosave.status}
+                hint={scriptAutosave.hint}
+              />
               {activeNode?.node_type === 'SQL' && (
                 <Button icon={<FormatPainterOutlined />} onClick={() => void handleFormat()} size="small" disabled={activeNode.is_locked}>格式化</Button>
               )}
@@ -1685,6 +1647,12 @@ export default function StudioPage() {
           onSaved={(updated) => {
             setNodes(prev => prev.map(n => (n.id === updated.id ? { ...n, ...updated } : n)))
             setOpenTabs(prev => prev.map(t => (t.id === updated.id ? { ...t, ...updated } : t)))
+            setDirtyMap(prev => {
+              if (prev[updated.id] === undefined) return prev
+              const n = { ...prev }
+              delete n[updated.id]
+              return n
+            })
             if (updated.edit_lock_user_id) {
               setEditLockHeld(prev => ({ ...prev, [updated.id]: true }))
             }
