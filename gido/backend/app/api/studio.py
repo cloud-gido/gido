@@ -356,12 +356,39 @@ def update_node(node_id: int, node_in: NodeCreate, db: Session = Depends(get_db)
 
 @router.delete("/nodes/{node_id}")
 def delete_node(node_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    from app.models.workspace import AdhocRun, AlertEvent, Lineage, NodeHistory
+
     node = db.query(TaskNode).filter(TaskNode.id == node_id).first()
     if not node:
         raise HTTPException(status_code=404, detail="节点不存在")
     assert_workspace_data_capability(db, current_user, node.workspace_id, "developer", PC.GIDO_BATCH_STUDIO_WRITE)
     if getattr(node, "is_locked", False) and not workspace_data_full_control(db, current_user, node.workspace_id):
         raise HTTPException(status_code=403, detail="节点已锁定，仅空间管理员或平台管理员可删除")
+
+    # 先清外键引用，再删节点（历史 / 依赖 / 实例 / 试跑 / 告警 / 血缘）
+    inst_ids = [
+        r[0]
+        for r in db.query(NodeInstance.id).filter(NodeInstance.node_id == node_id).all()
+    ]
+    if inst_ids:
+        db.query(AdhocRun).filter(AdhocRun.node_instance_id.in_(inst_ids)).update(
+            {AdhocRun.node_instance_id: None}, synchronize_session=False
+        )
+        db.query(AlertEvent).filter(AlertEvent.node_instance_id.in_(inst_ids)).update(
+            {AlertEvent.node_instance_id: None}, synchronize_session=False
+        )
+    db.query(AdhocRun).filter(AdhocRun.node_id == node_id).update(
+        {AdhocRun.node_id: None}, synchronize_session=False
+    )
+    db.query(NodeInstance).filter(NodeInstance.node_id == node_id).delete(synchronize_session=False)
+    db.query(NodeHistory).filter(NodeHistory.node_id == node_id).delete(synchronize_session=False)
+    db.query(NodeDependency).filter(
+        (NodeDependency.node_id == node_id) | (NodeDependency.depends_on_id == node_id)
+    ).delete(synchronize_session=False)
+    db.query(Lineage).filter(Lineage.task_node_id == node_id).update(
+        {Lineage.task_node_id: None}, synchronize_session=False
+    )
+
     db.delete(node)
     db.commit()
     return {"message": "删除成功"}
