@@ -223,6 +223,11 @@ export default function ProbePage() {
   const sql = activeScript?.sql ?? ''
   const limit = activeScript?.limit ?? 500
 
+  const activeScriptIdRef = useRef<string | null>(null)
+  activeScriptIdRef.current = probeState.activeScriptId
+  const sqlRef = useRef(sql)
+  sqlRef.current = sql
+
   useEffect(() => {
     setSqlDirty(false)
   }, [probeState.activeScriptId])
@@ -232,11 +237,17 @@ export default function ProbePage() {
     dirty: sqlDirty,
     value: sql,
     storageKey: null,
+    entityId: activeScript?.id ?? null,
     persist: async () => {
       if (!wsId) throw new Error('no workspace')
       saveProbeState(wsId, probeStateRef.current)
     },
-    onSynced: () => setSqlDirty(false),
+    onSynced: (script, entityId) => {
+      if (entityId == null) return
+      if (activeScriptIdRef.current !== entityId) return
+      if (sqlRef.current !== script) return
+      setSqlDirty(false)
+    },
   })
 
   const probeDsResolve = useMemo(() => {

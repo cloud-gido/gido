@@ -47,6 +47,7 @@ import {
   clearScriptLocalDraft,
   restoreScriptLocalDraft,
   scriptDraftStorageKey,
+  writeScriptLocalDraft,
 } from '../utils/scriptLocalDraft'
 
 const NODE_TYPES = ['SQL', 'PYTHON', 'SHELL', 'SYNC', 'VIRTUAL', 'DEPENDENT']
@@ -371,25 +372,40 @@ export default function StudioPage() {
     }
   }, [wsId])
 
-  /** 切换 Tab 时先冲刷草稿再释放上一节点编辑锁 */
+  /** 切换 Tab 时先冲刷草稿；成功才释放上一节点编辑锁 */
   const prevActiveTabIdRef = useRef<number | null>(null)
   useEffect(() => {
     const prev = prevActiveTabIdRef.current
     prevActiveTabIdRef.current = activeTabId
     if (prev != null && prev !== activeTabId && editLockHeldRef.current[prev] === true) {
       void (async () => {
-        await flushDraftToServer(prev)
-        studioApi.releaseEditLock(prev).catch(() => {})
-        setEditLockHeld(p => {
-          const n = { ...p }
-          delete n[prev]
-          return n
-        })
+        const script = dirtyMapRef.current[prev]
+        if (script !== undefined && wsId != null) {
+          writeScriptLocalDraft(scriptDraftStorageKey(`studio.${wsId}`, prev), script)
+        }
+        const ok = await flushDraftToServer(prev)
+        if (ok) {
+          studioApi.releaseEditLock(prev).catch(() => {})
+          setEditLockHeld(p => {
+            const n = { ...p }
+            delete n[prev]
+            return n
+          })
+        } else if (script !== undefined) {
+          message.warning('上一脚本草稿同步失败，已保留本地且未释放编辑锁')
+        } else {
+          studioApi.releaseEditLock(prev).catch(() => {})
+          setEditLockHeld(p => {
+            const n = { ...p }
+            delete n[prev]
+            return n
+          })
+        }
       })()
     }
-  }, [activeTabId, flushDraftToServer])
+  }, [activeTabId, flushDraftToServer, wsId])
 
-  // 关闭 tab（支持批量，类似 IDEA）：先冲刷草稿再释锁
+  // 关闭 tab（支持批量，类似 IDEA）：先冲刷草稿；失败则保留 dirty/锁并写本地
   const closeTabsBulk = (ids: number[]) => {
     if (!ids.length) return
     const idSet = new Set(ids)
@@ -415,32 +431,51 @@ export default function StudioPage() {
       }
     }
     void (async () => {
+      const failed: number[] = []
       for (const id of ids) {
+        const script = dirtyMapRef.current[id]
+        if (script !== undefined && wsId != null) {
+          writeScriptLocalDraft(scriptDraftStorageKey(`studio.${wsId}`, id), script)
+        }
         if (editLockHeldRef.current[id] === true) {
-          await flushDraftToServer(id)
-          studioApi.releaseEditLock(id).catch(() => {})
+          const ok = await flushDraftToServer(id)
+          if (ok) {
+            studioApi.releaseEditLock(id).catch(() => {})
+            setEditLockHeld(prevHeld => {
+              const n = { ...prevHeld }
+              delete n[id]
+              return n
+            })
+          } else {
+            failed.push(id)
+          }
+        } else if (script !== undefined) {
+          // 无锁脏内容：已写本地，从内存清掉（重开可 restore）
+          setDirtyMap(prevDirty => {
+            if (prevDirty[id] === undefined) return prevDirty
+            const n = { ...prevDirty }
+            delete n[id]
+            return n
+          })
         }
       }
-      setEditLockHeld(prevHeld => {
-        const n = { ...prevHeld }
-        ids.forEach(id => { delete n[id] })
-        return n
-      })
-      setDirtyMap(prevDirty => {
-        const n = { ...prevDirty }
-        ids.forEach(id => { delete n[id] })
-        return n
-      })
+      if (failed.length) {
+        message.warning(
+          failed.length === 1
+            ? '脚本草稿未能同步到服务端，已保留本地且未释放编辑锁；重新打开可继续编辑'
+            : `${failed.length} 个脚本草稿未能同步，已保留本地且未释放编辑锁`,
+        )
+      }
     })()
     setOpenTabs(newTabs)
     if (nextActive !== activeTabId) setActiveTabId(nextActive)
-    setResultMap(prev => {
-      const n = { ...prev }
+    setResultMap(prevMap => {
+      const n = { ...prevMap }
       ids.forEach(id => { delete n[id] })
       return n
     })
-    setLogMap(prev => {
-      const n = { ...prev }
+    setLogMap(prevMap => {
+      const n = { ...prevMap }
       ids.forEach(id => { delete n[id] })
       return n
     })
@@ -505,29 +540,37 @@ export default function StudioPage() {
     dirty: isDirty,
     value: activeScript,
     storageKey: studioDraftKey,
+    entityId: activeTabId,
     persist: async (script) => {
-      if (!wsId || activeTabId == null || !activeNode) throw new Error('no active node')
-      const updated: any = await studioApi.saveDraft(activeTabId, {
+      const nodeId = activeTabIdRef.current
+      if (!wsId || nodeId == null) throw new Error('no active node')
+      const tab = openTabsRef.current.find(t => t.id === nodeId)
+      if (!tab) throw new Error('no active node')
+      const updated: any = await studioApi.saveDraft(nodeId, {
         workspace_id: wsId,
-        name: activeNode.name,
-        node_type: activeNode.node_type,
+        name: tab.name,
+        node_type: tab.node_type,
         script_content: script,
       })
-      if (dirtyMapRef.current[activeTabId] !== script) return
-      setNodes(prev => prev.map(n => (n.id === activeTabId ? { ...n, ...updated, script_content: script } : n)))
-      setOpenTabs(prev => prev.map(t => (t.id === activeTabId ? { ...t, ...updated, script_content: script } : t)))
+      if (dirtyMapRef.current[nodeId] !== script) return
+      setNodes(prev => prev.map(n => (n.id === nodeId ? { ...n, ...updated, script_content: script } : n)))
+      setOpenTabs(prev => prev.map(t => (t.id === nodeId ? { ...t, ...updated, script_content: script } : t)))
     },
-    onSynced: (script) => {
-      if (activeTabId == null) return
-      if (dirtyMapRef.current[activeTabId] !== script) return
+    onSynced: (script, entityId) => {
+      // 按保存时的 nodeId 清 dirty（即使已切到其他 Tab）
+      if (entityId == null) return
+      const nodeId = Number(entityId)
+      if (!Number.isFinite(nodeId) || dirtyMapRef.current[nodeId] !== script) return
       setDirtyMap(prev => {
+        if (prev[nodeId] !== script) return prev
         const n = { ...prev }
-        delete n[activeTabId]
+        delete n[nodeId]
         return n
       })
     },
     persistKeepalive: () => {
-      if (activeTabId != null) flushDraftKeepalive(activeTabId)
+      const id = activeTabIdRef.current
+      if (id != null) flushDraftKeepalive(id)
     },
   })
 

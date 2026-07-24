@@ -24,10 +24,15 @@ export type UseScriptAutosaveOptions = {
   value: string
   /** localStorage key；null 表示不写本地草稿 */
   storageKey: string | null
+  /**
+   * 当前编辑实体 id（节点/作业/探查脚本）。
+   * 用于避免切 Tab/作业后，迟到的 onSynced 误清新实体的 dirty。
+   */
+  entityId?: string | number | null
   /** 静默持久化（服务端草稿或不写版本历史）；Probe 可为写本机权威状态 */
   persist: (script: string) => Promise<void>
-  /** 持久化成功且内容仍匹配时回调（父组件清 dirty / 更新 baseline） */
-  onSynced?: (script: string) => void
+  /** 持久化成功且实体/内容仍匹配时回调（父组件清 dirty / 更新 baseline） */
+  onSynced?: (script: string, entityId: string | number | null | undefined) => void
   debounceMs?: number
   /**
    * 页面卸载时的 keepalive 冲刷（可选）。
@@ -54,6 +59,7 @@ export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAuto
     dirty,
     value,
     storageKey,
+    entityId = null,
     persist,
     onSynced,
     debounceMs = SCRIPT_AUTOSAVE_DEBOUNCE_MS,
@@ -70,6 +76,7 @@ export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAuto
   const persistRef = useRef(persist)
   const onSyncedRef = useRef(onSynced)
   const storageKeyRef = useRef(storageKey)
+  const entityIdRef = useRef(entityId)
   const keepaliveRef = useRef(persistKeepalive)
 
   valueRef.current = value
@@ -78,6 +85,7 @@ export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAuto
   persistRef.current = persist
   onSyncedRef.current = onSynced
   storageKeyRef.current = storageKey
+  entityIdRef.current = entityId
   keepaliveRef.current = persistKeepalive
 
   const setStatus = useCallback((s: ScriptAutosaveStatus, h = '') => {
@@ -89,14 +97,20 @@ export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAuto
     if (!enabledRef.current || !dirtyRef.current) return true
     if (flushingRef.current) return false
     const script = valueRef.current
+    const eid = entityIdRef.current
+    const sk = storageKeyRef.current
     flushingRef.current = true
     try {
+      writeScriptLocalDraft(sk, script)
       await persistRef.current(script)
-      if (valueRef.current !== script) return true
-      clearScriptLocalDraft(storageKeyRef.current)
-      onSyncedRef.current?.(script)
+      // 同一实体在保存期间又改了内容：保留 dirty，交给下一轮防抖
+      if (entityIdRef.current === eid && valueRef.current !== script) return true
+      // 已切走实体或内容仍匹配：按「本次保存的 entityId」回传，避免误清新实体
+      clearScriptLocalDraft(sk)
+      onSyncedRef.current?.(script, eid)
       return true
     } catch {
+      writeScriptLocalDraft(sk, script)
       return false
     } finally {
       flushingRef.current = false
@@ -115,17 +129,17 @@ export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAuto
     setStatus('saved', '已写入版本历史')
   }, [setStatus])
 
-  // 脏内容 → 本地草稿 + 防抖持久化
+  // 脏内容 → 防抖持久化；本地草稿与防抖对齐写入（避免每键 localStorage）
   useEffect(() => {
     if (!enabled || !dirty) return
-    writeScriptLocalDraft(storageKey, value)
     const seq = ++seqRef.current
     setStatus('pending')
     const timer = window.setTimeout(() => {
       void (async () => {
         if (seqRef.current !== seq) return
         if (!enabledRef.current || !dirtyRef.current) return
-        if (valueRef.current !== value) return
+        if (valueRef.current !== value || entityIdRef.current !== entityId) return
+        writeScriptLocalDraft(storageKey, valueRef.current)
         setStatus('saving')
         const ok = await flush()
         if (seqRef.current !== seq) return
@@ -133,16 +147,35 @@ export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAuto
           setStatus('saved', new Date().toLocaleTimeString())
         } else if (!ok) {
           setStatus('error', '将保留在本地，网络恢复后重试')
+        } else if (dirtyRef.current) {
+          // 仍有未同步修改（保存中又编辑 / 切实体软成功）：回到待保存
+          setStatus('pending')
         }
       })()
     }, debounceMs)
     return () => window.clearTimeout(timer)
-  }, [enabled, dirty, value, storageKey, debounceMs, flush, setStatus])
+  }, [enabled, dirty, value, storageKey, entityId, debounceMs, flush, setStatus])
 
+  // 隐藏/卸载前补写本地草稿（弥补防抖窗口内的未落盘）
   useEffect(() => {
-    const onBeforeUnload = () => flushKeepalive()
+    const persistLocal = () => {
+      if (!enabledRef.current || !dirtyRef.current) return
+      writeScriptLocalDraft(storageKeyRef.current, valueRef.current)
+    }
+    const onBeforeUnload = () => {
+      persistLocal()
+      flushKeepalive()
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') persistLocal()
+    }
     window.addEventListener('beforeunload', onBeforeUnload)
-    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload)
+      document.removeEventListener('visibilitychange', onVisibility)
+      persistLocal()
+    }
   }, [flushKeepalive])
 
   return { status, hint, setStatus, flush, flushKeepalive, markVersionSaved }

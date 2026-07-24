@@ -395,6 +395,11 @@ export default function StreamStudioPage() {
     setResourceTier(parseResourceTier(sp))
   }, [selected?.id, selected?.job_type, wsId])
 
+  const selectedIdRef = useRef<number | null>(null)
+  selectedIdRef.current = selected?.id ?? null
+  const scriptDraftRef = useRef(scriptDraft)
+  scriptDraftRef.current = scriptDraft
+
   const streamDraftKey =
     wsId != null && selected?.job_type === 'SQL'
       ? scriptDraftStorageKey(`stream.${wsId}`, selected.id)
@@ -405,21 +410,29 @@ export default function StreamStudioPage() {
     dirty: scriptDirty,
     value: scriptDraft,
     storageKey: streamDraftKey,
+    entityId: selected?.id ?? null,
     persist: async (script) => {
-      if (!selected) throw new Error('no job')
-      const updated: any = await streamingApi.saveDraft(selected.id, { script_content: script })
-      setSelected((prev: any) => (prev && prev.id === selected.id
+      const jobId = selectedIdRef.current
+      if (jobId == null) throw new Error('no job')
+      const updated: any = await streamingApi.saveDraft(jobId, { script_content: script })
+      setSelected((prev: any) => (prev && prev.id === jobId
         ? { ...prev, ...updated, script_content: script }
         : prev))
-      setJobs(prev => prev.map(j => (j.id === selected.id ? { ...j, ...updated, script_content: script } : j)))
+      setJobs(prev => prev.map(j => (j.id === jobId ? { ...j, ...updated, script_content: script } : j)))
     },
-    onSynced: () => setScriptDirty(false),
+    onSynced: (script, entityId) => {
+      if (entityId == null) return
+      if (selectedIdRef.current !== entityId) return
+      if (scriptDraftRef.current !== script) return
+      setScriptDirty(false)
+    },
     persistKeepalive: (script) => {
-      if (!selected || !wsId) return
+      const jobId = selectedIdRef.current
+      if (jobId == null || !wsId) return
       const token = localStorage.getItem('token')
       if (!token) return
       const apiOrigin = (import.meta.env.VITE_API_ORIGIN as string | undefined)?.replace(/\/$/, '') ?? ''
-      const url = `${apiOrigin || ''}/api/streaming/jobs/${selected.id}?create_history=false`
+      const url = `${apiOrigin || ''}/api/streaming/jobs/${jobId}?create_history=false`
       try {
         fetch(url, {
           method: 'PUT',

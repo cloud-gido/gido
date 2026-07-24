@@ -228,31 +228,47 @@ export default function NodeConfigModal({
     ? scriptDraftStorageKey(`studio.${workspaceId}`, nodeId)
     : null
 
+  const scriptContentRef = useRef(scriptContent)
+  scriptContentRef.current = scriptContent
+  const nodeIdRef = useRef(nodeId)
+  nodeIdRef.current = nodeId
+
   const scriptAutosave = useScriptAutosave({
     enabled: Boolean(showScriptEditor && holdsLock && node && !node.is_locked && nodeId),
     dirty: scriptDirty,
     value: scriptContent,
     storageKey: modalDraftKey,
+    entityId: nodeId,
     persist: async (script) => {
-      if (!nodeId || !nodeRef.current) throw new Error('no node')
+      const id = nodeIdRef.current
+      if (!id || !nodeRef.current) throw new Error('no node')
       const n = nodeRef.current
-      const updated: any = await studioApi.saveDraft(nodeId, {
+      const updated: any = await studioApi.saveDraft(id, {
         workspace_id: workspaceId,
         name: form.getFieldValue('name') || n.name,
         node_type: n.node_type,
         script_content: script,
       })
+      if (nodeIdRef.current !== id) return
       const merged = { ...n, ...updated, script_content: script }
       setNode(merged)
       // 同步父页面节点缓存（Studio 打开的 Tab / Workflow 节点列表），避免关弹窗后仍见旧脚本
       onSaved?.(merged)
     },
-    onSynced: () => setScriptDirty(false),
+    onSynced: (script, entityId) => {
+      if (entityId == null || nodeIdRef.current !== entityId) return
+      if (scriptContentRef.current !== script) return
+      setScriptDirty(false)
+    },
   })
 
   const handleClose = async () => {
     if (holdsLockRef.current && scriptDirty) {
-      await scriptAutosave.flush()
+      const ok = await scriptAutosave.flush()
+      if (!ok) {
+        message.warning('草稿同步失败，请检查网络后再关闭；内容已保留在本地')
+        return
+      }
     }
     if (releaseOnClose && acquiredHereRef.current && nodeId && holdsLockRef.current) {
       try {

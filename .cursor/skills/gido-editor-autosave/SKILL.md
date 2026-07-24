@@ -31,10 +31,11 @@ description: >-
 
 ## 共享实现（改行为时先改这里）
 
-- Hook：`gido/frontend/src/hooks/useScriptAutosave.ts`（防抖约 1.6s、status、flush、keepalive、local draft）
+- Hook：`gido/frontend/src/hooks/useScriptAutosave.ts`（防抖约 1.6s、`entityId` 防串清 dirty、status、flush、keepalive；本地草稿与防抖对齐，勿每键写 localStorage）
 - 状态条：`gido/frontend/src/components/AutosaveStatusHint.tsx`
 - 本地草稿：`gido/frontend/src/utils/scriptLocalDraft.ts`
 - API：`studioApi.saveDraft` / `streamingApi.saveDraft`（`create_history=false`）
+- 关 Tab / 切 Tab：flush 失败须保留 dirty 与编辑锁，并提示；禁止失败后强行 `releaseEditLock`
 
 ## 必须同步触达的入口
 
