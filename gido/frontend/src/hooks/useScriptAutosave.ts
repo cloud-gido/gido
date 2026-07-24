@@ -29,8 +29,8 @@ export type UseScriptAutosaveOptions = {
    * 用于避免切 Tab/作业后，迟到的 onSynced 误清新实体的 dirty。
    */
   entityId?: string | number | null
-  /** 静默持久化（服务端草稿或不写版本历史）；Probe 可为写本机权威状态 */
-  persist: (script: string) => Promise<void>
+  /** 静默持久化；第二参为发起保存时的 entityId（勿用最新选中项，防串写） */
+  persist: (script: string, entityId: string | number | null | undefined) => Promise<void>
   /** 持久化成功且实体/内容仍匹配时回调（父组件清 dirty / 更新 baseline） */
   onSynced?: (script: string, entityId: string | number | null | undefined) => void
   debounceMs?: number
@@ -51,6 +51,15 @@ export type UseScriptAutosaveResult = {
   flushKeepalive: () => void
   /** 显式「保存版本」成功后重置状态文案 */
   markVersionSaved: () => void
+}
+
+async function waitWhile(cond: () => boolean, maxMs: number, stepMs = 40): Promise<boolean> {
+  const deadline = Date.now() + maxMs
+  while (cond()) {
+    if (Date.now() >= deadline) return false
+    await new Promise(r => window.setTimeout(r, stepMs))
+  }
+  return true
 }
 
 export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAutosaveResult {
@@ -95,14 +104,18 @@ export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAuto
 
   const flush = useCallback(async (): Promise<boolean> => {
     if (!enabledRef.current || !dirtyRef.current) return true
-    if (flushingRef.current) return false
+    if (flushingRef.current) {
+      const freed = await waitWhile(() => flushingRef.current, 2500)
+      if (!freed) return false
+      if (!enabledRef.current || !dirtyRef.current) return true
+    }
     const script = valueRef.current
     const eid = entityIdRef.current
     const sk = storageKeyRef.current
     flushingRef.current = true
     try {
       writeScriptLocalDraft(sk, script)
-      await persistRef.current(script)
+      await persistRef.current(script, eid)
       // 同一实体在保存期间又改了内容：保留 dirty，交给下一轮防抖
       if (entityIdRef.current === eid && valueRef.current !== script) return true
       // 已切走实体或内容仍匹配：按「本次保存的 entityId」回传，避免误清新实体
@@ -133,12 +146,14 @@ export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAuto
   useEffect(() => {
     if (!enabled || !dirty) return
     const seq = ++seqRef.current
+    const scheduledEntity = entityId
+    const scheduledValue = value
     setStatus('pending')
     const timer = window.setTimeout(() => {
       void (async () => {
         if (seqRef.current !== seq) return
         if (!enabledRef.current || !dirtyRef.current) return
-        if (valueRef.current !== value || entityIdRef.current !== entityId) return
+        if (valueRef.current !== scheduledValue || entityIdRef.current !== scheduledEntity) return
         writeScriptLocalDraft(storageKey, valueRef.current)
         setStatus('saving')
         const ok = await flush()
@@ -148,7 +163,6 @@ export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAuto
         } else if (!ok) {
           setStatus('error', '将保留在本地，网络恢复后重试')
         } else if (dirtyRef.current) {
-          // 仍有未同步修改（保存中又编辑 / 切实体软成功）：回到待保存
           setStatus('pending')
         }
       })()

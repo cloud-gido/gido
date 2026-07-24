@@ -240,6 +240,7 @@ export default function ProbePage() {
     entityId: activeScript?.id ?? null,
     persist: async () => {
       if (!wsId) throw new Error('no workspace')
+      // 权威在整棵探查状态树；sql 已在 onChange 写入 scripts[]
       saveProbeState(wsId, probeStateRef.current)
     },
     onSynced: (script, entityId) => {

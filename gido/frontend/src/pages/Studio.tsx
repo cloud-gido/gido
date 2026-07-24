@@ -314,20 +314,30 @@ export default function StudioPage() {
     const script = dirtyMapRef.current[nodeId]
     if (script === undefined) return true
     if (editLockHeldRef.current[nodeId] !== true) return false
-    if (flushingRef.current.has(nodeId)) return false
+    if (flushingRef.current.has(nodeId)) {
+      const deadline = Date.now() + 2500
+      while (flushingRef.current.has(nodeId) && Date.now() < deadline) {
+        await new Promise(r => window.setTimeout(r, 40))
+      }
+      if (flushingRef.current.has(nodeId)) return false
+      // 并发冲刷已结束：若 dirty 已清则视为成功
+      if (dirtyMapRef.current[nodeId] === undefined) return true
+    }
     const tab = openTabsRef.current.find(t => t.id === nodeId)
     if (!tab || tab.is_locked) return false
     flushingRef.current.add(nodeId)
     try {
+      const latest = dirtyMapRef.current[nodeId]
+      if (latest === undefined) return true
       const updated: any = await studioApi.saveDraft(nodeId, {
         workspace_id: wsId,
         name: tab.name,
         node_type: tab.node_type,
-        script_content: script,
+        script_content: latest,
       })
-      if (dirtyMapRef.current[nodeId] !== script) return true
-      setNodes(prev => prev.map(n => (n.id === nodeId ? { ...n, ...updated, script_content: script } : n)))
-      setOpenTabs(prev => prev.map(t => (t.id === nodeId ? { ...t, ...updated, script_content: script } : t)))
+      if (dirtyMapRef.current[nodeId] !== latest) return true
+      setNodes(prev => prev.map(n => (n.id === nodeId ? { ...n, ...updated, script_content: latest } : n)))
+      setOpenTabs(prev => prev.map(t => (t.id === nodeId ? { ...t, ...updated, script_content: latest } : t)))
       setDirtyMap(prev => {
         const n = { ...prev }
         delete n[nodeId]
@@ -541,9 +551,9 @@ export default function StudioPage() {
     value: activeScript,
     storageKey: studioDraftKey,
     entityId: activeTabId,
-    persist: async (script) => {
-      const nodeId = activeTabIdRef.current
-      if (!wsId || nodeId == null) throw new Error('no active node')
+    persist: async (script, entityId) => {
+      const nodeId = entityId == null ? null : Number(entityId)
+      if (!wsId || nodeId == null || !Number.isFinite(nodeId)) throw new Error('no active node')
       const tab = openTabsRef.current.find(t => t.id === nodeId)
       if (!tab) throw new Error('no active node')
       const updated: any = await studioApi.saveDraft(nodeId, {

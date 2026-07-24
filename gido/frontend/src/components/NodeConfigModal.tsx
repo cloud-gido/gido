@@ -239,9 +239,9 @@ export default function NodeConfigModal({
     value: scriptContent,
     storageKey: modalDraftKey,
     entityId: nodeId,
-    persist: async (script) => {
-      const id = nodeIdRef.current
-      if (!id || !nodeRef.current) throw new Error('no node')
+    persist: async (script, entityId) => {
+      const id = entityId == null ? null : Number(entityId)
+      if (id == null || !Number.isFinite(id) || !nodeRef.current) throw new Error('no node')
       const n = nodeRef.current
       const updated: any = await studioApi.saveDraft(id, {
         workspace_id: workspaceId,

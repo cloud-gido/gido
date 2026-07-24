@@ -38,8 +38,10 @@ import { openFlinkConsoleUrl } from '../utils/flinkConsole'
 import AutosaveStatusHint from '../components/AutosaveStatusHint'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
 import {
+  clearScriptLocalDraft,
   restoreScriptLocalDraft,
   scriptDraftStorageKey,
+  writeScriptLocalDraft,
 } from '../utils/scriptLocalDraft'
 
 const { Paragraph, Text } = Typography
@@ -364,8 +366,36 @@ export default function StreamStudioPage() {
     }
   }, [wsId, load])
 
-  // 仅切换作业时重置编辑器；静默草稿写回 selected.script_content 时不打断正在编辑的内容
+  const selectedIdRef = useRef<number | null>(null)
+  selectedIdRef.current = selected?.id ?? null
+  const scriptDraftRef = useRef(scriptDraft)
+  scriptDraftRef.current = scriptDraft
+  const scriptDirtyRef = useRef(scriptDirty)
+  scriptDirtyRef.current = scriptDirty
+  const prevStreamJobIdRef = useRef<number | null>(null)
+
+  // 切换作业：先冲刷上一 SQL 草稿，再绑定编辑器（避免丢稿 / 串写到新作业）
   useEffect(() => {
+    const prevId = prevStreamJobIdRef.current
+    const currId = selected?.id ?? null
+    if (
+      prevId != null
+      && currId !== prevId
+      && scriptDirtyRef.current
+      && wsId != null
+    ) {
+      const script = scriptDraftRef.current
+      const key = scriptDraftStorageKey(`stream.${wsId}`, prevId)
+      writeScriptLocalDraft(key, script)
+      void streamingApi.saveDraft(prevId, { script_content: script }).then(() => {
+        clearScriptLocalDraft(key)
+        setJobs(prev => prev.map(j => (j.id === prevId ? { ...j, script_content: script } : j)))
+      }).catch(() => {
+        message.warning('上一作业草稿同步失败，已保留本地')
+      })
+    }
+    prevStreamJobIdRef.current = currId
+
     if (!selected || selected.job_type !== 'SQL') {
       setScriptDirty(false)
       return
@@ -395,11 +425,6 @@ export default function StreamStudioPage() {
     setResourceTier(parseResourceTier(sp))
   }, [selected?.id, selected?.job_type, wsId])
 
-  const selectedIdRef = useRef<number | null>(null)
-  selectedIdRef.current = selected?.id ?? null
-  const scriptDraftRef = useRef(scriptDraft)
-  scriptDraftRef.current = scriptDraft
-
   const streamDraftKey =
     wsId != null && selected?.job_type === 'SQL'
       ? scriptDraftStorageKey(`stream.${wsId}`, selected.id)
@@ -411,9 +436,9 @@ export default function StreamStudioPage() {
     value: scriptDraft,
     storageKey: streamDraftKey,
     entityId: selected?.id ?? null,
-    persist: async (script) => {
-      const jobId = selectedIdRef.current
-      if (jobId == null) throw new Error('no job')
+    persist: async (script, entityId) => {
+      const jobId = entityId == null ? null : Number(entityId)
+      if (jobId == null || !Number.isFinite(jobId)) throw new Error('no job')
       const updated: any = await streamingApi.saveDraft(jobId, { script_content: script })
       setSelected((prev: any) => (prev && prev.id === jobId
         ? { ...prev, ...updated, script_content: script }
