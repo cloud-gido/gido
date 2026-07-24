@@ -1,3 +1,5 @@
+# Copyright 2026 玑渡 GIDO Contributors
+# SPDX-License-Identifier: Apache-2.0
 """回归：静默草稿不得写版本历史；显式保存才快照。"""
 from __future__ import annotations
 
