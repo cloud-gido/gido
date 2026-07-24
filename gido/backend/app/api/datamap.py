@@ -30,6 +30,158 @@ def _qualified_name(ds_name: str, catalog: str, table_name: str) -> str:
     return f"{ds_name}.{table_name}"
 
 
+def _sync_table_schema(db: Session, table: MetaTable, ds: DataSource) -> int:
+    """从物理库同步字段到 MetaColumn，返回字段数。失败抛 HTTPException。"""
+    lt = (ds.ds_type or "").lower()
+    table_id = int(table.id)
+
+    if lt in ("mysql", "doris"):
+        import pymysql
+
+        catalog = (table.db_name or ds.database or "").strip()
+        if not catalog:
+            raise HTTPException(
+                status_code=400,
+                detail="请在元数据或数据源上配置库名（catalog），以便定位物理表",
+            )
+        conn = pymysql.connect(
+            host=ds.host,
+            port=ds.port or 3306,
+            user=mysql_protocol_connect_user(ds),
+            password=ds.password or "",
+            database=catalog,
+        )
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"DESCRIBE `{catalog}`.`{table.table_name}`")
+            rows = cursor.fetchall()
+            db.query(MetaColumn).filter(MetaColumn.table_id == table_id).delete()
+            for i, row in enumerate(rows):
+                db.add(
+                    MetaColumn(
+                        table_id=table_id,
+                        column_name=row[0],
+                        column_type=row[1],
+                        is_nullable=(row[2] == "YES"),
+                        is_primary_key=(row[3] == "PRI"),
+                        ordinal_position=i + 1,
+                    )
+                )
+            cursor.execute(f"SELECT COUNT(*) FROM `{catalog}`.`{table.table_name}`")
+            table.row_count = cursor.fetchone()[0]
+            table.last_updated = datetime.utcnow()
+            db.commit()
+            return len(rows)
+        finally:
+            conn.close()
+
+    if lt == "postgresql":
+        import psycopg2
+        from psycopg2 import sql as psql
+
+        dbname = (ds.database or "").strip()
+        if not dbname:
+            raise HTTPException(status_code=400, detail="PostgreSQL 数据源未配置数据库名")
+        ex = ds.extra_config if isinstance(ds.extra_config, dict) else {}
+        schema = (table.db_name or ex.get("schema") or "public").strip() or "public"
+        conn = psycopg2.connect(
+            host=ds.host or "127.0.0.1",
+            port=ds.port or 5432,
+            user=(ds.username or "").strip() or None,
+            password=ds.password or "",
+            dbname=dbname,
+        )
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT kcu.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                  ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+                WHERE tc.table_schema = %s AND tc.table_name = %s AND tc.constraint_type = 'PRIMARY KEY'
+                """,
+                (schema, table.table_name),
+            )
+            pk_cols = {r[0] for r in cur.fetchall()}
+            cur.execute(
+                """
+                SELECT column_name, data_type, is_nullable, ordinal_position
+                FROM information_schema.columns
+                WHERE table_schema = %s AND table_name = %s
+                ORDER BY ordinal_position
+                """,
+                (schema, table.table_name),
+            )
+            col_rows = cur.fetchall()
+            db.query(MetaColumn).filter(MetaColumn.table_id == table_id).delete()
+            for i, row in enumerate(col_rows):
+                cname, dtype, nullable = row[0], row[1], row[2]
+                db.add(
+                    MetaColumn(
+                        table_id=table_id,
+                        column_name=cname,
+                        column_type=dtype or "",
+                        is_nullable=(str(nullable).upper() == "YES"),
+                        is_primary_key=cname in pk_cols,
+                        ordinal_position=i + 1,
+                    )
+                )
+            cur.execute(
+                psql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+                    psql.Identifier(schema), psql.Identifier(table.table_name)
+                )
+            )
+            table.row_count = cur.fetchone()[0]
+            table.last_updated = datetime.utcnow()
+            db.commit()
+            return len(col_rows)
+        finally:
+            conn.close()
+
+    raise HTTPException(status_code=400, detail=f"暂不支持该数据源类型的结构同步: {ds.ds_type}")
+
+
+def _serialize_table_detail(db: Session, table: MetaTable) -> dict:
+    columns = (
+        db.query(MetaColumn)
+        .filter(MetaColumn.table_id == table.id)
+        .order_by(MetaColumn.ordinal_position)
+        .all()
+    )
+    ds = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
+    catalog = _catalog_for_table(ds, table)
+    qual = _qualified_name(ds.name, catalog, table.table_name) if ds else None
+    return {
+        "id": table.id,
+        "datasource_id": table.datasource_id,
+        "datasource_name": ds.name if ds else None,
+        "ds_type": ds.ds_type if ds else None,
+        "catalog": catalog or None,
+        "qualified_name": qual,
+        "db_name": table.db_name,
+        "table_name": table.table_name,
+        "table_comment": table.table_comment,
+        "table_type": table.table_type,
+        "row_count": table.row_count,
+        "size_bytes": table.size_bytes,
+        "tags": table.tags,
+        "owner": table.owner,
+        "last_updated": table.last_updated,
+        "columns": [
+            {
+                "id": c.id,
+                "name": c.column_name,
+                "type": c.column_type,
+                "comment": c.column_comment,
+                "nullable": c.is_nullable,
+                "primary_key": c.is_primary_key,
+            }
+            for c in columns
+        ],
+    }
+
+
 class MetaTableCreate(BaseModel):
     workspace_id: int
     datasource_id: int
@@ -255,39 +407,40 @@ def workspace_catalog(
 
 @router.post("/tables")
 def register_table(table_in: MetaTableCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """注册元数据表并自动从数据源同步字段（无需再点「同步结构」）。"""
     assert_workspace_data_capability(db, current_user, table_in.workspace_id, "developer", PC.GIDO_BATCH_DATAMAP_WRITE)
     ds = require_datasource_row(db, current_user, table_in.datasource_id)
     if ds.workspace_id != table_in.workspace_id:
         raise HTTPException(status_code=400, detail="数据源与工作空间不一致")
-    table = MetaTable(**table_in.model_dump())
+    payload = table_in.model_dump()
+    if not (payload.get("db_name") or "").strip() and (ds.database or "").strip():
+        payload["db_name"] = (ds.database or "").strip()
+    table = MetaTable(**payload)
     db.add(table)
     db.commit()
     db.refresh(table)
-    return table
+
+    sync_warning = None
+    columns_synced = 0
+    try:
+        columns_synced = _sync_table_schema(db, table, ds)
+        db.refresh(table)
+    except HTTPException as e:
+        sync_warning = e.detail if isinstance(e.detail, str) else str(e.detail)
+    except Exception as e:
+        sync_warning = str(e)
+
+    out = _serialize_table_detail(db, table)
+    out["columns_synced"] = columns_synced
+    if sync_warning:
+        out["sync_warning"] = sync_warning
+    return out
 
 
 @router.get("/tables/{table_id}")
 def get_table_detail(table_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     table = require_meta_table(db, current_user, table_id)
-    columns = db.query(MetaColumn).filter(MetaColumn.table_id == table_id).order_by(MetaColumn.ordinal_position).all()
-    ds = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
-    catalog = _catalog_for_table(ds, table)
-    qual = _qualified_name(ds.name, catalog, table.table_name) if ds else None
-    return {
-        "id": table.id,
-        "datasource_id": table.datasource_id,
-        "datasource_name": ds.name if ds else None,
-        "ds_type": ds.ds_type if ds else None,
-        "catalog": catalog or None,
-        "qualified_name": qual,
-        "db_name": table.db_name, "table_name": table.table_name,
-        "table_comment": table.table_comment, "table_type": table.table_type,
-        "row_count": table.row_count, "size_bytes": table.size_bytes,
-        "tags": table.tags, "owner": table.owner, "last_updated": table.last_updated,
-        "columns": [{"id": c.id, "name": c.column_name, "type": c.column_type,
-                     "comment": c.column_comment, "nullable": c.is_nullable,
-                     "primary_key": c.is_primary_key} for c in columns]
-    }
+    return _serialize_table_detail(db, table)
 
 
 @router.post("/tables/{table_id}/columns")
@@ -311,104 +464,9 @@ def sync_schema(table_id: int, db: Session = Depends(get_db), current_user: User
     ds = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
     if not ds:
         raise HTTPException(status_code=404, detail="数据源不存在")
-    lt = (ds.ds_type or "").lower()
     try:
-        if lt in ("mysql", "doris"):
-            import pymysql
-
-            catalog = (table.db_name or ds.database or "").strip()
-            if not catalog:
-                raise HTTPException(status_code=400, detail="请在元数据或数据源上配置库名（catalog），以便定位物理表")
-            conn = pymysql.connect(
-                host=ds.host,
-                port=ds.port or 3306,
-                user=mysql_protocol_connect_user(ds),
-                password=ds.password or "",
-                database=catalog,
-            )
-            cursor = conn.cursor()
-            cursor.execute(f"DESCRIBE `{catalog}`.`{table.table_name}`")
-            rows = cursor.fetchall()
-            db.query(MetaColumn).filter(MetaColumn.table_id == table_id).delete()
-            for i, row in enumerate(rows):
-                col = MetaColumn(
-                    table_id=table_id,
-                    column_name=row[0],
-                    column_type=row[1],
-                    is_nullable=(row[2] == "YES"),
-                    is_primary_key=(row[3] == "PRI"),
-                    ordinal_position=i + 1,
-                )
-                db.add(col)
-            cursor.execute(f"SELECT COUNT(*) FROM `{catalog}`.`{table.table_name}`")
-            table.row_count = cursor.fetchone()[0]
-            table.last_updated = datetime.utcnow()
-            conn.close()
-            db.commit()
-            return {"message": "同步成功", "columns": len(rows)}
-
-        if lt == "postgresql":
-            import psycopg2
-            from psycopg2 import sql as psql
-
-            dbname = (ds.database or "").strip()
-            if not dbname:
-                raise HTTPException(status_code=400, detail="PostgreSQL 数据源未配置数据库名")
-            ex = ds.extra_config if isinstance(ds.extra_config, dict) else {}
-            schema = (table.db_name or ex.get("schema") or "public").strip() or "public"
-            conn = psycopg2.connect(
-                host=ds.host or "127.0.0.1",
-                port=ds.port or 5432,
-                user=(ds.username or "").strip() or None,
-                password=ds.password or "",
-                dbname=dbname,
-            )
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT kcu.column_name
-                FROM information_schema.table_constraints tc
-                JOIN information_schema.key_column_usage kcu
-                  ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-                WHERE tc.table_schema = %s AND tc.table_name = %s AND tc.constraint_type = 'PRIMARY KEY'
-                """,
-                (schema, table.table_name),
-            )
-            pk_cols = {r[0] for r in cur.fetchall()}
-            cur.execute(
-                """
-                SELECT column_name, data_type, is_nullable, ordinal_position
-                FROM information_schema.columns
-                WHERE table_schema = %s AND table_name = %s
-                ORDER BY ordinal_position
-                """,
-                (schema, table.table_name),
-            )
-            col_rows = cur.fetchall()
-            db.query(MetaColumn).filter(MetaColumn.table_id == table_id).delete()
-            for i, row in enumerate(col_rows):
-                cname, dtype, nullable, _ordpos = row[0], row[1], row[2], row[3]
-                col = MetaColumn(
-                    table_id=table_id,
-                    column_name=cname,
-                    column_type=dtype or "",
-                    is_nullable=(str(nullable).upper() == "YES"),
-                    is_primary_key=cname in pk_cols,
-                    ordinal_position=i + 1,
-                )
-                db.add(col)
-            cur.execute(
-                psql.SQL("SELECT COUNT(*) FROM {}.{}").format(
-                    psql.Identifier(schema), psql.Identifier(table.table_name)
-                )
-            )
-            table.row_count = cur.fetchone()[0]
-            table.last_updated = datetime.utcnow()
-            conn.close()
-            db.commit()
-            return {"message": "同步成功", "columns": len(col_rows)}
-
-        raise HTTPException(status_code=400, detail=f"暂不支持该数据源类型的结构同步: {ds.ds_type}")
+        n = _sync_table_schema(db, table, ds)
+        return {"message": "同步成功", "columns": n}
     except HTTPException:
         raise
     except Exception as e:

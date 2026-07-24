@@ -118,7 +118,11 @@ export default function DataMapPage() {
     const values = await form.validateFields()
     values.workspace_id = wsId
     const created: any = await datamapApi.registerTable(values)
-    message.success('注册成功')
+    if (created?.sync_warning) {
+      message.warning(`已注册，但字段同步失败：${created.sync_warning}`)
+    } else {
+      message.success(`注册成功，已同步 ${created?.columns_synced ?? created?.columns?.length ?? 0} 个字段`)
+    }
     setRegisterModal(false)
     await load()
     if (created?.id) openDetail({ id: created.id })
@@ -135,7 +139,7 @@ export default function DataMapPage() {
     }
     Modal.confirm({
       title: '注册到数据地图',
-      content: `将「${row.qualified_name}」注册为元数据后，可查看字段字典、血缘、样例数据。`,
+      content: `将「${row.qualified_name}」注册为元数据后自动同步字段，并可查看血缘、样例数据。`,
       okText: '注册并打开',
       onOk: async () => {
         const created: any = await datamapApi.registerTable({
@@ -146,7 +150,11 @@ export default function DataMapPage() {
           table_comment: row.table_comment || undefined,
           table_type: String(row.table_type || 'table').toLowerCase().includes('view') ? 'view' : 'table',
         })
-        message.success('已注册')
+        if (created?.sync_warning) {
+          message.warning(`已注册，但字段同步失败：${created.sync_warning}`)
+        } else {
+          message.success(`已注册并同步 ${created?.columns_synced ?? created?.columns?.length ?? 0} 个字段`)
+        }
         await load()
         if (created?.id) openDetail({ id: created.id })
       },
@@ -230,7 +238,7 @@ export default function DataMapPage() {
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="展示当前工作空间内已启用数据源中可枚举的物理表（MySQL / Doris / PostgreSQL；未注册也可浏览）。点击限定名可将表纳入元数据并查看数据字典；新建表后请点「刷新目录」同步。"
+        message="展示当前工作空间内已启用数据源中可枚举的物理表（MySQL / Doris / PostgreSQL；未注册也可浏览）。注册时会自动同步字段到数据字典；表结构变更后可点「同步结构」刷新；新建物理表后请点「刷新目录」。"
       />
       <Table dataSource={tables} columns={columns} rowKey="rowKey" scroll={{ x: 1100 }} />
 
