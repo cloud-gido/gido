@@ -587,7 +587,7 @@ class StreamingJob(Base):
     script_content = Column(Text)                   # SQL 内容
     jar_path = Column(String(512))                  # JAR 文件路径（容器内）
     main_class = Column(String(256))                # JAR 主类
-    program_args = Column(String(512))              # 运行参数
+    program_args = Column(Text)                     # 运行参数（Kafka broker 等长参数，勿限 VARCHAR(512)）
     parallelism = Column(Integer, default=1)
     # Flink SQL Gateway Open Session 的额外 properties（JSON 对象字符串），与 parallelism 等合并后提交
     streaming_properties = Column(Text, nullable=True)
@@ -621,7 +621,7 @@ class StreamingJobHistory(Base):
     job_type = Column(String(16), nullable=False)
     script_content = Column(Text, nullable=True)
     main_class = Column(String(256), nullable=True)
-    program_args = Column(String(512), nullable=True)
+    program_args = Column(Text, nullable=True)
     parallelism = Column(Integer, nullable=True)
     streaming_properties = Column(Text, nullable=True)
     flink_sql_submit_mode = Column(String(32), nullable=True)
@@ -2298,8 +2298,36 @@ def update_job(
     for k, v in patch.items():
         setattr(job, k, v)
     job.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(job)
+    try:
+        db.commit()
+        db.refresh(job)
+    except Exception as e:
+        db.rollback()
+        logging.getLogger(__name__).exception("update_job commit failed job_id=%s", job_id)
+        msg = str(e)
+        # 缺列时给可操作提示（重启 backend 会跑 ensure_columns 迁移）
+        if "streaming_properties" in msg or "flink_sql_submit_mode" in msg or "flink_jar_submit_mode" in msg:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "保存版本历史失败：实时作业历史表缺少字段。"
+                    "请重启 gido-backend 以自动补齐迁移后重试。"
+                    f" ({type(e).__name__})"
+                ),
+            ) from e
+        if "StringDataRightTruncation" in type(e).__name__ or "value too long for type character varying" in msg:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "保存失败：program_args 等字段超过数据库列长度。"
+                    "请重启 gido-backend 以自动加宽 program_args 为 TEXT 后重试。"
+                    f" ({type(e).__name__})"
+                ),
+            ) from e
+        raise HTTPException(
+            status_code=500,
+            detail=f"保存作业失败：{type(e).__name__}: {msg[:400]}",
+        ) from e
     return _streaming_job_public_dict(db, job)
 
 

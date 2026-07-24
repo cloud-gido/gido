@@ -12,7 +12,7 @@ import {
 import {
   PlusOutlined, PlayCircleOutlined, StopOutlined, SaveOutlined, ReloadOutlined, UploadOutlined, DeleteOutlined,
   UnlockOutlined, HistoryOutlined, CopyOutlined, SearchOutlined, EditOutlined,
-  MenuFoldOutlined, MenuUnfoldOutlined, AimOutlined,
+  MenuFoldOutlined, MenuUnfoldOutlined, AimOutlined, ExpandAltOutlined,
 } from '@ant-design/icons'
 import Editor from '@monaco-editor/react'
 import { streamingApi, approvalApi } from '../api'
@@ -211,6 +211,7 @@ export default function StreamStudioPage() {
   const editorRef = useRef<any>(null)
   const [editorAppearance, setEditorAppearance] = useState<EditorAppearance>(() => loadEditorAppearance())
   const [jarForm, setJarForm] = useState({ main_class: '', program_args: '', parallelism: 1 })
+  const [programArgsExpandOpen, setProgramArgsExpandOpen] = useState(false)
   const [sqlParallelism, setSqlParallelism] = useState(1)
   /** Flink SQL Gateway Open Session 合并用 JSON（对标阿里云实时计算「参数调优」的轻量版） */
   const [streamingPropsJson, setStreamingPropsJson] = useState('{}')
@@ -533,11 +534,11 @@ export default function StreamStudioPage() {
     }
   }
 
-  const handleSave = async () => {
-    if (!selected) return
+  const handleSave = async (): Promise<boolean> => {
+    if (!selected) return false
     if (selected.is_locked) {
       message.warning('作业已锁定，请先解锁后再保存')
-      return
+      return false
     }
     let streaming_properties: string | undefined
     const includeOperatorRes =
@@ -548,28 +549,35 @@ export default function StreamStudioPage() {
         streaming_properties = buildStreamingPropertiesJson(streamingPropsJson, operatorResForm, includeOperatorRes, resourceTier)
       } catch {
         message.error('参数调优 JSON 格式无效，请检查')
-        return
+        return false
       }
     } else if (selected.job_type === 'JAR' && effectiveJarMode === 'flink_operator') {
       try {
         streaming_properties = buildStreamingPropertiesJson(jarStreamingPropsJson, operatorResForm, true, resourceTier)
       } catch {
         message.error('高级配置 JSON 格式无效，请检查')
-        return
+        return false
       }
     }
-    await streamingApi.updateJob(selected.id, {
-      script_content: selected.job_type === 'SQL' ? scriptDraft : undefined,
-      main_class: selected.job_type === 'JAR' ? (jarForm.main_class || undefined) : undefined,
-      program_args: selected.job_type === 'JAR' ? (jarForm.program_args || undefined) : undefined,
-      parallelism: selected.job_type === 'JAR' ? jarForm.parallelism : sqlParallelism,
-      ...(selected.job_type === 'SQL' ? { streaming_properties, flink_sql_submit_mode: effectiveSqlMode } : {}),
-      ...(selected.job_type === 'JAR' ? { flink_jar_submit_mode: effectiveJarMode, streaming_properties } : {}),
-    }, { createHistory: true })
-    setScriptDirty(false)
-    scriptAutosave.markVersionSaved()
-    message.success(selected.job_type === 'SQL' ? '已保存并记入版本历史' : '已保存')
-    await load()
+    try {
+      await streamingApi.updateJob(selected.id, {
+        script_content: selected.job_type === 'SQL' ? scriptDraft : undefined,
+        main_class: selected.job_type === 'JAR' ? (jarForm.main_class || undefined) : undefined,
+        program_args: selected.job_type === 'JAR' ? (jarForm.program_args || undefined) : undefined,
+        parallelism: selected.job_type === 'JAR' ? jarForm.parallelism : sqlParallelism,
+        ...(selected.job_type === 'SQL' ? { streaming_properties, flink_sql_submit_mode: effectiveSqlMode } : {}),
+        ...(selected.job_type === 'JAR' ? { flink_jar_submit_mode: effectiveJarMode, streaming_properties } : {}),
+      }, { createHistory: true })
+      setScriptDirty(false)
+      scriptAutosave.markVersionSaved()
+      message.success(selected.job_type === 'SQL' ? '已保存并记入版本历史' : '已保存')
+      await load()
+      return true
+    } catch (e: any) {
+      const d = e?.response?.data?.detail
+      message.error(typeof d === 'string' ? d : (e?.message || '保存失败'))
+      return false
+    }
   }
 
   useEffect(() => {
@@ -642,14 +650,16 @@ export default function StreamStudioPage() {
     }
     setSubmitDrawerOpen(false)
     if (!canPublishDirect) {
-      await handleSave()
+      const saved = await handleSave()
+      if (!saved) return
       setApprovalNote('')
       setApprovalOpen(true)
       return
     }
     setSubmitting(true)
     try {
-      await handleSave()
+      const saved = await handleSave()
+      if (!saved) return
       const res: any = await streamingApi.submitJob(selected.id, selected.job_type === 'SQL' ? scriptDraft : undefined)
       await load()
       if (res?.submit_warning) {
@@ -660,7 +670,7 @@ export default function StreamStudioPage() {
             <span>
               <a href={res.flink_console_url} target="_blank" rel="noreferrer">打开 Flink Web UI</a>
               <div style={{ marginTop: 6, fontSize: 12, wordBreak: 'break-all' }}>{res.flink_console_url}</div>
-              {' · '}失败排查见 <Link to={R.stream.monitor}>作业运维</Link>
+              {' · '}失败排查见 <a href={R.stream.monitor}>作业运维</a>
             </span>
           )
         : '未返回控制台链接，请检查后端 FLINK_UI_URL / FLINK_URL。失败原因将写入作业运维中的「启动失败」记录。'
@@ -673,7 +683,7 @@ export default function StreamStudioPage() {
         message: '提交失败',
         description: (
           <span>
-            详细错误已落库，请在 <Link to={R.stream.monitor}>作业运维</Link> 中打开「诊断」查看启动阶段日志。
+            详细错误已落库，请在 <a href={R.stream.monitor}>作业运维</a> 中打开「诊断」查看启动阶段日志。
           </span>
         ),
         duration: 8,
@@ -1239,12 +1249,22 @@ export default function StreamStudioPage() {
                       />
                     </Form.Item>
                     <Form.Item label="运行参数">
-                      <Input
-                        value={jarForm.program_args}
-                        placeholder="--key value"
-                        disabled={selected.is_locked}
-                        onChange={e => setJarForm(f => ({ ...f, program_args: e.target.value }))}
-                      />
+                      <Space.Compact style={{ width: '100%' }}>
+                        <Input
+                          value={jarForm.program_args}
+                          placeholder="--key value"
+                          disabled={selected.is_locked}
+                          onChange={e => setJarForm(f => ({ ...f, program_args: e.target.value }))}
+                          style={{ flex: 1 }}
+                        />
+                        <Tooltip title={selected.is_locked ? '放大查看' : '放大编辑'}>
+                          <Button
+                            icon={<ExpandAltOutlined />}
+                            aria-label="放大运行参数"
+                            onClick={() => setProgramArgsExpandOpen(true)}
+                          />
+                        </Tooltip>
+                      </Space.Compact>
                     </Form.Item>
                     <Form.Item label="并行度">
                       <InputNumber
@@ -1262,6 +1282,27 @@ export default function StreamStudioPage() {
         </div>
         )}
       />
+
+      <Modal
+        title="运行参数"
+        open={programArgsExpandOpen}
+        onCancel={() => setProgramArgsExpandOpen(false)}
+        onOk={() => setProgramArgsExpandOpen(false)}
+        okText="完成"
+        cancelButtonProps={{ style: { display: 'none' } }}
+        width="min(920px, 92vw)"
+        destroyOnClose
+      >
+        <Input.TextArea
+          autoFocus
+          rows={18}
+          value={jarForm.program_args}
+          disabled={selected?.is_locked}
+          onChange={e => setJarForm(f => ({ ...f, program_args: e.target.value }))}
+          style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 13 }}
+          placeholder="--key value"
+        />
+      </Modal>
 
       <Modal title="新建实时作业" open={createOpen} onOk={handleCreate} onCancel={() => setCreateOpen(false)} destroyOnClose>
         <Form form={createForm} layout="vertical" initialValues={{ job_type: 'SQL', parallelism: 1 }}>

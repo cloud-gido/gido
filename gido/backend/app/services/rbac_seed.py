@@ -738,6 +738,73 @@ def migrate_dw_streaming_job_history_streaming_properties(engine: Engine) -> Non
             conn.execute(text("ALTER TABLE dw_streaming_job_history ADD COLUMN streaming_properties TEXT"))
 
 
+def migrate_dw_streaming_job_history_ensure_columns(engine: Engine) -> None:
+    """
+    补齐 dw_streaming_job_history 与 ORM 一致的列。
+    旧库若只建了基础表、后续增量迁移未跑全，create_history=true 写快照会 500。
+    """
+    insp = inspect(engine)
+    if not insp.has_table("dw_streaming_job_history"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_streaming_job_history")}
+    # name -> (mysql ddl, other ddl)
+    needed = {
+        "streaming_properties": ("TEXT NULL", "TEXT"),
+        "flink_sql_submit_mode": ("VARCHAR(32) NULL", "VARCHAR(32)"),
+        "flink_jar_submit_mode": ("VARCHAR(32) NULL", "VARCHAR(32)"),
+    }
+    missing = [n for n in needed if n not in cols]
+    if not missing:
+        return
+    with engine.begin() as conn:
+        for name in missing:
+            mysql_t, other_t = needed[name]
+            typ = mysql_t if engine.dialect.name == "mysql" else other_t
+            conn.execute(text(f"ALTER TABLE dw_streaming_job_history ADD COLUMN {name} {typ}"))
+
+
+def migrate_dw_streaming_program_args_widen(engine: Engine) -> None:
+    """
+    JAR program_args：VARCHAR(512) → TEXT。
+    多 broker / 长 CLI 参数常见远超 512，否则 create_history / 保存会 StringDataRightTruncation。
+    """
+    import logging
+
+    _log = logging.getLogger(__name__)
+    if engine.dialect.name not in ("mysql", "postgresql"):
+        return
+
+    def _needs_text(table: str) -> bool:
+        insp = inspect(engine)
+        if not insp.has_table(table):
+            return False
+        col = next((c for c in insp.get_columns(table) if c["name"] == "program_args"), None)
+        if not col:
+            return False
+        length = getattr(col["type"], "length", None)
+        # TEXT / CLOB：length 为 None；仍是 VARCHAR(n) 则需加宽
+        return length is not None
+
+    jobs = _needs_text("dw_streaming_jobs")
+    hist = _needs_text("dw_streaming_job_history")
+    if not jobs and not hist:
+        return
+    try:
+        with engine.begin() as conn:
+            if jobs:
+                if engine.dialect.name == "mysql":
+                    conn.execute(text("ALTER TABLE dw_streaming_jobs MODIFY COLUMN program_args TEXT NULL"))
+                else:
+                    conn.execute(text("ALTER TABLE dw_streaming_jobs ALTER COLUMN program_args TYPE TEXT"))
+            if hist:
+                if engine.dialect.name == "mysql":
+                    conn.execute(text("ALTER TABLE dw_streaming_job_history MODIFY COLUMN program_args TEXT NULL"))
+                else:
+                    conn.execute(text("ALTER TABLE dw_streaming_job_history ALTER COLUMN program_args TYPE TEXT"))
+    except Exception as e:
+        _log.warning("migrate_dw_streaming_program_args_widen: %s", e)
+
+
 def migrate_dw_streaming_job_history(engine: Engine) -> None:
     """实时作业脚本 / JAR 参数版本表（对齐数据开发 dw_node_history）。"""
     insp = inspect(engine)
@@ -754,7 +821,7 @@ def migrate_dw_streaming_job_history(engine: Engine) -> None:
                         job_type VARCHAR(16) NOT NULL,
                         script_content TEXT NULL,
                         main_class VARCHAR(256) NULL,
-                        program_args VARCHAR(512) NULL,
+                        program_args TEXT NULL,
                         parallelism INT NULL,
                         saved_at DATETIME NOT NULL,
                         saved_by INT NULL,
@@ -775,7 +842,7 @@ def migrate_dw_streaming_job_history(engine: Engine) -> None:
                         job_type VARCHAR(16) NOT NULL,
                         script_content TEXT,
                         main_class VARCHAR(256),
-                        program_args VARCHAR(512),
+                        program_args TEXT,
                         parallelism INTEGER,
                         saved_at TIMESTAMP NOT NULL,
                         saved_by INTEGER
@@ -794,7 +861,7 @@ def migrate_dw_streaming_job_history(engine: Engine) -> None:
                         job_type VARCHAR(16) NOT NULL,
                         script_content TEXT,
                         main_class VARCHAR(256),
-                        program_args VARCHAR(512),
+                        program_args TEXT,
                         parallelism INTEGER,
                         saved_at TIMESTAMP NOT NULL,
                         saved_by INTEGER,

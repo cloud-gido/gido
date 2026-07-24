@@ -3,6 +3,9 @@
 # @author felixzhu
 # @date 2026-06-05
 """启动迁移函数的幂等回归：不连真实 DB，仅用内存 SQLite + create_all。"""
+import os
+
+os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
 from sqlalchemy import create_engine, inspect
 
@@ -180,6 +183,78 @@ def test_migrate_flink_session_profiles_and_job_fk_idempotent():
     assert inspect(eng).has_table("dw_flink_session_profiles")
     jcols = {c["name"] for c in inspect(eng).get_columns("dw_streaming_jobs")}
     assert "flink_session_profile_id" in jcols
+
+
+def test_migrate_streaming_job_history_ensure_columns_idempotent():
+    import os
+    os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+    from app.core.database import Base
+    from sqlalchemy import text
+    from app.services.rbac_seed import (
+        migrate_dw_streaming_jobs,
+        migrate_dw_streaming_job_history,
+        migrate_dw_streaming_job_history_ensure_columns,
+    )
+
+    _load_models()
+    import app.api.streaming  # noqa: F401
+
+    eng = _fresh_engine()
+    Base.metadata.create_all(eng)
+    migrate_dw_streaming_jobs(eng)
+    migrate_dw_streaming_job_history(eng)
+    migrate_dw_streaming_job_history_ensure_columns(eng)
+    migrate_dw_streaming_job_history_ensure_columns(eng)
+    hcols = {c["name"] for c in inspect(eng).get_columns("dw_streaming_job_history")}
+    assert "streaming_properties" in hcols
+    assert "flink_sql_submit_mode" in hcols
+    assert "flink_jar_submit_mode" in hcols
+
+    # 旧瘦表：仅基础列，ensure 应补齐
+    eng2 = _fresh_engine()
+    with eng2.begin() as conn:
+        conn.execute(text(
+            """
+            CREATE TABLE dw_streaming_jobs (
+              id INTEGER PRIMARY KEY,
+              workspace_id INTEGER,
+              name VARCHAR(128),
+              job_type VARCHAR(16)
+            )
+            """
+        ))
+        conn.execute(text(
+            """
+            CREATE TABLE dw_streaming_job_history (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              job_id INTEGER NOT NULL,
+              job_type VARCHAR(16) NOT NULL,
+              script_content TEXT,
+              main_class VARCHAR(256),
+              program_args VARCHAR(512),
+              parallelism INTEGER,
+              saved_at TIMESTAMP NOT NULL,
+              saved_by INTEGER
+            )
+            """
+        ))
+    migrate_dw_streaming_job_history_ensure_columns(eng2)
+    h2 = {c["name"] for c in inspect(eng2).get_columns("dw_streaming_job_history")}
+    assert "streaming_properties" in h2
+    assert "flink_sql_submit_mode" in h2
+    assert "flink_jar_submit_mode" in h2
+
+
+def test_migrate_streaming_program_args_is_text_on_orm_and_noop_sqlite():
+    from sqlalchemy import Text
+    from app.api.streaming import StreamingJob, StreamingJobHistory
+    from app.services.rbac_seed import migrate_dw_streaming_program_args_widen
+
+    assert isinstance(StreamingJob.__table__.c.program_args.type, Text)
+    assert isinstance(StreamingJobHistory.__table__.c.program_args.type, Text)
+    eng = _fresh_engine()
+    migrate_dw_streaming_program_args_widen(eng)  # sqlite: no-op
+    migrate_dw_streaming_program_args_widen(eng)
 
 
 def test_dolphin_trigger_prefix_from_command_type():
