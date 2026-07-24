@@ -319,7 +319,7 @@ def update_node(
     current_user: User = Depends(get_current_user),
     create_history: bool = Query(
         True,
-        description="是否写入版本历史。编辑器自动草稿保存应传 false（对齐 DataWorks：草稿≠提交版本）。",
+        description="是否写入版本历史。编辑器自动草稿保存应传 false（草稿≠提交版本）。",
     ),
 ):
     from app.models.workspace import NodeHistory
