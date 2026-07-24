@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # @author felixzhu
 # @date 2026-06-05
-from fastapi import APIRouter, Body, Depends, Header, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, field_validator
 from typing import Optional, Any, Dict, List
@@ -312,7 +312,16 @@ def reorder_nodes(
 
 
 @router.put("/nodes/{node_id}")
-def update_node(node_id: int, node_in: NodeCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def update_node(
+    node_id: int,
+    node_in: NodeCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    create_history: bool = Query(
+        True,
+        description="是否写入版本历史。编辑器自动草稿保存应传 false（对齐 DataWorks：草稿≠提交版本）。",
+    ),
+):
     from app.models.workspace import NodeHistory
     node = db.query(TaskNode).filter(TaskNode.id == node_id).first()
     if not node:
@@ -330,9 +339,6 @@ def update_node(node_id: int, node_in: NodeCreate, db: Session = Depends(get_db)
             status_code=403,
             detail=f"编辑锁由「{hu or node.edit_lock_user_id}」占用，请先在左侧打开脚本并获取编辑锁，或使用抢锁。",
         )
-    # 保存历史版本
-    if node.script_content:
-        db.add(NodeHistory(node_id=node_id, script_content=node.script_content, saved_by=current_user.id))
     patch = node_in.model_dump(exclude_unset=True)
     patch.pop("workspace_id", None)
     patch.pop("sort_order", None)
@@ -346,6 +352,21 @@ def update_node(node_id: int, node_in: NodeCreate, db: Session = Depends(get_db)
         base_params = node.params if isinstance(node.params, dict) else {}
         merged = {**base_params, **(patch.get("params") or {})}
         patch["params"] = normalize_dependent_params(merged)
+
+    # 显式保存：将「变更前」脚本写入版本历史；自动草稿保存不写历史
+    if create_history and "script_content" in patch:
+        old_script = node.script_content or ""
+        new_script = patch.get("script_content") or ""
+        if old_script and old_script != new_script:
+            db.add(NodeHistory(node_id=node_id, script_content=old_script, saved_by=current_user.id))
+
+    if not patch:
+        return _serialize_task_node(db, node)
+
+    # 仅脚本且内容未变：跳过写库（自动保存常见）
+    if set(patch.keys()) == {"script_content"} and (patch.get("script_content") or "") == (node.script_content or ""):
+        return _serialize_task_node(db, node)
+
     for k, v in patch.items():
         setattr(node, k, v)
     node.updated_at = datetime.utcnow()

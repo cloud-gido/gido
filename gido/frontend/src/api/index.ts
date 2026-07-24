@@ -80,7 +80,15 @@ export const studioApi = {
   listNodes: (workspaceId: number, folderId?: number) => request.get('/studio/nodes', { params: { workspace_id: workspaceId, folder_id: folderId } }),
   createNode: (data: any) => request.post('/studio/nodes', data),
   getNode: (id: number) => request.get(`/studio/nodes/${id}`),
-  updateNode: (id: number, data: any) => request.put(`/studio/nodes/${id}`, data),
+  /** createHistory=false：静默草稿保存，不写版本历史（编辑器自动保存） */
+  updateNode: (id: number, data: any, opts?: { createHistory?: boolean }) =>
+    request.put(`/studio/nodes/${id}`, data, {
+      params: { create_history: opts?.createHistory !== false },
+    }),
+  saveDraft: (
+    id: number,
+    data: { workspace_id: number; name: string; node_type: string; script_content: string },
+  ) => request.put(`/studio/nodes/${id}`, data, { params: { create_history: false } }),
   deleteNode: (id: number) => request.delete(`/studio/nodes/${id}`),
   publishNode: (id: number) => request.post(`/studio/nodes/${id}/publish`),
   unlockNode: (id: number) => request.post(`/studio/nodes/${id}/unlock`),
