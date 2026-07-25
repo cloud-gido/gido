@@ -19,9 +19,9 @@ description: >-
 
 | 层 | 行为 | 版本历史 |
 |----|------|----------|
-| **静默草稿** | 编辑后防抖写入权威存储；切 Tab / 关页 / 释锁前 flush | **不写** |
-| **显式保存版本** | 工具栏「保存版本」类按钮 | **写入**可回滚历史 |
-| **本地兜底** | `localStorage` 防断网/失败丢稿 | 非权威 |
+| **静默草稿** | 编辑后防抖写入权威存储；切 Tab / 关页 / 释锁前 flush；**成功路径不对用户提示、不改工具栏布局** | **不写** |
+| **显式保存版本** | 工具栏「保存版本」类按钮（`versionDirty` 星标，不因草稿 autosave 闪烁） | **写入**可回滚历史 |
+| **本地兜底** | `localStorage` 防断网/失败丢稿；仅失败时 `AutosaveStatusHint` 提示 | 非权威 |
 
 权威存储：
 
@@ -31,8 +31,8 @@ description: >-
 
 ## 共享实现（改行为时先改这里）
 
-- Hook：`gido/frontend/src/hooks/useScriptAutosave.ts`（防抖约 1.6s、`entityId` 防串清 dirty、status、flush、keepalive；本地草稿与防抖对齐，勿每键写 localStorage）
-- 状态条：`gido/frontend/src/components/AutosaveStatusHint.tsx`
+- Hook：`gido/frontend/src/hooks/useScriptAutosave.ts`（防抖约 1.6s、`entityId` 防串清 dirty、`versionDirty`、flush、keepalive；本地草稿与防抖对齐，勿每键写 localStorage）
+- 状态条：`gido/frontend/src/components/AutosaveStatusHint.tsx`（**仅 error 可见**；pending/saving/saved 禁止渲染）
 - 本地草稿：`gido/frontend/src/utils/scriptLocalDraft.ts`
 - API：`studioApi.saveDraft` / `streamingApi.saveDraft`（`create_history=false`）
 - 关 Tab / 切 Tab：flush 失败须保留 dirty 与编辑锁，并提示；禁止失败后强行 `releaseEditLock`
@@ -48,7 +48,7 @@ description: >-
 
 - 协作锁 / 发布锁：仅持有编辑锁且未发布锁定时可写服务端草稿
 - 后端静默草稿不得刷爆 `NodeHistory` / Stream 历史表
-- UI 文案区分「已自动保存」与「已保存并记入版本历史」
+- 显式保存可用 `message.success('已保存并记入版本历史')`；禁止用「已自动保存 / 正在自动保存」占用工具栏
 
 ## Agent 检查清单
 
@@ -56,4 +56,5 @@ description: >-
 - [ ] 静默草稿是否避免写版本历史？
 - [ ] 显式保存是否仍写历史？
 - [ ] DAG `NodeConfigModal` 是否同步？
-- [ ] Probe / Stream 体验是否与 Studio 一致（状态提示、防丢稿）？
+- [ ] 成功路径是否无状态文案跳动？失败是否仍可感知？
+- [ ] 「保存版本 *」是否用 `versionDirty` 而非草稿 dirty？

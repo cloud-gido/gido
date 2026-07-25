@@ -44,12 +44,17 @@ export type UseScriptAutosaveOptions = {
 export type UseScriptAutosaveResult = {
   status: ScriptAutosaveStatus
   hint: string
+  /**
+   * 相对上次「保存版本」是否仍有未记入历史的改动。
+   * 与草稿 dirty 解耦：静默 autosave 成功后仍可为 true，避免「保存版本 *」随草稿闪烁。
+   */
+  versionDirty: boolean
   setStatus: (s: ScriptAutosaveStatus, hint?: string) => void
   /** 立即冲刷当前 dirty 内容 */
   flush: () => Promise<boolean>
   /** beforeunload 尽力冲刷 */
   flushKeepalive: () => void
-  /** 显式「保存版本」成功后重置状态文案 */
+  /** 显式「保存版本」成功后重置版本脏标记与状态 */
   markVersionSaved: () => void
 }
 
@@ -77,6 +82,8 @@ export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAuto
 
   const [status, setStatusState] = useState<ScriptAutosaveStatus>('idle')
   const [hint, setHint] = useState('')
+  const [versionDirty, setVersionDirty] = useState(false)
+  const versionDirtyIdsRef = useRef<Set<string>>(new Set())
   const seqRef = useRef(0)
   const flushingRef = useRef(false)
   const valueRef = useRef(value)
@@ -101,6 +108,17 @@ export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAuto
     setStatusState(s)
     setHint(h)
   }, [])
+
+  // 草稿 dirty 仅驱动静默持久化；versionDirty 供「保存版本」按钮，不因 autosave 成功而清除
+  useEffect(() => {
+    if (!dirty || entityId == null) {
+      setVersionDirty(entityId != null && versionDirtyIdsRef.current.has(String(entityId)))
+      return
+    }
+    const key = String(entityId)
+    versionDirtyIdsRef.current.add(key)
+    setVersionDirty(true)
+  }, [dirty, entityId])
 
   const flush = useCallback(async (): Promise<boolean> => {
     if (!enabledRef.current || !dirtyRef.current) return true
@@ -139,7 +157,11 @@ export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAuto
 
   const markVersionSaved = useCallback(() => {
     clearScriptLocalDraft(storageKeyRef.current)
-    setStatus('saved', '已写入版本历史')
+    const eid = entityIdRef.current
+    if (eid != null) versionDirtyIdsRef.current.delete(String(eid))
+    setVersionDirty(false)
+    // 成功路径保持静默，不刷「已自动保存」类文案
+    setStatus('idle')
   }, [setStatus])
 
   // 脏内容 → 防抖持久化；本地草稿与防抖对齐写入（避免每键 localStorage）
@@ -192,5 +214,5 @@ export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAuto
     }
   }, [flushKeepalive])
 
-  return { status, hint, setStatus, flush, flushKeepalive, markVersionSaved }
+  return { status, hint, versionDirty, setStatus, flush, flushKeepalive, markVersionSaved }
 }

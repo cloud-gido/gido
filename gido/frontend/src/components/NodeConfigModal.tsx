@@ -406,7 +406,9 @@ export default function NodeConfigModal({
       onCancel={() => void handleClose()}
       confirmLoading={saving}
       okButtonProps={{ disabled: Boolean(node?.is_locked) }}
-      okText={showScriptEditor ? '保存版本' : '保存'}
+      okText={showScriptEditor
+        ? `保存版本${scriptAutosave.versionDirty ? ' *' : ''}`
+        : '保存'}
       width={920}
       styles={{ body: { maxHeight: 'min(78vh, 820px)', overflowY: 'auto' } }}
       destroyOnClose
@@ -473,8 +475,8 @@ export default function NodeConfigModal({
                         name="script_content"
                         label="脚本内容"
                         extra={node?.node_type === 'PYTHON'
-                          ? '与数据开发同一脚本；可用 gido_job.execute / writelog；编辑后自动保存草稿，点「保存版本」记入历史'
-                          : '与数据开发同一脚本；编辑后自动保存草稿，点「保存版本」记入历史'}
+                          ? '与数据开发同一脚本；可用 gido_job.execute / writelog；后台自动落草稿，点「保存版本」记入历史'
+                          : '与数据开发同一脚本；后台自动落草稿，点「保存版本」记入历史'}
                       >
                         <div style={{ border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden' }}>
                           <Editor

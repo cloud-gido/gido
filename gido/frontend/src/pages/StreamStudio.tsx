@@ -899,12 +899,14 @@ export default function StreamStudioPage() {
                     icon={<SaveOutlined />}
                     onClick={handleSave}
                     disabled={selected.is_locked}
-                    type={selected.job_type === 'SQL' && scriptDirty ? 'default' : 'text'}
+                    type={selected.job_type === 'SQL' && scriptAutosave.versionDirty ? 'default' : 'text'}
                     title={selected.job_type === 'SQL'
-                      ? '写入服务端并生成版本历史（自动保存只落草稿、不记版本）'
+                      ? '写入服务端并生成版本历史（后台自动落草稿，不记版本、无打扰提示）'
                       : '保存作业配置'}
                   >
-                    {selected.job_type === 'SQL' ? `保存版本${scriptDirty ? ' *' : ''}` : '保存'}
+                    {selected.job_type === 'SQL'
+                      ? `保存版本${scriptAutosave.versionDirty ? ' *' : ''}`
+                      : '保存'}
                   </Button>
                   <AutosaveStatusHint
                     visible={selected.job_type === 'SQL' && !selected.is_locked}

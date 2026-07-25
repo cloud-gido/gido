@@ -1410,11 +1410,11 @@ export default function StudioPage() {
                 icon={<SaveOutlined />}
                 onClick={handleSave}
                 size="small"
-                type={isDirty ? 'default' : 'text'}
+                type={scriptAutosave.versionDirty ? 'default' : 'text'}
                 disabled={activeNode.is_locked}
-                title="写入服务端并生成版本历史（自动保存只落草稿、不记版本）"
+                title="写入服务端并生成版本历史（后台自动落草稿，不记版本、无打扰提示）"
               >
-                保存版本{isDirty ? ' *' : ''}
+                保存版本{scriptAutosave.versionDirty ? ' *' : ''}
               </Button>
               <AutosaveStatusHint
                 visible={canEdit}
