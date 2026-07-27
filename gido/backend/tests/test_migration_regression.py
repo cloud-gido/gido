@@ -257,6 +257,66 @@ def test_migrate_streaming_program_args_is_text_on_orm_and_noop_sqlite():
     migrate_dw_streaming_program_args_widen(eng)
 
 
+def test_migrate_node_folders_scope_and_jar_library():
+    from app.core.database import Base
+    from app.services.rbac_seed import (
+        migrate_dw_node_folders_scope,
+        migrate_dw_streaming_jobs_folder_sort_and_jar_refs,
+        migrate_dw_streaming_jar_library,
+        migrate_dw_streaming_jobs,
+    )
+    from sqlalchemy import text
+
+    _load_models()
+    import app.api.streaming  # noqa: F401
+    from app.models.workspace import NodeFolder  # noqa: F401
+
+    eng = _fresh_engine()
+    Base.metadata.create_all(eng)
+    migrate_dw_streaming_jobs(eng)
+    migrate_dw_node_folders_scope(eng)
+    migrate_dw_node_folders_scope(eng)
+    migrate_dw_streaming_jobs_folder_sort_and_jar_refs(eng)
+    migrate_dw_streaming_jar_library(eng)
+    migrate_dw_streaming_jar_library(eng)
+    fcols = {c["name"] for c in inspect(eng).get_columns("dw_node_folders")}
+    assert "scope" in fcols
+    jcols = {c["name"] for c in inspect(eng).get_columns("dw_streaming_jobs")}
+    assert "sort_order" in jcols
+    assert "jar_artifact_id" in jcols
+    assert "jar_version_id" in jcols
+    assert inspect(eng).has_table("dw_streaming_jar_artifacts")
+    assert inspect(eng).has_table("dw_streaming_jar_versions")
+
+    # 旧表无 scope：补列
+    eng2 = _fresh_engine()
+    with eng2.begin() as conn:
+        conn.execute(text(
+            """
+            CREATE TABLE dw_node_folders (
+              id INTEGER PRIMARY KEY,
+              workspace_id INTEGER,
+              name VARCHAR(128),
+              parent_id INTEGER
+            )
+            """
+        ))
+        conn.execute(text(
+            """
+            CREATE TABLE dw_streaming_jobs (
+              id INTEGER PRIMARY KEY,
+              workspace_id INTEGER,
+              name VARCHAR(128),
+              job_type VARCHAR(16)
+            )
+            """
+        ))
+    migrate_dw_node_folders_scope(eng2)
+    migrate_dw_streaming_jobs_folder_sort_and_jar_refs(eng2)
+    assert "scope" in {c["name"] for c in inspect(eng2).get_columns("dw_node_folders")}
+    assert "sort_order" in {c["name"] for c in inspect(eng2).get_columns("dw_streaming_jobs")}
+
+
 def test_dolphin_trigger_prefix_from_command_type():
     from app.services.dolphin_instance_sync import _trigger_prefix_from_ds_command_type
 

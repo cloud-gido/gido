@@ -24,6 +24,7 @@ import ApprovalPage from './pages/Approval'
 import DatasourcePage from './pages/Datasource'
 import WorkflowPage from './pages/Workflow'
 import StreamStudioPage from './pages/StreamStudio'
+import StreamJarLibraryPage from './pages/StreamJarLibrary'
 import StreamMonitorPage from './pages/StreamMonitor'
 import SystemRbacPage from './pages/SystemRbac'
 import WorkspaceSettingsPage from './pages/WorkspaceSettings'
@@ -93,6 +94,7 @@ export default function App() {
           <Route path={R.stream.root} element={<RequireAuth><StreamLayout /></RequireAuth>}>
             <Route index element={<Navigate to={R.stream.studio} replace />} />
             <Route path="studio" element={<StreamStudioPage />} />
+            <Route path="jars" element={<StreamJarLibraryPage />} />
             <Route path="monitor" element={<StreamMonitorPage />} />
             <Route path="overview" element={<Navigate to={R.stream.monitor} replace />} />
             <Route path="flink-sessions" element={<Navigate to={R.stream.monitor} replace />} />

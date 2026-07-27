@@ -102,25 +102,40 @@ class FolderCreate(BaseModel):
     workspace_id: int
     name: str
     parent_id: Optional[int] = None
+    scope: str = "batch"
 
 
 @router.get("/folders")
 def list_folders(workspace_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_BATCH_STUDIO_READ)
-    folders = db.query(NodeFolder).filter(NodeFolder.workspace_id == workspace_id).all()
-    return [{"id": f.id, "name": f.name, "parent_id": f.parent_id} for f in folders]
+    folders = (
+        db.query(NodeFolder)
+        .filter(NodeFolder.workspace_id == workspace_id, NodeFolder.scope == "batch")
+        .all()
+    )
+    return [{"id": f.id, "name": f.name, "parent_id": f.parent_id, "scope": getattr(f, "scope", None) or "batch"} for f in folders]
 
 
 @router.post("/folders")
 def create_folder(folder_in: FolderCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     assert_workspace_data_capability(db, current_user, folder_in.workspace_id, "developer", PC.GIDO_BATCH_STUDIO_WRITE)
+    scope = (folder_in.scope or "batch").strip().lower()
+    if scope != "batch":
+        raise HTTPException(status_code=400, detail="数据开发目录 scope 须为 batch")
     if folder_in.parent_id is not None:
         parent = db.query(NodeFolder).filter(NodeFolder.id == folder_in.parent_id).first()
         if not parent:
             raise HTTPException(status_code=404, detail="父文件夹不存在")
         if parent.workspace_id != folder_in.workspace_id:
             raise HTTPException(status_code=400, detail="父文件夹与工作空间不一致")
-    folder = NodeFolder(**folder_in.model_dump())
+        if (getattr(parent, "scope", None) or "batch") != "batch":
+            raise HTTPException(status_code=400, detail="父文件夹不属于数据开发目录树")
+    folder = NodeFolder(
+        workspace_id=folder_in.workspace_id,
+        name=folder_in.name,
+        parent_id=folder_in.parent_id,
+        scope="batch",
+    )
     db.add(folder)
     db.commit()
     db.refresh(folder)
@@ -268,6 +283,8 @@ def move_node_to_folder(
         fo = db.query(NodeFolder).filter(NodeFolder.id == folder_id).first()
         if not fo or fo.workspace_id != node.workspace_id:
             raise HTTPException(status_code=400, detail="目标文件夹不存在或不属于该工作空间")
+        if (getattr(fo, "scope", None) or "batch") != "batch":
+            raise HTTPException(status_code=400, detail="目标文件夹不属于数据开发目录树")
     node.folder_id = folder_id
     node.sort_order = _next_sort_order(db, node.workspace_id, folder_id)
     node.updated_at = datetime.utcnow()

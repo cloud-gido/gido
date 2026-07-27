@@ -805,6 +805,175 @@ def migrate_dw_streaming_program_args_widen(engine: Engine) -> None:
         _log.warning("migrate_dw_streaming_program_args_widen: %s", e)
 
 
+def migrate_dw_node_folders_scope(engine: Engine) -> None:
+    """文件夹 scope：batch | stream，存量默认 batch。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_node_folders"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_node_folders")}
+    if "scope" in cols:
+        return
+    with engine.begin() as conn:
+        if engine.dialect.name == "mysql":
+            conn.execute(text("ALTER TABLE dw_node_folders ADD COLUMN scope VARCHAR(16) NOT NULL DEFAULT 'batch'"))
+        else:
+            conn.execute(text("ALTER TABLE dw_node_folders ADD COLUMN scope VARCHAR(16) DEFAULT 'batch'"))
+            conn.execute(text("UPDATE dw_node_folders SET scope = 'batch' WHERE scope IS NULL"))
+
+
+def migrate_dw_streaming_jobs_folder_sort_and_jar_refs(engine: Engine) -> None:
+    """实时作业：同目录 sort_order + JAR 制品库外键列。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_streaming_jobs"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_streaming_jobs")}
+    with engine.begin() as conn:
+        if "sort_order" not in cols:
+            if engine.dialect.name == "mysql":
+                conn.execute(text("ALTER TABLE dw_streaming_jobs ADD COLUMN sort_order INT NOT NULL DEFAULT 0"))
+            else:
+                conn.execute(text("ALTER TABLE dw_streaming_jobs ADD COLUMN sort_order INTEGER DEFAULT 0"))
+                conn.execute(text("UPDATE dw_streaming_jobs SET sort_order = 0 WHERE sort_order IS NULL"))
+        if "jar_artifact_id" not in cols:
+            conn.execute(text("ALTER TABLE dw_streaming_jobs ADD COLUMN jar_artifact_id INTEGER"))
+        if "jar_version_id" not in cols:
+            conn.execute(text("ALTER TABLE dw_streaming_jobs ADD COLUMN jar_version_id INTEGER"))
+
+
+def migrate_dw_streaming_jar_library(engine: Engine) -> None:
+    """工作空间级 JAR 制品库 + 版本表。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_streaming_jar_artifacts"):
+        with engine.begin() as conn:
+            if engine.dialect.name == "mysql":
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE dw_streaming_jar_artifacts (
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            workspace_id INT NOT NULL,
+                            name VARCHAR(128) NOT NULL,
+                            description TEXT NULL,
+                            owner_id INT NULL,
+                            created_by INT NULL,
+                            created_at DATETIME NOT NULL,
+                            updated_at DATETIME NOT NULL,
+                            INDEX idx_sja_ws (workspace_id),
+                            CONSTRAINT fk_sja_ws FOREIGN KEY (workspace_id)
+                                REFERENCES dw_workspaces(id) ON DELETE CASCADE
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                        """
+                    )
+                )
+            elif engine.dialect.name == "postgresql":
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE dw_streaming_jar_artifacts (
+                            id SERIAL PRIMARY KEY,
+                            workspace_id INTEGER NOT NULL REFERENCES dw_workspaces(id) ON DELETE CASCADE,
+                            name VARCHAR(128) NOT NULL,
+                            description TEXT,
+                            owner_id INTEGER,
+                            created_by INTEGER,
+                            created_at TIMESTAMP NOT NULL,
+                            updated_at TIMESTAMP NOT NULL
+                        )
+                        """
+                    )
+                )
+                conn.execute(text("CREATE INDEX idx_sja_ws ON dw_streaming_jar_artifacts (workspace_id)"))
+            else:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE dw_streaming_jar_artifacts (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            workspace_id INTEGER NOT NULL,
+                            name VARCHAR(128) NOT NULL,
+                            description TEXT,
+                            owner_id INTEGER,
+                            created_by INTEGER,
+                            created_at TIMESTAMP NOT NULL,
+                            updated_at TIMESTAMP NOT NULL
+                        )
+                        """
+                    )
+                )
+    if not insp.has_table("dw_streaming_jar_versions"):
+        with engine.begin() as conn:
+            if engine.dialect.name == "mysql":
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE dw_streaming_jar_versions (
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            artifact_id INT NOT NULL,
+                            version INT NOT NULL,
+                            file_name VARCHAR(256) NOT NULL,
+                            size_bytes BIGINT NULL,
+                            sha256 VARCHAR(64) NULL,
+                            storage_key VARCHAR(512) NULL,
+                            default_main_class VARCHAR(256) NULL,
+                            change_note TEXT NULL,
+                            status VARCHAR(16) NOT NULL DEFAULT 'active',
+                            uploaded_by INT NULL,
+                            uploaded_at DATETIME NOT NULL,
+                            UNIQUE KEY uq_sjv_art_ver (artifact_id, version),
+                            INDEX idx_sjv_art (artifact_id),
+                            CONSTRAINT fk_sjv_art FOREIGN KEY (artifact_id)
+                                REFERENCES dw_streaming_jar_artifacts(id) ON DELETE CASCADE
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                        """
+                    )
+                )
+            elif engine.dialect.name == "postgresql":
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE dw_streaming_jar_versions (
+                            id SERIAL PRIMARY KEY,
+                            artifact_id INTEGER NOT NULL REFERENCES dw_streaming_jar_artifacts(id) ON DELETE CASCADE,
+                            version INTEGER NOT NULL,
+                            file_name VARCHAR(256) NOT NULL,
+                            size_bytes BIGINT,
+                            sha256 VARCHAR(64),
+                            storage_key VARCHAR(512),
+                            default_main_class VARCHAR(256),
+                            change_note TEXT,
+                            status VARCHAR(16) NOT NULL DEFAULT 'active',
+                            uploaded_by INTEGER,
+                            uploaded_at TIMESTAMP NOT NULL,
+                            UNIQUE (artifact_id, version)
+                        )
+                        """
+                    )
+                )
+                conn.execute(text("CREATE INDEX idx_sjv_art ON dw_streaming_jar_versions (artifact_id)"))
+            else:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE dw_streaming_jar_versions (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            artifact_id INTEGER NOT NULL,
+                            version INTEGER NOT NULL,
+                            file_name VARCHAR(256) NOT NULL,
+                            size_bytes INTEGER,
+                            sha256 VARCHAR(64),
+                            storage_key VARCHAR(512),
+                            default_main_class VARCHAR(256),
+                            change_note TEXT,
+                            status VARCHAR(16) NOT NULL DEFAULT 'active',
+                            uploaded_by INTEGER,
+                            uploaded_at TIMESTAMP NOT NULL,
+                            UNIQUE (artifact_id, version)
+                        )
+                        """
+                    )
+                )
+
+
 def migrate_dw_streaming_job_history(engine: Engine) -> None:
     """实时作业脚本 / JAR 参数版本表（对齐数据开发 dw_node_history）。"""
     insp = inspect(engine)

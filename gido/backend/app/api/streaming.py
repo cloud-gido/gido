@@ -12,14 +12,14 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, 
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from app.core import perm_codes as PC
 from sqlalchemy.orm import Session
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, JSON, BigInteger, func
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Tuple, Set
 from datetime import datetime
 from app.core.database import get_db, Base
 from app.core.security import get_current_user
 from app.core.config import settings
-from app.models.workspace import User, FlinkSessionProfile
+from app.models.workspace import User, FlinkSessionProfile, NodeFolder
 from app.services.flink_runtime import (
     FlinkRuntimeConfig,
     apply_flink_row_overrides,
@@ -562,6 +562,9 @@ def _streaming_job_public_dict(
         "parallelism": job.parallelism,
         "streaming_properties": getattr(job, "streaming_properties", None),
         "folder_id": job.folder_id,
+        "sort_order": getattr(job, "sort_order", 0) or 0,
+        "jar_artifact_id": getattr(job, "jar_artifact_id", None),
+        "jar_version_id": getattr(job, "jar_version_id", None),
         "script_content": job.script_content,
         "main_class": job.main_class,
         "program_args": job.program_args,
@@ -606,6 +609,10 @@ class StreamingJob(Base):
     last_submitted_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
     status = Column(String(32), default="draft")    # draft/running/finished/failed/cancelled
     folder_id = Column(Integer, ForeignKey("dw_node_folders.id"), nullable=True)
+    sort_order = Column(Integer, default=0)  # 同目录内拖拽排序
+    # 工作空间 JAR 制品库绑定（优先于遗留 jar_path）
+    jar_artifact_id = Column(Integer, nullable=True)
+    jar_version_id = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_by = Column(Integer, ForeignKey("dw_users.id"))
@@ -628,6 +635,36 @@ class StreamingJobHistory(Base):
     flink_jar_submit_mode = Column(String(32), nullable=True)
     saved_at = Column(DateTime, default=datetime.utcnow)
     saved_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+
+
+class StreamingJarArtifact(Base):
+    """工作空间级 JAR 制品（多版本）。"""
+    __tablename__ = "dw_streaming_jar_artifacts"
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("dw_workspaces.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(128), nullable=False)
+    description = Column(Text, nullable=True)
+    owner_id = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    created_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class StreamingJarVersion(Base):
+    """JAR 制品版本（二进制 + 审计）。"""
+    __tablename__ = "dw_streaming_jar_versions"
+    id = Column(Integer, primary_key=True, index=True)
+    artifact_id = Column(Integer, ForeignKey("dw_streaming_jar_artifacts.id", ondelete="CASCADE"), nullable=False)
+    version = Column(Integer, nullable=False)
+    file_name = Column(String(256), nullable=False)
+    size_bytes = Column(BigInteger, nullable=True)
+    sha256 = Column(String(64), nullable=True)
+    storage_key = Column(String(512), nullable=True)
+    default_main_class = Column(String(256), nullable=True)
+    change_note = Column(Text, nullable=True)
+    status = Column(String(16), nullable=False, default="active")  # active | deprecated
+    uploaded_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
 
 
 def _append_streaming_job_history_snapshot(db: Session, job: StreamingJob, user_id: int) -> None:
@@ -1431,6 +1468,8 @@ class JobCreate(BaseModel):
     flink_sql_submit_mode: str = "flink_operator"
     flink_jar_submit_mode: str = "flink_operator"
     flink_session_profile_id: Optional[int] = None
+    jar_artifact_id: Optional[int] = None
+    jar_version_id: Optional[int] = None
 
     @field_validator("flink_sql_submit_mode")
     @classmethod
@@ -1460,6 +1499,8 @@ class JobUpdate(BaseModel):
     flink_sql_submit_mode: Optional[str] = None
     flink_jar_submit_mode: Optional[str] = None
     flink_session_profile_id: Optional[int] = None
+    jar_artifact_id: Optional[int] = None
+    jar_version_id: Optional[int] = None
 
     @field_validator("flink_sql_submit_mode")
     @classmethod
@@ -2120,11 +2161,171 @@ def _sync_operator_jobs_from_cluster(db: Session, jobs: List[StreamingJob]) -> N
         db.commit()
 
 
+def _require_stream_folder(db: Session, workspace_id: int, folder_id: Optional[int]) -> Optional[NodeFolder]:
+    if folder_id is None:
+        return None
+    fo = db.query(NodeFolder).filter(NodeFolder.id == folder_id).first()
+    if not fo or fo.workspace_id != workspace_id:
+        raise HTTPException(status_code=400, detail="目标文件夹不存在或不属于该工作空间")
+    if (getattr(fo, "scope", None) or "batch") != "stream":
+        raise HTTPException(status_code=400, detail="目标文件夹不属于实时作业目录树")
+    return fo
+
+
+def _next_stream_job_sort_order(db: Session, workspace_id: int, folder_id: Optional[int]) -> int:
+    q = db.query(func.max(StreamingJob.sort_order)).filter(StreamingJob.workspace_id == workspace_id)
+    if folder_id is None:
+        q = q.filter(StreamingJob.folder_id.is_(None))
+    else:
+        q = q.filter(StreamingJob.folder_id == folder_id)
+    mx = q.scalar()
+    return (int(mx) if mx is not None else 0) + 10
+
+
+class StreamFolderCreate(BaseModel):
+    workspace_id: int
+    name: str
+    parent_id: Optional[int] = None
+
+
+class StreamFolderRename(BaseModel):
+    name: str
+
+
+class StreamJobFolderPatch(BaseModel):
+    folder_id: Optional[int] = None
+
+
+class StreamJobReorderIn(BaseModel):
+    workspace_id: int
+    folder_id: Optional[int] = None
+    job_ids: List[int]
+
+
+@router.get("/folders")
+def list_stream_folders(workspace_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_STREAM_READ)
+    folders = (
+        db.query(NodeFolder)
+        .filter(NodeFolder.workspace_id == workspace_id, NodeFolder.scope == "stream")
+        .all()
+    )
+    return [{"id": f.id, "name": f.name, "parent_id": f.parent_id, "scope": "stream"} for f in folders]
+
+
+@router.post("/folders")
+def create_stream_folder(
+    body: StreamFolderCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    assert_workspace_data_capability(db, current_user, body.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="文件夹名称不能为空")
+    if body.parent_id is not None:
+        _require_stream_folder(db, body.workspace_id, body.parent_id)
+    folder = NodeFolder(workspace_id=body.workspace_id, name=name, parent_id=body.parent_id, scope="stream")
+    db.add(folder)
+    db.commit()
+    db.refresh(folder)
+    return {"id": folder.id, "name": folder.name, "parent_id": folder.parent_id, "scope": "stream"}
+
+
+@router.put("/folders/{folder_id}")
+def rename_stream_folder(
+    folder_id: int,
+    body: StreamFolderRename,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    folder = db.query(NodeFolder).filter(NodeFolder.id == folder_id).first()
+    if not folder or (getattr(folder, "scope", None) or "batch") != "stream":
+        raise HTTPException(status_code=404, detail="文件夹不存在")
+    assert_workspace_data_capability(db, current_user, folder.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="文件夹名称不能为空")
+    folder.name = name
+    db.commit()
+    return {"id": folder.id, "name": folder.name, "parent_id": folder.parent_id, "scope": "stream"}
+
+
+@router.delete("/folders/{folder_id}")
+def delete_stream_folder(
+    folder_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    folder = db.query(NodeFolder).filter(NodeFolder.id == folder_id).first()
+    if not folder or (getattr(folder, "scope", None) or "batch") != "stream":
+        raise HTTPException(status_code=404, detail="文件夹不存在")
+    assert_workspace_data_capability(db, current_user, folder.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
+    kids = db.query(NodeFolder).filter(NodeFolder.parent_id == folder_id).count()
+    if kids:
+        raise HTTPException(status_code=400, detail="请先删除子文件夹")
+    db.query(StreamingJob).filter(StreamingJob.folder_id == folder_id).update({"folder_id": None})
+    db.delete(folder)
+    db.commit()
+    return {"message": "删除成功"}
+
+
+@router.patch("/jobs/{job_id}/folder")
+def move_stream_job_folder(
+    job_id: int,
+    body: StreamJobFolderPatch,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_WRITE)
+    folder_id = body.folder_id
+    _require_stream_folder(db, int(job.workspace_id), folder_id)
+    job.folder_id = folder_id
+    job.sort_order = _next_stream_job_sort_order(db, int(job.workspace_id), folder_id)
+    job.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(job)
+    return _streaming_job_public_dict(db, job)
+
+
+@router.put("/jobs/reorder")
+def reorder_stream_jobs(
+    body: StreamJobReorderIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    assert_workspace_data_capability(db, current_user, body.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
+    if not body.job_ids:
+        return {"ok": True}
+    _require_stream_folder(db, body.workspace_id, body.folder_id)
+    jobs = (
+        db.query(StreamingJob)
+        .filter(StreamingJob.workspace_id == body.workspace_id, StreamingJob.id.in_(body.job_ids))
+        .all()
+    )
+    if len(jobs) != len(set(body.job_ids)):
+        raise HTTPException(status_code=400, detail="存在无效作业 ID")
+    for j in jobs:
+        jf = j.folder_id if j.folder_id is not None else None
+        if jf != body.folder_id:
+            raise HTTPException(status_code=400, detail="作业与目标目录不一致，请先移动到同一目录")
+    for i, jid in enumerate(body.job_ids):
+        job = next(j for j in jobs if j.id == jid)
+        job.sort_order = (i + 1) * 10
+    db.commit()
+    return {"ok": True}
+
+
 @router.get("/jobs")
 def list_jobs(workspace_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """列出工作空间下的实时任务"""
     assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_STREAM_READ)
-    jobs = db.query(StreamingJob).filter(StreamingJob.workspace_id == workspace_id).all()
+    jobs = (
+        db.query(StreamingJob)
+        .filter(StreamingJob.workspace_id == workspace_id)
+        .order_by(StreamingJob.sort_order.asc(), StreamingJob.id.asc())
+        .all()
+    )
     try:
         _sync_operator_jobs_from_cluster(db, jobs)
         _ensure_operator_ui_tunnels(jobs)
@@ -2175,6 +2376,9 @@ def create_job(job_in: JobCreate, db: Session = Depends(get_db), current_user: U
     data = job_in.model_dump()
     data["name"] = normalize_stream_job_name(data.get("name") or "")
     ensure_stream_job_name_available(db, int(job_in.workspace_id), data["name"])
+    folder_id = data.get("folder_id")
+    _require_stream_folder(db, int(job_in.workspace_id), folder_id)
+    data["sort_order"] = _next_stream_job_sort_order(db, int(job_in.workspace_id), folder_id)
     job = StreamingJob(**data, created_by=current_user.id, owner_id=current_user.id, is_locked=False)
     db.add(job)
     db.commit()
@@ -2295,6 +2499,18 @@ def update_job(
         return _streaming_job_public_dict(db, job)
     if set(patch.keys()) == {"script_content"} and (patch.get("script_content") or "") == (job.script_content or ""):
         return _streaming_job_public_dict(db, job)
+    if "folder_id" in patch:
+        _require_stream_folder(db, int(job.workspace_id), patch.get("folder_id"))
+    if "jar_version_id" in patch and patch.get("jar_version_id") is not None:
+        ver = db.query(StreamingJarVersion).filter(StreamingJarVersion.id == int(patch["jar_version_id"])).first()
+        if not ver or ver.status != "active":
+            raise HTTPException(status_code=400, detail="JAR 版本不存在或已废弃")
+        art = db.query(StreamingJarArtifact).filter(StreamingJarArtifact.id == ver.artifact_id).first()
+        if not art or art.workspace_id != job.workspace_id:
+            raise HTTPException(status_code=400, detail="JAR 制品不属于当前工作空间")
+        patch["jar_artifact_id"] = art.id
+        if not (patch.get("main_class") or job.main_class) and ver.default_main_class:
+            patch.setdefault("main_class", ver.default_main_class)
     for k, v in patch.items():
         setattr(job, k, v)
     job.updated_at = datetime.utcnow()
@@ -2462,15 +2678,24 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                 ),
             )
     elif job.job_type == "JAR":
-        from app.services.jar_artifact import jar_artifact_exists
+        from app.services.jar_artifact import jar_artifact_exists, library_jar_exists
 
         jar_mode = _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None))
+        lib_ver = None
+        jvid = getattr(job, "jar_version_id", None)
+        if jvid:
+            lib_ver = db.query(StreamingJarVersion).filter(StreamingJarVersion.id == int(jvid)).first()
+        has_lib = bool(
+            lib_ver
+            and lib_ver.status == "active"
+            and library_jar_exists(int(lib_ver.artifact_id), int(lib_ver.version))
+        )
         if jar_mode == "flink_operator":
-            if not jar_artifact_exists(job.id):
+            if not has_lib and not jar_artifact_exists(job.id):
                 from app.services.artifact_s3 import artifact_s3_enabled
 
                 hint = (
-                    "请重新上传 JAR。"
+                    "请在「JAR 制品」绑定版本，或重新上传 JAR。"
                     + (
                         " 已配置 S3 制品前缀时，Operator 从 s3:// 拉取；"
                         "否则经 HTTP 拉取，backend Pod 重启且未用 PVC 时会丢制品。"
@@ -2480,8 +2705,8 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                     )
                 )
                 raise HTTPException(status_code=400, detail=f"JAR 制品不存在。{hint}")
-        elif not job.jar_path and not jar_artifact_exists(job.id):
-            raise HTTPException(status_code=400, detail="请先上传 JAR 文件")
+        elif not has_lib and not job.jar_path and not jar_artifact_exists(job.id):
+            raise HTTPException(status_code=400, detail="请先在「JAR 制品」绑定版本或上传 JAR 文件")
         if jar_mode == "session":
             blocked = _jar_session_blocked_reason()
             if blocked:
@@ -2583,6 +2808,9 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                     operator_resources=op_resources,
                     extra_flink_props=flink_extra or None,
                     deployment_meta=dep_meta,
+                    jar_version_id=getattr(job, "jar_version_id", None),
+                    jar_artifact_id=(int(lib_ver.artifact_id) if lib_ver else getattr(job, "jar_artifact_id", None)),
+                    jar_version_num=(int(lib_ver.version) if lib_ver else None),
                 )
                 job.flink_operator_deployment_name = out.get("deployment_name")
                 job.flink_application_jm_rest = out.get("application_jm_rest")
@@ -2965,6 +3193,347 @@ def proxy_operator_flink_ui(
     if request.method.upper() == "HEAD":
         return Response(status_code=status_code, headers=headers)
     return Response(content=body, status_code=status_code, headers=headers)
+
+
+@router.get("/jar-versions/{version_id}/artifact.jar")
+def download_library_jar_version(
+    version_id: int,
+    token: str = Query(..., description="与 FLINK_OPERATOR_ARTIFACT_TOKEN 一致"),
+    db: Session = Depends(get_db),
+):
+    """供 Flink Operator 拉取制品库版本 JAR。"""
+    from app.services.jar_artifact import (
+        artifact_download_token_is_valid,
+        library_version_file_path,
+    )
+
+    if not artifact_download_token_is_valid(token):
+        raise HTTPException(status_code=403, detail="无效 artifact token")
+    ver = db.query(StreamingJarVersion).filter(StreamingJarVersion.id == version_id).first()
+    if not ver:
+        raise HTTPException(status_code=404, detail="JAR 版本不存在")
+    path = library_version_file_path(int(ver.artifact_id), int(ver.version))
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="JAR 文件不存在")
+    return FileResponse(path, media_type="application/java-archive", filename=ver.file_name or "artifact.jar")
+
+
+def _serialize_jar_version(db: Session, ver: StreamingJarVersion, username_by_id: Optional[dict] = None) -> dict:
+    umap = username_by_id or {}
+    uid = getattr(ver, "uploaded_by", None)
+    return {
+        "id": ver.id,
+        "artifact_id": ver.artifact_id,
+        "version": ver.version,
+        "file_name": ver.file_name,
+        "size_bytes": ver.size_bytes,
+        "sha256": ver.sha256,
+        "default_main_class": ver.default_main_class,
+        "change_note": ver.change_note,
+        "status": ver.status,
+        "uploaded_by": uid,
+        "uploaded_by_username": umap.get(uid) if uid else None,
+        "uploaded_at": ver.uploaded_at,
+    }
+
+
+def _serialize_jar_artifact(db: Session, art: StreamingJarArtifact, *, include_versions: bool = False) -> dict:
+    refs = db.query(StreamingJob).filter(StreamingJob.jar_artifact_id == art.id).count()
+    latest = (
+        db.query(StreamingJarVersion)
+        .filter(StreamingJarVersion.artifact_id == art.id)
+        .order_by(StreamingJarVersion.version.desc())
+        .first()
+    )
+    uids = [art.owner_id, art.created_by, latest.uploaded_by if latest else None]
+    umap = _username_map(db, uids)
+    out = {
+        "id": art.id,
+        "workspace_id": art.workspace_id,
+        "name": art.name,
+        "description": art.description,
+        "owner_id": art.owner_id,
+        "owner_username": umap.get(art.owner_id) if art.owner_id else None,
+        "created_by": art.created_by,
+        "created_by_username": umap.get(art.created_by) if art.created_by else None,
+        "created_at": art.created_at,
+        "updated_at": art.updated_at,
+        "ref_job_count": refs,
+        "latest_version": _serialize_jar_version(db, latest, umap) if latest else None,
+    }
+    if include_versions:
+        vers = (
+            db.query(StreamingJarVersion)
+            .filter(StreamingJarVersion.artifact_id == art.id)
+            .order_by(StreamingJarVersion.version.desc())
+            .all()
+        )
+        vuids = [v.uploaded_by for v in vers]
+        vumap = _username_map(db, vuids)
+        out["versions"] = [_serialize_jar_version(db, v, vumap) for v in vers]
+    return out
+
+
+class JarArtifactCreate(BaseModel):
+    workspace_id: int
+    name: str
+    description: Optional[str] = None
+
+
+class JarArtifactUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
+@router.get("/jar-artifacts")
+def list_jar_artifacts(workspace_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_STREAM_READ)
+    rows = (
+        db.query(StreamingJarArtifact)
+        .filter(StreamingJarArtifact.workspace_id == workspace_id)
+        .order_by(StreamingJarArtifact.updated_at.desc())
+        .all()
+    )
+    return [_serialize_jar_artifact(db, a) for a in rows]
+
+
+@router.post("/jar-artifacts")
+def create_jar_artifact(
+    body: JarArtifactCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    assert_workspace_data_capability(db, current_user, body.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="制品名称不能为空")
+    art = StreamingJarArtifact(
+        workspace_id=body.workspace_id,
+        name=name,
+        description=(body.description or "").strip() or None,
+        owner_id=current_user.id,
+        created_by=current_user.id,
+    )
+    db.add(art)
+    db.commit()
+    db.refresh(art)
+    return _serialize_jar_artifact(db, art)
+
+
+@router.get("/jar-artifacts/{artifact_id}")
+def get_jar_artifact(artifact_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    art = db.query(StreamingJarArtifact).filter(StreamingJarArtifact.id == artifact_id).first()
+    if not art:
+        raise HTTPException(status_code=404, detail="制品不存在")
+    assert_workspace_data_capability(db, current_user, art.workspace_id, "developer", PC.GIDO_STREAM_READ)
+    return _serialize_jar_artifact(db, art, include_versions=True)
+
+
+@router.put("/jar-artifacts/{artifact_id}")
+def update_jar_artifact(
+    artifact_id: int,
+    body: JarArtifactUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    art = db.query(StreamingJarArtifact).filter(StreamingJarArtifact.id == artifact_id).first()
+    if not art:
+        raise HTTPException(status_code=404, detail="制品不存在")
+    assert_workspace_data_capability(db, current_user, art.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="制品名称不能为空")
+        art.name = name
+    if body.description is not None:
+        art.description = body.description.strip() or None
+    art.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(art)
+    return _serialize_jar_artifact(db, art, include_versions=True)
+
+
+@router.delete("/jar-artifacts/{artifact_id}")
+def delete_jar_artifact(artifact_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    art = db.query(StreamingJarArtifact).filter(StreamingJarArtifact.id == artifact_id).first()
+    if not art:
+        raise HTTPException(status_code=404, detail="制品不存在")
+    assert_workspace_data_capability(db, current_user, art.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
+    refs = db.query(StreamingJob).filter(StreamingJob.jar_artifact_id == artifact_id).count()
+    if refs:
+        raise HTTPException(status_code=409, detail=f"仍有 {refs} 个作业引用该制品，请先解绑后再删除")
+    db.delete(art)
+    db.commit()
+    return {"message": "删除成功"}
+
+
+@router.post("/jar-artifacts/{artifact_id}/versions")
+async def upload_jar_artifact_version(
+    artifact_id: int,
+    file: UploadFile = File(...),
+    change_note: Optional[str] = Query(None),
+    default_main_class: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    import hashlib
+    from app.services.jar_artifact import save_library_jar_bytes
+
+    art = db.query(StreamingJarArtifact).filter(StreamingJarArtifact.id == artifact_id).first()
+    if not art:
+        raise HTTPException(status_code=404, detail="制品不存在")
+    assert_workspace_data_capability(db, current_user, art.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
+    if not file.filename or not file.filename.lower().endswith(".jar"):
+        raise HTTPException(status_code=400, detail="只支持 .jar 文件")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="空文件")
+    mx = db.query(func.max(StreamingJarVersion.version)).filter(StreamingJarVersion.artifact_id == artifact_id).scalar()
+    next_ver = (int(mx) if mx is not None else 0) + 1
+    save_library_jar_bytes(art.id, next_ver, content)
+    ver = StreamingJarVersion(
+        artifact_id=art.id,
+        version=next_ver,
+        file_name=file.filename,
+        size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        storage_key=f"library/{art.id}/v{next_ver}/artifact.jar",
+        default_main_class=(default_main_class or "").strip() or None,
+        change_note=(change_note or "").strip() or None,
+        status="active",
+        uploaded_by=current_user.id,
+    )
+    db.add(ver)
+    art.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(ver)
+    return _serialize_jar_version(db, ver, _username_map(db, [ver.uploaded_by]))
+
+
+@router.post("/jar-versions/{version_id}/deprecate")
+def deprecate_jar_version(version_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    ver = db.query(StreamingJarVersion).filter(StreamingJarVersion.id == version_id).first()
+    if not ver:
+        raise HTTPException(status_code=404, detail="版本不存在")
+    art = db.query(StreamingJarArtifact).filter(StreamingJarArtifact.id == ver.artifact_id).first()
+    if not art:
+        raise HTTPException(status_code=404, detail="制品不存在")
+    assert_workspace_data_capability(db, current_user, art.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
+    refs = db.query(StreamingJob).filter(StreamingJob.jar_version_id == version_id).count()
+    if refs:
+        raise HTTPException(status_code=409, detail=f"仍有 {refs} 个作业绑定该版本，请先改绑后再废弃")
+    ver.status = "deprecated"
+    art.updated_at = datetime.utcnow()
+    db.commit()
+    return _serialize_jar_version(db, ver, _username_map(db, [ver.uploaded_by]))
+
+
+def backfill_job_jars_into_library(db: Session) -> int:
+    """将仍只有 jar_path / 本地制品的作业幂等回填到制品库。"""
+    from app.services.jar_artifact import jar_artifact_exists, artifact_file_path, save_library_jar_bytes
+    import hashlib
+
+    n = 0
+    jobs = (
+        db.query(StreamingJob)
+        .filter(StreamingJob.job_type == "JAR", StreamingJob.jar_version_id.is_(None))
+        .all()
+    )
+    for job in jobs:
+        if not jar_artifact_exists(job.id):
+            continue
+        path = artifact_file_path(job.id)
+        if not path.is_file():
+            continue
+        content = path.read_bytes()
+        name = (job.name or f"job-{job.id}").strip()[:120] or f"job-{job.id}"
+        art = StreamingJarArtifact(
+            workspace_id=job.workspace_id,
+            name=f"{name}-migrated",
+            description=f"从作业 {job.name}(#{job.id}) 本地制品迁移",
+            owner_id=job.owner_id or job.created_by,
+            created_by=job.created_by,
+        )
+        db.add(art)
+        db.flush()
+        save_library_jar_bytes(art.id, 1, content)
+        ver = StreamingJarVersion(
+            artifact_id=art.id,
+            version=1,
+            file_name=job.jar_path or "artifact.jar",
+            size_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            storage_key=f"library/{art.id}/v1/artifact.jar",
+            default_main_class=job.main_class,
+            change_note="自动迁移自作业本地 JAR",
+            status="active",
+            uploaded_by=job.created_by,
+        )
+        db.add(ver)
+        db.flush()
+        job.jar_artifact_id = art.id
+        job.jar_version_id = ver.id
+        n += 1
+    if n:
+        db.commit()
+    return n
+
+
+@router.post("/jar-artifacts/backfill")
+def backfill_jar_artifacts(workspace_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_STREAM_WRITE)
+    # 仅回填该空间
+    from app.services.jar_artifact import jar_artifact_exists, artifact_file_path, save_library_jar_bytes
+    import hashlib
+
+    n = 0
+    jobs = (
+        db.query(StreamingJob)
+        .filter(
+            StreamingJob.workspace_id == workspace_id,
+            StreamingJob.job_type == "JAR",
+            StreamingJob.jar_version_id.is_(None),
+        )
+        .all()
+    )
+    for job in jobs:
+        if not jar_artifact_exists(job.id):
+            continue
+        path = artifact_file_path(job.id)
+        if not path.is_file():
+            continue
+        content = path.read_bytes()
+        name = (job.name or f"job-{job.id}").strip()[:120] or f"job-{job.id}"
+        art = StreamingJarArtifact(
+            workspace_id=job.workspace_id,
+            name=f"{name}-migrated",
+            description=f"从作业 {job.name}(#{job.id}) 本地制品迁移",
+            owner_id=job.owner_id or job.created_by,
+            created_by=current_user.id,
+        )
+        db.add(art)
+        db.flush()
+        save_library_jar_bytes(art.id, 1, content)
+        ver = StreamingJarVersion(
+            artifact_id=art.id,
+            version=1,
+            file_name=job.jar_path or "artifact.jar",
+            size_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            storage_key=f"library/{art.id}/v1/artifact.jar",
+            default_main_class=job.main_class,
+            change_note="自动迁移自作业本地 JAR",
+            status="active",
+            uploaded_by=current_user.id,
+        )
+        db.add(ver)
+        db.flush()
+        job.jar_artifact_id = art.id
+        job.jar_version_id = ver.id
+        n += 1
+    if n:
+        db.commit()
+    return {"migrated": n}
 
 
 @router.get("/jobs/{job_id}/artifact.jar")

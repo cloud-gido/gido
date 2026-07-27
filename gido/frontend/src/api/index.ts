@@ -335,6 +335,38 @@ export const streamingApi = {
   },
   previewSql: (data: { workspace_id: number; sql: string; limit?: number }) =>
     request.post('/streaming/preview-sql', data),
+  listFolders: (workspaceId: number) =>
+    request.get('/streaming/folders', { params: { workspace_id: workspaceId } }),
+  createFolder: (data: { workspace_id: number; name: string; parent_id?: number | null }) =>
+    request.post('/streaming/folders', data),
+  renameFolder: (id: number, name: string) => request.put(`/streaming/folders/${id}`, { name }),
+  deleteFolder: (id: number) => request.delete(`/streaming/folders/${id}`),
+  moveJobFolder: (id: number, folder_id: number | null) =>
+    request.patch(`/streaming/jobs/${id}/folder`, { folder_id }),
+  reorderJobs: (data: { workspace_id: number; folder_id: number | null; job_ids: number[] }) =>
+    request.put('/streaming/jobs/reorder', data),
+  listJarArtifacts: (workspaceId: number) =>
+    request.get('/streaming/jar-artifacts', { params: { workspace_id: workspaceId } }),
+  createJarArtifact: (data: { workspace_id: number; name: string; description?: string }) =>
+    request.post('/streaming/jar-artifacts', data),
+  getJarArtifact: (id: number) => request.get(`/streaming/jar-artifacts/${id}`),
+  updateJarArtifact: (id: number, data: { name?: string; description?: string }) =>
+    request.put(`/streaming/jar-artifacts/${id}`, data),
+  deleteJarArtifact: (id: number) => request.delete(`/streaming/jar-artifacts/${id}`),
+  uploadJarVersion: (artifactId: number, file: File, opts?: { change_note?: string; default_main_class?: string }) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request.post(`/streaming/jar-artifacts/${artifactId}/versions`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      params: {
+        change_note: opts?.change_note || undefined,
+        default_main_class: opts?.default_main_class || undefined,
+      },
+    })
+  },
+  deprecateJarVersion: (versionId: number) => request.post(`/streaming/jar-versions/${versionId}/deprecate`),
+  backfillJarArtifacts: (workspaceId: number) =>
+    request.post('/streaming/jar-artifacts/backfill', null, { params: { workspace_id: workspaceId } }),
 }
 
 // 数据服务

@@ -5,13 +5,14 @@
  * @date 2026-06-05
  */
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import type { Key } from 'react'
 import {
-  Table, Button, Space, Tag, message, Modal, Form, Input, InputNumber, Select, Upload, Card, Drawer,
+  Button, Space, Tag, message, Modal, Form, Input, InputNumber, Select, Card, Drawer,
   Divider, Typography, Alert, notification, Collapse, Popconfirm, Tooltip,
 } from 'antd'
 import {
-  PlusOutlined, PlayCircleOutlined, StopOutlined, SaveOutlined, ReloadOutlined, UploadOutlined, DeleteOutlined,
-  UnlockOutlined, HistoryOutlined, CopyOutlined, SearchOutlined, EditOutlined,
+  PlusOutlined, PlayCircleOutlined, StopOutlined, SaveOutlined, ReloadOutlined,
+  UnlockOutlined, HistoryOutlined, SearchOutlined, EditOutlined,
   MenuFoldOutlined, MenuUnfoldOutlined, AimOutlined, ExpandAltOutlined,
 } from '@ant-design/icons'
 import Editor from '@monaco-editor/react'
@@ -22,6 +23,7 @@ import PublishApprovalModal from '../components/PublishApprovalModal'
 import { approvalPendingKey } from '../approvalLabels'
 import EditorAppearanceToolbar from '../components/EditorAppearanceToolbar'
 import ResizableSidebar from '../components/ResizableSidebar'
+import WorkspaceFolderTree, { locateLeafInFolderTree } from '../components/WorkspaceFolderTree'
 import QueryResultPanel from '../components/QueryResultPanel'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
 import { normalizeQueryColumns } from '../utils/queryColumns'
@@ -199,6 +201,11 @@ export default function StreamStudioPage() {
   const canPublishDirect = isWorkspaceAdmin(user, currentWorkspace)
   const displayTz = currentWorkspace?.timezone || 'Asia/Shanghai'
   const [jobs, setJobs] = useState<any[]>([])
+  const [folders, setFolders] = useState<any[]>([])
+  const [treeExpandedKeys, setTreeExpandedKeys] = useState<Key[]>([])
+  const [folderModalOpen, setFolderModalOpen] = useState(false)
+  const [folderParentId, setFolderParentId] = useState<number | null>(null)
+  const [folderName, setFolderName] = useState('')
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<any | null>(null)
   const [scriptDraft, setScriptDraft] = useState('')
@@ -211,6 +218,8 @@ export default function StreamStudioPage() {
   const editorRef = useRef<any>(null)
   const [editorAppearance, setEditorAppearance] = useState<EditorAppearance>(() => loadEditorAppearance())
   const [jarForm, setJarForm] = useState({ main_class: '', program_args: '', parallelism: 1 })
+  const [jarArtifacts, setJarArtifacts] = useState<any[]>([])
+  const [selectedJarArtifact, setSelectedJarArtifact] = useState<any | null>(null)
   const [programArgsExpandOpen, setProgramArgsExpandOpen] = useState(false)
   const [sqlParallelism, setSqlParallelism] = useState(1)
   /** Flink SQL Gateway Open Session 合并用 JSON（对标阿里云实时计算「参数调优」的轻量版） */
@@ -299,23 +308,30 @@ export default function StreamStudioPage() {
       return
     }
     setSidebarCollapsedPersist(false)
-    window.setTimeout(() => {
-      const el = document.querySelector(
-        `.stream-job-list tr[data-stream-job-id="${selected.id}"]`,
-      ) as HTMLElement | null
-      el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
-    }, 80)
+    locateLeafInFolderTree({
+      leafId: selected.id,
+      leaves: jobs,
+      folders,
+      expandedKeys: treeExpandedKeys,
+      setExpandedKeys: setTreeExpandedKeys,
+      treeSelector: '.stream-job-tree',
+    })
   }
 
   const load = useCallback(async (showSpinner = true) => {
     if (!wsId) return
     if (showSpinner) setLoading(true)
     try {
-      const [list, pendingRes]: any = await Promise.all([
+      const [list, folderList, pendingRes]: any = await Promise.all([
         streamingApi.listJobs(wsId),
+        streamingApi.listFolders(wsId),
         approvalApi.list(wsId, { status: 'pending', page_size: 200 }),
       ])
       setJobs(list)
+      setFolders(folderList || [])
+      setTreeExpandedKeys(prev => (
+        prev.length ? prev : ['root', ...(folderList || []).map((f: any) => `folder-${f.id}`)]
+      ))
       setPendingKeys(
         new Set((pendingRes?.items || []).map((i: any) => approvalPendingKey(i.resource_type, i.resource_id, i.action))),
       )
@@ -330,6 +346,16 @@ export default function StreamStudioPage() {
   }, [wsId])
 
   useEffect(() => { load(true) }, [load])
+
+  useEffect(() => {
+    if (!wsId) {
+      setJarArtifacts([])
+      return
+    }
+    streamingApi.listJarArtifacts(wsId)
+      .then((list: any) => setJarArtifacts(list || []))
+      .catch(() => setJarArtifacts([]))
+  }, [wsId])
 
   useEffect(() => {
     streamingApi.flinkRuntime().then(setFlinkRuntime).catch(() => setFlinkRuntime(null))
@@ -500,6 +526,7 @@ export default function StreamStudioPage() {
       job_type: v.job_type,
       script_content: v.job_type === 'SQL' ? (v.script_content || '-- Flink SQL\nCREATE TABLE ...') : null,
       parallelism: v.parallelism ?? 1,
+      folder_id: null,
     })
     message.success('已创建任务')
     setCreateOpen(false)
@@ -587,8 +614,53 @@ export default function StreamStudioPage() {
         program_args: selected.program_args ?? '',
         parallelism: selected.parallelism ?? 1,
       })
+      if (selected.jar_artifact_id) {
+        streamingApi.getJarArtifact(selected.jar_artifact_id)
+          .then((detail: any) => setSelectedJarArtifact(detail))
+          .catch(() => setSelectedJarArtifact(null))
+      } else {
+        setSelectedJarArtifact(null)
+      }
     }
-  }, [selected?.id, selected?.job_type])
+  }, [selected?.id, selected?.job_type, selected?.jar_artifact_id])
+
+  const bindJarArtifact = async (artifactId?: number) => {
+    if (!selected || selected.job_type !== 'JAR') return
+    if (artifactId == null) {
+      await streamingApi.updateJob(selected.id, {
+        jar_artifact_id: null,
+        jar_version_id: null,
+      }, { createHistory: false })
+      setSelectedJarArtifact(null)
+      await load(false)
+      return
+    }
+    const detail: any = await streamingApi.getJarArtifact(artifactId)
+    const version = detail.latest_version || detail.versions?.find((v: any) => v.status === 'active')
+    const patch: Record<string, unknown> = {
+      jar_artifact_id: artifactId,
+      jar_version_id: version?.id ?? null,
+    }
+    if (!jarForm.main_class.trim() && version?.default_main_class) {
+      patch.main_class = version.default_main_class
+      setJarForm(f => ({ ...f, main_class: version.default_main_class }))
+    }
+    await streamingApi.updateJob(selected.id, patch, { createHistory: false })
+    setSelectedJarArtifact(detail)
+    await load(false)
+  }
+
+  const bindJarVersion = async (versionId?: number) => {
+    if (!selected || selected.job_type !== 'JAR' || !selectedJarArtifact) return
+    const version = selectedJarArtifact.versions?.find((v: any) => v.id === versionId)
+    const patch: Record<string, unknown> = { jar_version_id: versionId ?? null }
+    if (!jarForm.main_class.trim() && version?.default_main_class) {
+      patch.main_class = version.default_main_class
+      setJarForm(f => ({ ...f, main_class: version.default_main_class }))
+    }
+    await streamingApi.updateJob(selected.id, patch, { createHistory: false })
+    await load(false)
+  }
 
   const canPreviewSql = useMemo(
     () => /\bSELECT\b/i.test(scriptDraft || ''),
@@ -639,6 +711,9 @@ export default function StreamStudioPage() {
       message.warning('作业已锁定，请先解锁后再提交')
       return
     }
+    const raw = selected.job_type === 'JAR' ? jarStreamingPropsJson : streamingPropsJson
+    setOperatorResForm(parseOperatorResForm(raw))
+    setResourceTier(parseResourceTier(raw))
     setSubmitDrawerOpen(true)
   }
 
@@ -774,35 +849,28 @@ export default function StreamStudioPage() {
     }
   }
 
-  const columns = [
-    { title: '名称', dataIndex: 'name', key: 'name', ellipsis: true },
-    {
-      title: '提交', dataIndex: 'flink_sql_submit_mode', key: 'sm', width: 92,
-      render: (_m: string, row: any) => {
-        if (row.job_type === 'JAR' || row.job_type === 'SQL') {
-          return <Tag color="purple">Operator</Tag>
-        }
-        return <Text type="secondary">—</Text>
-      },
-    },
-    {
-      title: '类型', dataIndex: 'job_type', key: 'job_type', width: 80,
-      render: (t: string) => <Tag color={t === 'SQL' ? 'blue' : 'orange'}>{t}</Tag>,
-    },
-    {
-      title: '操作', key: 'op', width: 88,
-      render: (_: any, row: any) => (
-        <Space size={0}>
-          <Button type="link" size="small" icon={<CopyOutlined />} title="复制作业" onClick={(e) => { e.stopPropagation(); handleCopy(row) }} />
-          <Button type="link" danger size="small" icon={<DeleteOutlined />} onClick={(e) => { e.stopPropagation(); handleDelete(row) }} />
-        </Space>
-      ),
-    },
-  ]
+  const createFolder = async () => {
+    if (!wsId || !folderName.trim()) return
+    await streamingApi.createFolder({
+      workspace_id: wsId,
+      name: folderName.trim(),
+      parent_id: folderParentId,
+    })
+    setFolderModalOpen(false)
+    setFolderName('')
+    await load(false)
+  }
 
   const statusColor: Record<string, string> = {
     draft: 'default', running: 'processing', finished: 'success', failed: 'error', cancelled: 'warning',
   }
+  const selectedJarVersion = selectedJarArtifact?.versions?.find(
+    (v: any) => v.id === selected?.jar_version_id,
+  ) || (
+    selectedJarArtifact?.latest_version?.id === selected?.jar_version_id
+      ? selectedJarArtifact.latest_version
+      : null
+  )
 
   return (
     <div>
@@ -842,21 +910,49 @@ export default function StreamStudioPage() {
               <Button type="text" size="small" icon={<MenuFoldOutlined />} onClick={() => setSidebarCollapsedPersist(true)} />
             </Tooltip>
           </div>
-          <div style={{ flex: 1, minHeight: 0 }}>
-            <Table
-              size="small"
-              rowKey="id"
-              loading={loading}
-              dataSource={jobs}
-              columns={columns}
-              pagination={false}
-              scroll={{ y: 440 }}
-              tableLayout="fixed"
-              onRow={row => ({
-                onClick: () => setSelected(row),
-                'data-stream-job-id': String(row.id),
-                style: { cursor: 'pointer', background: selected?.id === row.id ? '#e6f4ff' : undefined },
-              })}
+          <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '0 8px' }}>
+            <WorkspaceFolderTree
+              rootTitle="作业列表"
+              treeClassName="stream-job-tree"
+              leaves={jobs}
+              folders={folders}
+              selectedLeafId={selected?.id}
+              expandedKeys={treeExpandedKeys}
+              onExpandedKeysChange={setTreeExpandedKeys}
+              onSelectLeaf={setSelected}
+              onCreateFolder={parentId => {
+                setFolderParentId(parentId)
+                setFolderName('')
+                setFolderModalOpen(true)
+              }}
+              onRenameFolder={async (id, name) => {
+                await streamingApi.renameFolder(id, name)
+                await load(false)
+              }}
+              onDeleteFolder={async id => {
+                await streamingApi.deleteFolder(id)
+                await load(false)
+              }}
+              onRenameLeaf={async (id, name) => {
+                if (!STREAM_JOB_NAME_PATTERN.test(name)) {
+                  message.error(STREAM_JOB_NAME_RULE)
+                  return
+                }
+                await streamingApi.updateJob(id, { name }, { createHistory: false })
+                await load(false)
+              }}
+              onDeleteLeaf={handleDelete}
+              onCopyLeaf={handleCopy}
+              onMoveAndReorder={async ({ leafId, targetFolderId, orderedLeafIds, folderChanged }) => {
+                if (!wsId) return
+                if (folderChanged) await streamingApi.moveJobFolder(leafId, targetFolderId)
+                await streamingApi.reorderJobs({
+                  workspace_id: wsId,
+                  folder_id: targetFolderId,
+                  job_ids: orderedLeafIds,
+                })
+                await load(false)
+              }}
             />
           </div>
         </div>
@@ -1115,168 +1211,57 @@ export default function StreamStudioPage() {
                   <Alert
                     type="info"
                     showIcon
-                    message="统一运行时 · Flink Operator + gido-flink-runtime"
-                    description="JAR 作业通过 FlinkDeployment Application 提交；制品由 GIDO backend 提供 HTTP 拉取。"
+                    message="从工作空间 JAR 制品库绑定版本"
+                    description="JAR 文件统一在制品库上传和审计，作业仅绑定制品及版本。"
                   />
-                  <Tag color="purple">Flink Operator</Tag>
-                  {effectiveJarMode === 'flink_operator' && (
-                    <>
-                    <Alert
-                      type="info"
-                      showIcon
-                      style={{ marginBottom: 8 }}
-                      message="Flink Operator 生产"
-                      description="生产环境请配置 GIDO_FLINK_OPERATOR_UI_URL_TEMPLATE（Ingress 域名）或 LoadBalancer；本机 Kind 开发设 GIDO_FLINK_OPERATOR_DEV_LOCAL=true 并按提示 port-forward。"
-                    />
-                    <Alert
-                      type="info"
-                      showIcon
-                      message="Operator 生产提交"
-                      description={(
-                        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                          <li>上传 JAR 写入 GIDO 制品库；未配 S3 时 Flink Pod HTTP 拉取，EKS 生产请设 <code>FLINK_OPERATOR_JAR_S3_PREFIX</code>。</li>
-                          <li>须填写 <strong>Main Class</strong>；Backend 容器需挂载 kubeconfig。</li>
-                          <li>默认 namespace：<code>flink</code>（Kind 集群 <code>kind-gido</code>），Flink 2.0.1 + Operator 1.15。</li>
-                        </ul>
-                      )}
-                    />
-                    </>
-                  )}
-                  <Upload
-                    disabled={selected.is_locked}
-                    maxCount={1}
-                    beforeUpload={async file => {
-                      if (!file.name.endsWith('.jar')) {
-                        message.error('请上传 .jar')
-                        return Upload.LIST_IGNORE
-                      }
-                      try {
-                        await streamingApi.uploadJar(selected.id, file)
-                        message.success('JAR 已上传至 Flink')
-                        await load()
-                      } catch (e: any) {
-                        message.error(e?.response?.data?.detail || '上传失败')
-                      }
-                      return false
-                    }}
-                    showUploadList={false}
-                  >
-                    <Button icon={<UploadOutlined />}>上传 JAR{effectiveJarMode === 'flink_operator' ? '（制品库）' : ' 到 Flink'}</Button>
-                  </Upload>
-                  {effectiveJarMode === 'flink_operator' && (
-                    <Collapse
-                      ghost
-                      style={{ marginBottom: 8 }}
-                      items={[
-                        {
-                          key: 'operator-res',
-                          label: 'Operator 资源配置（JM / TM / Slots，留空用平台默认）',
-                          children: (
-                            <div>
-                              <Form.Item label="规格模板" style={{ marginBottom: 12, maxWidth: 360 }}>
-                                <Select
-                                  allowClear
-                                  placeholder="平台默认"
-                                  value={resourceTier || undefined}
-                                  disabled={selected.is_locked}
-                                  onChange={v => setResourceTier(v || '')}
-                                  options={[
-                                    { value: 'small', label: '小 — 轻量作业' },
-                                    { value: 'medium', label: '中 — 默认生产' },
-                                    { value: 'large', label: '大 — 高资源' },
-                                  ]}
-                                />
-                              </Form.Item>
-                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12 }}>
-                              <Form.Item label="JM 内存" style={{ marginBottom: 0 }}>
-                                <Input placeholder="2048m" value={operatorResForm.jm_memory} disabled={selected.is_locked}
-                                  onChange={e => setOperatorResForm(f => ({ ...f, jm_memory: e.target.value }))} />
-                              </Form.Item>
-                              <Form.Item label="JM CPU" style={{ marginBottom: 0 }}>
-                                <InputNumber min={0.1} step={0.5} style={{ width: '100%' }} placeholder="1"
-                                  value={operatorResForm.jm_cpu ? Number(operatorResForm.jm_cpu) : undefined}
-                                  disabled={selected.is_locked}
-                                  onChange={v => setOperatorResForm(f => ({ ...f, jm_cpu: v != null ? String(v) : '' }))} />
-                              </Form.Item>
-                              <Form.Item label="TM 内存" style={{ marginBottom: 0 }}>
-                                <Input placeholder="4096m" value={operatorResForm.tm_memory} disabled={selected.is_locked}
-                                  onChange={e => setOperatorResForm(f => ({ ...f, tm_memory: e.target.value }))} />
-                              </Form.Item>
-                              <Form.Item label="TM CPU" style={{ marginBottom: 0 }}>
-                                <InputNumber min={0.1} step={0.5} style={{ width: '100%' }} placeholder="1"
-                                  value={operatorResForm.tm_cpu ? Number(operatorResForm.tm_cpu) : undefined}
-                                  disabled={selected.is_locked}
-                                  onChange={v => setOperatorResForm(f => ({ ...f, tm_cpu: v != null ? String(v) : '' }))} />
-                              </Form.Item>
-                              <Form.Item label="Task Slots" style={{ marginBottom: 0 }}>
-                                <InputNumber min={1} style={{ width: '100%' }} placeholder="2"
-                                  value={operatorResForm.task_slots ? Number(operatorResForm.task_slots) : undefined}
-                                  disabled={selected.is_locked}
-                                  onChange={v => setOperatorResForm(f => ({ ...f, task_slots: v != null ? String(v) : '' }))} />
-                              </Form.Item>
-                              <Form.Item label="TM 副本数" style={{ marginBottom: 0 }}>
-                                <InputNumber min={1} style={{ width: '100%' }} placeholder="自动"
-                                  value={operatorResForm.tm_replicas ? Number(operatorResForm.tm_replicas) : undefined}
-                                  disabled={selected.is_locked}
-                                  onChange={v => setOperatorResForm(f => ({ ...f, tm_replicas: v != null ? String(v) : '' }))} />
-                              </Form.Item>
-                              </div>
-                            </div>
-                          ),
-                        },
-                        {
-                          key: 'advanced',
-                          label: '高级 Flink 配置（合并进 flinkConfiguration）',
-                          children: (
-                            <Input.TextArea
-                              rows={6}
-                              value={jarStreamingPropsJson}
-                              onChange={e => setJarStreamingPropsJson(e.target.value)}
-                              disabled={selected.is_locked}
-                              style={{ fontFamily: 'monospace', fontSize: 12 }}
-                              placeholder={'{\n  "execution.checkpointing.interval": "60s"\n}'}
-                            />
-                          ),
-                        },
-                      ]}
-                    />
-                  )}
-                  <Form layout="vertical" style={{ maxWidth: 560 }}>
-                    <Form.Item label="入口类 (Main Class)">
-                      <Input
-                        value={jarForm.main_class}
-                        placeholder="com.example.StreamingJob"
+                  <Form layout="vertical" style={{ maxWidth: 680 }}>
+                    <Form.Item label="JAR 制品">
+                      <Select
+                        allowClear
+                        showSearch
+                        optionFilterProp="label"
+                        value={selected.jar_artifact_id ?? undefined}
                         disabled={selected.is_locked}
-                        onChange={e => setJarForm(f => ({ ...f, main_class: e.target.value }))}
+                        placeholder="选择制品"
+                        options={jarArtifacts.map(a => ({ value: a.id, label: a.name }))}
+                        onChange={v => void bindJarArtifact(v).catch((e: any) => {
+                          message.error(e?.response?.data?.detail || '绑定制品失败')
+                        })}
                       />
                     </Form.Item>
-                    <Form.Item label="运行参数">
-                      <Space.Compact style={{ width: '100%' }}>
-                        <Input
-                          value={jarForm.program_args}
-                          placeholder="--key value"
-                          disabled={selected.is_locked}
-                          onChange={e => setJarForm(f => ({ ...f, program_args: e.target.value }))}
-                          style={{ flex: 1 }}
-                        />
-                        <Tooltip title={selected.is_locked ? '放大查看' : '放大编辑'}>
-                          <Button
-                            icon={<ExpandAltOutlined />}
-                            aria-label="放大运行参数"
-                            onClick={() => setProgramArgsExpandOpen(true)}
-                          />
-                        </Tooltip>
-                      </Space.Compact>
-                    </Form.Item>
-                    <Form.Item label="并行度">
-                      <InputNumber
-                        min={1}
-                        value={jarForm.parallelism}
-                        disabled={selected.is_locked}
-                        onChange={v => setJarForm(f => ({ ...f, parallelism: Number(v) || 1 }))}
+                    <Form.Item label="制品版本">
+                      <Select
+                        allowClear
+                        value={selected.jar_version_id ?? undefined}
+                        disabled={selected.is_locked || !selectedJarArtifact}
+                        placeholder="选择版本"
+                        options={(selectedJarArtifact?.versions || []).map((v: any) => ({
+                          value: v.id,
+                          label: `v${v.version}${v.status === 'active' ? '' : ` · ${v.status}`}`,
+                          disabled: v.status !== 'active',
+                        }))}
+                        onChange={v => void bindJarVersion(v).catch((e: any) => {
+                          message.error(e?.response?.data?.detail || '绑定版本失败')
+                        })}
                       />
                     </Form.Item>
                   </Form>
+                  {selectedJarVersion ? (
+                    <Text type="secondary">
+                      上传人 {selectedJarVersion.uploaded_by_username || '—'} ·
+                      {' '}{selectedJarVersion.uploaded_at ? formatInTimeZone(selectedJarVersion.uploaded_at, displayTz) : '—'} ·
+                      {' '}SHA256 {selectedJarVersion.sha256 ? `${selectedJarVersion.sha256.slice(0, 16)}…` : '—'} ·
+                      {' '}{selectedJarVersion.size_bytes != null ? `${Math.round(selectedJarVersion.size_bytes / 1024)} KB` : '—'}
+                    </Text>
+                  ) : (
+                    <Text type="secondary">选择制品版本后显示上传审计信息。</Text>
+                  )}
+                  <Link to={R.stream.jars}>前往 JAR 制品库</Link>
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="运行参数与资源配置在「提交运行」抽屉中设置"
+                  />
                 </Space>
               )}
             </Card>
@@ -1353,6 +1338,27 @@ export default function StreamStudioPage() {
         </Form>
       </Modal>
 
+      <Modal
+        title="新建目录"
+        open={folderModalOpen}
+        onOk={() => void createFolder().catch((e: any) => message.error(e?.response?.data?.detail || '创建目录失败'))}
+        onCancel={() => setFolderModalOpen(false)}
+        okButtonProps={{ disabled: !folderName.trim() }}
+        destroyOnClose
+      >
+        <Form layout="vertical">
+          <Form.Item label="目录名称" required>
+            <Input
+              autoFocus
+              value={folderName}
+              onChange={e => setFolderName(e.target.value)}
+              onPressEnter={() => void createFolder()}
+              placeholder="请输入目录名称"
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
+
       <Drawer
         title={canPublishDirect ? '提交运行配置' : '提交审批配置'}
         placement="right"
@@ -1376,28 +1382,64 @@ export default function StreamStudioPage() {
           </div>
         )}
       >
-        {selected?.job_type === 'SQL' ? (
+        {selected ? (
           <Space direction="vertical" size="middle" style={{ width: '100%' }}>
             <Alert
               type="info"
               showIcon
-              message="FlinkDeployment Application + SQL Runner"
+              message={selected.job_type === 'SQL'
+                ? 'FlinkDeployment Application + SQL Runner'
+                : 'FlinkDeployment Application + JAR'}
               description={(
                 <div style={{ fontSize: 13 }}>
                   <div>Flink {flinkRuntime?.flink_version || '2.0.1'} · 命名空间 {flinkRuntime?.operator_namespace || 'flink'}</div>
-                  {flinkRuntime?.paimon_warehouse_default && (
+                  {selected.job_type === 'SQL' && flinkRuntime?.paimon_warehouse_default && (
                     <div>默认 Paimon warehouse：<code>{flinkRuntime.paimon_warehouse_default}</code></div>
                   )}
                 </div>
               )}
             />
             <Form layout="vertical">
+              {selected.job_type === 'JAR' && (
+                <>
+                  <Form.Item label="入口类 (Main Class)">
+                    <Input
+                      value={jarForm.main_class}
+                      placeholder="com.example.StreamingJob"
+                      disabled={selected.is_locked}
+                      onChange={e => setJarForm(f => ({ ...f, main_class: e.target.value }))}
+                    />
+                  </Form.Item>
+                  <Form.Item label="运行参数">
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Input
+                        value={jarForm.program_args}
+                        placeholder="--key value"
+                        disabled={selected.is_locked}
+                        onChange={e => setJarForm(f => ({ ...f, program_args: e.target.value }))}
+                        style={{ flex: 1 }}
+                      />
+                      <Tooltip title={selected.is_locked ? '放大查看' : '放大编辑'}>
+                        <Button
+                          icon={<ExpandAltOutlined />}
+                          aria-label="放大运行参数"
+                          onClick={() => setProgramArgsExpandOpen(true)}
+                        />
+                      </Tooltip>
+                    </Space.Compact>
+                  </Form.Item>
+                </>
+              )}
               <Form.Item label="并行度">
                 <InputNumber
                   min={1}
                   style={{ width: '100%' }}
-                  value={sqlParallelism}
-                  onChange={v => setSqlParallelism(Number(v) || 1)}
+                  value={selected.job_type === 'SQL' ? sqlParallelism : jarForm.parallelism}
+                  onChange={v => {
+                    const parallelism = Number(v) || 1
+                    if (selected.job_type === 'SQL') setSqlParallelism(parallelism)
+                    else setJarForm(f => ({ ...f, parallelism }))
+                  }}
                   disabled={selected.is_locked}
                 />
               </Form.Item>
@@ -1455,8 +1497,11 @@ export default function StreamStudioPage() {
                 </Paragraph>
                 <Input.TextArea
                   rows={8}
-                  value={streamingPropsJson}
-                  onChange={e => setStreamingPropsJson(e.target.value)}
+                  value={selected.job_type === 'SQL' ? streamingPropsJson : jarStreamingPropsJson}
+                  onChange={e => {
+                    if (selected.job_type === 'SQL') setStreamingPropsJson(e.target.value)
+                    else setJarStreamingPropsJson(e.target.value)
+                  }}
                   disabled={selected.is_locked}
                   style={{ fontFamily: 'monospace', fontSize: 12 }}
                   placeholder={'{\n  "execution.checkpointing.interval": "60000"\n}'}
@@ -1470,7 +1515,7 @@ export default function StreamStudioPage() {
             </div>
           </Space>
         ) : (
-          <Text type="secondary">JAR 作业暂沿用主页面配置。</Text>
+          <Text type="secondary">请先选择作业。</Text>
         )}
       </Drawer>
 

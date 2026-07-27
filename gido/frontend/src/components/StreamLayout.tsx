@@ -7,7 +7,7 @@
 import { Layout, Menu } from 'antd'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import {
-  CodeOutlined, MonitorOutlined, AuditOutlined,
+  CodeOutlined, MonitorOutlined, AuditOutlined, InboxOutlined,
 } from '@ant-design/icons'
 import ProductBrandBlock from './ProductBrandBlock'
 import WorkspaceHeaderBar from './shell/WorkspaceHeaderBar'
@@ -19,6 +19,7 @@ const { Sider, Content, Header } = Layout
 
 const MENU_ITEMS = [
   { key: R.stream.studio, icon: <CodeOutlined />, label: '作业开发' },
+  { key: R.stream.jars, icon: <InboxOutlined />, label: 'JAR 制品' },
   { key: R.stream.monitor, icon: <MonitorOutlined />, label: '作业运维' },
   { key: R.stream.approval, icon: <AuditOutlined />, label: '发布审批' },
 ]

@@ -29,6 +29,7 @@ export const R = {
   stream: {
     root: '/gido/stream',
     studio: '/gido/stream/studio',
+    jars: '/gido/stream/jars',
     monitor: '/gido/stream/monitor',
     overview: '/gido/stream/overview',
     /** @deprecated Session 模式已移除；保留路径供旧链接重定向 */

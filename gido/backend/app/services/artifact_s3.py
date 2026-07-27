@@ -119,3 +119,58 @@ def artifact_exists_in_s3(job_id: int, filename: str) -> bool:
             return False
         logger.debug("S3 head_object 失败 job=%s key=%s: %s", job_id, key, ex)
         return False
+
+
+def s3_key_for_library_version(artifact_id: int, version: int, filename: str) -> Optional[str]:
+    prefix = artifact_s3_prefix()
+    if not prefix:
+        return None
+    _, key_prefix = _parse_s3_prefix(prefix)
+    parts = [p for p in (key_prefix, "library", str(int(artifact_id)), f"v{int(version)}", filename) if p]
+    return "/".join(parts)
+
+
+def build_s3_library_version_uri(artifact_id: int, version: int, filename: str) -> Optional[str]:
+    prefix = artifact_s3_prefix()
+    if not prefix:
+        return None
+    key = s3_key_for_library_version(artifact_id, version, filename)
+    if not key:
+        return None
+    bucket, _ = _parse_s3_prefix(prefix)
+    return f"s3://{bucket}/{key}"
+
+
+def upload_artifact_bytes_at_key(
+    key: str,
+    content: bytes,
+    *,
+    content_type: Optional[str] = None,
+) -> str:
+    prefix = artifact_s3_prefix()
+    if not prefix:
+        raise RuntimeError("未配置 FLINK_OPERATOR_JAR_S3_PREFIX 或 GIDO_ARTIFACT_S3_PREFIX")
+    bucket, _ = _parse_s3_prefix(prefix)
+    extra: dict = {}
+    if content_type:
+        extra["ContentType"] = content_type
+    _s3_client().put_object(Bucket=bucket, Key=key, Body=content, **extra)
+    uri = f"s3://{bucket}/{key}"
+    logger.info("已上传制品到 S3 key=%s", key)
+    return uri
+
+
+def artifact_exists_in_s3_key(key: str) -> bool:
+    prefix = artifact_s3_prefix()
+    if not prefix:
+        return False
+    bucket, _ = _parse_s3_prefix(prefix)
+    try:
+        _s3_client().head_object(Bucket=bucket, Key=key)
+        return True
+    except Exception as ex:
+        code = getattr(ex, "response", {}).get("Error", {}).get("Code", "")
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return False
+        logger.debug("S3 head_object 失败 key=%s: %s", key, ex)
+        return False

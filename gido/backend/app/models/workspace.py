@@ -122,12 +122,14 @@ class TaskNode(Base):
 
 
 class NodeFolder(Base):
-    """节点文件夹/分组"""
+    """节点文件夹/分组（batch=数据开发树；stream=实时作业树，互不混排）"""
     __tablename__ = "dw_node_folders"
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = Column(Integer, ForeignKey("dw_workspaces.id"))
     name = Column(String(128), nullable=False)
     parent_id = Column(Integer, ForeignKey("dw_node_folders.id"), nullable=True)
+    # batch | stream；存量行迁移默认 batch
+    scope = Column(String(16), nullable=False, default="batch")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
