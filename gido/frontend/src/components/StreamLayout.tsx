@@ -4,10 +4,13 @@
  * @author felixzhu
  * @date 2026-06-05
  */
+import { useEffect, useMemo, useState } from 'react'
 import { Layout, Menu } from 'antd'
+import type { MenuProps } from 'antd'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import {
   CodeOutlined, MonitorOutlined, AuditOutlined, InboxOutlined,
+  AppstoreOutlined,
 } from '@ant-design/icons'
 import ProductBrandBlock from './ProductBrandBlock'
 import WorkspaceHeaderBar from './shell/WorkspaceHeaderBar'
@@ -17,17 +20,49 @@ import { R } from '../routes'
 
 const { Sider, Content, Header } = Layout
 
-const MENU_ITEMS = [
+const RESOURCES_GROUP_KEY = 'stream-resources'
+
+const MENU_ITEMS: MenuProps['items'] = [
   { key: R.stream.studio, icon: <CodeOutlined />, label: '作业开发' },
-  { key: R.stream.jars, icon: <InboxOutlined />, label: 'JAR 制品' },
+  {
+    key: RESOURCES_GROUP_KEY,
+    icon: <AppstoreOutlined />,
+    label: '资源管理',
+    children: [
+      { key: R.stream.resources, icon: <AppstoreOutlined />, label: '总览' },
+      { key: R.stream.resourcesJars, icon: <InboxOutlined />, label: 'JAR 包' },
+    ],
+  },
   { key: R.stream.monitor, icon: <MonitorOutlined />, label: '作业运维' },
   { key: R.stream.approval, icon: <AuditOutlined />, label: '发布审批' },
 ]
+
+function selectedStreamKey(pathname: string): string {
+  if (pathname === R.stream.overview) return R.stream.monitor
+  if (pathname === R.stream.jars || pathname.startsWith(`${R.stream.resources}/`)) {
+    if (pathname.includes('/jars')) return R.stream.resourcesJars
+    return R.stream.resources
+  }
+  if (pathname === R.stream.resources) return R.stream.resources
+  return pathname
+}
 
 export default function StreamLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const shell = useWorkspaceShell()
+  const selectedKey = selectedStreamKey(location.pathname)
+  const underResources = selectedKey === R.stream.resources || selectedKey === R.stream.resourcesJars
+
+  const [openKeys, setOpenKeys] = useState<string[]>(() => (underResources ? [RESOURCES_GROUP_KEY] : []))
+
+  useEffect(() => {
+    if (underResources) {
+      setOpenKeys(prev => (prev.includes(RESOURCES_GROUP_KEY) ? prev : [...prev, RESOURCES_GROUP_KEY]))
+    }
+  }, [underResources])
+
+  const selectedKeys = useMemo(() => [selectedKey], [selectedKey])
 
   return (
     <Layout className="dw-app-shell dw-app-shell--stream" style={{ minHeight: '100vh', background: 'var(--dw-bg)' }}>
@@ -44,9 +79,17 @@ export default function StreamLayout() {
         <Menu
           theme="dark"
           mode="inline"
-          selectedKeys={[location.pathname === R.stream.overview ? R.stream.monitor : location.pathname]}
+          selectedKeys={selectedKeys}
+          openKeys={openKeys}
+          onOpenChange={keys => setOpenKeys(keys as string[])}
           items={MENU_ITEMS}
-          onClick={({ key }) => navigate(key)}
+          onClick={({ key }) => {
+            if (key === RESOURCES_GROUP_KEY) {
+              navigate(R.stream.resources)
+              return
+            }
+            navigate(key)
+          }}
           style={{ borderInlineEnd: 'none', paddingTop: 8, paddingBottom: 16, background: 'transparent' }}
         />
       </Sider>

@@ -644,7 +644,7 @@ export default function StreamStudioPage() {
       || (detail.versions || []).find((v: any) => v.status === 'active')
       || null
     if (!version) {
-      message.warning('该制品尚无可用版本，请先在 JAR 制品库上传')
+      message.warning('该 JAR 尚无可用版本，请先在「资源管理 → JAR 包」上传')
       setSelectedJarArtifact(detail)
       return
     }
@@ -1226,25 +1226,25 @@ export default function StreamStudioPage() {
                   <Alert
                     type="info"
                     showIcon
-                    message="从工作空间 JAR 制品库绑定版本"
-                    description="JAR 文件统一在制品库上传和审计，作业仅绑定制品及版本。"
+                    message="从「资源管理 · JAR 包」绑定版本"
+                    description="JAR 统一在资源管理上传与审计；作业开发仅绑定包及版本，运行参数在提交时配置。"
                   />
                   <Form layout="vertical" style={{ maxWidth: 680 }}>
-                    <Form.Item label="JAR 制品">
+                    <Form.Item label="JAR 包">
                       <Select
                         allowClear
                         showSearch
                         optionFilterProp="label"
                         value={selected.jar_artifact_id ?? undefined}
                         disabled={selected.is_locked}
-                        placeholder="选择制品"
+                        placeholder="选择 JAR 包"
                         options={jarArtifacts.map(a => ({ value: a.id, label: a.name }))}
                         onChange={v => void bindJarArtifact(v).catch((e: any) => {
-                          message.error(e?.response?.data?.detail || '绑定制品失败')
+                          message.error(e?.response?.data?.detail || '绑定失败')
                         })}
                       />
                     </Form.Item>
-                    <Form.Item label="制品版本">
+                    <Form.Item label="版本">
                       <Select
                         allowClear
                         value={selected.jar_version_id ?? undefined}
@@ -1269,9 +1269,9 @@ export default function StreamStudioPage() {
                       {' '}{selectedJarVersion.size_bytes != null ? `${Math.round(selectedJarVersion.size_bytes / 1024)} KB` : '—'}
                     </Text>
                   ) : (
-                    <Text type="secondary">选择制品版本后显示上传审计信息。</Text>
+                    <Text type="secondary">选择版本后显示上传审计信息。</Text>
                   )}
-                  <Link to={R.stream.jars}>前往 JAR 制品库</Link>
+                  <Link to={R.stream.resourcesJars}>前往资源管理 · JAR 包</Link>
                   <Alert
                     type="info"
                     showIcon

@@ -2695,7 +2695,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                 from app.services.artifact_s3 import artifact_s3_enabled
 
                 hint = (
-                    "请在「JAR 制品」绑定版本，或重新上传 JAR。"
+                    "请在「资源管理 → JAR 包」绑定版本，或重新上传 JAR。"
                     + (
                         " 已配置 S3 制品前缀时，Operator 从 s3:// 拉取；"
                         "否则经 HTTP 拉取，backend Pod 重启且未用 PVC 时会丢制品。"
@@ -2706,7 +2706,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                 )
                 raise HTTPException(status_code=400, detail=f"JAR 制品不存在。{hint}")
         elif not has_lib and not job.jar_path and not jar_artifact_exists(job.id):
-            raise HTTPException(status_code=400, detail="请先在「JAR 制品」绑定版本或上传 JAR 文件")
+            raise HTTPException(status_code=400, detail="请先在「资源管理 → JAR 包」绑定版本或上传 JAR 文件")
         if jar_mode == "session":
             blocked = _jar_session_blocked_reason()
             if blocked:

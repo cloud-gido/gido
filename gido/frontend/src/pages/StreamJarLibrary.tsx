@@ -53,7 +53,7 @@ export default function StreamJarLibraryPage() {
       name: v.name,
       description: v.description,
     })
-    message.success('已创建制品')
+    message.success('已创建')
     setCreateOpen(false)
     createForm.resetFields()
     await load()
@@ -61,7 +61,7 @@ export default function StreamJarLibraryPage() {
 
   const handleDelete = (row: any) => {
     Modal.confirm({
-      title: `删除制品「${row.name}」？`,
+      title: `删除「${row.name}」？`,
       content: row.ref_job_count ? `仍有 ${row.ref_job_count} 个作业引用，无法删除` : '将删除全部版本文件元数据',
       okButtonProps: { danger: true, disabled: Boolean(row.ref_job_count) },
       onOk: async () => {
@@ -123,12 +123,12 @@ export default function StreamJarLibraryPage() {
 
   return (
     <div>
-      <Typography.Title level={4} style={{ marginBottom: 4 }}>JAR 制品</Typography.Title>
+      <Typography.Title level={4} style={{ marginBottom: 4 }}>JAR 包</Typography.Title>
       <Paragraph type="secondary" style={{ marginBottom: 12, maxWidth: 900 }}>
-        工作空间级 JAR 制品库：上传与版本审计（上传人、时间、SHA256）。作业开发中绑定版本后提交运行；勿再把二进制散落在单个作业页。
+        资源管理 · JAR：上传与版本审计（上传人、时间、SHA256）。在「作业开发」中绑定版本后提交运行；二进制统一在此管理。
       </Paragraph>
       <Space style={{ marginBottom: 16 }}>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建制品</Button>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建 JAR</Button>
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
         <Button onClick={() => void handleBackfill()}>迁移作业本地 JAR</Button>
       </Space>
@@ -136,7 +136,7 @@ export default function StreamJarLibraryPage() {
         <Table rowKey="id" loading={loading} dataSource={items} columns={columns} pagination={false} />
       </Card>
 
-      <Modal title="新建 JAR 制品" open={createOpen} onOk={() => void handleCreate()} onCancel={() => setCreateOpen(false)} destroyOnClose>
+      <Modal title="新建 JAR 包" open={createOpen} onOk={() => void handleCreate()} onCancel={() => setCreateOpen(false)} destroyOnClose>
         <Form form={createForm} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
             <Input placeholder="例如 football-risk-engine" />
@@ -148,7 +148,7 @@ export default function StreamJarLibraryPage() {
       </Modal>
 
       <Drawer
-        title={detail ? `制品 · ${detail.name}` : '制品详情'}
+        title={detail ? `JAR · ${detail.name}` : 'JAR 详情'}
         width={640}
         open={detailOpen}
         onClose={() => setDetailOpen(false)}
