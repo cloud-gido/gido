@@ -125,7 +125,7 @@ export default function StreamJarLibraryPage() {
     <div>
       <Typography.Title level={4} style={{ marginBottom: 4 }}>JAR 包</Typography.Title>
       <Paragraph type="secondary" style={{ marginBottom: 12, maxWidth: 900 }}>
-        资源管理 · JAR：上传与版本审计（上传人、时间、SHA256）。在「作业开发」中绑定版本后提交运行；二进制统一在此管理。
+        资源管理 · JAR：上传与版本审计。在「作业开发」中绑定版本后部署上线；启停与运行态在「作业运维」。
       </Paragraph>
       <Space style={{ marginBottom: 16 }}>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建 JAR</Button>

@@ -327,6 +327,9 @@ export const streamingApi = {
     ),
   cancelJob: (id: number) => request.post(`/streaming/jobs/${id}/cancel`),
   getStatus: (id: number) => request.get(`/streaming/jobs/${id}/status`),
+  /** 工作空间批量状态同步（替代 N 路 getStatus） */
+  syncJobsStatus: (workspaceId: number) =>
+    request.get('/streaming/jobs-status-sync', { params: { workspace_id: workspaceId } }),
   getExceptions: (id: number) => request.get(`/streaming/jobs/${id}/exceptions`),
   uploadJar: (id: number, file: File) => {
     const form = new FormData()

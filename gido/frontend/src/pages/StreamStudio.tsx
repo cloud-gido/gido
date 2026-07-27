@@ -8,10 +8,10 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import type { Key } from 'react'
 import {
   Button, Space, Tag, message, Modal, Form, Input, InputNumber, Select, Card, Drawer,
-  Divider, Typography, Alert, notification, Collapse, Popconfirm, Tooltip,
+  Divider, Typography, Alert, notification, Collapse, Tooltip,
 } from 'antd'
 import {
-  PlusOutlined, PlayCircleOutlined, StopOutlined, SaveOutlined, ReloadOutlined,
+  PlusOutlined, CloudUploadOutlined, SaveOutlined, ReloadOutlined,
   UnlockOutlined, HistoryOutlined, SearchOutlined, EditOutlined,
   MenuFoldOutlined, MenuUnfoldOutlined, AimOutlined, ExpandAltOutlined,
 } from '@ant-design/icons'
@@ -28,7 +28,7 @@ import QueryResultPanel from '../components/QueryResultPanel'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
 import { normalizeQueryColumns } from '../utils/queryColumns'
 import { R } from '../routes'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   registerDwMonacoThemes,
   loadEditorAppearance,
@@ -196,6 +196,7 @@ SELECT order_id, user_id, amount, updated_at FROM default_catalog.default_databa
 }
 
 export default function StreamStudioPage() {
+  const navigate = useNavigate()
   const { currentWorkspace, user } = useAppStore()
   const wsId = currentWorkspace?.id
   const canPublishDirect = isWorkspaceAdmin(user, currentWorkspace)
@@ -363,35 +364,6 @@ export default function StreamStudioPage() {
 
   const effectiveSqlMode: SqlSubmitMode = 'flink_operator'
   const effectiveJarMode = 'flink_operator' as const
-
-  /** Flink 控制台停止后 JM 已无作业时，单靠列表会卡在 running — 周期性拉 JM 回填平台状态（不打断编辑） */
-  useEffect(() => {
-    let alive = true
-    const tick = async () => {
-      if (!wsId || !alive) return
-      try {
-        const list = (await streamingApi.listJobs(wsId)) as unknown as any[]
-        const tracked = list.filter(
-          (j: any) =>
-            j.flink_job_id
-            || j.flink_application_cluster_id
-            || ((j.flink_sql_submit_mode || j.flink_jar_submit_mode) === 'flink_operator'
-              && j.flink_operator_deployment_name
-              && j.status !== 'draft'),
-        )
-        if (tracked.length === 0) return
-        await Promise.all(tracked.map((j: any) => streamingApi.getStatus(j.id).catch(() => null)))
-        if (!alive) return
-        await load(false)
-      } catch { /* ignore */ }
-    }
-    const iv = window.setInterval(tick, 6500)
-    tick()
-    return () => {
-      alive = false
-      window.clearInterval(iv)
-    }
-  }, [wsId, load])
 
   const selectedIdRef = useRef<number | null>(null)
   selectedIdRef.current = selected?.id ?? null
@@ -751,28 +723,49 @@ export default function StreamStudioPage() {
       if (res?.submit_warning) {
         message.warning(String(res.submit_warning), 10)
       }
-      const desc = res?.flink_console_url
-        ? (
-            <span>
+      const desc = (
+        <div>
+          <div>部署已提交到 Flink Operator。运行态、启停与诊断请到作业运维查看（对标实时计算：开发部署 / 运维启停）。</div>
+          {res?.flink_console_url && (
+            <div style={{ marginTop: 6 }}>
               <a href={res.flink_console_url} target="_blank" rel="noreferrer">打开 Flink Web UI</a>
-              <div style={{ marginTop: 6, fontSize: 12, wordBreak: 'break-all' }}>{res.flink_console_url}</div>
-              {' · '}失败排查见 <a href={R.stream.monitor}>作业运维</a>
-            </span>
-          )
-        : '未返回控制台链接，请检查后端 FLINK_UI_URL / FLINK_URL。失败原因将写入作业运维中的「启动失败」记录。'
-      notification.success({ message: '已提交到 Flink', description: desc, duration: 10 })
+            </div>
+          )}
+        </div>
+      )
+      notification.success({
+        message: '部署上线已提交',
+        description: desc,
+        duration: 12,
+        btn: (
+          <Button type="primary" size="small" onClick={() => {
+            notification.destroy()
+            navigate(R.stream.monitor)
+          }}>
+            前往作业运维
+          </Button>
+        ),
+      })
     } catch (e: any) {
-      const d = e?.response?.data?.detail || '提交失败'
-      message.error(typeof d === 'string' ? d : '提交失败')
+      const d = e?.response?.data?.detail || '部署失败'
+      message.error(typeof d === 'string' ? d : '部署失败')
       await load()
       notification.warning({
-        message: '提交失败',
+        message: '部署失败',
         description: (
           <span>
-            详细错误已落库，请在 <a href={R.stream.monitor}>作业运维</a> 中打开「诊断」查看启动阶段日志。
+            详细错误已落库，请在 <Link to={R.stream.monitor}>作业运维</Link> 中打开「诊断」查看启动阶段日志。
           </span>
         ),
         duration: 8,
+        btn: (
+          <Button type="primary" size="small" onClick={() => {
+            notification.destroy()
+            navigate(R.stream.monitor)
+          }}>
+            前往作业运维
+          </Button>
+        ),
       })
     } finally {
       setSubmitting(false)
@@ -801,17 +794,6 @@ export default function StreamStudioPage() {
   const isJobPendingApproval = selected
     ? pendingKeys.has(approvalPendingKey('stream_job', selected.id, 'submit_job'))
     : false
-
-  const handleCancelJob = async () => {
-    if (!selected) return
-    try {
-      const res: any = await streamingApi.cancelJob(selected.id)
-      message.success(res?.message || '已停止')
-      await load()
-    } catch (e: any) {
-      message.error(e?.response?.data?.detail || '停止失败')
-    }
-  }
 
   const openHistory = async () => {
     if (!selected) return
@@ -891,8 +873,11 @@ export default function StreamStudioPage() {
     <div>
       <Typography.Title level={4} style={{ marginBottom: 4 }}>作业开发</Typography.Title>
       <Paragraph type="secondary" style={{ marginBottom: 12, maxWidth: 900 }}>
-        在此维护<strong>草稿与逻辑</strong>：编辑 SQL / JAR、保存、单作业提交试跑；<strong>版本历史</strong>自动记录保存/提交前的上一版逻辑，可回滚。运行列表、Flink 控制台链接、<strong>提交失败与运行时异常</strong>请使用
-        {' '}<Link to={R.stream.monitor}>作业运维</Link>（对标阿里云实时计算等产品中「开发与运维」拆分）。
+        对标实时计算「数据开发」：编写 SQL / JAR、绑定
+        {' '}<Link to={R.stream.resources}>资源</Link>、保存版本与部署上线。
+        本页只读库加载目录树（与批处理数据开发一致），不轮询集群运行态。
+        启停、状态、诊断与 Flink UI 请到
+        {' '}<Link to={R.stream.monitor}>作业运维</Link>。
       </Paragraph>
 
       <Space style={{ marginBottom: 16 }}>
@@ -993,7 +978,9 @@ export default function StreamStudioPage() {
                   </Button>
                   <Tag>{selected.job_type}</Tag>
                   {selected.status && (
-                    <Tag color={statusColor[selected.status] || 'default'}>{selected.status}</Tag>
+                    <Tooltip title="库内记录，非实时。运行态请到作业运维查看与同步。">
+                      <Tag color={statusColor[selected.status] || 'default'}>{selected.status}</Tag>
+                    </Tooltip>
                   )}
                   {selected.owner_username && (
                     <Tag>负责人 {selected.owner_username}</Tag>
@@ -1026,27 +1013,16 @@ export default function StreamStudioPage() {
                   />
                   <Button
                     type="primary"
-                    icon={<PlayCircleOutlined />}
+                    icon={<CloudUploadOutlined />}
                     loading={submitting}
                     onClick={openSubmitDrawer}
                     disabled={selected.is_locked || isJobPendingApproval}
                   >
-                    {isJobPendingApproval ? '审批中' : canPublishDirect ? '提交运行' : '提交审批'}
+                    {isJobPendingApproval ? '审批中' : canPublishDirect ? '部署上线' : '提交审批'}
                   </Button>
-                  <Popconfirm title="停止该作业？Operator 模式将暂停 FlinkDeployment" onConfirm={handleCancelJob}>
-                    <Button danger icon={<StopOutlined />}>停止</Button>
-                  </Popconfirm>
-                  <Button icon={<ReloadOutlined />} onClick={async () => {
-                    try {
-                      const s: any = await streamingApi.getStatus(selected.id)
-                      const note = s?.note ? ` · ${s.note}` : ''
-                      const op = s?.flink_operational?.readiness ? ` · 就绪度 ${s.flink_operational.readiness}` : ''
-                      message.info(`状态: ${s.status} / Flink: ${s.flink_status ?? '-'}${op}${note}`)
-                      await load()
-                    } catch {
-                      message.error('同步状态失败')
-                    }
-                  }}>同步状态</Button>
+                  <Tooltip title="启停与运行态在作业运维（对标实时计算运维管理）">
+                    <Button onClick={() => navigate(R.stream.monitor)}>作业运维</Button>
+                  </Tooltip>
                   <Button icon={<HistoryOutlined />} onClick={openHistory}>版本历史</Button>
                 </Space>
               }
@@ -1275,7 +1251,7 @@ export default function StreamStudioPage() {
                   <Alert
                     type="info"
                     showIcon
-                    message="运行参数与资源配置在「提交运行」抽屉中设置"
+                    message="运行参数与资源配置在「部署上线」抽屉中设置"
                   />
                 </Space>
               )}
@@ -1375,7 +1351,7 @@ export default function StreamStudioPage() {
       </Modal>
 
       <Drawer
-        title={canPublishDirect ? '提交运行配置' : '提交审批配置'}
+        title={canPublishDirect ? '部署上线配置' : '提交审批配置'}
         placement="right"
         width={520}
         open={submitDrawerOpen}
@@ -1387,12 +1363,12 @@ export default function StreamStudioPage() {
             <Button onClick={() => setSubmitDrawerOpen(false)}>取消</Button>
             <Button
               type="primary"
-              icon={<PlayCircleOutlined />}
+              icon={<CloudUploadOutlined />}
               loading={submitting}
               disabled={Boolean(selected?.is_locked) || isJobPendingApproval}
               onClick={handleSubmit}
             >
-              {isJobPendingApproval ? '审批中' : canPublishDirect ? '确认提交运行' : '提交审批'}
+              {isJobPendingApproval ? '审批中' : canPublishDirect ? '确认部署上线' : '提交审批'}
             </Button>
           </div>
         )}
@@ -1537,7 +1513,7 @@ export default function StreamStudioPage() {
       <Modal title="版本历史" open={historyModal} onCancel={() => setHistoryModal(false)} footer={null} width={780} destroyOnClose>
         {historyList.length === 0 && (
           <div style={{ color: '#bbb', textAlign: 'center', padding: 24 }}>
-            暂无版本快照。保存时对 SQL / JAR 参数 / 并行度的修改、以及提交运行（SQL 正文变更或 JAR 提交）前，会自动保留上一版内容。
+            暂无版本快照。保存时对 SQL / JAR 参数 / 并行度的修改、以及部署上线（SQL 正文变更或 JAR 提交）前，会自动保留上一版内容。
           </div>
         )}
         {historyList.map((h: any) => (
@@ -1573,7 +1549,7 @@ export default function StreamStudioPage() {
       <PublishApprovalModal
         open={approvalOpen}
         title={`提交发布审批 — ${selected?.name || ''}`}
-        hint="普通开发不能直接提交到 Flink 生产集群。审批通过后将使用当前已保存的作业定义提交运行。"
+        hint="普通开发不能直接部署到 Flink 生产集群。审批通过后将使用当前已保存的作业定义部署上线。"
         note={approvalNote}
         onNoteChange={setApprovalNote}
         onCancel={() => { setApprovalOpen(false); setApprovalNote('') }}

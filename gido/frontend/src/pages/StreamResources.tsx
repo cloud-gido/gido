@@ -2,7 +2,7 @@
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Stream 资源管理总览：开发侧依赖统一入口（对标实时计算「资源管理」）。
+ * Stream 资源管理总览：对标实时计算「资源管理」——JAR / 连接器 / 依赖文件统一入口。
  */
 import type { ReactNode } from 'react'
 import { Card, Col, Row, Tag, Typography, Button } from 'antd'
@@ -27,7 +27,7 @@ const CARDS: ResourceCard[] = [
   {
     key: 'jar',
     title: 'JAR 包',
-    desc: '上传、版本审计与作业绑定。Flink Operator 提交时按选定版本拉取二进制。',
+    desc: '上传与版本审计后供 JAR 作业绑定；部署上线时按选定版本拉取二进制（对标实时计算资源文件）。',
     icon: <InboxOutlined style={{ fontSize: 22 }} />,
     status: 'ready',
     path: R.stream.resourcesJars,
@@ -35,14 +35,14 @@ const CARDS: ResourceCard[] = [
   {
     key: 'connector',
     title: '连接器',
-    desc: '自定义 / 三方 Flink 连接器包统一纳管，供 SQL 作业引用（规划中）。',
+    desc: '自定义 / 三方 Flink 连接器包纳管，供 SQL 作业引用（规划中，对标实时计算连接器管理）。',
     icon: <ApiOutlined style={{ fontSize: 22 }} />,
     status: 'planned',
   },
   {
     key: 'files',
     title: '依赖文件',
-    desc: '配置文件、UDF、模型等非 JAR 依赖的版本化托管（规划中）。',
+    desc: '配置、UDF、模型等非 JAR 依赖的版本化托管（规划中）。',
     icon: <FileZipOutlined style={{ fontSize: 22 }} />,
     status: 'planned',
   },
@@ -55,8 +55,8 @@ export default function StreamResourcesPage() {
     <div>
       <Title level={4} style={{ marginBottom: 4 }}>资源管理</Title>
       <Paragraph type="secondary" style={{ marginBottom: 20, maxWidth: 880 }}>
-        管理实时作业依赖的开发资源：与「作业开发」解耦、与「作业运维」区分。
-        开发在此上传并审计版本，作业仅绑定引用；运维关注运行态，不在此改二进制。
+        对标实时计算「资源管理」：统一托管作业依赖（JAR、连接器、依赖文件）。
+        在此上传并审计版本；「作业开发」仅绑定引用，「作业运维」关注运行态，不在此改二进制。
       </Paragraph>
 
       <Row gutter={[16, 16]}>

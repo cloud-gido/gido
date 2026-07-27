@@ -114,11 +114,12 @@ function isOperatorJob(j: any) {
   return false
 }
 
-/** Session：有 jobId 才轮询 JM。Operator：有 deployment 即轮询（含 cancelled→SUSPENDED）。 */
+/** Session：有 jobId 且非终态才轮询 JM。Operator：有 deployment 且非终态才轮询。 */
 function jobNeedsFlinkStatusPoll(j: any) {
+  const st = (j.status || '').toString().toLowerCase()
+  if (st === 'cancelled' || st === 'finished' || st === 'failed') return false
   if (j.flink_job_id) return true
   if (isOperatorJob(j) && j.flink_operator_deployment_name) return true
-  if ((j.status || '').toString().toLowerCase() === 'cancelled') return false
   const mode = (j.flink_sql_submit_mode || 'session').toString().toLowerCase()
   if (mode === 'kubernetes_application') return Boolean(j.flink_application_cluster_id)
   return false
@@ -177,20 +178,19 @@ export default function StreamMonitorPage() {
 
   const syncAll = useCallback(async () => {
     if (!wsId || jobs.length === 0) return
-    const next: Record<number, { flink_status?: string; status?: string }> = {}
-    for (const j of jobs) {
-      if (!jobNeedsFlinkStatusPoll(j)) continue
-      try {
-        const s: any = await streamingApi.getStatus(j.id)
-        next[j.id] = { flink_status: s.flink_status, status: s.status }
-      } catch {
-        next[j.id] = { flink_status: 'UNKNOWN' }
+    try {
+      const res: any = await streamingApi.syncJobsStatus(wsId)
+      const next: Record<number, { flink_status?: string; status?: string }> = {}
+      for (const s of res?.items || []) {
+        next[s.id] = { flink_status: s.flink_status, status: s.status }
       }
+      setFlinkMap(prev => ({ ...prev, ...next }))
+      message.success(`已同步 ${res?.synced ?? 0} 个活跃作业`)
+      await loadJobs()
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || e.message || '同步失败')
     }
-    setFlinkMap(prev => ({ ...prev, ...next }))
-    message.success('已同步 Flink 状态')
-    await loadJobs()
-  }, [wsId, jobs, loadJobs])
+  }, [wsId, jobs.length, loadJobs])
 
   useEffect(() => { loadJobs() }, [loadJobs])
 
@@ -232,30 +232,31 @@ export default function StreamMonitorPage() {
     const poll = async () => {
       if (!wsId || !alive) return
       const list = jobsRef.current
-      const withFlink = list.filter(jobNeedsFlinkStatusPoll)
-      if (withFlink.length === 0) return
-      const nextMap: Record<number, { flink_status?: string; status?: string }> = {}
-      await Promise.all(
-        withFlink.map(async j => {
-          try {
-            const s: any = await streamingApi.getStatus(j.id)
-            nextMap[j.id] = { flink_status: s.flink_status, status: s.status }
-          } catch {
-            nextMap[j.id] = { flink_status: 'UNKNOWN' }
-          }
-        }),
-      )
-      if (!alive) return
-      setFlinkMap(prev => ({ ...prev, ...nextMap }))
-      await loadJobs(false)
+      if (!list.some(jobNeedsFlinkStatusPoll)) return
+      try {
+        const res: any = await streamingApi.syncJobsStatus(wsId)
+        if (!alive) return
+        const nextMap: Record<number, { flink_status?: string; status?: string }> = {}
+        for (const s of res?.items || []) {
+          nextMap[s.id] = { flink_status: s.flink_status, status: s.status }
+        }
+        setFlinkMap(prev => ({ ...prev, ...nextMap }))
+        // 有状态变化时轻量刷新列表；避免每轮再打一遍 listJobs 加重负载
+        if ((res?.synced || 0) > 0) {
+          setJobs(prev => prev.map(j => {
+            const u = nextMap[j.id]
+            return u?.status != null ? { ...j, status: u.status } : j
+          }))
+        }
+      } catch { /* ignore */ }
     }
     poll()
-    const t = window.setInterval(poll, 6500)
+    const t = window.setInterval(poll, 8000)
     return () => {
       alive = false
       window.clearInterval(t)
     }
-  }, [wsId, loadJobs])
+  }, [wsId])
 
   const unifiedJobState = (row: any) => {
     const platform = String(flinkMap[row.id]?.status || row.status || '').toLowerCase()
@@ -538,8 +539,12 @@ export default function StreamMonitorPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
         <div>
           <Typography.Title level={4} style={{ marginBottom: 4 }}>作业运维</Typography.Title>
-          <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            统一查看作业状态、FlinkDeployment、诊断与 K8s Flink UI。逻辑编辑请前往 <Link to={R.stream.studio}>作业开发</Link>。
+          <Paragraph type="secondary" style={{ marginBottom: 0, maxWidth: 920 }}>
+            对标实时计算「运维管理」：查看作业与 FlinkDeployment 运行态、停止、诊断与 Flink UI。
+            本页周期性同步集群状态；逻辑编辑与部署上线请到
+            {' '}<Link to={R.stream.studio}>作业开发</Link>
+            ，依赖包请到
+            {' '}<Link to={R.stream.resources}>资源管理</Link>。
           </Paragraph>
         </div>
       </div>

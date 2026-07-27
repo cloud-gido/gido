@@ -435,6 +435,7 @@ def read_flink_deployment(deployment_name: str, namespace: Optional[str] = None)
         namespace=ns,
         plural=FLINK_DEPLOYMENT_PLURAL,
         name=deployment_name,
+        _request_timeout=5,
     )
 
 
@@ -446,7 +447,7 @@ def list_flink_deployments(
     """列出命名空间内 FlinkDeployment CR；可选按 gido.io/workspace-id 标签过滤。"""
     api = _custom_objects_api()
     ns = namespace or _operator_namespace()
-    kwargs: Dict[str, Any] = {}
+    kwargs: Dict[str, Any] = {"_request_timeout": 8}
     if workspace_id is not None:
         kwargs["label_selector"] = f"gido.io/workspace-id={int(workspace_id)}"
     resp = api.list_namespaced_custom_object(
@@ -1143,24 +1144,30 @@ def sync_job_from_flink_deployment(
     *,
     deployment_name: Optional[str] = None,
     namespace: Optional[str] = None,
+    cr: Optional[Dict[str, Any]] = None,
+    resolve_jm: bool = True,
+    jm_deadline_seconds: float = 2.0,
 ) -> Optional[Dict[str, Any]]:
     """
     从已存在的 FlinkDeployment CR 回填 jobId / 运行状态（提交 HTTP 500 但 CR 已创建时的补偿）。
     返回建议写入 DB 的字段；CR 不存在或不可读时返回 None。
+
+    resolve_jm=False：仅根据 CR 回填状态（列表/批量轮询用），避免每作业解析 JM 阻塞数秒。
     """
     dep = (deployment_name or "").strip()
     if not dep:
         dep = deployment_name_for_job(job_id)
     ns = namespace or _operator_namespace()
-    try:
-        cr = read_flink_deployment(dep, ns)
-    except Exception as ex:
-        from kubernetes.client import ApiException  # type: ignore
+    if cr is None:
+        try:
+            cr = read_flink_deployment(dep, ns)
+        except Exception as ex:
+            from kubernetes.client import ApiException  # type: ignore
 
-        if isinstance(ex, ApiException) and getattr(ex, "status", None) == 404:
+            if isinstance(ex, ApiException) and getattr(ex, "status", None) == 404:
+                return None
+            logger.debug("sync_job_from_flink_deployment(%s): %s", dep, ex)
             return None
-        logger.debug("sync_job_from_flink_deployment(%s): %s", dep, ex)
-        return None
     jid, lifecycle, err = extract_status_from_cr(cr)
     spec_state = (cr.get("spec", {}).get("job", {}).get("state") or "").strip().lower()
     patch: Dict[str, Any] = {"flink_operator_deployment_name": dep}
@@ -1179,7 +1186,8 @@ def sync_job_from_flink_deployment(
             patch["last_submit_error"] = err
     elif jid:
         patch["status"] = "running"
-    jm = resolve_operator_jm_rest(dep, ns, job_id=job_id, deadline_seconds=8.0)
-    if jm:
-        patch["flink_application_jm_rest"] = jm
+    if resolve_jm:
+        jm = resolve_operator_jm_rest(dep, ns, job_id=job_id, deadline_seconds=jm_deadline_seconds)
+        if jm:
+            patch["flink_application_jm_rest"] = jm
     return patch if len(patch) > 1 else None

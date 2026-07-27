@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  * @author felixzhu
  * @date 2026-06-05
+ * Stream 侧栏：对标实时计算开发控制台 — 作业开发 / 资源管理 / 作业运维 / 发布审批。
  */
 import { useEffect, useMemo, useState } from 'react'
 import { Layout, Menu } from 'antd'

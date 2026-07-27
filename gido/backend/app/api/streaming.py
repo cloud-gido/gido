@@ -14,7 +14,7 @@ from app.core import perm_codes as PC
 from sqlalchemy.orm import Session
 from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, JSON, BigInteger, func
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List, Tuple, Set
+from typing import Optional, List, Tuple, Set, Dict, Any
 from datetime import datetime
 from app.core.database import get_db, Base
 from app.core.security import get_current_user
@@ -851,14 +851,16 @@ class FlinkClient:
     def list_jobs(self) -> list:
         return self._get("/jobs/overview").get("jobs", [])
 
-    def fetch_job_document(self, job_id: str, jm_base: Optional[str] = None) -> Optional[dict]:
+    def fetch_job_document(
+        self, job_id: str, jm_base: Optional[str] = None, *, timeout: float = 10
+    ) -> Optional[dict]:
         """GET /jobs/{id}；若在 JobManager 上已不存在返回 None（通常为 404，作业已结束或被撤销并清理记录）。"""
         base = (jm_base or self.jm_base or "").strip().rstrip("/")
         if not base:
             raise RuntimeError("未配置 JobManager REST（FLINK_URL）")
         path = f"/jobs/{job_id}"
         try:
-            r = _FLINK_HTTP_GET.get(f"{base}{path}", timeout=10)
+            r = _FLINK_HTTP_GET.get(f"{base}{path}", timeout=timeout)
         except requests.exceptions.RequestException as e:
             raise RuntimeError(_explain_flink_jm_connect_error(base, path, e)) from e
         if r.status_code == 404:
@@ -2087,9 +2089,16 @@ def _build_operator_deployment_meta(
     )
 
 
-def _jm_base_for_job(job: StreamingJob) -> Optional[str]:
+def _jm_base_for_job(
+    job: StreamingJob,
+    *,
+    deadline_seconds: float = 3.0,
+    prefer_stored: bool = False,
+) -> Optional[str]:
     """Flink JM REST 基址；Operator 本机开发时运行时解析隧道/NodePort，不用 DB 内集群 DNS。"""
     stored = (getattr(job, "flink_application_jm_rest", None) or "").strip() or None
+    if prefer_stored and stored:
+        return stored
     dep = _operator_deployment_name_for_job(job)
     if dep:
         from app.services.flink_operator_submit import _operator_namespace, effective_operator_jm_rest
@@ -2099,6 +2108,7 @@ def _jm_base_for_job(job: StreamingJob) -> Optional[str]:
             dep,
             _operator_namespace(),
             stored,
+            deadline_seconds=deadline_seconds,
         )
         if resolved:
             return resolved
@@ -2115,50 +2125,19 @@ def _release_operator_ui_tunnel(job: StreamingJob) -> None:
     release_ui_tunnel(dep, _operator_namespace())
 
 
-def _ensure_operator_ui_tunnels(jobs: List[StreamingJob]) -> None:
-    from app.services.flink_operator_ui_tunnel import auto_ui_tunnel_enabled, ensure_ui_tunnel
-    from app.services.flink_operator_submit import _operator_namespace
-
-    if not auto_ui_tunnel_enabled():
-        return
-    ns = _operator_namespace()
-    for job in jobs:
-        dep = _operator_deployment_name_for_job(job)
-        if not dep:
-            continue
-        if (job.status or "").lower() in ("cancelled", "draft"):
-            continue
-        if not job.flink_job_id and not (getattr(job, "flink_operator_deployment_name", None) or "").strip():
-            continue
-        if dep:
-            try:
-                ensure_ui_tunnel(job.id, dep, ns)
-            except Exception:
-                logger.debug("ensure UI tunnel job=%s", job.id, exc_info=True)
-
-
-def _sync_operator_jobs_from_cluster(db: Session, jobs: List[StreamingJob]) -> None:
-    """Operator JAR 作业：若库内仍为 draft 但集群 CR 已运行，刷新列表时回填状态。"""
-    from app.services.flink_operator_submit import sync_job_from_flink_deployment
-
-    changed = False
-    for job in jobs:
-        dep = _operator_deployment_name_for_job(job)
-        if not dep:
-            continue
-        if job.status == "cancelled":
-            continue
-        patch = sync_job_from_flink_deployment(
-            job.id,
-            deployment_name=getattr(job, "flink_operator_deployment_name", None),
-        )
-        if not patch:
-            continue
-        for k, v in patch.items():
-            setattr(job, k, v)
-        changed = True
-    if changed:
-        db.commit()
+def _job_needs_live_status_sync(job: StreamingJob) -> bool:
+    """终态作业不再打 K8s/JM；仅「作业运维」批量同步使用。"""
+    st = (job.status or "").strip().lower()
+    if st in ("cancelled", "finished", "failed"):
+        return False
+    if job.flink_job_id:
+        return True
+    if _operator_deployment_name_for_job(job):
+        return True
+    cid = getattr(job, "flink_application_cluster_id", None)
+    if cid:
+        return True
+    return False
 
 
 def _require_stream_folder(db: Session, workspace_id: int, folder_id: Optional[int]) -> Optional[NodeFolder]:
@@ -2326,11 +2305,7 @@ def list_jobs(workspace_id: int, db: Session = Depends(get_db), current_user: Us
         .order_by(StreamingJob.sort_order.asc(), StreamingJob.id.asc())
         .all()
     )
-    try:
-        _sync_operator_jobs_from_cluster(db, jobs)
-        _ensure_operator_ui_tunnels(jobs)
-    except Exception:
-        logger.debug("Operator 作业状态同步失败", exc_info=True)
+    # 列表只读库（对齐批处理数据开发）：集群/JM 状态由「作业运维」jobs-status-sync 负责
     uids: List[Optional[int]] = []
     for j in jobs:
         uids.append(getattr(j, "owner_id", None) or j.created_by)
@@ -2973,87 +2948,107 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
         raise HTTPException(status_code=500, detail=f"停止失败: {e}")
 
 
-@router.get("/jobs/{job_id}/status")
-def get_job_status(job_id: int, db: Session = Depends(get_db_flink), current_user: User = Depends(get_current_user)):
-    """同步 Flink 任务状态；与 JobManager REST 对齐，JM 已无记录时回填平台为非运行态"""
-    job = require_streaming_job(db, current_user, job_id)
+def _status_payload(job: StreamingJob, *, runtime_cfg: FlinkRuntimeConfig, **extra):
+    out = {"status": job.status, "flink_operational": _compute_flink_operational(job, runtime_cfg=runtime_cfg)}
+    out.update(extra)
+    return out
+
+
+def _apply_status_from_operator_cr(db: Session, job: StreamingJob, cr: Dict[str, Any], dep_name: str) -> Optional[dict]:
+    """根据已读取的 FlinkDeployment CR 更新作业并返回 flink_status 相关字段；返回 None 表示应继续查 JM。"""
+    from app.services.flink_operator_submit import extract_status_from_cr
+
+    spec_state = (cr.get("spec", {}).get("job", {}).get("state") or "").strip().lower()
+    if spec_state == "suspended":
+        if job.status != "cancelled":
+            job.status = "cancelled"
+            job.flink_operator_deployment_name = dep_name
+            job.updated_at = datetime.utcnow()
+            db.commit()
+        return {
+            "flink_status": "SUSPENDED",
+            "note": "FlinkDeployment 已暂停（Operator spec.job.state=suspended）",
+        }
+
+    if not job.flink_job_id:
+        jid, lifecycle, err = extract_status_from_cr(cr)
+        if jid:
+            job.flink_job_id = jid
+            job.updated_at = datetime.utcnow()
+            db.commit()
+            return None
+        lifecycle_up = (lifecycle or "").strip().upper()
+        if job.status == "cancelled":
+            flink_st = "SUSPENDED"
+        elif err or lifecycle_up == "FAILED":
+            flink_st = "FAILED"
+        elif lifecycle_up:
+            flink_st = lifecycle_up
+        else:
+            flink_st = "STARTING"
+        note = err or (f"Operator lifecycle: {lifecycle}" if lifecycle else "等待 Flink Job ID 回填")
+        return {"flink_status": flink_st, "note": note}
+    return None
+
+
+def _sync_one_job_live_status(
+    db: Session,
+    job: StreamingJob,
+    *,
+    cr_cache: Optional[Dict[str, Any]] = None,
+    jm_timeout: float = 3.0,
+) -> dict:
+    """同步单个作业的 Flink/Operator 状态（短超时；优先用 CR 缓存与已存 JM）。"""
     rt_cfg = _flink_runtime_cfg_for_job(db, job)
     fc = _flink_client_for_job(db, job)
 
-    def _payload(**extra):
-        out = {"status": job.status, "flink_operational": _compute_flink_operational(job, runtime_cfg=rt_cfg)}
-        out.update(extra)
-        return out
-
-    jm_ov = _jm_base_for_job(job)
+    jm_ov = _jm_base_for_job(job, prefer_stored=True, deadline_seconds=2.0)
     if jm_ov and jm_ov != (getattr(job, "flink_application_jm_rest", None) or "").strip().rstrip("/"):
         job.flink_application_jm_rest = jm_ov
     dep_name = _operator_deployment_name_for_job(job)
     if dep_name:
-        try:
-            from app.services.flink_operator_submit import read_flink_deployment
+        cr = (cr_cache or {}).get(dep_name) if cr_cache is not None else None
+        if cr is None and cr_cache is None:
+            try:
+                from app.services.flink_operator_submit import read_flink_deployment
 
-            cr = read_flink_deployment(dep_name)
-            spec_state = (cr.get("spec", {}).get("job", {}).get("state") or "").strip().lower()
-            if spec_state == "suspended":
-                if job.status != "cancelled":
-                    job.status = "cancelled"
-                    job.flink_operator_deployment_name = dep_name
-                    job.updated_at = datetime.utcnow()
-                    db.commit()
-                return _payload(
-                    flink_status="SUSPENDED",
-                    note="FlinkDeployment 已暂停（Operator spec.job.state=suspended）",
-                )
-        except Exception:
-            logger.debug("读取 FlinkDeployment 状态失败 job_id=%s dep=%s", job.id, dep_name, exc_info=True)
-
-    if dep_name and not job.flink_job_id:
-        try:
-            from app.services.flink_operator_submit import extract_status_from_cr, read_flink_deployment
-
-            cr = read_flink_deployment(dep_name)
-            jid, lifecycle, err = extract_status_from_cr(cr)
-            if jid:
-                job.flink_job_id = jid
-                job.updated_at = datetime.utcnow()
-                db.commit()
-            else:
-                lifecycle_up = (lifecycle or "").strip().upper()
-                if job.status == "cancelled":
-                    flink_st = "SUSPENDED"
-                elif err or lifecycle_up == "FAILED":
-                    flink_st = "FAILED"
-                elif lifecycle_up:
-                    flink_st = lifecycle_up
-                else:
-                    flink_st = "STARTING"
-                note = err or (f"Operator lifecycle: {lifecycle}" if lifecycle else "等待 Flink Job ID 回填")
-                return _payload(flink_status=flink_st, note=note)
-        except Exception as ex:
-            logger.debug("Operator CR 状态读取失败 job_id=%s dep=%s", job.id, dep_name, exc_info=True)
+                cr = read_flink_deployment(dep_name)
+            except Exception:
+                logger.debug("读取 FlinkDeployment 状态失败 job_id=%s dep=%s", job.id, dep_name, exc_info=True)
+                cr = None
+        if cr is not None:
+            try:
+                early = _apply_status_from_operator_cr(db, job, cr, dep_name)
+                if early is not None:
+                    return _status_payload(job, runtime_cfg=rt_cfg, **early)
+            except Exception:
+                logger.debug("Operator CR 状态解析失败 job_id=%s dep=%s", job.id, dep_name, exc_info=True)
+        elif cr_cache is None and dep_name and not job.flink_job_id:
             if job.status == "cancelled":
-                return _payload(flink_status="SUSPENDED", note=str(ex))
-            return _payload(flink_status="UNKNOWN", note=str(ex))
+                return _status_payload(job, runtime_cfg=rt_cfg, flink_status="SUSPENDED")
+            return _status_payload(job, runtime_cfg=rt_cfg, flink_status="UNKNOWN", note="无法读取 FlinkDeployment")
 
     if not job.flink_job_id:
         cid = getattr(job, "flink_application_cluster_id", None)
         if cid and (getattr(job, "flink_sql_submit_mode", None) or "session").strip().lower() == "kubernetes_application":
-            return _payload(
+            return _status_payload(
+                job,
+                runtime_cfg=rt_cfg,
                 flink_status="APPLICATION_PENDING_JOB_ID",
                 cluster_id=cid,
                 note="Application 已创建，尚未回填 jobId；在集成页或 FLINK_K8S_APPLICATION_JM_REST_TEMPLATE 配置 JM REST 模板后可自动同步状态。",
             )
-        return _payload(flink_status=None)
+        return _status_payload(job, runtime_cfg=rt_cfg, flink_status=None)
     try:
-        detail = fc.fetch_job_document(job.flink_job_id, jm_base=jm_ov)
+        detail = fc.fetch_job_document(job.flink_job_id, jm_base=jm_ov, timeout=jm_timeout)
         if detail is None:
-            # JM 已无该 Job：例如在 UI 停止后记录被回收、或已不再活跃；平台不应长期显示 running
             if job.status == "running":
                 job.status = "cancelled"
                 job.updated_at = datetime.utcnow()
                 db.commit()
-            return _payload(
+            return _status_payload(
+                job,
+                runtime_cfg=rt_cfg,
                 flink_status="NOT_FOUND_ON_JM",
                 detail=None,
                 note="Flink JobManager 上已无该 Job ID（可能已从控制台停止或记录已回收），已将平台 running 回填为 cancelled",
@@ -3075,16 +3070,72 @@ def get_job_status(job_id: int, db: Session = Depends(get_db_flink), current_use
             "CANCELLING": "cancelled",
         }
         new_status = state_map.get(flink_state)
-        # Operator/Session 停止后 JM 可能仍短暂返回 RECONCILING/RUNNING，勿把平台 cancelled 冲回 running
         if job.status == "cancelled" and new_status == "running":
             new_status = None
         if new_status:
             job.status = new_status
         job.updated_at = datetime.utcnow()
         db.commit()
-        return _payload(flink_status=flink_state, detail=detail)
+        return _status_payload(job, runtime_cfg=rt_cfg, flink_status=flink_state, detail=detail)
     except Exception as e:
-        return _payload(flink_status="UNKNOWN", error=str(e))
+        return _status_payload(job, runtime_cfg=rt_cfg, flink_status="UNKNOWN", error=str(e))
+
+
+@router.get("/jobs-status-sync")
+def sync_workspace_jobs_status(
+    workspace_id: int,
+    db: Session = Depends(get_db_flink),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    工作空间批量状态同步：一次 list FlinkDeployment + 仅对非终态作业查 JM。
+    替代前端 N 路 GET /jobs/{id}/status，避免打开页面把 API worker 堵死。
+    """
+    assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_STREAM_READ)
+    jobs = (
+        db.query(StreamingJob)
+        .filter(StreamingJob.workspace_id == workspace_id)
+        .order_by(StreamingJob.sort_order.asc(), StreamingJob.id.asc())
+        .all()
+    )
+    need = [j for j in jobs if _job_needs_live_status_sync(j)]
+    cr_cache: Optional[Dict[str, Any]] = None
+    if any(_operator_deployment_name_for_job(j) for j in need):
+        cr_cache = {}
+        try:
+            from app.services.flink_operator_submit import list_flink_deployments
+
+            for cr in list_flink_deployments(workspace_id=workspace_id):
+                name = ((cr.get("metadata") or {}).get("name") or "").strip()
+                if name:
+                    cr_cache[name] = cr
+        except Exception:
+            logger.debug("jobs-status-sync list CR failed workspace=%s", workspace_id, exc_info=True)
+            cr_cache = None  # 回退到单作业 read CR
+
+    items = []
+    for job in need:
+        try:
+            payload = _sync_one_job_live_status(db, job, cr_cache=cr_cache, jm_timeout=3.0)
+        except Exception as ex:
+            payload = {"status": job.status, "flink_status": "UNKNOWN", "error": str(ex)}
+        items.append(
+            {
+                "id": job.id,
+                "status": payload.get("status", job.status),
+                "flink_status": payload.get("flink_status"),
+                "note": payload.get("note"),
+                "error": payload.get("error"),
+            }
+        )
+    return {"items": items, "synced": len(items), "total": len(jobs)}
+
+
+@router.get("/jobs/{job_id}/status")
+def get_job_status(job_id: int, db: Session = Depends(get_db_flink), current_user: User = Depends(get_current_user)):
+    """同步 Flink 任务状态；与 JobManager REST 对齐，JM 已无记录时回填平台为非运行态"""
+    job = require_streaming_job(db, current_user, job_id)
+    return _sync_one_job_live_status(db, job, jm_timeout=4.0)
 
 
 @router.get("/jobs/{job_id}/exceptions")
@@ -3093,7 +3144,7 @@ def get_job_exceptions(job_id: int, db: Session = Depends(get_db_flink), current
     job = require_streaming_job(db, current_user, job_id)
     if not job.flink_job_id:
         return {"exceptions": []}
-    jm_ov = _jm_base_for_job(job)
+    jm_ov = _jm_base_for_job(job, prefer_stored=True, deadline_seconds=2.0)
     fc = _flink_client_for_job(db, job)
     try:
         return fc.job_exceptions(job.flink_job_id, jm_base=jm_ov)
@@ -3274,6 +3325,57 @@ def _serialize_jar_artifact(db: Session, art: StreamingJarArtifact, *, include_v
     return out
 
 
+def _serialize_jar_artifacts_list(db: Session, arts: List[StreamingJarArtifact]) -> List[dict]:
+    """列表页批量序列化，避免每个制品单独 count/latest 查询。"""
+    if not arts:
+        return []
+    ids = [a.id for a in arts]
+    ref_rows = (
+        db.query(StreamingJob.jar_artifact_id, func.count(StreamingJob.id))
+        .filter(StreamingJob.jar_artifact_id.in_(ids))
+        .group_by(StreamingJob.jar_artifact_id)
+        .all()
+    )
+    ref_map = {int(aid): int(cnt) for aid, cnt in ref_rows if aid is not None}
+    vers = (
+        db.query(StreamingJarVersion)
+        .filter(StreamingJarVersion.artifact_id.in_(ids))
+        .order_by(StreamingJarVersion.artifact_id.asc(), StreamingJarVersion.version.desc())
+        .all()
+    )
+    latest_map: Dict[int, StreamingJarVersion] = {}
+    for v in vers:
+        if v.artifact_id not in latest_map:
+            latest_map[int(v.artifact_id)] = v
+    uids: List[Optional[int]] = []
+    for a in arts:
+        uids.extend([a.owner_id, a.created_by])
+        lv = latest_map.get(a.id)
+        if lv:
+            uids.append(lv.uploaded_by)
+    umap = _username_map(db, uids)
+    out = []
+    for a in arts:
+        latest = latest_map.get(a.id)
+        out.append(
+            {
+                "id": a.id,
+                "workspace_id": a.workspace_id,
+                "name": a.name,
+                "description": a.description,
+                "owner_id": a.owner_id,
+                "owner_username": umap.get(a.owner_id) if a.owner_id else None,
+                "created_by": a.created_by,
+                "created_by_username": umap.get(a.created_by) if a.created_by else None,
+                "created_at": a.created_at,
+                "updated_at": a.updated_at,
+                "ref_job_count": ref_map.get(a.id, 0),
+                "latest_version": _serialize_jar_version(db, latest, umap) if latest else None,
+            }
+        )
+    return out
+
+
 class JarArtifactCreate(BaseModel):
     workspace_id: int
     name: str
@@ -3294,7 +3396,7 @@ def list_jar_artifacts(workspace_id: int, db: Session = Depends(get_db), current
         .order_by(StreamingJarArtifact.updated_at.desc())
         .all()
     )
-    return [_serialize_jar_artifact(db, a) for a in rows]
+    return _serialize_jar_artifacts_list(db, rows)
 
 
 @router.post("/jar-artifacts")
