@@ -636,7 +636,18 @@ export default function StreamStudioPage() {
       return
     }
     const detail: any = await streamingApi.getJarArtifact(artifactId)
-    const version = detail.latest_version || detail.versions?.find((v: any) => v.status === 'active')
+    if (!detail) {
+      message.error('制品不存在或尚未就绪')
+      return
+    }
+    const version = detail.latest_version
+      || (detail.versions || []).find((v: any) => v.status === 'active')
+      || null
+    if (!version) {
+      message.warning('该制品尚无可用版本，请先在 JAR 制品库上传')
+      setSelectedJarArtifact(detail)
+      return
+    }
     const patch: Record<string, unknown> = {
       jar_artifact_id: artifactId,
       jar_version_id: version?.id ?? null,
@@ -864,13 +875,17 @@ export default function StreamStudioPage() {
   const statusColor: Record<string, string> = {
     draft: 'default', running: 'processing', finished: 'success', failed: 'error', cancelled: 'warning',
   }
-  const selectedJarVersion = selectedJarArtifact?.versions?.find(
-    (v: any) => v.id === selected?.jar_version_id,
-  ) || (
-    selectedJarArtifact?.latest_version?.id === selected?.jar_version_id
-      ? selectedJarArtifact.latest_version
-      : null
-  )
+  const selectedJarVersion =
+    selectedJarArtifact?.versions?.find((v: any) => v.id === selected?.jar_version_id)
+    || (
+      selectedJarArtifact != null
+      && selected?.jar_version_id != null
+      && selectedJarArtifact.latest_version?.id === selected.jar_version_id
+        ? selectedJarArtifact.latest_version
+        : null
+    )
+    || selectedJarArtifact?.latest_version
+    || null
 
   return (
     <div>
