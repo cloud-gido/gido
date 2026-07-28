@@ -3085,8 +3085,8 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
                 preferred_name=dep_name,
                 namespace=primary_ns,
             )
-            if not refs and dep_name:
-                refs = [(primary_ns, dep_name)]
+            # 勿再无脑 fallback 到 primary_ns：ConfigMap 若为 flink 而 SA 只在 bigdata 有权，
+            # 会对无权 ns 发起 DELETE → 403，整次停止失败（现网已复现）。
 
             deleted_ok: List[str] = []
             deleted_ns: List[str] = []

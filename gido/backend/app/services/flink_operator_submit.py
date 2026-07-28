@@ -469,6 +469,52 @@ def list_flink_deployments(
     return list(items) if isinstance(items, list) else []
 
 
+def _operator_namespace_candidates(primary: Optional[str] = None) -> List[str]:
+    """停止/查找时的命名空间候选：primary 优先，再补 bigdata/flink。
+
+    注意：不得对无权访问的命名空间做「猜测 DELETE」——无权限时 K8s 常回 403
+   （即使资源不存在），会导致整次停止失败。
+    """
+    p = (primary or _operator_namespace()).strip() or "flink"
+    out: List[str] = [p]
+    for extra in ("bigdata", "flink"):
+        if extra not in out:
+            out.append(extra)
+    return out
+
+
+def flink_deployment_accessible(
+    deployment_name: str, namespace: Optional[str] = None
+) -> bool:
+    """GET 能读到 CR 才视为可删目标；404/403/其它错误均视为不可作为删除目标。"""
+    name = (deployment_name or "").strip()
+    if not name:
+        return False
+    try:
+        read_flink_deployment(name, namespace=namespace)
+        return True
+    except Exception as e:
+        from kubernetes.client import ApiException  # type: ignore
+
+        status = getattr(e, "status", None) if isinstance(e, ApiException) else None
+        if status in (403, 404):
+            logger.debug(
+                "FlinkDeployment 不可访问 %s/%s status=%s",
+                namespace or _operator_namespace(),
+                name,
+                status,
+            )
+            return False
+        logger.debug(
+            "FlinkDeployment 探测失败 %s/%s: %s",
+            namespace or _operator_namespace(),
+            name,
+            e,
+            exc_info=True,
+        )
+        return False
+
+
 def find_flink_deployment_refs_for_job(
     job_id: int,
     *,
@@ -478,14 +524,11 @@ def find_flink_deployment_refs_for_job(
 ) -> List[Tuple[str, str]]:
     """返回待删除的 (namespace, name)。
 
-    生产常见 FLINK_OPERATOR_NAMESPACE=bigdata，模板默认 flink；
-    为避免配错空间导致「假删除」，会在候选命名空间内按 gido.io/job-id 扫描。
+    仅包含「已确认存在且可读」的 CR：按 gido.io/job-id 列出，并对库内名做 GET 探测。
+    禁止把库内名盲目扩到所有候选 ns（无 RBAC 的 ns 上 DELETE 会 403 中断停止）。
     """
     primary = (namespace or _operator_namespace()).strip() or "flink"
-    candidates: List[str] = [primary]
-    for extra in ("bigdata", "flink"):
-        if extra not in candidates:
-            candidates.append(extra)
+    candidates = _operator_namespace_candidates(primary)
 
     refs: List[Tuple[str, str]] = []
     seen = set()
@@ -500,12 +543,6 @@ def find_flink_deployment_refs_for_job(
         seen.add(key)
         refs.append(key)
 
-    pref = (preferred_name or "").strip()
-    # 库内名可能落在任一候选空间（ConfigMap 配错时 primary≠真实 ns）
-    if pref:
-        for ns in candidates:
-            _add(ns, pref)
-
     for ns in candidates:
         try:
             for cr in list_flink_deployments(namespace=ns, workspace_id=workspace_id, job_id=job_id):
@@ -514,6 +551,13 @@ def find_flink_deployment_refs_for_job(
                 _add(cr_ns, n)
         except Exception:
             logger.debug("list FlinkDeployment ns=%s job_id=%s failed", ns, job_id, exc_info=True)
+
+    pref = (preferred_name or "").strip()
+    if pref and not any(n == pref for _, n in refs):
+        for ns in candidates:
+            if flink_deployment_accessible(pref, namespace=ns):
+                _add(ns, pref)
+                break
 
     return refs
 
@@ -558,6 +602,14 @@ def delete_flink_deployment(deployment_name: str, namespace: Optional[str] = Non
         if isinstance(e, ApiException) and getattr(e, "status", None) == 404:
             logger.debug("FlinkDeployment 已不存在 %s/%s", ns, deployment_name)
             return False
+        if isinstance(e, ApiException) and getattr(e, "status", None) == 403:
+            # 无权删该 ns：不吞掉——调用方应只对 accessible 的 ref 调用；
+            # 这里改写为更短的运维可读错误，避免把整段 HTTP headers 抛到前端。
+            raise PermissionError(
+                f"无权限删除 FlinkDeployment {ns}/{deployment_name} "
+                f"（ServiceAccount 对该命名空间缺少 delete flinkdeployments）。"
+                f"请确认作业所在 ns 与 FLINK_OPERATOR_NAMESPACE，并检查 RBAC。"
+            ) from e
         raise
 
 

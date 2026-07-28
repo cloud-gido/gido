@@ -252,3 +252,57 @@ def test_cancel_job_fails_when_cr_still_exists(monkeypatch):
         assert e.status_code == 500
         assert "仍未进入回收" in str(e.detail)
         assert "bigdata" in str(e.detail)
+
+
+def test_cancel_job_skips_forbidden_namespace_guess(monkeypatch):
+    """无权 ns 上猜测 DELETE 会 403；只应对可读到的 CR 发删除。"""
+    deleted = []
+
+    def _delete(name, namespace=None, *a, **k):
+        if namespace == "flink":
+            raise PermissionError("forbidden flink")
+        deleted.append((namespace, name))
+        return True
+
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.delete_flink_deployment",
+        _delete,
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.find_flink_deployment_refs_for_job",
+        lambda *a, **k: [("bigdata", "gido-jar-1-204")],
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.wait_flink_deployment_reclaimed",
+        lambda *a, **k: "gone",
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit._operator_namespace",
+        lambda: "flink",
+    )
+    monkeypatch.setattr(streaming_api, "_operator_deployment_name_for_job", lambda job: "gido-jar-1-204")
+    monkeypatch.setattr(streaming_api, "_release_operator_ui_tunnel", lambda job: None)
+    monkeypatch.setattr(
+        streaming_api,
+        "require_streaming_job",
+        lambda db, user, job_id, *a, **k: _job(status="running", flink_job_id="jid-1", job_type="JAR"),
+    )
+
+    out = streaming_api.cancel_job(204, db=_db(), current_user=SimpleNamespace(id=1))
+    assert deleted == [("bigdata", "gido-jar-1-204")]
+    assert "bigdata" in out.get("namespace", "")
+
+
+def test_find_refs_only_adds_accessible_preferred(monkeypatch):
+    from app.services import flink_operator_submit as fos
+
+    monkeypatch.setattr(fos, "_operator_namespace", lambda: "flink")
+    monkeypatch.setattr(fos, "list_flink_deployments", lambda **k: [])
+
+    def _accessible(name, namespace=None):
+        return namespace == "bigdata" and name == "gido-jar-1-204"
+
+    monkeypatch.setattr(fos, "flink_deployment_accessible", _accessible)
+    refs = fos.find_flink_deployment_refs_for_job(204, preferred_name="gido-jar-1-204")
+    assert refs == [("bigdata", "gido-jar-1-204")]
+
