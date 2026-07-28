@@ -469,6 +469,55 @@ def list_flink_deployments(
     return list(items) if isinstance(items, list) else []
 
 
+def find_flink_deployment_refs_for_job(
+    job_id: int,
+    *,
+    workspace_id: Optional[int] = None,
+    preferred_name: Optional[str] = None,
+    namespace: Optional[str] = None,
+) -> List[Tuple[str, str]]:
+    """返回待删除的 (namespace, name)。
+
+    生产常见 FLINK_OPERATOR_NAMESPACE=bigdata，模板默认 flink；
+    为避免配错空间导致「假删除」，会在候选命名空间内按 gido.io/job-id 扫描。
+    """
+    primary = (namespace or _operator_namespace()).strip() or "flink"
+    candidates: List[str] = [primary]
+    for extra in ("bigdata", "flink"):
+        if extra not in candidates:
+            candidates.append(extra)
+
+    refs: List[Tuple[str, str]] = []
+    seen = set()
+
+    def _add(ns: str, name: str) -> None:
+        n = (name or "").strip()
+        if not n:
+            return
+        key = (ns, n)
+        if key in seen:
+            return
+        seen.add(key)
+        refs.append(key)
+
+    pref = (preferred_name or "").strip()
+    # 库内名可能落在任一候选空间（ConfigMap 配错时 primary≠真实 ns）
+    if pref:
+        for ns in candidates:
+            _add(ns, pref)
+
+    for ns in candidates:
+        try:
+            for cr in list_flink_deployments(namespace=ns, workspace_id=workspace_id, job_id=job_id):
+                n = ((cr.get("metadata") or {}).get("name") or "").strip()
+                cr_ns = ((cr.get("metadata") or {}).get("namespace") or ns).strip() or ns
+                _add(cr_ns, n)
+        except Exception:
+            logger.debug("list FlinkDeployment ns=%s job_id=%s failed", ns, job_id, exc_info=True)
+
+    return refs
+
+
 def find_flink_deployment_names_for_job(
     job_id: int,
     *,
@@ -476,23 +525,20 @@ def find_flink_deployment_names_for_job(
     preferred_name: Optional[str] = None,
     namespace: Optional[str] = None,
 ) -> List[str]:
-    """汇总待删除的 FlinkDeployment 名：库内记录名 + 标签 gido.io/job-id 匹配的 CR。"""
-    names: List[str] = []
-    pref = (preferred_name or "").strip()
-    if pref:
-        names.append(pref)
-    try:
-        for cr in list_flink_deployments(namespace=namespace, workspace_id=workspace_id, job_id=job_id):
-            n = ((cr.get("metadata") or {}).get("name") or "").strip()
-            if n and n not in names:
-                names.append(n)
-    except Exception:
-        logger.debug("list FlinkDeployment by job_id=%s failed", job_id, exc_info=True)
-    return names
+    """兼容旧调用：仅返回 name 列表（可能跨命名空间，优先用 find_flink_deployment_refs_for_job）。"""
+    return [name for _, name in find_flink_deployment_refs_for_job(
+        job_id,
+        workspace_id=workspace_id,
+        preferred_name=preferred_name,
+        namespace=namespace,
+    )]
 
 
 def delete_flink_deployment(deployment_name: str, namespace: Optional[str] = None) -> bool:
-    """删除 FlinkDeployment CR。返回 True=本次发出删除；False=CR 本就不存在(404)。其它错误抛出。"""
+    """删除 FlinkDeployment CR。返回 True=本次发出删除；False=CR 本就不存在(404)。其它错误抛出。
+
+    使用与历史可用路径相同的简单 DELETE（propagation_policy 走 query 参数，勿塞错误 body）。
+    """
     api = _custom_objects_api()
     ns = namespace or _operator_namespace()
     try:
@@ -502,6 +548,7 @@ def delete_flink_deployment(deployment_name: str, namespace: Optional[str] = Non
             namespace=ns,
             plural=FLINK_DEPLOYMENT_PLURAL,
             name=deployment_name,
+            propagation_policy="Background",
         )
         logger.info("已删除 FlinkDeployment %s/%s", ns, deployment_name)
         return True
@@ -514,18 +561,44 @@ def delete_flink_deployment(deployment_name: str, namespace: Optional[str] = Non
         raise
 
 
-def flink_deployment_still_exists(deployment_name: str, namespace: Optional[str] = None) -> bool:
+def flink_deployment_deletion_state(
+    deployment_name: str, namespace: Optional[str] = None
+) -> str:
+    """返回 gone | terminating | exists | unknown。"""
     try:
-        read_flink_deployment(deployment_name, namespace=namespace)
-        return True
+        cr = read_flink_deployment(deployment_name, namespace=namespace)
     except Exception as e:
         from kubernetes.client import ApiException  # type: ignore
 
         if isinstance(e, ApiException) and getattr(e, "status", None) == 404:
-            return False
-        # API 抖动时宁可认为仍在，避免误报已停
-        logger.warning("检查 FlinkDeployment 是否存在失败 %s: %s", deployment_name, e)
-        return True
+            return "gone"
+        logger.warning("检查 FlinkDeployment 状态失败 %s: %s", deployment_name, e)
+        return "unknown"
+    ts = ((cr.get("metadata") or {}).get("deletionTimestamp") or "").strip()
+    return "terminating" if ts else "exists"
+
+
+def wait_flink_deployment_reclaimed(
+    deployment_name: str,
+    *,
+    namespace: Optional[str] = None,
+    timeout_seconds: float = 30.0,
+) -> str:
+    """删除后等待 CR 消失或进入 Terminating。返回 gone | terminating | exists | unknown。"""
+    deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+    last = flink_deployment_deletion_state(deployment_name, namespace=namespace)
+    if last in ("gone", "terminating"):
+        return last
+    while time.monotonic() < deadline:
+        time.sleep(1.5)
+        last = flink_deployment_deletion_state(deployment_name, namespace=namespace)
+        if last in ("gone", "terminating"):
+            return last
+    return last
+
+
+def flink_deployment_still_exists(deployment_name: str, namespace: Optional[str] = None) -> bool:
+    return flink_deployment_deletion_state(deployment_name, namespace=namespace) != "gone"
 
 
 def deployment_summary_from_cr(cr: Dict[str, Any]) -> Dict[str, Any]:

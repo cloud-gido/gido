@@ -3073,89 +3073,107 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
         try:
             from app.services.flink_operator_submit import (
                 delete_flink_deployment,
-                find_flink_deployment_names_for_job,
-                flink_deployment_still_exists,
-                list_flink_deployments,
-                suspend_flink_deployment,
+                find_flink_deployment_refs_for_job,
+                wait_flink_deployment_reclaimed,
                 _operator_namespace,
             )
 
-            ns = _operator_namespace()
-            targets = find_flink_deployment_names_for_job(
+            primary_ns = _operator_namespace()
+            refs = find_flink_deployment_refs_for_job(
                 int(job.id),
                 workspace_id=int(job.workspace_id or 0) or None,
                 preferred_name=dep_name,
-                namespace=ns,
+                namespace=primary_ns,
             )
-            if not targets and dep_name:
-                targets = [dep_name]
+            if not refs and dep_name:
+                refs = [(primary_ns, dep_name)]
 
             deleted_ok: List[str] = []
-            for name in targets:
-                try:
-                    suspend_flink_deployment(name, namespace=ns)
-                except Exception:
-                    logger.debug(
-                        "cancel: suspend 跳过/失败，继续 delete CR job_id=%s dep=%s",
-                        job.id,
-                        name,
-                        exc_info=True,
-                    )
+            deleted_ns: List[str] = []
+            for ns, name in refs:
+                # 直接删 CR（与改前可用路径一致）；不再先 suspend——部分环境下 suspend 后删除行为异常
                 if delete_flink_deployment(name, namespace=ns):
                     deleted_ok.append(name)
+                    if ns not in deleted_ns:
+                        deleted_ns.append(ns)
 
-            # 再扫一遍标签，防止漏删 / 删错名
-            leftovers = list_flink_deployments(
-                namespace=ns,
+            # 再扫一遍候选空间，防止漏删
+            more = find_flink_deployment_refs_for_job(
+                int(job.id),
                 workspace_id=int(job.workspace_id or 0) or None,
-                job_id=int(job.id),
+                preferred_name=None,
+                namespace=primary_ns,
             )
-            leftover_names = [
-                ((cr.get("metadata") or {}).get("name") or "").strip()
-                for cr in leftovers
-                if ((cr.get("metadata") or {}).get("name") or "").strip()
-            ]
-            for name in leftover_names:
+            for ns, name in more:
+                if (ns, name) in refs:
+                    continue
                 if delete_flink_deployment(name, namespace=ns):
                     deleted_ok.append(name)
+                    if ns not in deleted_ns:
+                        deleted_ns.append(ns)
+                    refs.append((ns, name))
 
-            still = [
-                n for n in (targets + leftover_names)
-                if n and flink_deployment_still_exists(n, namespace=ns)
-            ]
-            # 去重
-            still = sorted(set(still))
-            if still:
+            stuck: List[str] = []
+            terminating: List[str] = []
+            for ns, name in refs:
+                state = wait_flink_deployment_reclaimed(name, namespace=ns, timeout_seconds=20.0)
+                if state == "gone":
+                    continue
+                if state in ("terminating", "unknown"):
+                    # Terminating=已受理；unknown=API 抖动，不阻断（平台已标停止，运维可对账）
+                    if state == "terminating":
+                        terminating.append(f"{ns}/{name}")
+                    continue
+                stuck.append(f"{ns}/{name}")
+
+            if stuck:
                 raise RuntimeError(
-                    f"已请求删除但仍存在 FlinkDeployment（可能卡在 Terminating 或 RBAC/命名空间不对）: {', '.join(still)}"
+                    "已请求删除但 FlinkDeployment 仍未进入回收: "
+                    + ", ".join(stuck)
+                    + f"。当前配置 FLINK_OPERATOR_NAMESPACE={primary_ns}；"
+                    "生产作业一般在 bigdata，请核对 ConfigMap。"
                 )
 
             _release_operator_ui_tunnel(job)
             if job.job_type == "SQL" and _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None)) == "flink_operator":
                 from app.services.sql_artifact import delete_sql_script_configmap
 
-                delete_sql_script_configmap(
-                    job.id, int(job.workspace_id or 0), ns
-                )
-            primary = (deleted_ok[0] if deleted_ok else None) or (targets[0] if targets else dep_name)
+                # SQL ConfigMap 也可能在 bigdata
+                for ns in sorted({primary_ns, *[n for n, _ in refs]}):
+                    try:
+                        delete_sql_script_configmap(job.id, int(job.workspace_id or 0), ns)
+                    except Exception:
+                        logger.debug("delete sql configmap skip ns=%s job=%s", ns, job.id, exc_info=True)
+
+            primary = (deleted_ok[0] if deleted_ok else None) or (refs[0][1] if refs else dep_name)
             job.flink_operator_deployment_name = primary
             job.flink_job_id = None
             job.flink_application_jm_rest = None
             job.status = "cancelled"
             job.updated_at = datetime.utcnow()
             db.commit()
-            if deleted_ok:
+            ns_note = ",".join(deleted_ns or [primary_ns])
+            if deleted_ok or terminating:
+                note = ""
+                if terminating:
+                    note = f"；回收中: {', '.join(terminating)}"
                 return {
                     "message": (
-                        f"已停止：已删除 FlinkDeployment ({', '.join(deleted_ok)})，"
-                        "Operator 将回收 JM/TM Pod"
+                        f"已停止：已删除 FlinkDeployment"
+                        f"{(' (' + ', '.join(deleted_ok) + ')') if deleted_ok else ''}"
+                        f"（namespace={ns_note}），Operator 将回收 JM/TM Pod{note}"
                     ),
                     "deleted": deleted_ok,
+                    "terminating": terminating,
+                    "namespace": ns_note,
                 }
-            # 库内有 Operator 标记但集群已无 CR：平台状态回填为停止
             return {
-                "message": "已停止：集群中已无对应 FlinkDeployment，已将平台状态标为已停止",
+                "message": (
+                    f"已停止：集群中已无对应 FlinkDeployment"
+                    f"（已查 {primary_ns}/bigdata/flink），已将平台状态标为已停止"
+                ),
                 "deleted": [],
+                "namespace": primary_ns,
             }
         except HTTPException:
             raise
