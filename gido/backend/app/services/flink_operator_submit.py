@@ -445,13 +445,19 @@ def list_flink_deployments(
     *,
     namespace: Optional[str] = None,
     workspace_id: Optional[int] = None,
+    job_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    """列出命名空间内 FlinkDeployment CR；可选按 gido.io/workspace-id 标签过滤。"""
+    """列出命名空间内 FlinkDeployment CR；可选按 workspace / job 标签过滤。"""
     api = _custom_objects_api()
     ns = namespace or _operator_namespace()
-    kwargs: Dict[str, Any] = {"_request_timeout": 8}
+    selectors: List[str] = []
     if workspace_id is not None:
-        kwargs["label_selector"] = f"gido.io/workspace-id={int(workspace_id)}"
+        selectors.append(f"gido.io/workspace-id={int(workspace_id)}")
+    if job_id is not None:
+        selectors.append(f"gido.io/job-id={int(job_id)}")
+    kwargs: Dict[str, Any] = {"_request_timeout": 8}
+    if selectors:
+        kwargs["label_selector"] = ",".join(selectors)
     resp = api.list_namespaced_custom_object(
         group=FLINK_DEPLOYMENT_GROUP,
         version=FLINK_DEPLOYMENT_VERSION,
@@ -461,6 +467,65 @@ def list_flink_deployments(
     )
     items = resp.get("items") if isinstance(resp, dict) else None
     return list(items) if isinstance(items, list) else []
+
+
+def find_flink_deployment_names_for_job(
+    job_id: int,
+    *,
+    workspace_id: Optional[int] = None,
+    preferred_name: Optional[str] = None,
+    namespace: Optional[str] = None,
+) -> List[str]:
+    """汇总待删除的 FlinkDeployment 名：库内记录名 + 标签 gido.io/job-id 匹配的 CR。"""
+    names: List[str] = []
+    pref = (preferred_name or "").strip()
+    if pref:
+        names.append(pref)
+    try:
+        for cr in list_flink_deployments(namespace=namespace, workspace_id=workspace_id, job_id=job_id):
+            n = ((cr.get("metadata") or {}).get("name") or "").strip()
+            if n and n not in names:
+                names.append(n)
+    except Exception:
+        logger.debug("list FlinkDeployment by job_id=%s failed", job_id, exc_info=True)
+    return names
+
+
+def delete_flink_deployment(deployment_name: str, namespace: Optional[str] = None) -> bool:
+    """删除 FlinkDeployment CR。返回 True=本次发出删除；False=CR 本就不存在(404)。其它错误抛出。"""
+    api = _custom_objects_api()
+    ns = namespace or _operator_namespace()
+    try:
+        api.delete_namespaced_custom_object(
+            group=FLINK_DEPLOYMENT_GROUP,
+            version=FLINK_DEPLOYMENT_VERSION,
+            namespace=ns,
+            plural=FLINK_DEPLOYMENT_PLURAL,
+            name=deployment_name,
+        )
+        logger.info("已删除 FlinkDeployment %s/%s", ns, deployment_name)
+        return True
+    except Exception as e:
+        from kubernetes.client import ApiException  # type: ignore
+
+        if isinstance(e, ApiException) and getattr(e, "status", None) == 404:
+            logger.debug("FlinkDeployment 已不存在 %s/%s", ns, deployment_name)
+            return False
+        raise
+
+
+def flink_deployment_still_exists(deployment_name: str, namespace: Optional[str] = None) -> bool:
+    try:
+        read_flink_deployment(deployment_name, namespace=namespace)
+        return True
+    except Exception as e:
+        from kubernetes.client import ApiException  # type: ignore
+
+        if isinstance(e, ApiException) and getattr(e, "status", None) == 404:
+            return False
+        # API 抖动时宁可认为仍在，避免误报已停
+        logger.warning("检查 FlinkDeployment 是否存在失败 %s: %s", deployment_name, e)
+        return True
 
 
 def deployment_summary_from_cr(cr: Dict[str, Any]) -> Dict[str, Any]:
@@ -561,28 +626,6 @@ def suspend_flink_deployment(deployment_name: str, namespace: Optional[str] = No
         name=deployment_name,
         body=patch,
     )
-
-
-def delete_flink_deployment(deployment_name: str, namespace: Optional[str] = None) -> None:
-    """删除 FlinkDeployment CR；Operator 会回收 JM/TM Pod 与 REST Service。CR 已不存在时忽略 404。"""
-    api = _custom_objects_api()
-    ns = namespace or _operator_namespace()
-    try:
-        api.delete_namespaced_custom_object(
-            group=FLINK_DEPLOYMENT_GROUP,
-            version=FLINK_DEPLOYMENT_VERSION,
-            namespace=ns,
-            plural=FLINK_DEPLOYMENT_PLURAL,
-            name=deployment_name,
-        )
-        logger.info("已删除 FlinkDeployment %s/%s", ns, deployment_name)
-    except Exception as e:
-        from kubernetes.client import ApiException  # type: ignore
-
-        if isinstance(e, ApiException) and getattr(e, "status", None) == 404:
-            logger.debug("FlinkDeployment 已不存在 %s/%s", ns, deployment_name)
-            return
-        raise
 
 
 def extract_status_from_cr(cr: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], Optional[str]]:

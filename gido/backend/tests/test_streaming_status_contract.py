@@ -151,6 +151,7 @@ def test_cancel_job_deletes_flink_deployment(monkeypatch):
 
     def _delete(name, *a, **k):
         deleted.append(name)
+        return True
 
     def _suspend(name, *a, **k):
         suspended.append(name)
@@ -162,6 +163,22 @@ def test_cancel_job_deletes_flink_deployment(monkeypatch):
     monkeypatch.setattr(
         "app.services.flink_operator_submit.suspend_flink_deployment",
         _suspend,
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.find_flink_deployment_names_for_job",
+        lambda *a, **k: ["gido-sql-1-42"],
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.list_flink_deployments",
+        lambda *a, **k: [],
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.flink_deployment_still_exists",
+        lambda *a, **k: False,
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit._operator_namespace",
+        lambda: "flink",
     )
     monkeypatch.setattr(streaming_api, "_operator_deployment_name_for_job", lambda job: "gido-sql-1-42")
     monkeypatch.setattr(streaming_api, "_release_operator_ui_tunnel", lambda job: None)
@@ -180,3 +197,46 @@ def test_cancel_job_deletes_flink_deployment(monkeypatch):
     out = streaming_api.cancel_job(42, db=_db(), current_user=user)
     assert deleted == ["gido-sql-1-42"]
     assert "已删除 FlinkDeployment" in out["message"]
+
+
+def test_cancel_job_fails_when_cr_still_exists(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.delete_flink_deployment",
+        lambda *a, **k: True,
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.suspend_flink_deployment",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.find_flink_deployment_names_for_job",
+        lambda *a, **k: ["gido-sql-1-42"],
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.list_flink_deployments",
+        lambda *a, **k: [],
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.flink_deployment_still_exists",
+        lambda *a, **k: True,
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit._operator_namespace",
+        lambda: "flink",
+    )
+    monkeypatch.setattr(streaming_api, "_operator_deployment_name_for_job", lambda job: "gido-sql-1-42")
+    monkeypatch.setattr(streaming_api, "_release_operator_ui_tunnel", lambda job: None)
+    monkeypatch.setattr(
+        streaming_api,
+        "require_streaming_job",
+        lambda db, user, job_id, *a, **k: _job(status="running", flink_job_id="jid-1", job_type="SQL"),
+    )
+
+    from fastapi import HTTPException
+
+    try:
+        streaming_api.cancel_job(42, db=_db(), current_user=SimpleNamespace(id=1))
+        assert False, "expected HTTPException"
+    except HTTPException as e:
+        assert e.status_code == 500
+        assert "仍存在 FlinkDeployment" in str(e.detail)

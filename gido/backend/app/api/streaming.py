@@ -3057,46 +3057,108 @@ def delete_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
 def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: User = Depends(get_current_user)):
     """停止 Flink 任务。
 
-    Operator 模式：删除 FlinkDeployment CR，由 Operator 回收 JM/TM Pod。
-    仅 patch spec.job.state=suspended 在部分 Operator / standalone 部署下会留下 Running Deployment，
-    与产品「停止」预期不符（此前可杀掉、现网复现 Pod 仍 Running）。
+    Operator 模式：删除与作业相关的全部 FlinkDeployment CR（库内名 + gido.io/job-id 标签），
+    并校验删除后集群侧已无 CR；禁止「删错名字 → 404 却报成功」导致 Flink 仍在跑。
     """
     job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_RUN)
     dep_name = _operator_deployment_name_for_job(job)
-    if dep_name:
+    is_operator = bool(dep_name) or (
+        (job.job_type or "").upper() == "SQL"
+        and _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None)) == "flink_operator"
+    ) or (
+        (job.job_type or "").upper() == "JAR"
+        and _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None)) == "flink_operator"
+    )
+    if is_operator:
         try:
-            from app.services.flink_operator_submit import delete_flink_deployment
+            from app.services.flink_operator_submit import (
+                delete_flink_deployment,
+                find_flink_deployment_names_for_job,
+                flink_deployment_still_exists,
+                list_flink_deployments,
+                suspend_flink_deployment,
+                _operator_namespace,
+            )
 
-            # 先尝试优雅 suspended（可选）；最终以删除 CR 为准，确保 K8s 侧 Deployment/Pod 回收
-            try:
-                from app.services.flink_operator_submit import suspend_flink_deployment
+            ns = _operator_namespace()
+            targets = find_flink_deployment_names_for_job(
+                int(job.id),
+                workspace_id=int(job.workspace_id or 0) or None,
+                preferred_name=dep_name,
+                namespace=ns,
+            )
+            if not targets and dep_name:
+                targets = [dep_name]
 
-                suspend_flink_deployment(dep_name)
-            except Exception:
-                logger.debug(
-                    "cancel: suspend 跳过/失败，继续 delete CR job_id=%s dep=%s",
-                    job.id,
-                    dep_name,
-                    exc_info=True,
+            deleted_ok: List[str] = []
+            for name in targets:
+                try:
+                    suspend_flink_deployment(name, namespace=ns)
+                except Exception:
+                    logger.debug(
+                        "cancel: suspend 跳过/失败，继续 delete CR job_id=%s dep=%s",
+                        job.id,
+                        name,
+                        exc_info=True,
+                    )
+                if delete_flink_deployment(name, namespace=ns):
+                    deleted_ok.append(name)
+
+            # 再扫一遍标签，防止漏删 / 删错名
+            leftovers = list_flink_deployments(
+                namespace=ns,
+                workspace_id=int(job.workspace_id or 0) or None,
+                job_id=int(job.id),
+            )
+            leftover_names = [
+                ((cr.get("metadata") or {}).get("name") or "").strip()
+                for cr in leftovers
+                if ((cr.get("metadata") or {}).get("name") or "").strip()
+            ]
+            for name in leftover_names:
+                if delete_flink_deployment(name, namespace=ns):
+                    deleted_ok.append(name)
+
+            still = [
+                n for n in (targets + leftover_names)
+                if n and flink_deployment_still_exists(n, namespace=ns)
+            ]
+            # 去重
+            still = sorted(set(still))
+            if still:
+                raise RuntimeError(
+                    f"已请求删除但仍存在 FlinkDeployment（可能卡在 Terminating 或 RBAC/命名空间不对）: {', '.join(still)}"
                 )
-            delete_flink_deployment(dep_name)
+
             _release_operator_ui_tunnel(job)
             if job.job_type == "SQL" and _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None)) == "flink_operator":
-                from app.services.flink_operator_submit import _operator_namespace
                 from app.services.sql_artifact import delete_sql_script_configmap
 
                 delete_sql_script_configmap(
-                    job.id, int(job.workspace_id or 0), _operator_namespace()
+                    job.id, int(job.workspace_id or 0), ns
                 )
-            job.flink_operator_deployment_name = dep_name
+            primary = (deleted_ok[0] if deleted_ok else None) or (targets[0] if targets else dep_name)
+            job.flink_operator_deployment_name = primary
             job.flink_job_id = None
             job.flink_application_jm_rest = None
             job.status = "cancelled"
             job.updated_at = datetime.utcnow()
             db.commit()
+            if deleted_ok:
+                return {
+                    "message": (
+                        f"已停止：已删除 FlinkDeployment ({', '.join(deleted_ok)})，"
+                        "Operator 将回收 JM/TM Pod"
+                    ),
+                    "deleted": deleted_ok,
+                }
+            # 库内有 Operator 标记但集群已无 CR：平台状态回填为停止
             return {
-                "message": "已停止：已删除 FlinkDeployment，Operator 将回收 JM/TM Pod",
+                "message": "已停止：集群中已无对应 FlinkDeployment，已将平台状态标为已停止",
+                "deleted": [],
             }
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"停止失败: {e}")
     jm_ov = _jm_base_for_job(job, prefer_stored=True, deadline_seconds=2.0)

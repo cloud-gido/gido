@@ -225,8 +225,8 @@ export default function StreamMonitorPage() {
 
   const handleStop = async (row: any) => {
     try {
-      await streamingApi.cancelJob(row.id)
-      message.success('已删除集群 Deployment，等待 Pod 回收；状态以集群为准')
+      const res: any = await streamingApi.cancelJob(row.id)
+      message.success(res?.message || '已删除集群 Deployment，等待 Pod 回收；状态以集群为准')
       await loadJobs()
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '停止失败')
