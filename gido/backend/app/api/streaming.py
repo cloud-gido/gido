@@ -2985,78 +2985,53 @@ def _status_payload(job: StreamingJob, *, runtime_cfg: FlinkRuntimeConfig, **ext
 
 
 def _apply_status_from_operator_cr(db: Session, job: StreamingJob, cr: Dict[str, Any], dep_name: str) -> Optional[dict]:
-    """根据已读取的 FlinkDeployment CR 更新作业并返回 flink_status 相关字段；返回 None 表示应继续查 JM。"""
-    from app.services.flink_operator_submit import extract_status_from_cr, delete_flink_deployment
+    """仅根据 K8s FlinkDeployment 回填 GIDO 状态；绝不因库内状态去改/删集群资源。"""
+    from app.services.flink_operator_submit import extract_status_from_cr
 
     spec_state = (cr.get("spec", {}).get("job", {}).get("state") or "").strip().lower()
     jid, lifecycle, err = extract_status_from_cr(cr)
     lifecycle_up = (lifecycle or "").strip().upper()
-
-    # 库内已取消，但 CR 仍非 suspended → 历史「只 suspend 失败/未删 CR」僵尸，强制删 CR 回收 Pod
-    if (job.status or "").strip().lower() == "cancelled" and spec_state != "suspended":
-        try:
-            delete_flink_deployment(dep_name)
-        except Exception:
-            logger.warning("清理僵尸 FlinkDeployment 失败 job_id=%s dep=%s", job.id, dep_name, exc_info=True)
-            return {
-                "flink_status": lifecycle_up or "RUNNING",
-                "note": "库内已停止但集群仍有 FlinkDeployment，自动删除失败，请在 K8s 手动删除",
-                "status": "cancelled",
-            }
-        job.flink_job_id = None
-        job.flink_application_jm_rest = None
-        job.updated_at = datetime.utcnow()
-        db.commit()
-        return {
-            "flink_status": "CLEANED_UP",
-            "note": "库内已停止但检测到残留 FlinkDeployment，已删除以回收 Pod",
-            "status": "cancelled",
-        }
 
     if spec_state == "suspended":
         if job.status != "cancelled":
             _mark_job_stopped(db, job, clear_runtime=True)
             job.flink_operator_deployment_name = dep_name
             db.commit()
-        # suspended 仍可能留 JM：顺带删 CR，与「停止」产品预期一致
-        try:
-            delete_flink_deployment(dep_name)
-        except Exception:
-            logger.debug("suspended 后删除 CR 跳过 job_id=%s", job.id, exc_info=True)
         return {
             "flink_status": "SUSPENDED",
-            "note": "FlinkDeployment 已暂停/回收",
+            "note": "FlinkDeployment spec.job.state=suspended（集群侧已暂停）",
             "status": "cancelled",
         }
 
-    # CR 仍在跑：纠正库内错误终态以外的状态
-    if jid and not job.flink_job_id:
+    # 集群 CR 仍在且非 suspended → GIDO 必须以集群为准（即使库内曾标 cancelled）
+    if jid and job.flink_job_id != jid:
         job.flink_job_id = jid
         job.updated_at = datetime.utcnow()
         db.commit()
 
-    if lifecycle_up in ("STABLE", "DEPLOYED", "CREATED", "RUNNING") or (jid and lifecycle_up not in ("FAILED", "FAILING")):
+    if lifecycle_up in ("STABLE", "DEPLOYED", "CREATED", "RUNNING") or (
+        jid and lifecycle_up not in ("FAILED", "FAILING", "")
+    ):
         if job.status != "running":
             job.status = "running"
             job.updated_at = datetime.utcnow()
             db.commit()
         if jid:
-            return None  # 继续查 JM 拿精确 state
+            return None  # 继续查 JM
         return {"flink_status": lifecycle_up or "RUNNING", "status": "running"}
 
+    if err or lifecycle_up == "FAILED":
+        flink_st = "FAILED"
+        if job.status != "failed":
+            job.status = "failed"
+            if err:
+                job.last_submit_error = err
+            job.updated_at = datetime.utcnow()
+            db.commit()
+        return {"flink_status": flink_st, "note": err or "Operator FAILED", "status": "failed"}
+
     if not job.flink_job_id:
-        if err or lifecycle_up == "FAILED":
-            flink_st = "FAILED"
-            if job.status != "failed":
-                job.status = "failed"
-                if err:
-                    job.last_submit_error = err
-                job.updated_at = datetime.utcnow()
-                db.commit()
-        elif lifecycle_up:
-            flink_st = lifecycle_up
-        else:
-            flink_st = "STARTING"
+        flink_st = lifecycle_up or "STARTING"
         note = err or (f"Operator lifecycle: {lifecycle}" if lifecycle else "等待 Flink Job ID 回填")
         return {"flink_status": flink_st, "note": note, "status": job.status}
     return None
@@ -3069,7 +3044,7 @@ def _sync_one_job_live_status(
     cr_cache: Optional[Dict[str, Any]] = None,
     jm_timeout: float = 3.0,
 ) -> dict:
-    """同步单个作业的 Flink/Operator 状态（短超时；优先用 CR 缓存与已存 JM）。以集群为准回填库。"""
+    """以 K8s/JM 为准回填 GIDO 库内状态；同步路径禁止删除/修改集群 CR。"""
     rt_cfg = _flink_runtime_cfg_for_job(db, job)
     fc = _flink_client_for_job(db, job)
 
@@ -3081,7 +3056,6 @@ def _sync_one_job_live_status(
         cr = (cr_cache or {}).get(dep_name) if cr_cache is not None else None
         cr_listed_missing = False
         if cr is None and cr_cache is not None:
-            # list 成功且无此 CR → 集群侧已不存在
             cr_listed_missing = True
         if cr is None and cr_cache is None:
             try:
@@ -3104,8 +3078,8 @@ def _sync_one_job_live_status(
             except Exception:
                 logger.debug("Operator CR 状态解析失败 job_id=%s dep=%s", job.id, dep_name, exc_info=True)
         elif cr_listed_missing:
-            # 库里 running/有 jobId，但 CR 已没了 → 纠正为已停止（如 datagen-paimon）
-            if (job.status or "").lower() in ("running", "draft") or job.flink_job_id:
+            # 仅回填 GIDO：集群已无 CR → 平台显示已停止（不删任何东西）
+            if (job.status or "").lower() not in ("cancelled", "finished", "failed"):
                 _mark_job_stopped(db, job, clear_runtime=True)
                 job.flink_operator_deployment_name = dep_name
                 db.commit()
@@ -3118,7 +3092,7 @@ def _sync_one_job_live_status(
             )
         elif not job.flink_job_id:
             if job.status == "cancelled":
-                return _status_payload(job, runtime_cfg=rt_cfg, flink_status="SUSPENDED", status="cancelled")
+                return _status_payload(job, runtime_cfg=rt_cfg, flink_status="UNKNOWN", status="cancelled")
             return _status_payload(job, runtime_cfg=rt_cfg, flink_status="UNKNOWN", note="无法读取 FlinkDeployment")
 
     if not job.flink_job_id:
@@ -3142,7 +3116,7 @@ def _sync_one_job_live_status(
                 runtime_cfg=rt_cfg,
                 flink_status="NOT_FOUND_ON_JM",
                 detail=None,
-                note="Flink JobManager 上已无该 Job ID（可能已从控制台停止或记录已回收），已将平台 running 回填为 cancelled",
+                note="Flink JobManager 上已无该 Job ID，已将平台状态回填为已停止",
                 status=job.status,
             )
         flink_state = (detail.get("state") or "UNKNOWN").upper()
@@ -3162,9 +3136,7 @@ def _sync_one_job_live_status(
             "CANCELLING": "cancelled",
         }
         new_status = state_map.get(flink_state)
-        if job.status == "cancelled" and new_status == "running":
-            # JM 仍报 RUNNING 但库已取消：Operator 路径应由 CR 清理；Session 则允许纠回？保持 cancelled 并尝试 cancel JM
-            new_status = None
+        # 集群 JM 仍 RUNNING → 纠正库内错误的 cancelled（GIDO 依赖 K8s，不做反向关闭）
         if new_status:
             job.status = new_status
         job.updated_at = datetime.utcnow()
@@ -3181,8 +3153,8 @@ def sync_workspace_jobs_status(
     current_user: User = Depends(get_current_user),
 ):
     """
-    工作空间批量状态同步：一次 list FlinkDeployment，按集群 CR 回填库内状态。
-    含「库内已停止但仍有 deployment」的僵尸清理，以及「库内 running 但 CR 已消失」的纠正。
+    工作空间批量状态同步：一次 list FlinkDeployment，**仅用集群状态回填 GIDO**。
+    同步路径不会删除/修改 FlinkDeployment；停止集群资源只发生在用户点击「停止」。
     """
     assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_STREAM_READ)
     jobs = (
