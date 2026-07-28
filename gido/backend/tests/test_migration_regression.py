@@ -279,14 +279,24 @@ def test_migrate_node_folders_scope_and_jar_library():
     migrate_dw_streaming_jobs_folder_sort_and_jar_refs(eng)
     migrate_dw_streaming_jar_library(eng)
     migrate_dw_streaming_jar_library(eng)
+    from app.services.rbac_seed import migrate_dw_streaming_resource_libraries
+
+    migrate_dw_streaming_resource_libraries(eng)
+    migrate_dw_streaming_resource_libraries(eng)
     fcols = {c["name"] for c in inspect(eng).get_columns("dw_node_folders")}
     assert "scope" in fcols
     jcols = {c["name"] for c in inspect(eng).get_columns("dw_streaming_jobs")}
     assert "sort_order" in jcols
     assert "jar_artifact_id" in jcols
     assert "jar_version_id" in jcols
+    assert "connector_version_ids" in jcols
+    assert "dependency_file_version_ids" in jcols
     assert inspect(eng).has_table("dw_streaming_jar_artifacts")
     assert inspect(eng).has_table("dw_streaming_jar_versions")
+    assert inspect(eng).has_table("dw_streaming_connector_artifacts")
+    assert inspect(eng).has_table("dw_streaming_connector_versions")
+    assert inspect(eng).has_table("dw_streaming_file_artifacts")
+    assert inspect(eng).has_table("dw_streaming_file_versions")
 
     # 旧表无 scope：补列
     eng2 = _fresh_engine()

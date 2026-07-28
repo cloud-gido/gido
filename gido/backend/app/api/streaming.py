@@ -459,6 +459,40 @@ def _explain_flink_jm_connect_error(jm_base: str, path: str, cause: Exception) -
     return "\n".join(chunks)
 
 
+def _parse_version_id_list(raw) -> List[int]:
+    """解析作业上绑定的版本 id 列表（JSON 数组或已是 list）。"""
+    if raw is None or raw == "":
+        return []
+    if isinstance(raw, list):
+        out: List[int] = []
+        for x in raw:
+            try:
+                out.append(int(x))
+            except (TypeError, ValueError):
+                continue
+        return out
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for x in data:
+        try:
+            out.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _dump_version_id_list(ids) -> Optional[str]:
+    parsed = _parse_version_id_list(ids)
+    if not parsed:
+        return None
+    return json.dumps(parsed, separators=(",", ":"))
+
+
 def _streaming_job_public_dict(
     db: Session,
     job: StreamingJob,
@@ -565,6 +599,8 @@ def _streaming_job_public_dict(
         "sort_order": getattr(job, "sort_order", 0) or 0,
         "jar_artifact_id": getattr(job, "jar_artifact_id", None),
         "jar_version_id": getattr(job, "jar_version_id", None),
+        "connector_version_ids": _parse_version_id_list(getattr(job, "connector_version_ids", None)),
+        "dependency_file_version_ids": _parse_version_id_list(getattr(job, "dependency_file_version_ids", None)),
         "script_content": job.script_content,
         "main_class": job.main_class,
         "program_args": job.program_args,
@@ -613,6 +649,9 @@ class StreamingJob(Base):
     # 工作空间 JAR 制品库绑定（优先于遗留 jar_path）
     jar_artifact_id = Column(Integer, nullable=True)
     jar_version_id = Column(Integer, nullable=True)
+    # JSON 数组字符串：连接器版本 id / 依赖文件版本 id
+    connector_version_ids = Column(Text, nullable=True)
+    dependency_file_version_ids = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_by = Column(Integer, ForeignKey("dw_users.id"))
@@ -663,6 +702,62 @@ class StreamingJarVersion(Base):
     default_main_class = Column(String(256), nullable=True)
     change_note = Column(Text, nullable=True)
     status = Column(String(16), nullable=False, default="active")  # active | deprecated
+    uploaded_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+
+
+class StreamingConnectorArtifact(Base):
+    """工作空间级连接器制品（多版本，.jar）。"""
+    __tablename__ = "dw_streaming_connector_artifacts"
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("dw_workspaces.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(128), nullable=False)
+    description = Column(Text, nullable=True)
+    owner_id = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    created_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class StreamingConnectorVersion(Base):
+    __tablename__ = "dw_streaming_connector_versions"
+    id = Column(Integer, primary_key=True, index=True)
+    artifact_id = Column(Integer, ForeignKey("dw_streaming_connector_artifacts.id", ondelete="CASCADE"), nullable=False)
+    version = Column(Integer, nullable=False)
+    file_name = Column(String(256), nullable=False)
+    size_bytes = Column(BigInteger, nullable=True)
+    sha256 = Column(String(64), nullable=True)
+    storage_key = Column(String(512), nullable=True)
+    change_note = Column(Text, nullable=True)
+    status = Column(String(16), nullable=False, default="active")
+    uploaded_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+
+
+class StreamingFileArtifact(Base):
+    """工作空间级依赖文件制品（多版本，任意文件）。"""
+    __tablename__ = "dw_streaming_file_artifacts"
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("dw_workspaces.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(128), nullable=False)
+    description = Column(Text, nullable=True)
+    owner_id = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    created_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class StreamingFileVersion(Base):
+    __tablename__ = "dw_streaming_file_versions"
+    id = Column(Integer, primary_key=True, index=True)
+    artifact_id = Column(Integer, ForeignKey("dw_streaming_file_artifacts.id", ondelete="CASCADE"), nullable=False)
+    version = Column(Integer, nullable=False)
+    file_name = Column(String(256), nullable=False)
+    size_bytes = Column(BigInteger, nullable=True)
+    sha256 = Column(String(64), nullable=True)
+    storage_key = Column(String(512), nullable=True)
+    change_note = Column(Text, nullable=True)
+    status = Column(String(16), nullable=False, default="active")
     uploaded_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
     uploaded_at = Column(DateTime, default=datetime.utcnow)
 
@@ -882,6 +977,19 @@ class FlinkClient:
         path = f"/jobs/{job_id}/exceptions"
         try:
             r = _FLINK_HTTP_GET.get(f"{base}{path}", timeout=15)
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(_explain_flink_jm_connect_error(base, path, e)) from e
+        r.raise_for_status()
+        return r.json()
+
+    def job_checkpoints(self, job_id: str, jm_base: Optional[str] = None, *, timeout: float = 10) -> dict:
+        """GET /jobs/{id}/checkpoints。"""
+        base = (jm_base or self.jm_base or "").strip().rstrip("/")
+        if not base:
+            raise RuntimeError("未配置 JobManager REST（FLINK_URL）")
+        path = f"/jobs/{job_id}/checkpoints"
+        try:
+            r = _FLINK_HTTP_GET.get(f"{base}{path}", timeout=timeout)
         except requests.exceptions.RequestException as e:
             raise RuntimeError(_explain_flink_jm_connect_error(base, path, e)) from e
         r.raise_for_status()
@@ -1472,6 +1580,8 @@ class JobCreate(BaseModel):
     flink_session_profile_id: Optional[int] = None
     jar_artifact_id: Optional[int] = None
     jar_version_id: Optional[int] = None
+    connector_version_ids: Optional[List[int]] = None
+    dependency_file_version_ids: Optional[List[int]] = None
 
     @field_validator("flink_sql_submit_mode")
     @classmethod
@@ -1503,6 +1613,8 @@ class JobUpdate(BaseModel):
     flink_session_profile_id: Optional[int] = None
     jar_artifact_id: Optional[int] = None
     jar_version_id: Optional[int] = None
+    connector_version_ids: Optional[List[int]] = None
+    dependency_file_version_ids: Optional[List[int]] = None
 
     @field_validator("flink_sql_submit_mode")
     @classmethod
@@ -2363,6 +2475,10 @@ def create_job(job_in: JobCreate, db: Session = Depends(get_db), current_user: U
     folder_id = data.get("folder_id")
     _require_stream_folder(db, int(job_in.workspace_id), folder_id)
     data["sort_order"] = _next_stream_job_sort_order(db, int(job_in.workspace_id), folder_id)
+    if "connector_version_ids" in data:
+        data["connector_version_ids"] = _dump_version_id_list(data.get("connector_version_ids"))
+    if "dependency_file_version_ids" in data:
+        data["dependency_file_version_ids"] = _dump_version_id_list(data.get("dependency_file_version_ids"))
     job = StreamingJob(**data, created_by=current_user.id, owner_id=current_user.id, is_locked=False)
     db.add(job)
     db.commit()
@@ -2420,6 +2536,10 @@ def copy_streaming_job(
         flink_jar_submit_mode=_normalize_jar_submit_mode(getattr(src, "flink_jar_submit_mode", None)),
         flink_session_profile_id=getattr(src, "flink_session_profile_id", None),
         folder_id=getattr(src, "folder_id", None),
+        jar_artifact_id=getattr(src, "jar_artifact_id", None),
+        jar_version_id=getattr(src, "jar_version_id", None),
+        connector_version_ids=getattr(src, "connector_version_ids", None),
+        dependency_file_version_ids=getattr(src, "dependency_file_version_ids", None),
         status="draft",
         is_locked=False,
         created_by=current_user.id,
@@ -2495,6 +2615,26 @@ def update_job(
         patch["jar_artifact_id"] = art.id
         if not (patch.get("main_class") or job.main_class) and ver.default_main_class:
             patch.setdefault("main_class", ver.default_main_class)
+    if "connector_version_ids" in patch:
+        ids = _parse_version_id_list(patch.get("connector_version_ids"))
+        for vid in ids:
+            ver = db.query(StreamingConnectorVersion).filter(StreamingConnectorVersion.id == vid).first()
+            if not ver or ver.status != "active":
+                raise HTTPException(status_code=400, detail=f"连接器版本 {vid} 不存在或已废弃")
+            art = db.query(StreamingConnectorArtifact).filter(StreamingConnectorArtifact.id == ver.artifact_id).first()
+            if not art or art.workspace_id != job.workspace_id:
+                raise HTTPException(status_code=400, detail=f"连接器版本 {vid} 不属于当前工作空间")
+        patch["connector_version_ids"] = _dump_version_id_list(ids)
+    if "dependency_file_version_ids" in patch:
+        ids = _parse_version_id_list(patch.get("dependency_file_version_ids"))
+        for vid in ids:
+            ver = db.query(StreamingFileVersion).filter(StreamingFileVersion.id == vid).first()
+            if not ver or ver.status != "active":
+                raise HTTPException(status_code=400, detail=f"依赖文件版本 {vid} 不存在或已废弃")
+            art = db.query(StreamingFileArtifact).filter(StreamingFileArtifact.id == ver.artifact_id).first()
+            if not art or art.workspace_id != job.workspace_id:
+                raise HTTPException(status_code=400, detail=f"依赖文件版本 {vid} 不属于当前工作空间")
+        patch["dependency_file_version_ids"] = _dump_version_id_list(ids)
     for k, v in patch.items():
         setattr(job, k, v)
     job.updated_at = datetime.utcnow()
@@ -2725,6 +2865,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
             from app.services.operator_resources import split_streaming_properties_for_operator
 
             flink_extra, op_resources = split_streaming_properties_for_operator(extra or None)
+            flink_extra = _merge_connector_pipeline_jars(db, job, flink_extra)
             sql_source = str((extra or {}).get("sql_source") or "mount").strip().lower()
             if mode == "flink_operator":
                 from app.services.flink_operator_submit import submit_sql_via_operator
@@ -2775,6 +2916,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
 
                 jar_extra = _parse_job_streaming_properties(getattr(job, "streaming_properties", None))
                 flink_extra, op_resources = split_streaming_properties_for_operator(jar_extra or None)
+                flink_extra = _merge_connector_pipeline_jars(db, job, flink_extra)
                 hist_version, _ = _record_submit_history_version(db, job, current_user.id)
                 dep_meta = _build_operator_deployment_meta(
                     job,
@@ -2978,9 +3120,96 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
         raise HTTPException(status_code=500, detail=f"停止失败: {e}")
 
 
+def _summarize_checkpoints(raw: Optional[dict]) -> dict:
+    """裁剪 Flink checkpoints REST 为运维摘要。"""
+    raw = raw or {}
+    counts = raw.get("counts") or {}
+    latest = raw.get("latest") or {}
+    completed = latest.get("completed") or {}
+    failed = latest.get("failed") or {}
+    in_progress = latest.get("in_progress") or latest.get("savepoint")  # 部分版本字段名不同
+
+    def _one(block: dict) -> Optional[dict]:
+        if not isinstance(block, dict) or not block:
+            return None
+        return {
+            "id": block.get("id"),
+            "status": block.get("status"),
+            "path": block.get("external_path") or block.get("path"),
+            "duration_ms": block.get("end_to_end_duration") or block.get("duration"),
+            "size_bytes": block.get("state_size") or block.get("checkpointed_size"),
+            "failure_message": block.get("failure_message") or block.get("failureMessage"),
+            "trigger_timestamp": block.get("trigger_timestamp"),
+        }
+
+    # in_progress 可能是 dict 或嵌套
+    ip = in_progress if isinstance(in_progress, dict) else None
+    if ip is None and isinstance(latest.get("savepoint"), dict) and (latest.get("savepoint") or {}).get("status") == "IN_PROGRESS":
+        ip = latest.get("savepoint")
+
+    return {
+        "counts": {
+            "restored": counts.get("restored"),
+            "total": counts.get("total"),
+            "in_progress": counts.get("in_progress"),
+            "completed": counts.get("completed"),
+            "failed": counts.get("failed"),
+        },
+        "latest_completed": _one(completed if isinstance(completed, dict) else {}),
+        "latest_failed": _one(failed if isinstance(failed, dict) else {}),
+        "in_progress": _one(ip or {}),
+    }
+
+
+def _build_failure_payload(
+    job: StreamingJob,
+    *,
+    flink_status: Optional[str] = None,
+    note: Optional[str] = None,
+    error: Optional[str] = None,
+) -> Optional[dict]:
+    """结构化失败原因：供运维诊断展示。"""
+    st = (job.status or "").strip().lower()
+    fl = (flink_status or "").strip().upper()
+    submit_err = (getattr(job, "last_submit_error", None) or "").strip()
+    note_s = (note or "").strip()
+    err_s = (error or "").strip()
+    interesting = st == "failed" or fl in ("FAILED", "FAILING") or bool(submit_err)
+    if not interesting:
+        return None
+    source = "submit"
+    message = submit_err or note_s or err_s or fl or st
+    if note_s and (fl in ("FAILED", "FAILING") or "Operator" in note_s or note_s == submit_err):
+        source = "cr"
+        message = note_s or submit_err
+    elif err_s and not submit_err:
+        source = "jm"
+        message = err_s
+    elif fl in ("FAILED", "FAILING") and not submit_err:
+        source = "jm"
+        message = note_s or fl
+    elif submit_err:
+        source = "submit"
+        message = submit_err
+    return {
+        "source": source,
+        "message": (message or "")[:2000],
+        "phase": fl or st or None,
+    }
+
+
 def _status_payload(job: StreamingJob, *, runtime_cfg: FlinkRuntimeConfig, **extra):
     out = {"status": job.status, "flink_operational": _compute_flink_operational(job, runtime_cfg=runtime_cfg)}
     out.update(extra)
+    if "failure" not in out:
+        failure = _build_failure_payload(
+            job,
+            flink_status=out.get("flink_status"),
+            note=out.get("note"),
+            error=out.get("error"),
+        )
+        if failure:
+            out["failure"] = failure
     return out
 
 
@@ -3191,6 +3420,7 @@ def sync_workspace_jobs_status(
                 "flink_status": payload.get("flink_status"),
                 "note": payload.get("note"),
                 "error": payload.get("error"),
+                "failure": payload.get("failure"),
             }
         )
     return {"items": items, "synced": len(items), "total": len(jobs)}
@@ -3215,6 +3445,30 @@ def get_job_exceptions(job_id: int, db: Session = Depends(get_db_flink), current
         return fc.job_exceptions(job.flink_job_id, jm_base=jm_ov)
     except Exception as e:
         return {"exceptions": [], "error": str(e)}
+
+
+@router.get("/jobs/{job_id}/checkpoints")
+def get_job_checkpoints(job_id: int, db: Session = Depends(get_db_flink), current_user: User = Depends(get_current_user)):
+    """只读 Checkpoint 摘要（不触发 savepoint）。"""
+    job = require_streaming_job(db, current_user, job_id)
+    if not job.flink_job_id:
+        return {
+            "available": False,
+            "reason": "尚无 Flink Job ID，无法拉取 checkpoints",
+            **_summarize_checkpoints(None),
+        }
+    jm_ov = _jm_base_for_job(job, prefer_stored=True, deadline_seconds=2.0)
+    fc = _flink_client_for_job(db, job)
+    try:
+        raw = fc.job_checkpoints(job.flink_job_id, jm_base=jm_ov, timeout=8.0)
+        return {"available": True, "flink_job_id": job.flink_job_id, **_summarize_checkpoints(raw)}
+    except Exception as e:
+        return {
+            "available": False,
+            "reason": str(e),
+            "flink_job_id": job.flink_job_id,
+            **_summarize_checkpoints(None),
+        }
 
 
 @router.get("/jobs/{job_id}/flink-ui/bootstrap")
@@ -3772,3 +4026,41 @@ async def upload_jar(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"上传失败: {e}")
+
+
+def _merge_connector_pipeline_jars(db: Session, job: StreamingJob, flink_extra: Optional[dict]) -> dict:
+    """将作业绑定的连接器版本解析为 URI，写入 pipeline.jars（分号分隔）。"""
+    from app.services.artifact_s3 import JAR_ARTIFACT_FILENAME
+    from app.services.jar_artifact import resolve_connector_uri_for_operator
+
+    out = dict(flink_extra or {})
+    ids = _parse_version_id_list(getattr(job, "connector_version_ids", None))
+    if not ids:
+        return out
+    uris: List[str] = []
+    for vid in ids:
+        ver = db.query(StreamingConnectorVersion).filter(StreamingConnectorVersion.id == vid).first()
+        if not ver or ver.status != "active":
+            raise HTTPException(status_code=400, detail=f"连接器版本 {vid} 不可用")
+        art = db.query(StreamingConnectorArtifact).filter(StreamingConnectorArtifact.id == ver.artifact_id).first()
+        if not art or art.workspace_id != job.workspace_id:
+            raise HTTPException(status_code=400, detail=f"连接器版本 {vid} 不属于当前工作空间")
+        uris.append(
+            resolve_connector_uri_for_operator(
+                int(ver.id),
+                int(ver.artifact_id),
+                int(ver.version),
+                JAR_ARTIFACT_FILENAME,
+            )
+        )
+    if not uris:
+        return out
+    existing = (out.get("pipeline.jars") or "").strip()
+    merged = ";".join([p for p in ([existing] if existing else []) + uris if p])
+    out["pipeline.jars"] = merged
+    return out
+
+
+from app.api.streaming_resource_library import register_routes as _register_resource_library_routes
+
+_register_resource_library_routes(router)

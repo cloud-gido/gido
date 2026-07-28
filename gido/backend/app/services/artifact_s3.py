@@ -130,11 +130,32 @@ def s3_key_for_library_version(artifact_id: int, version: int, filename: str) ->
     return "/".join(parts)
 
 
+def s3_key_for_kind_library_version(kind: str, artifact_id: int, version: int, filename: str) -> Optional[str]:
+    prefix = artifact_s3_prefix()
+    if not prefix:
+        return None
+    k = (kind or "").strip().strip("/")
+    _, key_prefix = _parse_s3_prefix(prefix)
+    parts = [p for p in (key_prefix, "library", k, str(int(artifact_id)), f"v{int(version)}", filename) if p]
+    return "/".join(parts)
+
+
 def build_s3_library_version_uri(artifact_id: int, version: int, filename: str) -> Optional[str]:
     prefix = artifact_s3_prefix()
     if not prefix:
         return None
     key = s3_key_for_library_version(artifact_id, version, filename)
+    if not key:
+        return None
+    bucket, _ = _parse_s3_prefix(prefix)
+    return f"s3://{bucket}/{key}"
+
+
+def build_s3_kind_library_version_uri(kind: str, artifact_id: int, version: int, filename: str) -> Optional[str]:
+    prefix = artifact_s3_prefix()
+    if not prefix:
+        return None
+    key = s3_key_for_kind_library_version(kind, artifact_id, version, filename)
     if not key:
         return None
     bucket, _ = _parse_s3_prefix(prefix)

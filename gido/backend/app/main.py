@@ -90,6 +90,7 @@ async def lifespan(app: FastAPI):
         migrate_dw_node_folders_scope,
         migrate_dw_streaming_jobs_folder_sort_and_jar_refs,
         migrate_dw_streaming_jar_library,
+        migrate_dw_streaming_resource_libraries,
         migrate_dw_flink_session_profiles,
         migrate_dw_streaming_jobs_flink_session_profile,
         migrate_dw_sync_tasks_enhance,
@@ -129,6 +130,7 @@ async def lifespan(app: FastAPI):
     migrate_dw_node_folders_scope(engine)
     migrate_dw_streaming_jobs_folder_sort_and_jar_refs(engine)
     migrate_dw_streaming_jar_library(engine)
+    migrate_dw_streaming_resource_libraries(engine)
     migrate_dw_flink_session_profiles(engine)
     migrate_dw_streaming_jobs_flink_session_profile(engine)
     migrate_dw_sync_tasks_enhance(engine)

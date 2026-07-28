@@ -26,6 +26,8 @@ import WorkflowPage from './pages/Workflow'
 import StreamStudioPage from './pages/StreamStudio'
 import StreamResourcesPage from './pages/StreamResources'
 import StreamJarLibraryPage from './pages/StreamJarLibrary'
+import StreamConnectorLibraryPage from './pages/StreamConnectorLibrary'
+import StreamFileLibraryPage from './pages/StreamFileLibrary'
 import StreamMonitorPage from './pages/StreamMonitor'
 import SystemRbacPage from './pages/SystemRbac'
 import WorkspaceSettingsPage from './pages/WorkspaceSettings'
@@ -97,6 +99,8 @@ export default function App() {
             <Route path="studio" element={<StreamStudioPage />} />
             <Route path="resources" element={<StreamResourcesPage />} />
             <Route path="resources/jars" element={<StreamJarLibraryPage />} />
+            <Route path="resources/connectors" element={<StreamConnectorLibraryPage />} />
+            <Route path="resources/files" element={<StreamFileLibraryPage />} />
             <Route path="jars" element={<Navigate to={R.stream.resourcesJars} replace />} />
             <Route path="monitor" element={<StreamMonitorPage />} />
             <Route path="overview" element={<Navigate to={R.stream.monitor} replace />} />

@@ -11,7 +11,7 @@ import type { MenuProps } from 'antd'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import {
   CodeOutlined, MonitorOutlined, AuditOutlined, InboxOutlined,
-  AppstoreOutlined,
+  AppstoreOutlined, ApiOutlined, FileZipOutlined,
 } from '@ant-design/icons'
 import ProductBrandBlock from './ProductBrandBlock'
 import WorkspaceHeaderBar from './shell/WorkspaceHeaderBar'
@@ -32,6 +32,8 @@ const MENU_ITEMS: MenuProps['items'] = [
     children: [
       { key: R.stream.resources, icon: <AppstoreOutlined />, label: '总览' },
       { key: R.stream.resourcesJars, icon: <InboxOutlined />, label: 'JAR 包' },
+      { key: R.stream.resourcesConnectors, icon: <ApiOutlined />, label: '连接器' },
+      { key: R.stream.resourcesFiles, icon: <FileZipOutlined />, label: '依赖文件' },
     ],
   },
   { key: R.stream.monitor, icon: <MonitorOutlined />, label: '作业运维' },
@@ -42,6 +44,8 @@ function selectedStreamKey(pathname: string): string {
   if (pathname === R.stream.overview) return R.stream.monitor
   if (pathname === R.stream.jars || pathname.startsWith(`${R.stream.resources}/`)) {
     if (pathname.includes('/jars')) return R.stream.resourcesJars
+    if (pathname.includes('/connectors')) return R.stream.resourcesConnectors
+    if (pathname.includes('/files')) return R.stream.resourcesFiles
     return R.stream.resources
   }
   if (pathname === R.stream.resources) return R.stream.resources
@@ -53,7 +57,10 @@ export default function StreamLayout() {
   const location = useLocation()
   const shell = useWorkspaceShell()
   const selectedKey = selectedStreamKey(location.pathname)
-  const underResources = selectedKey === R.stream.resources || selectedKey === R.stream.resourcesJars
+  const underResources = selectedKey === R.stream.resources
+    || selectedKey === R.stream.resourcesJars
+    || selectedKey === R.stream.resourcesConnectors
+    || selectedKey === R.stream.resourcesFiles
 
   const [openKeys, setOpenKeys] = useState<string[]>(() => (underResources ? [RESOURCES_GROUP_KEY] : []))
 

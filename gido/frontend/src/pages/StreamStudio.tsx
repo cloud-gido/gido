@@ -221,6 +221,8 @@ export default function StreamStudioPage() {
   const [jarForm, setJarForm] = useState({ main_class: '', program_args: '', parallelism: 1 })
   const [jarArtifacts, setJarArtifacts] = useState<any[]>([])
   const [selectedJarArtifact, setSelectedJarArtifact] = useState<any | null>(null)
+  const [connectorVersionOptions, setConnectorVersionOptions] = useState<{ value: number; label: string }[]>([])
+  const [fileVersionOptions, setFileVersionOptions] = useState<{ value: number; label: string }[]>([])
   const [programArgsExpandOpen, setProgramArgsExpandOpen] = useState(false)
   const [sqlParallelism, setSqlParallelism] = useState(1)
   /** Flink SQL Gateway Open Session 合并用 JSON（对标阿里云实时计算「参数调优」的轻量版） */
@@ -351,11 +353,45 @@ export default function StreamStudioPage() {
   useEffect(() => {
     if (!wsId) {
       setJarArtifacts([])
+      setConnectorVersionOptions([])
+      setFileVersionOptions([])
       return
     }
     streamingApi.listJarArtifacts(wsId)
       .then((list: any) => setJarArtifacts(list || []))
       .catch(() => setJarArtifacts([]))
+
+    const loadVersionOpts = async (
+      listFn: (ws: number) => Promise<any>,
+      getFn: (id: number) => Promise<any>,
+      setOpts: (o: { value: number; label: string }[]) => void,
+    ) => {
+      try {
+        const arts: any[] = (await listFn(wsId)) || []
+        const details = await Promise.all(arts.map(a => getFn(a.id).catch(() => null)))
+        const opts: { value: number; label: string }[] = []
+        for (const d of details) {
+          if (!d) continue
+          for (const v of d.versions || []) {
+            if (v.status !== 'active') continue
+            opts.push({ value: v.id, label: `${d.name} · v${v.version}` })
+          }
+        }
+        setOpts(opts)
+      } catch {
+        setOpts([])
+      }
+    }
+    void loadVersionOpts(
+      streamingApi.listConnectorArtifacts,
+      streamingApi.getConnectorArtifact,
+      setConnectorVersionOptions,
+    )
+    void loadVersionOpts(
+      streamingApi.listFileArtifacts,
+      streamingApi.getFileArtifact,
+      setFileVersionOptions,
+    )
   }, [wsId])
 
   useEffect(() => {
@@ -637,11 +673,24 @@ export default function StreamStudioPage() {
     if (!selected || selected.job_type !== 'JAR' || !selectedJarArtifact) return
     const version = selectedJarArtifact.versions?.find((v: any) => v.id === versionId)
     const patch: Record<string, unknown> = { jar_version_id: versionId ?? null }
+
     if (!jarForm.main_class.trim() && version?.default_main_class) {
       patch.main_class = version.default_main_class
       setJarForm(f => ({ ...f, main_class: version.default_main_class }))
     }
     await streamingApi.updateJob(selected.id, patch, { createHistory: false })
+    await load(false)
+  }
+
+  const bindConnectorVersions = async (ids: number[]) => {
+    if (!selected) return
+    await streamingApi.updateJob(selected.id, { connector_version_ids: ids }, { createHistory: false })
+    await load(false)
+  }
+
+  const bindFileVersions = async (ids: number[]) => {
+    if (!selected) return
+    await streamingApi.updateJob(selected.id, { dependency_file_version_ids: ids }, { createHistory: false })
     await load(false)
   }
 
@@ -1255,6 +1304,49 @@ export default function StreamStudioPage() {
                   />
                 </Space>
               )}
+            </Card>
+          )}
+
+          {selected && (
+            <Card size="small" title="依赖绑定" style={{ marginTop: 12 }}>
+              <Form layout="vertical" style={{ maxWidth: 720 }}>
+                <Form.Item
+                  label="连接器版本"
+                  extra={<Link to={R.stream.resourcesConnectors}>资源管理 · 连接器</Link>}
+                >
+                  <Select
+                    mode="multiple"
+                    allowClear
+                    showSearch
+                    optionFilterProp="label"
+                    disabled={selected.is_locked}
+                    placeholder="选择连接器版本（部署注入 pipeline.jars）"
+                    value={selected.connector_version_ids || []}
+                    options={connectorVersionOptions}
+                    onChange={v => void bindConnectorVersions(v || []).catch((e: any) => {
+                      message.error(e?.response?.data?.detail || '绑定失败')
+                    })}
+                  />
+                </Form.Item>
+                <Form.Item
+                  label="依赖文件版本"
+                  extra={<Link to={R.stream.resourcesFiles}>资源管理 · 依赖文件</Link>}
+                >
+                  <Select
+                    mode="multiple"
+                    allowClear
+                    showSearch
+                    optionFilterProp="label"
+                    disabled={selected.is_locked}
+                    placeholder="选择依赖文件版本（本轮仅落库绑定）"
+                    value={selected.dependency_file_version_ids || []}
+                    options={fileVersionOptions}
+                    onChange={v => void bindFileVersions(v || []).catch((e: any) => {
+                      message.error(e?.response?.data?.detail || '绑定失败')
+                    })}
+                  />
+                </Form.Item>
+              </Form>
             </Card>
           )}
         </div>

@@ -35,16 +35,18 @@ const CARDS: ResourceCard[] = [
   {
     key: 'connector',
     title: '连接器',
-    desc: '自定义 / 三方 Flink 连接器包纳管，供 SQL 作业引用（规划中，对标实时计算连接器管理）。',
+    desc: '自定义 / 三方 Flink 连接器包纳管，供 SQL/JAR 作业引用；部署时注入 pipeline.jars。',
     icon: <ApiOutlined style={{ fontSize: 22 }} />,
-    status: 'planned',
+    status: 'ready',
+    path: R.stream.resourcesConnectors,
   },
   {
     key: 'files',
     title: '依赖文件',
-    desc: '配置、UDF、模型等非 JAR 依赖的版本化托管（规划中）。',
+    desc: '配置、UDF、模型等非 JAR 依赖的版本化托管（绑定落库；本轮不挂载到 Pod）。',
     icon: <FileZipOutlined style={{ fontSize: 22 }} />,
-    status: 'planned',
+    status: 'ready',
+    path: R.stream.resourcesFiles,
   },
 ]
 

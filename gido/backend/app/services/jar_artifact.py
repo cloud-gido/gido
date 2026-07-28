@@ -175,3 +175,80 @@ def resolve_jar_uri_for_operator(
     if s3_uri:
         return s3_uri
     return build_jar_http_uri_for_operator(job_id)
+
+
+def kind_library_version_dir(kind: str, artifact_id: int, version: int) -> Path:
+    """kind: connectors | files"""
+    k = (kind or "").strip().strip("/")
+    if k not in ("connectors", "files"):
+        raise ValueError(f"unsupported library kind: {kind}")
+    base = Path(settings.JAR_ARTIFACT_DIR).expanduser().resolve()
+    d = base / "library" / k / str(int(artifact_id)) / f"v{int(version)}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def kind_library_file_path(kind: str, artifact_id: int, version: int, file_name: str) -> Path:
+    safe = Path(file_name or "artifact.bin").name
+    return kind_library_version_dir(kind, artifact_id, version) / safe
+
+
+def save_kind_library_bytes(
+    kind: str,
+    artifact_id: int,
+    version: int,
+    content: bytes,
+    file_name: str,
+    *,
+    content_type: str = "application/octet-stream",
+) -> Path:
+    path = kind_library_file_path(kind, artifact_id, version, file_name)
+    path.write_bytes(content)
+    if artifact_s3_enabled():
+        try:
+            from app.services.artifact_s3 import upload_artifact_bytes_at_key, s3_key_for_kind_library_version
+
+            key = s3_key_for_kind_library_version(kind, artifact_id, version, Path(file_name).name)
+            if key:
+                upload_artifact_bytes_at_key(key, content, content_type=content_type)
+        except Exception as ex:
+            logger.error("%s 库版本上传 S3 失败 artifact=%s v=%s: %s", kind, artifact_id, version, ex)
+            raise RuntimeError(f"文件已写入本地但上传 S3 失败: {ex}") from ex
+    return path
+
+
+def kind_library_exists(kind: str, artifact_id: int, version: int, file_name: str) -> bool:
+    p = kind_library_file_path(kind, artifact_id, version, file_name)
+    if p.is_file() and p.stat().st_size > 0:
+        return True
+    if artifact_s3_enabled():
+        from app.services.artifact_s3 import artifact_exists_in_s3_key, s3_key_for_kind_library_version
+
+        key = s3_key_for_kind_library_version(kind, artifact_id, version, Path(file_name).name)
+        return bool(key and artifact_exists_in_s3_key(key))
+    return False
+
+
+def build_kind_library_http_uri(kind: str, version_id: int) -> str:
+    base = (settings.FLINK_OPERATOR_JAR_HTTP_BASE or "").strip().rstrip("/")
+    if not base:
+        raise RuntimeError(
+            "未配置 FLINK_OPERATOR_JAR_HTTP_BASE（Flink 集群拉取制品的 GIDO API 基址）。"
+        )
+    token = quote(resolved_artifact_download_token(), safe="")
+    if kind == "connectors":
+        return f"{base}/api/streaming/connector-versions/{int(version_id)}/artifact.jar?token={token}"
+    return f"{base}/api/streaming/file-versions/{int(version_id)}/artifact?token={token}"
+
+
+def build_kind_library_s3_uri(kind: str, artifact_id: int, version: int, file_name: str) -> Optional[str]:
+    from app.services.artifact_s3 import build_s3_kind_library_version_uri
+
+    return build_s3_kind_library_version_uri(kind, artifact_id, version, Path(file_name).name)
+
+
+def resolve_connector_uri_for_operator(version_id: int, artifact_id: int, version_num: int, file_name: str) -> str:
+    s3_uri = build_kind_library_s3_uri("connectors", artifact_id, version_num, file_name or JAR_ARTIFACT_FILENAME)
+    if s3_uri:
+        return s3_uri
+    return build_kind_library_http_uri("connectors", version_id)

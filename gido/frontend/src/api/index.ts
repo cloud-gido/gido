@@ -331,6 +331,7 @@ export const streamingApi = {
   syncJobsStatus: (workspaceId: number) =>
     request.get('/streaming/jobs-status-sync', { params: { workspace_id: workspaceId } }),
   getExceptions: (id: number) => request.get(`/streaming/jobs/${id}/exceptions`),
+  getCheckpoints: (id: number) => request.get(`/streaming/jobs/${id}/checkpoints`),
   uploadJar: (id: number, file: File) => {
     const form = new FormData()
     form.append('file', file)
@@ -370,6 +371,44 @@ export const streamingApi = {
   deprecateJarVersion: (versionId: number) => request.post(`/streaming/jar-versions/${versionId}/deprecate`),
   backfillJarArtifacts: (workspaceId: number) =>
     request.post('/streaming/jar-artifacts/backfill', null, { params: { workspace_id: workspaceId } }),
+
+  listConnectorArtifacts: (workspaceId: number) =>
+    request.get('/streaming/connector-artifacts', { params: { workspace_id: workspaceId } }),
+  createConnectorArtifact: (data: { workspace_id: number; name: string; description?: string }) =>
+    request.post('/streaming/connector-artifacts', data),
+  getConnectorArtifact: (id: number) => request.get(`/streaming/connector-artifacts/${id}`),
+  updateConnectorArtifact: (id: number, data: { name?: string; description?: string }) =>
+    request.put(`/streaming/connector-artifacts/${id}`, data),
+  deleteConnectorArtifact: (id: number) => request.delete(`/streaming/connector-artifacts/${id}`),
+  uploadConnectorVersion: (artifactId: number, file: File, opts?: { change_note?: string }) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request.post(`/streaming/connector-artifacts/${artifactId}/versions`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      params: { change_note: opts?.change_note || undefined },
+    })
+  },
+  deprecateConnectorVersion: (versionId: number) =>
+    request.post(`/streaming/connector-versions/${versionId}/deprecate`),
+
+  listFileArtifacts: (workspaceId: number) =>
+    request.get('/streaming/file-artifacts', { params: { workspace_id: workspaceId } }),
+  createFileArtifact: (data: { workspace_id: number; name: string; description?: string }) =>
+    request.post('/streaming/file-artifacts', data),
+  getFileArtifact: (id: number) => request.get(`/streaming/file-artifacts/${id}`),
+  updateFileArtifact: (id: number, data: { name?: string; description?: string }) =>
+    request.put(`/streaming/file-artifacts/${id}`, data),
+  deleteFileArtifact: (id: number) => request.delete(`/streaming/file-artifacts/${id}`),
+  uploadFileVersion: (artifactId: number, file: File, opts?: { change_note?: string }) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request.post(`/streaming/file-artifacts/${artifactId}/versions`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      params: { change_note: opts?.change_note || undefined },
+    })
+  },
+  deprecateFileVersion: (versionId: number) =>
+    request.post(`/streaming/file-versions/${versionId}/deprecate`),
 }
 
 // 数据服务

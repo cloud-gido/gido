@@ -974,6 +974,181 @@ def migrate_dw_streaming_jar_library(engine: Engine) -> None:
                 )
 
 
+def _create_streaming_artifact_tables(
+    engine: Engine,
+    *,
+    artifacts_table: str,
+    versions_table: str,
+    art_idx: str,
+    ver_idx: str,
+    fk_ws: str,
+    fk_art: str,
+    uq_ver: str,
+) -> None:
+    """通用：制品表 + 版本表（连接器 / 依赖文件镜像 JAR）。"""
+    insp = inspect(engine)
+    if not insp.has_table(artifacts_table):
+        with engine.begin() as conn:
+            if engine.dialect.name == "mysql":
+                conn.execute(
+                    text(
+                        f"""
+                        CREATE TABLE {artifacts_table} (
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            workspace_id INT NOT NULL,
+                            name VARCHAR(128) NOT NULL,
+                            description TEXT NULL,
+                            owner_id INT NULL,
+                            created_by INT NULL,
+                            created_at DATETIME NOT NULL,
+                            updated_at DATETIME NOT NULL,
+                            INDEX {art_idx} (workspace_id),
+                            CONSTRAINT {fk_ws} FOREIGN KEY (workspace_id)
+                                REFERENCES dw_workspaces(id) ON DELETE CASCADE
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                        """
+                    )
+                )
+            elif engine.dialect.name == "postgresql":
+                conn.execute(
+                    text(
+                        f"""
+                        CREATE TABLE {artifacts_table} (
+                            id SERIAL PRIMARY KEY,
+                            workspace_id INTEGER NOT NULL REFERENCES dw_workspaces(id) ON DELETE CASCADE,
+                            name VARCHAR(128) NOT NULL,
+                            description TEXT,
+                            owner_id INTEGER,
+                            created_by INTEGER,
+                            created_at TIMESTAMP NOT NULL,
+                            updated_at TIMESTAMP NOT NULL
+                        )
+                        """
+                    )
+                )
+                conn.execute(text(f"CREATE INDEX {art_idx} ON {artifacts_table} (workspace_id)"))
+            else:
+                conn.execute(
+                    text(
+                        f"""
+                        CREATE TABLE {artifacts_table} (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            workspace_id INTEGER NOT NULL,
+                            name VARCHAR(128) NOT NULL,
+                            description TEXT,
+                            owner_id INTEGER,
+                            created_by INTEGER,
+                            created_at TIMESTAMP NOT NULL,
+                            updated_at TIMESTAMP NOT NULL
+                        )
+                        """
+                    )
+                )
+    insp = inspect(engine)
+    if not insp.has_table(versions_table):
+        with engine.begin() as conn:
+            if engine.dialect.name == "mysql":
+                conn.execute(
+                    text(
+                        f"""
+                        CREATE TABLE {versions_table} (
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            artifact_id INT NOT NULL,
+                            version INT NOT NULL,
+                            file_name VARCHAR(256) NOT NULL,
+                            size_bytes BIGINT NULL,
+                            sha256 VARCHAR(64) NULL,
+                            storage_key VARCHAR(512) NULL,
+                            change_note TEXT NULL,
+                            status VARCHAR(16) NOT NULL DEFAULT 'active',
+                            uploaded_by INT NULL,
+                            uploaded_at DATETIME NOT NULL,
+                            UNIQUE KEY {uq_ver} (artifact_id, version),
+                            INDEX {ver_idx} (artifact_id),
+                            CONSTRAINT {fk_art} FOREIGN KEY (artifact_id)
+                                REFERENCES {artifacts_table}(id) ON DELETE CASCADE
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                        """
+                    )
+                )
+            elif engine.dialect.name == "postgresql":
+                conn.execute(
+                    text(
+                        f"""
+                        CREATE TABLE {versions_table} (
+                            id SERIAL PRIMARY KEY,
+                            artifact_id INTEGER NOT NULL REFERENCES {artifacts_table}(id) ON DELETE CASCADE,
+                            version INTEGER NOT NULL,
+                            file_name VARCHAR(256) NOT NULL,
+                            size_bytes BIGINT,
+                            sha256 VARCHAR(64),
+                            storage_key VARCHAR(512),
+                            change_note TEXT,
+                            status VARCHAR(16) NOT NULL DEFAULT 'active',
+                            uploaded_by INTEGER,
+                            uploaded_at TIMESTAMP NOT NULL
+                        )
+                        """
+                    )
+                )
+                conn.execute(text(f"CREATE UNIQUE INDEX {uq_ver} ON {versions_table} (artifact_id, version)"))
+                conn.execute(text(f"CREATE INDEX {ver_idx} ON {versions_table} (artifact_id)"))
+            else:
+                conn.execute(
+                    text(
+                        f"""
+                        CREATE TABLE {versions_table} (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            artifact_id INTEGER NOT NULL,
+                            version INTEGER NOT NULL,
+                            file_name VARCHAR(256) NOT NULL,
+                            size_bytes INTEGER,
+                            sha256 VARCHAR(64),
+                            storage_key VARCHAR(512),
+                            change_note TEXT,
+                            status VARCHAR(16) NOT NULL DEFAULT 'active',
+                            uploaded_by INTEGER,
+                            uploaded_at TIMESTAMP NOT NULL,
+                            UNIQUE (artifact_id, version)
+                        )
+                        """
+                    )
+                )
+
+
+def migrate_dw_streaming_resource_libraries(engine: Engine) -> None:
+    """连接器 / 依赖文件制品库 + 作业绑定列。"""
+    _create_streaming_artifact_tables(
+        engine,
+        artifacts_table="dw_streaming_connector_artifacts",
+        versions_table="dw_streaming_connector_versions",
+        art_idx="idx_sca_ws",
+        ver_idx="idx_scv_art",
+        fk_ws="fk_sca_ws",
+        fk_art="fk_scv_art",
+        uq_ver="uq_scv_art_ver",
+    )
+    _create_streaming_artifact_tables(
+        engine,
+        artifacts_table="dw_streaming_file_artifacts",
+        versions_table="dw_streaming_file_versions",
+        art_idx="idx_sfa_ws",
+        ver_idx="idx_sfv_art",
+        fk_ws="fk_sfa_ws",
+        fk_art="fk_sfv_art",
+        uq_ver="uq_sfv_art_ver",
+    )
+    insp = inspect(engine)
+    if not insp.has_table("dw_streaming_jobs"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_streaming_jobs")}
+    with engine.begin() as conn:
+        if "connector_version_ids" not in cols:
+            conn.execute(text("ALTER TABLE dw_streaming_jobs ADD COLUMN connector_version_ids TEXT"))
+        if "dependency_file_version_ids" not in cols:
+            conn.execute(text("ALTER TABLE dw_streaming_jobs ADD COLUMN dependency_file_version_ids TEXT"))
+
+
 def migrate_dw_streaming_job_history(engine: Engine) -> None:
     """实时作业脚本 / JAR 参数版本表（对齐数据开发 dw_node_history）。"""
     insp = inspect(engine)

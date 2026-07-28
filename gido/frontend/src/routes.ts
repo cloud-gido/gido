@@ -33,6 +33,8 @@ export const R = {
     resources: '/gido/stream/resources',
     /** JAR 包（资源管理子页） */
     resourcesJars: '/gido/stream/resources/jars',
+    resourcesConnectors: '/gido/stream/resources/connectors',
+    resourcesFiles: '/gido/stream/resources/files',
     /** @deprecated 旧路径，重定向到 resourcesJars */
     jars: '/gido/stream/jars',
     monitor: '/gido/stream/monitor',

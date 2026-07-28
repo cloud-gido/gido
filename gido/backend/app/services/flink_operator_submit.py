@@ -240,8 +240,10 @@ def build_flink_deployment_body(
     flink_version = (settings.FLINK_OPERATOR_FLINK_VERSION or "v2_0").strip()
     sa = (settings.FLINK_OPERATOR_SERVICE_ACCOUNT or "flink").strip() or "flink"
 
+    pj = str((extra_flink_props or {}).get("pipeline.jars") or "")
+    need_http = jar_uri.startswith(("http://", "https://")) or ("http://" in pj or "https://" in pj)
     flink_conf = merge_flink_configuration(
-        _base_flink_conf(enable_http_artifacts=jar_uri.startswith(("http://", "https://"))),
+        _base_flink_conf(enable_http_artifacts=need_http),
         resources,
         extra_flink_props,
     )
@@ -1036,6 +1038,9 @@ def submit_sql_via_operator(
     )
     merged_flink_extra: Dict[str, Any] = dict(extra_flink_props or {})
     merged_flink_extra.update(extract_sql_set_flink_configuration(sql_content))
+    pj = str(merged_flink_extra.get("pipeline.jars") or "")
+    if "http://" in pj or "https://" in pj:
+        http_artifacts = True
     body = build_flink_deployment_body_for_sql(
         deployment_name=deployment_name,
         namespace=namespace,

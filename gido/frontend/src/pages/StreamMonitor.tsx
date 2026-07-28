@@ -142,6 +142,7 @@ export default function StreamMonitorPage() {
   const [diagRow, setDiagRow] = useState<any | null>(null)
   const [diagExceptions, setDiagExceptions] = useState<any>(null)
   const [diagSync, setDiagSync] = useState<any>(null)
+  const [diagCheckpoints, setDiagCheckpoints] = useState<any>(null)
   const [overview, setOverview] = useState<Record<string, any> | null>(null)
   const [overviewErr, setOverviewErr] = useState<string | null>(null)
   const [keyword, setKeyword] = useState('')
@@ -198,6 +199,7 @@ export default function StreamMonitorPage() {
     setDiagRow(row)
     setDiagExceptions(null)
     setDiagSync(null)
+    setDiagCheckpoints(null)
     setDiagOpen(true)
     try {
       const s: any = await streamingApi.getStatus(row.id)
@@ -205,7 +207,12 @@ export default function StreamMonitorPage() {
     } catch (e: any) {
       setDiagSync({ error: e?.response?.data?.detail || e.message })
     }
-    if (!row.flink_job_id) return
+    try {
+      const ck: any = await streamingApi.getCheckpoints(row.id)
+      setDiagCheckpoints(ck)
+    } catch (e: any) {
+      setDiagCheckpoints({ available: false, reason: e?.response?.data?.detail || e.message })
+    }
     try {
       const ex: any = await streamingApi.getExceptions(row.id)
       setDiagExceptions(ex)
@@ -219,7 +226,7 @@ export default function StreamMonitorPage() {
   const handleStop = async (row: any) => {
     try {
       await streamingApi.cancelJob(row.id)
-      message.success('已请求停止')
+      message.success('已删除集群 Deployment，等待 Pod 回收；状态以集群为准')
       await loadJobs()
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '停止失败')
@@ -261,7 +268,7 @@ export default function StreamMonitorPage() {
   const unifiedJobState = (row: any) => {
     const platform = String(flinkMap[row.id]?.status || row.status || '').toLowerCase()
     const flink = String(flinkMap[row.id]?.flink_status || row.flink_status || '')
-    if (/NOT_FOUND_ON_OPERATOR|CLEANED_UP|SUSPENDED/i.test(flink) || platform === 'cancelled') {
+    if (/NOT_FOUND_ON_OPERATOR|SUSPENDED/i.test(flink) || platform === 'cancelled') {
       return { key: 'stopped', label: '已停止', color: 'warning' }
     }
     if (row.last_submit_error || platform === 'failed' || /FAILED/i.test(flink)) {
@@ -716,6 +723,52 @@ export default function StreamMonitorPage() {
           </pre>
         ) : (
           <Text type="secondary">加载中…</Text>
+        )}
+
+        {diagSync?.failure ? (
+          <>
+            <Typography.Title level={5} style={{ marginTop: 16 }}>结构化失败原因</Typography.Title>
+            <Alert
+              type="error"
+              showIcon
+              message={`来源：${diagSync.failure.source || 'unknown'} · 阶段：${diagSync.failure.phase || '—'}`}
+              description={
+                <pre style={{
+                  margin: 0,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  fontSize: 12,
+                  maxHeight: 200,
+                  overflow: 'auto',
+                }}>
+                  {diagSync.failure.message}
+                </pre>
+              }
+            />
+          </>
+        ) : null}
+
+        <Typography.Title level={5} style={{ marginTop: 16 }}>Checkpoint 摘要</Typography.Title>
+        {!diagCheckpoints ? (
+          <Text type="secondary">加载中…</Text>
+        ) : !diagCheckpoints.available ? (
+          <Text type="secondary">{diagCheckpoints.reason || '暂不可用（JobManager 不可达或尚无 Job ID）'}</Text>
+        ) : (
+          <Descriptions size="small" bordered column={1} style={{ marginBottom: 8 }}>
+            <Descriptions.Item label="完成 / 失败 / 进行中">
+              {diagCheckpoints.counts?.completed ?? '—'} / {diagCheckpoints.counts?.failed ?? '—'} / {diagCheckpoints.counts?.in_progress ?? '—'}
+            </Descriptions.Item>
+            <Descriptions.Item label="最近成功">
+              {diagCheckpoints.latest_completed?.id != null
+                ? `#${diagCheckpoints.latest_completed.id} · ${diagCheckpoints.latest_completed.duration_ms ?? '—'}ms · ${diagCheckpoints.latest_completed.path || '—'}`
+                : '—'}
+            </Descriptions.Item>
+            <Descriptions.Item label="最近失败">
+              {diagCheckpoints.latest_failed?.id != null
+                ? `#${diagCheckpoints.latest_failed.id} · ${diagCheckpoints.latest_failed.failure_message || '—'}`
+                : '—'}
+            </Descriptions.Item>
+          </Descriptions>
         )}
 
         {diagRow?.flink_operational?.hints?.length ? (
