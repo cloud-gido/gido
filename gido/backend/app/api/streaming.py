@@ -2126,7 +2126,7 @@ def _release_operator_ui_tunnel(job: StreamingJob) -> None:
 
 
 def _job_needs_live_status_sync(job: StreamingJob) -> bool:
-    """运维页对账：有 Operator CR / JobId 就要同步（含库内 cancelled，用于发现僵尸集群）。"""
+    """运维页对账：有 Operator deployment / JobId 则按集群回填 GIDO（含库内 cancelled，用于纠正误标）。"""
     st = (job.status or "").strip().lower()
     if _operator_deployment_name_for_job(job):
         return True
