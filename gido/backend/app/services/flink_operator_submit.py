@@ -547,6 +547,7 @@ def operator_overview_payload(*, workspace_id: Optional[int] = None) -> Dict[str
 
 
 def suspend_flink_deployment(deployment_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
+    """将 FlinkDeployment.spec.job.state 设为 suspended。"""
     api = _custom_objects_api()
     ns = namespace or _operator_namespace()
     patch = {"spec": {"job": {"state": "suspended"}}}

@@ -114,12 +114,12 @@ function isOperatorJob(j: any) {
   return false
 }
 
-/** Session：有 jobId 且非终态才轮询 JM。Operator：有 deployment 且非终态才轮询。 */
+/** Operator：有 deployment 就对账（含库内已停止，用于发现僵尸集群）。Session：有 jobId 才轮询。 */
 function jobNeedsFlinkStatusPoll(j: any) {
   const st = (j.status || '').toString().toLowerCase()
+  if (isOperatorJob(j) && j.flink_operator_deployment_name) return true
   if (st === 'cancelled' || st === 'finished' || st === 'failed') return false
   if (j.flink_job_id) return true
-  if (isOperatorJob(j) && j.flink_operator_deployment_name) return true
   const mode = (j.flink_sql_submit_mode || 'session').toString().toLowerCase()
   if (mode === 'kubernetes_application') return Boolean(j.flink_application_cluster_id)
   return false
@@ -261,7 +261,10 @@ export default function StreamMonitorPage() {
   const unifiedJobState = (row: any) => {
     const platform = String(flinkMap[row.id]?.status || row.status || '').toLowerCase()
     const flink = String(flinkMap[row.id]?.flink_status || row.flink_status || '')
-    if (row.last_submit_error || platform === 'failed' || /FAILED|NOT_FOUND/i.test(flink)) {
+    if (/NOT_FOUND_ON_OPERATOR|CLEANED_UP|SUSPENDED/i.test(flink) || platform === 'cancelled') {
+      return { key: 'stopped', label: '已停止', color: 'warning' }
+    }
+    if (row.last_submit_error || platform === 'failed' || /FAILED/i.test(flink)) {
       return { key: 'needs_attention', label: '需处理', color: 'error' }
     }
     if (platform === 'draft') return { key: 'draft', label: '草稿', color: 'default' }
@@ -274,7 +277,7 @@ export default function StreamMonitorPage() {
     if (platform === 'finished' || /FINISHED/i.test(flink)) {
       return { key: 'terminal', label: '已结束', color: 'success' }
     }
-    if (platform === 'cancelled' || /CANCEL|SUSPENDED/i.test(flink)) {
+    if (/CANCEL|NOT_FOUND_ON_JM/i.test(flink)) {
       return { key: 'stopped', label: '已停止', color: 'warning' }
     }
     return { key: 'other', label: '未知', color: 'default' }
@@ -512,7 +515,7 @@ export default function StreamMonitorPage() {
             if (row.flink_job_id || opJar) {
               return (
                 <Popconfirm
-                  title={opJar ? '暂停 FlinkDeployment 并停止作业？' : '在 Flink 上停止该作业？'}
+                  title={opJar ? '删除 FlinkDeployment 并回收 JM/TM Pod？' : '在 Flink 上停止该作业？'}
                   onConfirm={() => handleStop(row)}
                 >
                   <Button type="link" size="small" danger icon={<StopOutlined />} />
