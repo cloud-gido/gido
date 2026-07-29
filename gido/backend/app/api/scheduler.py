@@ -14,6 +14,31 @@ from app.services.ds_runtime import get_dolphin_runtime, refresh_ds_client
 router = APIRouter(prefix="/scheduler", tags=["调度器"])
 
 
+@router.get("/cron/preview")
+def preview_cron(
+    cron: str,
+    count: int = 5,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    预览 Cron 最近若干次执行时间（时区 Asia/Shanghai，与 DolphinScheduler 默认一致）。
+    入参为 GIDO 使用的 5 段 Linux cron；响应同时给出发布到 DS 时的 Quartz 表达式。
+    """
+    from app.services.cron_utils import preview_next_runs
+
+    try:
+        linux, quartz, times = preview_next_runs(cron, count=count)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "cron": linux,
+        "quartz_cron": quartz,
+        "timezone": "Asia/Shanghai",
+        "next_times": times,
+        "count": len(times),
+    }
+
+
 @router.post("/reload")
 def reload_scheduler(current_user: User = Depends(get_current_user)):
     """重新加载本地 APScheduler 调度任务（DS 未启用时使用）"""

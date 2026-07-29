@@ -18,9 +18,9 @@ def assert_cron_when_scheduled(schedule_type: str, cron_expression: Optional[str
     raw = (cron_expression or "").strip()
     if not raw:
         raise ValueError("选择 Cron 定时时必须填写调度表达式")
-    parts = raw.split()
-    if len(parts) != 5:
-        raise ValueError("Cron 须为 5 段（Linux 风格）：分 时 日 月 周，例如 0 2 * * *")
+    from app.services.cron_utils import assert_linux_cron
+
+    assert_linux_cron(raw)
 
 
 def validate_dag_structure(dag: Dict[str, Any]) -> None:

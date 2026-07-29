@@ -981,26 +981,9 @@ class DSClient:
 
     def set_schedule(self, project_code: int, process_code: int, cron_expr: str):
         """为流程定义设置 Cron 调度，自动将5位 Linux cron 转为 DS 的 Quartz 6位格式"""
-        # DS 用 Quartz cron（秒 分 时 日 月 周），标准 Linux cron 是5位（分 时 日 月 周）
-        # 自动补秒字段
-        parts = cron_expr.strip().split()
-        if len(parts) == 5:
-            # Linux cron: 分 时 日 月 周
-            minute, hour, day, month, week = parts
-            # Quartz: 秒 分 时 日 月 周
-            # 日和周不能同时为 *，其中一个用 ?
-            if day == '*' and week == '*':
-                quartz_cron = f'0 {minute} {hour} * {month} ?'
-            elif day != '*' and week == '*':
-                quartz_cron = f'0 {minute} {hour} {day} {month} ?'
-            elif day == '*' and week != '*':
-                quartz_cron = f'0 {minute} {hour} ? {month} {week}'
-            else:
-                quartz_cron = f'0 {minute} {hour} {day} {month} ?'
-        elif len(parts) == 6:
-            quartz_cron = cron_expr
-        else:
-            quartz_cron = cron_expr
+        from app.services.cron_utils import linux_to_quartz_cron
+
+        quartz_cron = linux_to_quartz_cron(cron_expr)
         # 先查是否已有调度
         resp = self._get(f"/projects/{project_code}/schedules",
                          params={"processDefinitionCode": process_code, "pageSize": 10, "pageNo": 1})

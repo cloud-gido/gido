@@ -197,6 +197,8 @@ export const qualityApi = {
 // 调度器（Dolphin 元数据同步等）
 export const schedulerApi = {
   syncDolphinInstances: () => request.post('/scheduler/ds/sync-instances'),
+  previewCron: (cron: string, count = 5) =>
+    request.get('/scheduler/cron/preview', { params: { cron, count } }),
 }
 
 // 运维中心

@@ -4,8 +4,9 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useState, useEffect } from 'react'
-import { Tabs, Select, InputNumber, Checkbox, Radio, Space, Tag, Input } from 'antd'
+import { useState, useEffect, useRef } from 'react'
+import { Tabs, InputNumber, Radio, Space, Tag, Input } from 'antd'
+import { schedulerApi } from '../api'
 
 interface CronBuilderProps {
   value?: string
@@ -69,7 +70,7 @@ function fieldStatesFromFivePartCron(cron: string): {
 const WEEK_LABELS = ['日', '一', '二', '三', '四', '五', '六']
 const MONTH_LABELS = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月']
 
-function buildExpr(f: FieldState, min: number, max: number): string {
+function buildExpr(f: FieldState, _min: number, _max: number): string {
   switch (f.mode) {
     case 'every': return '*'
     case 'interval': return `${f.intervalStart}/${f.interval}`
@@ -174,6 +175,10 @@ export default function CronBuilder({ value, onChange }: CronBuilderProps) {
   const [week, setWeek] = useState<FieldState>({ ...defaultField(1, 0), mode: 'every' })
   const [manualCron, setManualCron] = useState('')
   const [mode, setMode] = useState<'visual' | 'manual'>('visual')
+  const [nextTimes, setNextTimes] = useState<string[]>([])
+  const [quartzCron, setQuartzCron] = useState('')
+  const [previewError, setPreviewError] = useState('')
+  const previewSeq = useRef(0)
 
   // 解析传入的 cron 值
   useEffect(() => {
@@ -210,6 +215,36 @@ export default function CronBuilder({ value, onChange }: CronBuilderProps) {
     mode === 'manual'
       ? manualCron
       : (value != null && String(value).trim() !== '' ? String(value).trim() : builtVisual)
+
+  // 类似 DolphinScheduler：预览最近几次执行时间（Asia/Shanghai）
+  useEffect(() => {
+    const cron = (currentCron || '').trim()
+    if (!cron || cron.split(/\s+/).length !== 5) {
+      setNextTimes([])
+      setQuartzCron('')
+      setPreviewError(cron ? '须为 5 段：分 时 日 月 周' : '')
+      return
+    }
+    const seq = ++previewSeq.current
+    const timer = window.setTimeout(() => {
+      schedulerApi.previewCron(cron, 5)
+        .then((res: any) => {
+          if (seq !== previewSeq.current) return
+          const d = res?.next_times != null ? res : (res?.data ?? res)
+          setNextTimes(Array.isArray(d?.next_times) ? d.next_times : [])
+          setQuartzCron(typeof d?.quartz_cron === 'string' ? d.quartz_cron : '')
+          setPreviewError('')
+        })
+        .catch((err: any) => {
+          if (seq !== previewSeq.current) return
+          setNextTimes([])
+          setQuartzCron('')
+          const msg = err?.response?.data?.detail || err?.message || '预览失败'
+          setPreviewError(typeof msg === 'string' ? msg : '预览失败')
+        })
+    }, 280)
+    return () => window.clearTimeout(timer)
+  }, [currentCron])
 
   // 常用预设
   const PRESETS = [
@@ -303,10 +338,32 @@ export default function CronBuilder({ value, onChange }: CronBuilderProps) {
         />
       )}
 
-      {/* 当前表达式预览 */}
-      <div style={{ marginTop: 8, padding: '6px 12px', background: '#f5f5f5', borderRadius: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ color: '#999', fontSize: 12 }}>Cron 表达式：</span>
-        <code style={{ fontSize: 14, color: '#1677ff', fontWeight: 600 }}>{currentCron || '未配置'}</code>
+      {/* 当前表达式 + 最近执行时间（对齐 DS 调度预览） */}
+      <div style={{ marginTop: 8, padding: '8px 12px', background: '#f5f5f5', borderRadius: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ color: '#999', fontSize: 12 }}>Cron 表达式：</span>
+          <code style={{ fontSize: 14, color: '#1677ff', fontWeight: 600 }}>{currentCron || '未配置'}</code>
+        </div>
+        {quartzCron ? (
+          <div style={{ marginTop: 4, fontSize: 12, color: '#888' }}>
+            发布到 DolphinScheduler：<code style={{ color: '#555' }}>{quartzCron}</code>
+            <span style={{ marginLeft: 6, color: '#aaa' }}>（Quartz · Asia/Shanghai）</span>
+          </div>
+        ) : null}
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 12, color: '#999', marginBottom: 4 }}>最近 5 次执行时间</div>
+          {previewError ? (
+            <div style={{ fontSize: 12, color: '#cf1322' }}>{previewError}</div>
+          ) : nextTimes.length ? (
+            <ol style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: '#333', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }}>
+              {nextTimes.map(t => (
+                <li key={t} style={{ marginBottom: 2 }}>{t}</li>
+              ))}
+            </ol>
+          ) : (
+            <div style={{ fontSize: 12, color: '#bbb' }}>配置有效表达式后自动预览</div>
+          )}
+        </div>
       </div>
     </div>
   )
