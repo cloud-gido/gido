@@ -2,11 +2,10 @@
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * 自研查找/替换条：交互对齐 Monaco 原 Find Widget（位置、展开替换、计数文案、开关），
- * 控件用 Ant Design，避免浏览器原生 title 残影。
+ * 自研查找条：布局/颜色对齐 Monaco Find Widget，避免原生 Escape tooltip。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Button, Input, Tooltip } from 'antd'
+import { Input, Tooltip } from 'antd'
 import {
   CloseOutlined,
   DownOutlined,
@@ -38,8 +37,24 @@ type Props = {
   getEditor: () => editor.IStandaloneCodeEditor | null
   apiRef?: React.MutableRefObject<MonacoFindBarApi | null>
   readOnly?: boolean
-  /** Monaco theme id，用于条与编辑器明暗一致 */
   theme?: string
+}
+
+/** 近似 VS Code Codicon.replace / replace-all */
+function ReplaceIcon() {
+  return (
+    <svg className="gido-find-codicon" viewBox="0 0 16 16" aria-hidden>
+      <path fill="currentColor" d="M3.5 2h4l.35.15 2 2L10 4.5V6H9V4.7L7.3 3H3.5V2zm0 4h3v1h-3V6zm0 2h5v1h-5V8zm7.15-.85 2.5 2.5-.7.7L13 11.2V14h-1v-2.8l-.95.95-.7-.7 2.5-2.5.8-.3zM3.5 10h3v1h-3v-1z" />
+    </svg>
+  )
+}
+
+function ReplaceAllIcon() {
+  return (
+    <svg className="gido-find-codicon" viewBox="0 0 16 16" aria-hidden>
+      <path fill="currentColor" d="M3.5 2h4l.35.15 2 2L10 4.5V5H9V4.7L7.3 3H3.5V2zm0 4h3v1h-3V6zm0 2h5v1h-5V8zm0 2h3v1h-3v-1zm9.15-2.85 1.5 1.5-.7.7-.8-.8V12h-1V8.55l-.8.8-.7-.7 1.5-1.5.5-.2.5.2zm0 3 1.5 1.5-.7.7-.8-.8V15h-1v-3.45l-.8.8-.7-.7 1.5-1.5.5-.2.5.2z" />
+    </svg>
+  )
 }
 
 function isDarkTheme(theme?: string) {
@@ -158,15 +173,14 @@ export default function MonacoFindBar({ getEditor, apiRef, readOnly, theme }: Pr
 
   if (!open) return null
 
-  // 与 Monaco 文案对齐：No results / 1 of N
   const countLabel = !query
     ? ''
     : hits.length === 0
       ? 'No results'
       : `${index + 1} of ${hits.length}`
 
-  const toggle = (active: boolean, label: string, title: string, onClick: () => void) => (
-    <Tooltip title={title} mouseEnterDelay={0.5}>
+  const toggle = (active: boolean, label: React.ReactNode, title: string, onClick: () => void) => (
+    <Tooltip title={title} mouseEnterDelay={0.55}>
       <button
         type="button"
         className={`gido-find-toggle${active ? ' is-active' : ''}`}
@@ -180,7 +194,7 @@ export default function MonacoFindBar({ getEditor, apiRef, readOnly, theme }: Pr
   )
 
   const iconBtn = (title: string, onClick: () => void, icon: React.ReactNode, disabled?: boolean) => (
-    <Tooltip title={title} mouseEnterDelay={0.5}>
+    <Tooltip title={title} mouseEnterDelay={0.55}>
       <button
         type="button"
         className="gido-find-icon-btn"
@@ -208,63 +222,74 @@ export default function MonacoFindBar({ getEditor, apiRef, readOnly, theme }: Pr
 
   return (
     <div
-      className={`gido-monaco-find-bar${dark ? ' is-dark' : ' is-light'}`}
+      className={`gido-monaco-find-bar${dark ? ' is-dark' : ' is-light'}${replaceMode ? ' is-replace' : ''}`}
       role="search"
       onMouseDown={e => e.stopPropagation()}
     >
-      <div className="gido-find-row">
-        {!readOnly && (
-          <Tooltip title={replaceMode ? '隐藏替换' : '切换替换'} mouseEnterDelay={0.5}>
-            <button
-              type="button"
-              className="gido-find-icon-btn gido-find-expand"
-              aria-label={replaceMode ? '隐藏替换' : '切换替换'}
-              aria-expanded={replaceMode}
-              onClick={() => setReplaceMode(v => !v)}
-            >
-              {replaceMode ? <DownOutlined style={{ fontSize: 10, transform: 'rotate(180deg)' }} /> : <DownOutlined style={{ fontSize: 10 }} />}
-            </button>
-          </Tooltip>
-        )}
-        <Input
-          ref={findInputRef}
-          size="small"
-          className="gido-find-input"
-          placeholder="Find"
-          value={query}
-          onChange={e => setQuery(e.target.value)}
-          onPressEnter={e => { if (e.shiftKey) go(-1); else go(1) }}
-          allowClear
-        />
-        <div className="gido-find-toggles">
-          {toggle(matchCase, 'Aa', 'Match Case', () => setMatchCase(v => !v))}
-          {toggle(wholeWord, 'ab', 'Match Whole Word', () => setWholeWord(v => !v))}
-          {toggle(useRegex, '.*', 'Use Regular Expression', () => setUseRegex(v => !v))}
+      {!readOnly && (
+        <Tooltip title={replaceMode ? 'Hide Replace' : 'Toggle Replace'} mouseEnterDelay={0.55}>
+          <button
+            type="button"
+            className="gido-find-expand"
+            aria-expanded={replaceMode}
+            aria-label={replaceMode ? 'Hide Replace' : 'Toggle Replace'}
+            onClick={() => setReplaceMode(v => !v)}
+          >
+            <DownOutlined className="gido-find-chevron" />
+          </button>
+        </Tooltip>
+      )}
+      <Tooltip title="Close" mouseEnterDelay={0.55}>
+        <button type="button" className="gido-find-close" aria-label="Close" onClick={close}>
+          <CloseOutlined style={{ fontSize: 11 }} />
+        </button>
+      </Tooltip>
+
+      <div className="gido-find-part">
+        <div className="gido-find-input-wrap">
+          <Input
+            ref={findInputRef}
+            size="small"
+            className="gido-find-input"
+            placeholder="Find"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onPressEnter={e => { if (e.shiftKey) go(-1); else go(1) }}
+            variant="borderless"
+          />
+          <div className="gido-find-toggles">
+            {toggle(matchCase, 'Aa', 'Match Case', () => setMatchCase(v => !v))}
+            {toggle(wholeWord, <span className="gido-find-whole">ab</span>, 'Match Whole Word', () => setWholeWord(v => !v))}
+            {toggle(useRegex, '.*', 'Use Regular Expression', () => setUseRegex(v => !v))}
+          </div>
         </div>
         <span className={`gido-find-matches${hits.length === 0 && query ? ' is-empty' : ''}`}>
           {countLabel}
         </span>
-        {iconBtn('Previous Match', () => go(-1), <UpOutlined />, !hits.length)}
-        {iconBtn('Next Match', () => go(1), <DownOutlined />, !hits.length)}
-        {iconBtn('Close', close, <CloseOutlined />)}
+        <div className="gido-find-actions">
+          {iconBtn('Previous Match', () => go(-1), <UpOutlined style={{ fontSize: 11 }} />, !hits.length)}
+          {iconBtn('Next Match', () => go(1), <DownOutlined style={{ fontSize: 11 }} />, !hits.length)}
+        </div>
       </div>
+
       {replaceMode && !readOnly && (
-        <div className="gido-find-row gido-find-replace-row">
-          <span className="gido-find-expand-spacer" />
-          <Input
-            size="small"
-            className="gido-find-input"
-            placeholder="Replace"
-            value={replacement}
-            onChange={e => setReplacement(e.target.value)}
-            onPressEnter={doReplaceOne}
-          />
-          <Button size="small" className="gido-find-text-btn" disabled={!hits.length} onClick={doReplaceOne}>
-            Replace
-          </Button>
-          <Button size="small" className="gido-find-text-btn" disabled={!hits.length} onClick={doReplaceAll}>
-            Replace All
-          </Button>
+        <div className="gido-find-part gido-replace-part">
+          <div className="gido-find-input-wrap">
+            <Input
+              size="small"
+              className="gido-find-input"
+              placeholder="Replace"
+              value={replacement}
+              onChange={e => setReplacement(e.target.value)}
+              onPressEnter={doReplaceOne}
+              variant="borderless"
+            />
+          </div>
+          <span className="gido-find-matches gido-find-matches-pad" aria-hidden />
+          <div className="gido-find-actions">
+            {iconBtn('Replace', doReplaceOne, <ReplaceIcon />, !hits.length)}
+            {iconBtn('Replace All', doReplaceAll, <ReplaceAllIcon />, !hits.length)}
+          </div>
         </div>
       )}
     </div>

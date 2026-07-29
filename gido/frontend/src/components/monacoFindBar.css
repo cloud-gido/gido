@@ -1,86 +1,176 @@
-/* Monaco 风格查找条：右上、扁平面板，明暗跟随编辑器主题 */
+/* 对齐 Monaco .find-widget（findWidget.css）尺寸、边距与控件节奏 */
 
 .gido-monaco-find-bar {
   position: absolute;
   top: 0;
   right: 28px;
-  z-index: 20;
-  min-width: 420px;
-  max-width: min(520px, calc(100% - 36px));
-  padding: 4px 6px 6px;
-  border-radius: 0 0 4px 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+  z-index: 35;
+  width: 419px;
+  max-width: calc(100% - 36px);
+  height: 33px;
+  box-sizing: border-box;
+  padding: 0 4px;
+  overflow: hidden;
+  line-height: 19px;
+  border-bottom-left-radius: 4px;
+  border-bottom-right-radius: 4px;
   font-size: 12px;
-  line-height: 1.2;
 }
 
-.gido-monaco-find-bar.is-dark {
-  background: #2d2d2d;
-  border: 1px solid #454545;
-  border-top: none;
-  color: #cccccc;
+.gido-monaco-find-bar.is-replace {
+  height: 61px;
 }
 
 .gido-monaco-find-bar.is-light {
   background: #f3f3f3;
-  border: 1px solid #c8c8c8;
-  border-top: none;
-  color: #333;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  color: #616161;
+  box-shadow: 0 0 8px 2px rgba(0, 0, 0, 0.16);
 }
 
-.gido-find-row {
+.gido-monaco-find-bar.is-dark {
+  background: #252526;
+  color: #cccccc;
+  box-shadow: 0 0 8px 2px rgba(0, 0, 0, 0.36);
+}
+
+/* 左侧 Toggle Replace：绝对定位，占满条高度 */
+.gido-find-expand {
+  position: absolute;
+  top: 0;
+  left: 3px;
+  width: 18px;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gido-find-expand:hover {
+  opacity: 1;
+  background: rgba(90, 93, 94, 0.31);
+}
+
+.gido-find-expand .gido-find-chevron {
+  font-size: 10px;
+  transition: transform 0.15s;
+  transform: rotate(-90deg);
+}
+
+.gido-monaco-find-bar.is-replace .gido-find-expand .gido-find-chevron {
+  transform: rotate(0deg);
+}
+
+/* 右上角 Close */
+.gido-find-close {
+  position: absolute;
+  top: 5px;
+  right: 4px;
+  width: 16px;
+  height: 16px;
+  padding: 3px;
+  margin: 0;
+  box-sizing: content-box;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gido-find-close:hover {
+  opacity: 1;
+  background: rgba(90, 93, 94, 0.31);
+}
+
+/* find / replace 行：为左右绝对按钮留边距（Monaco: 3px 25px 0 17px） */
+.gido-find-part {
   display: flex;
   align-items: center;
-  gap: 2px;
-  min-height: 28px;
+  margin: 3px 25px 0 17px;
+  min-height: 25px;
+  font-size: 12px;
 }
 
-.gido-find-replace-row {
-  margin-top: 4px;
+.gido-replace-part {
+  margin-top: 3px;
+  padding-bottom: 0;
 }
 
-.gido-find-expand-spacer {
-  width: 22px;
-  flex-shrink: 0;
+/* 输入框 + 右侧 Aa/ab/.*，贴近 .monaco-findInput */
+.gido-find-input-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 25px;
+  border-radius: 2px;
+  border: 1px solid transparent;
+}
+
+.gido-monaco-find-bar.is-light .gido-find-input-wrap {
+  background: #ffffff;
+  border-color: #cecece;
+}
+
+.gido-monaco-find-bar.is-dark .gido-find-input-wrap {
+  background: #3c3c3c;
+  border-color: #3c3c3c;
+}
+
+.gido-monaco-find-bar.is-light .gido-find-input-wrap:focus-within {
+  border-color: #0090f1;
+}
+
+.gido-monaco-find-bar.is-dark .gido-find-input-wrap:focus-within {
+  border-color: #007fd4;
 }
 
 .gido-find-input {
   flex: 1;
-  min-width: 120px;
+  min-width: 0;
 }
 
-.gido-monaco-find-bar .gido-find-input.ant-input-affix-wrapper,
-.gido-monaco-find-bar .gido-find-input.ant-input {
+.gido-monaco-find-bar .gido-find-input.ant-input,
+.gido-monaco-find-bar .gido-find-input.ant-input-affix-wrapper {
   font-size: 13px;
-  border-radius: 2px;
+  height: 23px;
+  padding: 2px 6px;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: inherit;
 }
 
-.gido-monaco-find-bar.is-dark .gido-find-input.ant-input-affix-wrapper,
 .gido-monaco-find-bar.is-dark .gido-find-input.ant-input {
-  background: #3c3c3c;
-  border-color: #3c3c3c;
   color: #cccccc;
-}
-
-.gido-monaco-find-bar.is-dark .gido-find-input.ant-input-affix-wrapper:focus,
-.gido-monaco-find-bar.is-dark .gido-find-input.ant-input-affix-wrapper-focused,
-.gido-monaco-find-bar.is-dark .gido-find-input.ant-input:focus {
-  border-color: #007fd4;
-  box-shadow: none;
+  caret-color: #cccccc;
 }
 
 .gido-find-toggles {
   display: flex;
   align-items: center;
-  gap: 1px;
-  margin-left: 2px;
+  padding-right: 2px;
+  gap: 0;
+  flex-shrink: 0;
 }
 
 .gido-find-toggle {
-  height: 22px;
-  min-width: 22px;
-  padding: 0 4px;
+  height: 20px;
+  min-width: 20px;
+  margin: 0 1px;
+  padding: 0 3px;
   border: none;
   border-radius: 3px;
   background: transparent;
@@ -89,57 +179,91 @@
   font-weight: 600;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   color: inherit;
-  opacity: 0.75;
+  opacity: 0.7;
+  line-height: 1;
 }
 
 .gido-find-toggle:hover {
   opacity: 1;
-  background: rgba(127, 127, 127, 0.2);
+  background: rgba(90, 93, 94, 0.31);
 }
 
 .gido-find-toggle.is-active {
   opacity: 1;
-  background: rgba(0, 127, 212, 0.35);
+  background: rgba(0, 127, 212, 0.4);
   color: #fff;
 }
 
 .gido-monaco-find-bar.is-light .gido-find-toggle.is-active {
-  background: rgba(0, 127, 212, 0.25);
-  color: #005a9e;
+  background: rgba(0, 127, 212, 0.2);
+  color: #0066bf;
+}
+
+.gido-find-whole {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .gido-find-matches {
-  min-width: 64px;
-  padding: 0 4px;
+  flex: initial;
+  margin: 0 0 0 3px;
+  padding: 2px 0 0 2px;
+  min-width: 69px;
+  height: 25px;
+  line-height: 23px;
   text-align: center;
+  box-sizing: border-box;
   font-size: 12px;
-  opacity: 0.85;
   white-space: nowrap;
+  color: inherit;
+  opacity: 0.9;
+}
+
+.gido-find-matches-pad {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .gido-find-matches.is-empty {
-  color: #f48771;
+  color: #a1260d;
   opacity: 1;
 }
 
+.gido-monaco-find-bar.is-dark .gido-find-matches.is-empty {
+  color: #f48771;
+}
+
+.gido-find-actions {
+  height: 25px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* Monaco .find-widget .button：16×16 + padding 3 → 圆角 5 */
 .gido-find-icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
+  width: 16px;
+  height: 16px;
+  padding: 3px;
+  margin-left: 3px;
+  box-sizing: content-box;
   border: none;
-  border-radius: 3px;
+  border-radius: 5px;
   background: transparent;
   color: inherit;
   cursor: pointer;
-  opacity: 0.8;
+  opacity: 0.85;
+  flex-shrink: 0;
+  font-size: 14px;
+  line-height: 1;
 }
 
 .gido-find-icon-btn:hover:not(:disabled) {
   opacity: 1;
-  background: rgba(127, 127, 127, 0.25);
+  background: rgba(90, 93, 94, 0.31);
 }
 
 .gido-find-icon-btn:disabled {
@@ -147,20 +271,8 @@
   cursor: default;
 }
 
-.gido-find-text-btn.ant-btn {
-  font-size: 12px;
-  height: 24px;
-  padding: 0 8px;
-}
-
-.gido-monaco-find-bar.is-dark .gido-find-text-btn.ant-btn {
-  background: #3c3c3c;
-  border-color: #3c3c3c;
-  color: #ccc;
-}
-
-.gido-monaco-find-bar.is-dark .gido-find-text-btn.ant-btn:hover:not(:disabled) {
-  background: #4a4a4a;
-  border-color: #4a4a4a;
-  color: #fff;
+.gido-find-icon-btn .gido-find-codicon {
+  width: 16px;
+  height: 16px;
+  display: block;
 }

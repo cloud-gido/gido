@@ -35,12 +35,12 @@ export function ensureFindDecorationStyles() {
       pointer-events: none !important;
     }
     .gido-find-other {
-      background-color: rgba(255, 213, 0, 0.35);
-      border-radius: 2px;
+      background-color: rgba(234, 92, 0, 0.33);
     }
     .gido-find-current {
-      background-color: rgba(255, 140, 0, 0.55);
-      border-radius: 2px;
+      background-color: rgba(234, 92, 0, 0.45);
+      border: 1px solid #cea11d;
+      box-sizing: border-box;
     }
   `
   document.head.appendChild(el)
