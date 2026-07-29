@@ -12,6 +12,8 @@ GitHub Actions（`.github/workflows/ci.yml` → `docker-flink-runtime`）构建 
 
 遗留 **Session** / **K8s Application** 提交仅当环境变量 `GIDO_LEGACY_FLINK_SUBMIT=true` 时可用。
 
+答疑（CR / Operator / JM·TM / 停止与 checkpoint）：见 [FLINK_OPERATOR_FAQ.md](./FLINK_OPERATOR_FAQ.md)。
+
 ## 架构示意
 
 ```
