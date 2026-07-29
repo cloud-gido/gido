@@ -22,6 +22,7 @@ import {
   monacoEditorOptionsFromAppearance,
   registerDwMonacoThemes,
 } from '../utils/editorAppearance'
+import { bindMonacoFindChromeTooltipFix } from '../utils/monacoFindTooltipFix'
 import AutosaveStatusHint from './AutosaveStatusHint'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
 import {
@@ -484,6 +485,7 @@ export default function NodeConfigModal({
                             language={SCRIPT_LANG[node!.node_type] || 'plaintext'}
                             theme={editorAppearance.theme}
                             beforeMount={registerDwMonacoThemes}
+                            onMount={ed => bindMonacoFindChromeTooltipFix(ed)}
                             value={scriptContent}
                             onChange={(v) => {
                               if (scriptReadOnly) return

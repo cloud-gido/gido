@@ -25,6 +25,7 @@ import {
   monacoEditorOptionsFromAppearance,
   type EditorAppearance,
 } from '../utils/editorAppearance'
+import { bindMonacoFindChromeTooltipFix } from '../utils/monacoFindTooltipFix'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
 import QueryResultPanel from '../components/QueryResultPanel'
 import { normalizeQueryColumns } from '../utils/queryColumns'
@@ -634,6 +635,7 @@ export default function ProbePage() {
                 setSqlDirty(true)
               }}
               beforeMount={registerDwMonacoThemes}
+              onMount={ed => bindMonacoFindChromeTooltipFix(ed)}
               theme={editorAppearance.theme}
               options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), minimap: { enabled: false } }}
             />

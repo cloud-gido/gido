@@ -32,6 +32,7 @@ import {
   monacoEditorOptionsFromAppearance,
   type EditorAppearance,
 } from '../utils/editorAppearance'
+import { bindMonacoFindChromeTooltipFix } from '../utils/monacoFindTooltipFix'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
 import { normalizeQueryColumns } from '../utils/queryColumns'
 import {
@@ -1252,37 +1253,7 @@ export default function StudioPage() {
         beforeMount={registerDwMonacoThemes}
         onMount={(editor) => {
           editorRef.current = editor
-          // Monaco Find 关闭按钮 title 含 "(Escape)"，Esc 关闭后 Chromium 原生 tooltip 易残影；去掉 title 保留 aria-label
-          const root = editor.getDomNode()
-          const stripFindTitles = () => {
-            root?.querySelectorAll('.find-widget [title], .replace-widget [title]').forEach(el => {
-              const title = el.getAttribute('title') || ''
-              if (!title) return
-              if (!el.getAttribute('aria-label')) {
-                el.setAttribute('aria-label', title.replace(/\s*\([^)]*\)\s*$/, '').trim() || title)
-              }
-              el.removeAttribute('title')
-            })
-          }
-          const mo = new MutationObserver(() => stripFindTitles())
-          if (root) {
-            mo.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['title', 'class'] })
-          }
-          const onKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') {
-              stripFindTitles()
-              const ae = document.activeElement as HTMLElement | null
-              if (ae?.closest?.('.find-widget, .replace-widget')) {
-                ae.blur()
-              }
-            }
-          }
-          window.addEventListener('keydown', onKeyDown, true)
-          editor.onDidDispose(() => {
-            mo.disconnect()
-            window.removeEventListener('keydown', onKeyDown, true)
-          })
-          stripFindTitles()
+          bindMonacoFindChromeTooltipFix(editor)
         }}
         theme={editorAppearance.theme}
         options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: Boolean(!canEdit) }}

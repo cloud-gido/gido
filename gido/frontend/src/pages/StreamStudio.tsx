@@ -35,6 +35,7 @@ import {
   monacoEditorOptionsFromAppearance,
   type EditorAppearance,
 } from '../utils/editorAppearance'
+import { bindMonacoFindChromeTooltipFix } from '../utils/monacoFindTooltipFix'
 import { formatInTimeZone } from '../utils/datetime'
 import { openFlinkConsoleUrl } from '../utils/flinkConsole'
 import AutosaveStatusHint from '../components/AutosaveStatusHint'
@@ -1166,7 +1167,10 @@ export default function StreamStudioPage() {
                           setScriptDirty(true)
                         })}
                         beforeMount={registerDwMonacoThemes}
-                        onMount={ed => { editorRef.current = ed }}
+                        onMount={ed => {
+                          editorRef.current = ed
+                          bindMonacoFindChromeTooltipFix(ed)
+                        }}
                         options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: Boolean(selected.is_locked), minimap: { enabled: false } }}
                       />
                     </div>
