@@ -306,3 +306,11 @@ def test_find_refs_only_adds_accessible_preferred(monkeypatch):
     refs = fos.find_flink_deployment_refs_for_job(204, preferred_name="gido-jar-1-204")
     assert refs == [("bigdata", "gido-jar-1-204")]
 
+
+def test_operator_candidates_bigdata_only(monkeypatch):
+    from app.services import flink_operator_submit as fos
+
+    assert fos._operator_namespace_candidates("flink") == ["bigdata"]
+    assert fos._operator_namespace_candidates("bigdata") == ["bigdata"]
+    assert fos._operator_namespace_candidates(None) == ["bigdata"]
+

@@ -470,17 +470,11 @@ def list_flink_deployments(
 
 
 def _operator_namespace_candidates(primary: Optional[str] = None) -> List[str]:
-    """停止/查找时的命名空间候选：primary 优先，再补 bigdata/flink。
+    """停止/查找时的命名空间：现网固定只查 bigdata，不猜测 flink。
 
-    注意：不得对无权访问的命名空间做「猜测 DELETE」——无权限时 K8s 常回 403
-   （即使资源不存在），会导致整次停止失败。
+    primary 参数保留兼容旧调用，但不再参与候选列表。
     """
-    p = (primary or _operator_namespace()).strip() or "flink"
-    out: List[str] = [p]
-    for extra in ("bigdata", "flink"):
-        if extra not in out:
-            out.append(extra)
-    return out
+    return ["bigdata"]
 
 
 def flink_deployment_accessible(
@@ -522,13 +516,8 @@ def find_flink_deployment_refs_for_job(
     preferred_name: Optional[str] = None,
     namespace: Optional[str] = None,
 ) -> List[Tuple[str, str]]:
-    """返回待删除的 (namespace, name)。
-
-    仅包含「已确认存在且可读」的 CR：按 gido.io/job-id 列出，并对库内名做 GET 探测。
-    禁止把库内名盲目扩到所有候选 ns（无 RBAC 的 ns 上 DELETE 会 403 中断停止）。
-    """
-    primary = (namespace or _operator_namespace()).strip() or "flink"
-    candidates = _operator_namespace_candidates(primary)
+    """返回待删除的 (namespace, name)，仅在 bigdata。"""
+    candidates = _operator_namespace_candidates(namespace)
 
     refs: List[Tuple[str, str]] = []
     seen = set()
@@ -548,7 +537,8 @@ def find_flink_deployment_refs_for_job(
             for cr in list_flink_deployments(namespace=ns, workspace_id=workspace_id, job_id=job_id):
                 n = ((cr.get("metadata") or {}).get("name") or "").strip()
                 cr_ns = ((cr.get("metadata") or {}).get("namespace") or ns).strip() or ns
-                _add(cr_ns, n)
+                if n and flink_deployment_accessible(n, namespace=cr_ns):
+                    _add(cr_ns, n)
         except Exception:
             logger.debug("list FlinkDeployment ns=%s job_id=%s failed", ns, job_id, exc_info=True)
 

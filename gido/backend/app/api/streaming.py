@@ -3075,27 +3075,30 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
                 delete_flink_deployment,
                 find_flink_deployment_refs_for_job,
                 wait_flink_deployment_reclaimed,
-                _operator_namespace,
             )
 
-            primary_ns = _operator_namespace()
+            primary_ns = "bigdata"
             refs = find_flink_deployment_refs_for_job(
                 int(job.id),
                 workspace_id=int(job.workspace_id or 0) or None,
                 preferred_name=dep_name,
                 namespace=primary_ns,
             )
-            # 勿再无脑 fallback 到 primary_ns：ConfigMap 若为 flink 而 SA 只在 bigdata 有权，
-            # 会对无权 ns 发起 DELETE → 403，整次停止失败（现网已复现）。
+            # 停止只操作 bigdata，不猜测 flink（SA 对 flink DELETE 会 403）。
 
             deleted_ok: List[str] = []
             deleted_ns: List[str] = []
+            skipped_forbidden: List[str] = []
             for ns, name in refs:
-                # 直接删 CR（与改前可用路径一致）；不再先 suspend——部分环境下 suspend 后删除行为异常
-                if delete_flink_deployment(name, namespace=ns):
-                    deleted_ok.append(name)
-                    if ns not in deleted_ns:
-                        deleted_ns.append(ns)
+                # 直接删 CR；403（无权 ns）跳过，勿中断整次停止
+                try:
+                    if delete_flink_deployment(name, namespace=ns):
+                        deleted_ok.append(name)
+                        if ns not in deleted_ns:
+                            deleted_ns.append(ns)
+                except PermissionError as e:
+                    skipped_forbidden.append(f"{ns}/{name}")
+                    logger.warning("cancel: skip forbidden delete %s/%s: %s", ns, name, e)
 
             # 再扫一遍候选空间，防止漏删
             more = find_flink_deployment_refs_for_job(
@@ -3107,15 +3110,21 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
             for ns, name in more:
                 if (ns, name) in refs:
                     continue
-                if delete_flink_deployment(name, namespace=ns):
-                    deleted_ok.append(name)
-                    if ns not in deleted_ns:
-                        deleted_ns.append(ns)
-                    refs.append((ns, name))
+                try:
+                    if delete_flink_deployment(name, namespace=ns):
+                        deleted_ok.append(name)
+                        if ns not in deleted_ns:
+                            deleted_ns.append(ns)
+                        refs.append((ns, name))
+                except PermissionError as e:
+                    skipped_forbidden.append(f"{ns}/{name}")
+                    logger.warning("cancel: skip forbidden delete %s/%s: %s", ns, name, e)
 
+            # 只校验「实际尝试删除且非无权跳过」的目标
+            check_refs = [(ns, name) for ns, name in refs if f"{ns}/{name}" not in skipped_forbidden]
             stuck: List[str] = []
             terminating: List[str] = []
-            for ns, name in refs:
+            for ns, name in check_refs:
                 state = wait_flink_deployment_reclaimed(name, namespace=ns, timeout_seconds=20.0)
                 if state == "gone":
                     continue
@@ -3130,8 +3139,14 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
                 raise RuntimeError(
                     "已请求删除但 FlinkDeployment 仍未进入回收: "
                     + ", ".join(stuck)
-                    + f"。当前配置 FLINK_OPERATOR_NAMESPACE={primary_ns}；"
-                    "生产作业一般在 bigdata，请核对 ConfigMap。"
+                    + f"。当前停止命名空间固定为 bigdata；"
+                    "请核对 RBAC（flink-service-account-dev）与 CR 是否在 bigdata。"
+                )
+            if not deleted_ok and not terminating and not check_refs and skipped_forbidden:
+                raise RuntimeError(
+                    "停止失败：对 bigdata 无删除权限 "
+                    + f"（跳过: {', '.join(skipped_forbidden)}）。"
+                    "请检查 Role/RoleBinding 是否允许 delete flinkdeployments。"
                 )
 
             _release_operator_ui_tunnel(job)
@@ -3170,7 +3185,7 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
             return {
                 "message": (
                     f"已停止：集群中已无对应 FlinkDeployment"
-                    f"（已查 {primary_ns}/bigdata/flink），已将平台状态标为已停止"
+                    f"（已查 bigdata），已将平台状态标为已停止"
                 ),
                 "deleted": [],
                 "namespace": primary_ns,
