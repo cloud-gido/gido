@@ -486,6 +486,7 @@ export default function NodeConfigModal({
                             getEditor={() => editorRef.current}
                             apiRef={findApiRef}
                             readOnly={scriptReadOnly}
+                            theme={editorAppearance.theme}
                           />
                           <Editor
                             height={360}

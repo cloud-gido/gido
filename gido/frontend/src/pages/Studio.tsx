@@ -1250,6 +1250,7 @@ export default function StudioPage() {
           getEditor={() => editorRef.current}
           apiRef={findApiRef}
           readOnly={!canEdit}
+          theme={editorAppearance.theme}
         />
         <Editor
           key={activeTabId ?? 0}

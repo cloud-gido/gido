@@ -628,7 +628,7 @@ export default function ProbePage() {
           minBottomRatio={0.22}
           top={(
             <div style={{ position: 'relative', height: '100%' }}>
-              <MonacoFindBar getEditor={() => editorRef.current} apiRef={findApiRef} />
+              <MonacoFindBar getEditor={() => editorRef.current} apiRef={findApiRef} theme={editorAppearance.theme} />
               <Editor
                 key={activeScript?.id ?? 'probe'}
                 height="100%"

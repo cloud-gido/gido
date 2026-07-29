@@ -1,0 +1,166 @@
+/* Monaco 风格查找条：右上、扁平面板，明暗跟随编辑器主题 */
+
+.gido-monaco-find-bar {
+  position: absolute;
+  top: 0;
+  right: 28px;
+  z-index: 20;
+  min-width: 420px;
+  max-width: min(520px, calc(100% - 36px));
+  padding: 4px 6px 6px;
+  border-radius: 0 0 4px 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.gido-monaco-find-bar.is-dark {
+  background: #2d2d2d;
+  border: 1px solid #454545;
+  border-top: none;
+  color: #cccccc;
+}
+
+.gido-monaco-find-bar.is-light {
+  background: #f3f3f3;
+  border: 1px solid #c8c8c8;
+  border-top: none;
+  color: #333;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.gido-find-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 28px;
+}
+
+.gido-find-replace-row {
+  margin-top: 4px;
+}
+
+.gido-find-expand-spacer {
+  width: 22px;
+  flex-shrink: 0;
+}
+
+.gido-find-input {
+  flex: 1;
+  min-width: 120px;
+}
+
+.gido-monaco-find-bar .gido-find-input.ant-input-affix-wrapper,
+.gido-monaco-find-bar .gido-find-input.ant-input {
+  font-size: 13px;
+  border-radius: 2px;
+}
+
+.gido-monaco-find-bar.is-dark .gido-find-input.ant-input-affix-wrapper,
+.gido-monaco-find-bar.is-dark .gido-find-input.ant-input {
+  background: #3c3c3c;
+  border-color: #3c3c3c;
+  color: #cccccc;
+}
+
+.gido-monaco-find-bar.is-dark .gido-find-input.ant-input-affix-wrapper:focus,
+.gido-monaco-find-bar.is-dark .gido-find-input.ant-input-affix-wrapper-focused,
+.gido-monaco-find-bar.is-dark .gido-find-input.ant-input:focus {
+  border-color: #007fd4;
+  box-shadow: none;
+}
+
+.gido-find-toggles {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  margin-left: 2px;
+}
+
+.gido-find-toggle {
+  height: 22px;
+  min-width: 22px;
+  padding: 0 4px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: inherit;
+  opacity: 0.75;
+}
+
+.gido-find-toggle:hover {
+  opacity: 1;
+  background: rgba(127, 127, 127, 0.2);
+}
+
+.gido-find-toggle.is-active {
+  opacity: 1;
+  background: rgba(0, 127, 212, 0.35);
+  color: #fff;
+}
+
+.gido-monaco-find-bar.is-light .gido-find-toggle.is-active {
+  background: rgba(0, 127, 212, 0.25);
+  color: #005a9e;
+}
+
+.gido-find-matches {
+  min-width: 64px;
+  padding: 0 4px;
+  text-align: center;
+  font-size: 12px;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
+.gido-find-matches.is-empty {
+  color: #f48771;
+  opacity: 1;
+}
+
+.gido-find-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.gido-find-icon-btn:hover:not(:disabled) {
+  opacity: 1;
+  background: rgba(127, 127, 127, 0.25);
+}
+
+.gido-find-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.gido-find-text-btn.ant-btn {
+  font-size: 12px;
+  height: 24px;
+  padding: 0 8px;
+}
+
+.gido-monaco-find-bar.is-dark .gido-find-text-btn.ant-btn {
+  background: #3c3c3c;
+  border-color: #3c3c3c;
+  color: #ccc;
+}
+
+.gido-monaco-find-bar.is-dark .gido-find-text-btn.ant-btn:hover:not(:disabled) {
+  background: #4a4a4a;
+  border-color: #4a4a4a;
+  color: #fff;
+}

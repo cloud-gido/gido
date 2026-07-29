@@ -1162,6 +1162,7 @@ export default function StreamStudioPage() {
                         getEditor={() => editorRef.current}
                         apiRef={findApiRef}
                         readOnly={Boolean(selected.is_locked)}
+                        theme={editorAppearance.theme}
                       />
                       <Editor
                         height="100%"
