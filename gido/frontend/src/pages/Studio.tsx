@@ -32,7 +32,7 @@ import {
   monacoEditorOptionsFromAppearance,
   type EditorAppearance,
 } from '../utils/editorAppearance'
-import { bindMonacoFindChromeTooltipFix } from '../utils/monacoFindTooltipFix'
+import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from '../components/MonacoFindBar'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
 import { normalizeQueryColumns } from '../utils/queryColumns'
 import {
@@ -129,8 +129,9 @@ export default function StudioPage() {
   const [folders, setFolders] = useState<any[]>([])
   const [datasources, setDatasources] = useState<any[]>([])
 
-  // 编辑器 ref（用于格式化）
+  // 编辑器 ref（用于格式化 / 自研查找）
   const editorRef = useRef<any>(null)
+  const findApiRef = useRef<MonacoFindBarApi | null>(null)
   const [editorAppearance, setEditorAppearance] = useState<EditorAppearance>(() => loadEditorAppearance())
   const [openTabs, setOpenTabs] = useState<any[]>([])
   const [activeTabId, setActiveTabId] = useState<number | null>(null)
@@ -1244,20 +1245,27 @@ export default function StudioPage() {
       )
     }
     return (
-      <Editor
-        key={activeTabId ?? 0}
-        height="100%"
-        language={LANG_MAP[activeNode!.node_type] || 'plaintext'}
-        value={activeScript}
-        onChange={!canEdit ? undefined : onEditorChange}
-        beforeMount={registerDwMonacoThemes}
-        onMount={(editor) => {
-          editorRef.current = editor
-          bindMonacoFindChromeTooltipFix(editor)
-        }}
-        theme={editorAppearance.theme}
-        options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: Boolean(!canEdit) }}
-      />
+      <div style={{ position: 'relative', height: '100%' }}>
+        <MonacoFindBar
+          getEditor={() => editorRef.current}
+          apiRef={findApiRef}
+          readOnly={!canEdit}
+        />
+        <Editor
+          key={activeTabId ?? 0}
+          height="100%"
+          language={LANG_MAP[activeNode!.node_type] || 'plaintext'}
+          value={activeScript}
+          onChange={!canEdit ? undefined : onEditorChange}
+          beforeMount={registerDwMonacoThemes}
+          onMount={(editor, monaco) => {
+            editorRef.current = editor
+            bindMonacoFindKeybindings(editor, monaco, () => findApiRef.current)
+          }}
+          theme={editorAppearance.theme}
+          options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: Boolean(!canEdit) }}
+        />
+      </div>
     )
   }
 

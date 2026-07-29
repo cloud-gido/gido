@@ -25,7 +25,7 @@ import {
   monacoEditorOptionsFromAppearance,
   type EditorAppearance,
 } from '../utils/editorAppearance'
-import { bindMonacoFindChromeTooltipFix } from '../utils/monacoFindTooltipFix'
+import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from '../components/MonacoFindBar'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
 import QueryResultPanel from '../components/QueryResultPanel'
 import { normalizeQueryColumns } from '../utils/queryColumns'
@@ -94,6 +94,8 @@ export default function ProbePage() {
   })
   const [treeExpandedKeys, setTreeExpandedKeys] = useState<Key[]>(['root'])
   const treeExpandedInitRef = useRef(false)
+  const editorRef = useRef<any>(null)
+  const findApiRef = useRef<MonacoFindBarApi | null>(null)
   const [sqlDirty, setSqlDirty] = useState(false)
   const probeStateRef = useRef(probeState)
   probeStateRef.current = probeState
@@ -625,20 +627,26 @@ export default function ProbePage() {
           minTopRatio={0.2}
           minBottomRatio={0.22}
           top={(
-            <Editor
-              key={activeScript?.id ?? 'probe'}
-              height="100%"
-              language="sql"
-              value={sql}
-              onChange={v => {
-                patchActiveScript({ sql: v || '' })
-                setSqlDirty(true)
-              }}
-              beforeMount={registerDwMonacoThemes}
-              onMount={ed => bindMonacoFindChromeTooltipFix(ed)}
-              theme={editorAppearance.theme}
-              options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), minimap: { enabled: false } }}
-            />
+            <div style={{ position: 'relative', height: '100%' }}>
+              <MonacoFindBar getEditor={() => editorRef.current} apiRef={findApiRef} />
+              <Editor
+                key={activeScript?.id ?? 'probe'}
+                height="100%"
+                language="sql"
+                value={sql}
+                onChange={v => {
+                  patchActiveScript({ sql: v || '' })
+                  setSqlDirty(true)
+                }}
+                beforeMount={registerDwMonacoThemes}
+                onMount={(ed, monaco) => {
+                  editorRef.current = ed
+                  bindMonacoFindKeybindings(ed, monaco, () => findApiRef.current)
+                }}
+                theme={editorAppearance.theme}
+                options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), minimap: { enabled: false } }}
+              />
+            </div>
           )}
           bottom={(
             <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, background: '#fff' }}>

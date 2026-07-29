@@ -35,7 +35,7 @@ import {
   monacoEditorOptionsFromAppearance,
   type EditorAppearance,
 } from '../utils/editorAppearance'
-import { bindMonacoFindChromeTooltipFix } from '../utils/monacoFindTooltipFix'
+import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from '../components/MonacoFindBar'
 import { formatInTimeZone } from '../utils/datetime'
 import { openFlinkConsoleUrl } from '../utils/flinkConsole'
 import AutosaveStatusHint from '../components/AutosaveStatusHint'
@@ -218,6 +218,7 @@ export default function StreamStudioPage() {
   const [renameForm] = Form.useForm()
   const [submitting, setSubmitting] = useState(false)
   const editorRef = useRef<any>(null)
+  const findApiRef = useRef<MonacoFindBarApi | null>(null)
   const [editorAppearance, setEditorAppearance] = useState<EditorAppearance>(() => loadEditorAppearance())
   const [jarForm, setJarForm] = useState({ main_class: '', program_args: '', parallelism: 1 })
   const [jarArtifacts, setJarArtifacts] = useState<any[]>([])
@@ -1156,7 +1157,12 @@ export default function StreamStudioPage() {
                     <EditorAppearanceToolbar value={editorAppearance} onChange={setEditorAppearance} />
                   </div>
                   <div style={{ flex: 1, minHeight: 360, display: 'flex', flexDirection: 'column' }}>
-                    <div style={{ height: resultPanelOpen ? 520 : 620, border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden' }}>
+                    <div style={{ height: resultPanelOpen ? 520 : 620, border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden', position: 'relative' }}>
+                      <MonacoFindBar
+                        getEditor={() => editorRef.current}
+                        apiRef={findApiRef}
+                        readOnly={Boolean(selected.is_locked)}
+                      />
                       <Editor
                         height="100%"
                         language="sql"
@@ -1167,9 +1173,9 @@ export default function StreamStudioPage() {
                           setScriptDirty(true)
                         })}
                         beforeMount={registerDwMonacoThemes}
-                        onMount={ed => {
+                        onMount={(ed, monaco) => {
                           editorRef.current = ed
-                          bindMonacoFindChromeTooltipFix(ed)
+                          bindMonacoFindKeybindings(ed, monaco, () => findApiRef.current)
                         }}
                         options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: Boolean(selected.is_locked), minimap: { enabled: false } }}
                       />

@@ -22,7 +22,7 @@ import {
   monacoEditorOptionsFromAppearance,
   registerDwMonacoThemes,
 } from '../utils/editorAppearance'
-import { bindMonacoFindChromeTooltipFix } from '../utils/monacoFindTooltipFix'
+import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from './MonacoFindBar'
 import AutosaveStatusHint from './AutosaveStatusHint'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
 import {
@@ -105,6 +105,8 @@ export default function NodeConfigModal({
   holdsLockRef.current = holdsLock
   const acquiredHereRef = useRef(false)
   const nodeRef = useRef<StudioNode | null>(null)
+  const editorRef = useRef<any>(null)
+  const findApiRef = useRef<MonacoFindBarApi | null>(null)
 
   const dsResolve = node && (node.node_type === 'SQL' || node.node_type === 'PYTHON')
     ? resolveDatasourceForRun(node.datasource_id, currentWorkspace, datasources)
@@ -479,13 +481,21 @@ export default function NodeConfigModal({
                           ? '与数据开发同一脚本；可用 gido_job.execute / writelog；后台自动落草稿，点「保存版本」记入历史'
                           : '与数据开发同一脚本；后台自动落草稿，点「保存版本」记入历史'}
                       >
-                        <div style={{ border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden' }}>
+                        <div style={{ border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden', position: 'relative' }}>
+                          <MonacoFindBar
+                            getEditor={() => editorRef.current}
+                            apiRef={findApiRef}
+                            readOnly={scriptReadOnly}
+                          />
                           <Editor
                             height={360}
                             language={SCRIPT_LANG[node!.node_type] || 'plaintext'}
                             theme={editorAppearance.theme}
                             beforeMount={registerDwMonacoThemes}
-                            onMount={ed => bindMonacoFindChromeTooltipFix(ed)}
+                            onMount={(ed, monaco) => {
+                              editorRef.current = ed
+                              bindMonacoFindKeybindings(ed, monaco, () => findApiRef.current)
+                            }}
                             value={scriptContent}
                             onChange={(v) => {
                               if (scriptReadOnly) return
