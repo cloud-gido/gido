@@ -8,7 +8,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import type { Key } from 'react'
 import {
   Button, Space, Tag, message, Modal, Form, Input, InputNumber, Select, Card, Drawer,
-  Divider, Typography, Alert, notification, Collapse, Tooltip,
+  Divider, Typography, Alert, notification, Tooltip,
 } from 'antd'
 import {
   PlusOutlined, CloudUploadOutlined, SaveOutlined, ReloadOutlined,
@@ -25,6 +25,7 @@ import EditorAppearanceToolbar from '../components/EditorAppearanceToolbar'
 import ResizableSidebar from '../components/ResizableSidebar'
 import WorkspaceFolderTree, { locateLeafInFolderTree } from '../components/WorkspaceFolderTree'
 import QueryResultPanel from '../components/QueryResultPanel'
+import EditorResultDock, { EditorResultRowBadge } from '../components/EditorResultDock'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
 import { normalizeQueryColumns } from '../utils/queryColumns'
 import { R } from '../routes'
@@ -1181,80 +1182,133 @@ export default function StreamStudioPage() {
                         options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: Boolean(selected.is_locked), minimap: { enabled: false } }}
                       />
                     </div>
-                    <Collapse
-                      style={{ marginTop: 12 }}
-                      activeKey={resultPanelOpen ? ['result'] : []}
-                      onChange={keys => setResultPanelOpen(Array.isArray(keys) ? keys.includes('result') : keys === 'result')}
-                      items={[{
-                        key: 'result',
-                        label: (
-                          <Space>
-                            <span>查询结果</span>
-                            {previewResult && <Tag>{previewResult.total ?? 0} 行</Tag>}
-                          </Space>
-                        ),
-                        extra: (
-                          <Space
-                            size={8}
-                            onClick={e => e.stopPropagation()}
-                            onMouseDown={e => e.stopPropagation()}
-                          >
-                            <InputNumber
-                              min={1}
-                              max={10000}
-                              size="small"
-                              value={previewLimit}
-                              onChange={v => setPreviewLimit(Number(v) || 100)}
-                              addonBefore="预览行数"
-                              style={{ width: 148 }}
-                            />
-                            <Button
-                              size="small"
-                              icon={<SearchOutlined />}
-                              loading={previewLoading}
-                              disabled={!canPreviewSql || selected.is_locked}
-                              onClick={handlePreviewSql}
-                            >
-                              预览查询
-                            </Button>
-                          </Space>
-                        ),
-                        children: (
-                          <div style={{ height: resultPanelHeight, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                            <div
-                              role="separator"
-                              aria-orientation="horizontal"
-                              title="拖拽调整查询结果高度"
-                              onMouseDown={startResultResize}
-                              style={{
-                                height: 8,
-                                flexShrink: 0,
-                                cursor: 'row-resize',
-                                margin: '-8px 0 0',
-                                background: 'linear-gradient(180deg, transparent 0, transparent 3px, #d9d9d9 3px, #d9d9d9 5px, transparent 5px)',
-                              }}
-                            />
-                            {previewResult ? (
-                              <QueryResultPanel
-                                dataSource={previewTable.dataSource}
-                                columns={previewTable.tableColumns}
-                                toolbar={(
-                                  <div style={{ padding: '8px 12px', fontSize: 12, color: '#666' }}>
-                                    共 <strong>{previewResult.total ?? 0}</strong> 行
-                                    {previewResult.truncated ? `（已按上限 ${previewLimit} 截断）` : ''}
-                                    ；预览在集群内短生命周期 Job 执行，不创建 FlinkDeployment
-                                  </div>
-                                )}
-                              />
-                            ) : (
-                              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999', fontSize: 13, padding: 16, textAlign: 'center' }}>
-                                点击「预览查询」在此展示 SELECT 结果（须 SET batch 模式；支持 CREATE TABLE 定义连接器后 SELECT）
-                              </div>
+                    {resultPanelOpen ? (
+                      <div
+                        style={{
+                          marginTop: 12,
+                          height: resultPanelHeight + 40,
+                          display: 'flex',
+                          flexDirection: 'column',
+                          minHeight: 0,
+                          border: '1px solid #f0f0f0',
+                          borderRadius: 8,
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <div
+                          role="separator"
+                          aria-orientation="horizontal"
+                          title="拖拽调整查询结果高度"
+                          onMouseDown={startResultResize}
+                          style={{
+                            height: 8,
+                            flexShrink: 0,
+                            cursor: 'row-resize',
+                            margin: '0 0 -8px',
+                            zIndex: 2,
+                            background: 'linear-gradient(180deg, transparent 0, transparent 3px, #d9d9d9 3px, #d9d9d9 5px, transparent 5px)',
+                          }}
+                        />
+                        <div style={{ flex: 1, minHeight: 0 }}>
+                          <EditorResultDock
+                            activeKey="result"
+                            onClose={() => setResultPanelOpen(false)}
+                            extra={(
+                              <Space size={8} style={{ marginRight: 4 }}>
+                                <InputNumber
+                                  min={1}
+                                  max={10000}
+                                  size="small"
+                                  value={previewLimit}
+                                  onChange={v => setPreviewLimit(Number(v) || 100)}
+                                  addonBefore="预览行数"
+                                  style={{ width: 148 }}
+                                />
+                                <Button
+                                  size="small"
+                                  icon={<SearchOutlined />}
+                                  loading={previewLoading}
+                                  disabled={!canPreviewSql || selected.is_locked}
+                                  onClick={handlePreviewSql}
+                                >
+                                  预览查询
+                                </Button>
+                              </Space>
                             )}
-                          </div>
-                        ),
-                      }]}
-                    />
+                            tabs={[{
+                              key: 'result',
+                              label: (
+                                <>
+                                  查询结果
+                                  {previewResult && <EditorResultRowBadge count={previewResult.total ?? 0} />}
+                                </>
+                              ),
+                              children: (
+                                <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                                  {previewResult ? (
+                                    <QueryResultPanel
+                                      dataSource={previewTable.dataSource}
+                                      columns={previewTable.tableColumns}
+                                      toolbar={(
+                                        <div style={{ padding: '8px 12px', fontSize: 12, color: '#666' }}>
+                                          共 <strong>{previewResult.total ?? 0}</strong> 行
+                                          {previewResult.truncated ? `（已按上限 ${previewLimit} 截断）` : ''}
+                                          ；预览在集群内短生命周期 Job 执行，不创建 FlinkDeployment
+                                        </div>
+                                      )}
+                                    />
+                                  ) : (
+                                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999', fontSize: 13, padding: 16, textAlign: 'center' }}>
+                                      点击「预览查询」在此展示 SELECT 结果（须 SET batch 模式；支持 CREATE TABLE 定义连接器后 SELECT）
+                                    </div>
+                                  )}
+                                </div>
+                              ),
+                            }]}
+                          />
+                        </div>
+                      </div>
+                    ) : (
+                      <div
+                        style={{
+                          marginTop: 12,
+                          border: '1px solid #f0f0f0',
+                          borderRadius: 8,
+                          overflow: 'hidden',
+                          background: '#fff',
+                          display: 'flex',
+                          alignItems: 'center',
+                          minHeight: 40,
+                          padding: '0 12px',
+                        }}
+                      >
+                        <Button type="link" size="small" style={{ padding: '0 14px', fontWeight: 600 }} onClick={() => setResultPanelOpen(true)}>
+                          查询结果
+                          {previewResult ? <EditorResultRowBadge count={previewResult.total ?? 0} /> : null}
+                        </Button>
+                        <div style={{ flex: 1 }} />
+                        <Space size={8}>
+                          <InputNumber
+                            min={1}
+                            max={10000}
+                            size="small"
+                            value={previewLimit}
+                            onChange={v => setPreviewLimit(Number(v) || 100)}
+                            addonBefore="预览行数"
+                            style={{ width: 148 }}
+                          />
+                          <Button
+                            size="small"
+                            icon={<SearchOutlined />}
+                            loading={previewLoading}
+                            disabled={!canPreviewSql || selected.is_locked}
+                            onClick={handlePreviewSql}
+                          >
+                            预览查询
+                          </Button>
+                        </Space>
+                      </div>
+                    )}
                   </div>
                 </>
               ) : (

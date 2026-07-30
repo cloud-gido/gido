@@ -40,8 +40,9 @@ import {
   resolveDatasourceForRun,
 } from '../utils/workspaceDatasource'
 import QueryResultPanel from '../components/QueryResultPanel'
+import EditorResultDock, { EditorResultRowBadge } from '../components/EditorResultDock'
 import { exportRowsToCsv } from '../utils/csvExport'
-import { mergeColumnOrderWithKeys, pruneWidths } from '../utils/resultTableMeta'
+import { pruneWidths, resolveResultColumnOrder } from '../utils/resultTableMeta'
 import NodeConfigModal from '../components/NodeConfigModal'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
 import {
@@ -86,7 +87,12 @@ function writeLastStudioNodeId(workspaceId: number, nodeId: number) {
 
 const STUDIO_RESULT_COL_META = 'gido.studio.resultTableMeta.v1'
 
-type StudioResultColMeta = { order: string[]; widths: Record<string, number> }
+type StudioResultColMeta = {
+  order: string[]
+  widths: Record<string, number>
+  /** 产生 order 时的结果列序；与本次结果不一致则展示跟 SQL */
+  sourceKeys?: string[]
+}
 
 function loadStudioResultMetaMap(): Record<string, StudioResultColMeta> {
   try {
@@ -602,22 +608,33 @@ export default function StudioPage() {
       setResultColMeta(stored)
       return
     }
-    setResultColMeta({
-      order: mergeColumnOrderWithKeys(stored.order, cols),
+    const next: StudioResultColMeta = {
+      order: resolveResultColumnOrder(stored.order, cols, stored.sourceKeys),
       widths: pruneWidths(stored.widths, cols),
-    })
+      sourceKeys: cols,
+    }
+    setResultColMeta(next)
+    // 列签名变化时写回，避免旧 order 持续污染后续查询
+    if (
+      !stored.sourceKeys?.length ||
+      stored.sourceKeys.join('\x1e') !== cols.join('\x1e') ||
+      stored.order.join('\x1e') !== next.order.join('\x1e')
+    ) {
+      saveStudioResultMetaNode(activeTabId, next)
+    }
   }, [activeTabId, resultColSig])
 
   const onResultColumnOrderChange = useCallback(
     (nextOrder: string[]) => {
       if (activeTabId == null) return
       setResultColMeta(prev => {
-        const next = { ...prev, order: nextOrder }
+        const cols = resultMap[activeTabId]?.columns ?? prev.sourceKeys ?? nextOrder
+        const next = { ...prev, order: nextOrder, sourceKeys: cols }
         saveStudioResultMetaNode(activeTabId, next)
         return next
       })
     },
-    [activeTabId],
+    [activeTabId, resultMap],
   )
 
   const onResultColumnWidthChange = useCallback(
@@ -1475,134 +1492,96 @@ export default function StudioPage() {
                     </div>
                   )}
                   bottom={(
-                    <div
-                      style={{
-                        background: '#fafafa',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        height: '100%',
-                        minHeight: 0,
-                        overflow: 'hidden',
-                      }}
-                    >
-                      {/* 面板标题栏 */}
-                      <div
-                        style={{
-                          padding: '0 12px',
-                          background: '#fff',
-                          borderBottom: '1px solid #f0f0f0',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 0,
-                          minHeight: 40,
-                        }}
-                      >
-                        <div
-                          onClick={() => setResultTab(prev => ({ ...prev, [activeTabId!]: 'log' }))}
-                          style={{
-                            padding: '0 14px', height: 40, lineHeight: '40px', cursor: 'pointer', fontSize: 13,
-                            color: (resultTab[activeTabId!] ?? 'log') === 'log' ? '#1677ff' : '#666',
-                            fontWeight: (resultTab[activeTabId!] ?? 'log') === 'log' ? 600 : 400,
-                            borderBottom: (resultTab[activeTabId!] ?? 'log') === 'log' ? '2px solid #1677ff' : '2px solid transparent',
-                          }}
-                        >
-                          日志 {isRunning && <Spin size="small" style={{ marginLeft: 6 }} />}
-                        </div>
-                        <div
-                          onClick={() => setResultTab(prev => ({ ...prev, [activeTabId!]: 'result' }))}
-                          style={{
-                            padding: '0 14px', height: 40, lineHeight: '40px', cursor: 'pointer', fontSize: 13,
-                            color: (resultTab[activeTabId!] ?? 'log') === 'result' ? '#1677ff' : '#666',
-                            fontWeight: (resultTab[activeTabId!] ?? 'log') === 'result' ? 600 : 400,
-                            borderBottom: (resultTab[activeTabId!] ?? 'log') === 'result' ? '2px solid #1677ff' : '2px solid transparent',
-                          }}
-                        >
-                          查询结果
-                          {resultMap[activeTabId!] && (
-                            <span style={{ marginLeft: 8, color: '#52c41a', fontSize: 12, fontWeight: 400 }}>
-                              {resultMap[activeTabId!]!.total} 行
-                            </span>
-                          )}
-                        </div>
-                        <div style={{ flex: 1 }} />
-                        <Button
-                          type="text" size="small"
-                          icon={<CloseCircleOutlined />}
-                          style={{ color: '#999' }}
-                          onClick={() => setLogPanelOpen(false)}
-                        />
-                      </div>
-
-                      {(resultTab[activeTabId!] ?? 'log') === 'log' && (
-                        <pre style={{
-                          flex: 1, margin: 0, padding: '10px 14px',
-                          color: '#333', fontSize: 13, overflow: 'auto',
-                          whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, monospace',
-                          background: '#fff',
-                        }}>
-                          {isRunning ? '执行中...' : (logMap[activeTabId!] || '暂无日志')}
-                        </pre>
-                      )}
-
-                      {(resultTab[activeTabId!] ?? 'log') === 'result' && (
-                        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', background: '#fff' }}>
-                          {isRunning && (
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, color: '#888' }}>
-                              <Spin /><span style={{ marginLeft: 8 }}>执行中...</span>
+                    <EditorResultDock
+                      activeKey={resultTab[activeTabId!] ?? 'log'}
+                      onChange={key => setResultTab(prev => ({ ...prev, [activeTabId!]: key as 'log' | 'result' }))}
+                      onClose={() => setLogPanelOpen(false)}
+                      tabs={[
+                        {
+                          key: 'log',
+                          label: <>日志 {isRunning && <Spin size="small" style={{ marginLeft: 6 }} />}</>,
+                          children: (
+                            <pre style={{
+                              flex: 1, margin: 0, padding: '10px 14px',
+                              color: '#333', fontSize: 13, overflow: 'auto',
+                              whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, monospace',
+                              background: '#fff', height: '100%', boxSizing: 'border-box',
+                            }}>
+                              {isRunning ? '执行中...' : (logMap[activeTabId!] || '暂无日志')}
+                            </pre>
+                          ),
+                        },
+                        {
+                          key: 'result',
+                          label: (
+                            <>
+                              查询结果
+                              {resultMap[activeTabId!] && (
+                                <EditorResultRowBadge count={resultMap[activeTabId!]!.total} />
+                              )}
+                            </>
+                          ),
+                          children: (
+                            <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+                              {isRunning && (
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, color: '#888' }}>
+                                  <Spin /><span style={{ marginLeft: 8 }}>执行中...</span>
+                                </div>
+                              )}
+                              {!isRunning && !resultMap[activeTabId!] && (
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, color: '#999', fontSize: 13 }}>
+                                  运行 SQL 后在此展示结果；表头固定，底部可横向滚动；双击单元格复制
+                                </div>
+                              )}
+                              {!isRunning && resultMap[activeTabId!] && (() => {
+                                const { columns, column_types, rows, total } = resultMap[activeTabId!]! as {
+                                  columns: string[]
+                                  column_types?: string[]
+                                  rows: unknown[][]
+                                  total: number
+                                }
+                                const colMetas = normalizeQueryColumns(columns, column_types)
+                                const dataSource = rowsToRecordDataSource(columns, rows)
+                                const tableColumns = buildQueryTableColumns(colMetas, {
+                                  order: resultColMeta.order,
+                                  widths: resultColMeta.widths,
+                                  dataSource,
+                                  onOrderChange: onResultColumnOrderChange,
+                                  onWidthChange: onResultColumnWidthChange,
+                                })
+                                const rawRows = rows as unknown[][]
+                                return (
+                                  <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                                    <QueryResultPanel
+                                      dataSource={dataSource}
+                                      columns={tableColumns}
+                                      toolbar={(
+                                        <div style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                          <span style={{ color: '#666', fontSize: 12 }}>
+                                            共 <strong>{total}</strong> 行；已返回 <strong>{rows.length}</strong> 行（上限 10000）；结果区分页展示，表头右上角为类型徽章
+                                          </span>
+                                          <div style={{ flex: 1 }} />
+                                          <Button
+                                            size="small"
+                                            icon={<DownloadOutlined />}
+                                            onClick={() => {
+                                              exportRowsToCsv(columns, rawRows, `studio_node_${activeTabId}_result`)
+                                              message.success('已导出当前表格数据为 CSV')
+                                            }}
+                                          >
+                                            导出 CSV
+                                          </Button>
+                                        </div>
+                                      )}
+                                    />
+                                  </div>
+                                )
+                              })()}
                             </div>
-                          )}
-                          {!isRunning && !resultMap[activeTabId!] && (
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, color: '#999', fontSize: 13 }}>
-                              运行 SQL 后在此展示结果；表头固定，底部可横向滚动；双击单元格复制
-                            </div>
-                          )}
-                          {!isRunning && resultMap[activeTabId!] && (() => {
-                            const { columns, column_types, rows, total } = resultMap[activeTabId!]! as {
-                              columns: string[]
-                              column_types?: string[]
-                              rows: unknown[][]
-                              total: number
-                            }
-                            const colMetas = normalizeQueryColumns(columns, column_types)
-                            const dataSource = rowsToRecordDataSource(columns, rows)
-                            const tableColumns = buildQueryTableColumns(colMetas, {
-                              order: resultColMeta.order,
-                              widths: resultColMeta.widths,
-                              dataSource,
-                              onOrderChange: onResultColumnOrderChange,
-                              onWidthChange: onResultColumnWidthChange,
-                            })
-                            const rawRows = rows as unknown[][]
-                            return (
-                              <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-                                <QueryResultPanel
-                                  dataSource={dataSource}
-                                  columns={tableColumns}
-                                  toolbar={(
-                                    <div style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                                      <span style={{ color: '#666', fontSize: 12 }}>
-                                        共 <strong>{total}</strong> 行；已返回 <strong>{rows.length}</strong> 行（上限 10000）；结果区分页展示，表头右上角为类型徽章
-                                      </span>
-                                      <div style={{ flex: 1 }} />
-                                      <Button
-                                        size="small"
-                                        icon={<DownloadOutlined />}
-                                        onClick={() => {
-                                          exportRowsToCsv(columns, rawRows, `studio_node_${activeTabId}_result`)
-                                          message.success('已导出当前表格数据为 CSV')
-                                        }}
-                                      >
-                                        导出 CSV
-                                      </Button>
-                                    </div>
-                                  )}
-                                />
-                              </div>
-                            )
-                          })()}
-                        </div>
-                      )}
-                    </div>
+                          ),
+                        },
+                      ]}
+                    />
                   )}
                 />
               ) : (

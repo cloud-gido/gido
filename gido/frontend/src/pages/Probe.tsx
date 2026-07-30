@@ -28,9 +28,10 @@ import {
 import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from '../components/MonacoFindBar'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
 import QueryResultPanel from '../components/QueryResultPanel'
+import EditorResultDock, { EditorResultRowBadge } from '../components/EditorResultDock'
 import { normalizeQueryColumns } from '../utils/queryColumns'
 import { exportRowsToCsv } from '../utils/csvExport'
-import { mergeColumnOrderWithKeys, pruneWidths } from '../utils/resultTableMeta'
+import { pruneWidths, resolveResultColumnOrder } from '../utils/resultTableMeta'
 import {
   datasourceTagText,
   hasExplicitDatasource,
@@ -76,6 +77,8 @@ export default function ProbePage() {
   }
   const [result, setResult] = useState<ProbeRunResult | null>(null)
   const [activeResultTab, setActiveResultTab] = useState('0')
+  /** 与 Studio 一致：可关闭底部结果面板，再次运行时自动打开 */
+  const [resultPanelOpen, setResultPanelOpen] = useState(false)
   const [editorAppearance, setEditorAppearance] = useState<EditorAppearance>(() => loadEditorAppearance())
 
   const [folderModal, setFolderModal] = useState(false)
@@ -186,11 +189,14 @@ export default function ProbePage() {
 
   const displayColMeta = useMemo(() => {
     const cols = activeStmt?.columns
-    if (!cols?.length) return { order: [] as string[], widths: {} as Record<string, number> }
+    if (!cols?.length) {
+      return { order: [] as string[], widths: {} as Record<string, number>, sourceKeys: [] as string[] }
+    }
     const m = activeScript?.resultColMeta ?? { order: [], widths: {} }
     return {
-      order: mergeColumnOrderWithKeys(m.order, cols),
+      order: resolveResultColumnOrder(m.order, cols, m.sourceKeys),
       widths: pruneWidths(m.widths, cols),
+      sourceKeys: cols,
     }
   }, [activeStmt?.columns, activeScript?.resultColMeta])
 
@@ -208,19 +214,27 @@ export default function ProbePage() {
   const onResultColumnOrderChange = useCallback(
     (nextOrder: string[]) => {
       patchActiveScript({
-        resultColMeta: { order: nextOrder, widths: displayColMeta.widths },
+        resultColMeta: {
+          order: nextOrder,
+          widths: displayColMeta.widths,
+          sourceKeys: displayColMeta.sourceKeys,
+        },
       })
     },
-    [patchActiveScript, displayColMeta.widths],
+    [patchActiveScript, displayColMeta.widths, displayColMeta.sourceKeys],
   )
 
   const onResultColumnWidthChange = useCallback(
     (key: string, width: number) => {
       patchActiveScript({
-        resultColMeta: { order: displayColMeta.order, widths: { ...displayColMeta.widths, [key]: width } },
+        resultColMeta: {
+          order: displayColMeta.order,
+          widths: { ...displayColMeta.widths, [key]: width },
+          sourceKeys: displayColMeta.sourceKeys,
+        },
       })
     },
-    [patchActiveScript, displayColMeta.order, displayColMeta.widths],
+    [patchActiveScript, displayColMeta.order, displayColMeta.widths, displayColMeta.sourceKeys],
   )
 
   const sql = activeScript?.sql ?? ''
@@ -281,6 +295,7 @@ export default function ProbePage() {
     }
     setLoading(true)
     setResult(null)
+    setResultPanelOpen(true)
     try {
       const res: any = await probeApi.query({
         workspace_id: wsId,
@@ -302,11 +317,14 @@ export default function ProbePage() {
             scripts: prev.scripts.map(s => {
               if (s.id !== id) return s
               const m = s.resultColMeta ?? { order: [], widths: {} }
+              // 新结果以 SQL/JDBC 列序为准；仅列签名不变时保留拖拽（见 resolveResultColumnOrder）
+              const order = resolveResultColumnOrder(m.order, colKeys, m.sourceKeys)
               return {
                 ...s,
                 resultColMeta: {
-                  order: mergeColumnOrderWithKeys(m.order, colKeys),
+                  order,
                   widths: pruneWidths(m.widths, colKeys),
+                  sourceKeys: colKeys,
                 },
               }
             }),
@@ -621,73 +639,114 @@ export default function ProbePage() {
         <EditorAppearanceToolbar value={editorAppearance} onChange={setEditorAppearance} />
       </Space>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden' }}>
-        <ResizableVerticalSplit
-          storageKey="gido.probe.editorResultSplitRatio"
-          defaultTopRatio={0.42}
-          minTopRatio={0.2}
-          minBottomRatio={0.22}
-          top={(
-            <div style={{ position: 'relative', height: '100%' }}>
-              <MonacoFindBar getEditor={() => editorRef.current} apiRef={findApiRef} theme={editorAppearance.theme} />
-              <Editor
-                key={activeScript?.id ?? 'probe'}
-                height="100%"
-                language="sql"
-                value={sql}
-                onChange={v => {
-                  patchActiveScript({ sql: v || '' })
-                  setSqlDirty(true)
-                }}
-                beforeMount={registerDwMonacoThemes}
-                onMount={(ed, monaco) => {
-                  editorRef.current = ed
-                  bindMonacoFindKeybindings(ed, monaco, () => findApiRef.current)
-                }}
-                theme={editorAppearance.theme}
-                options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), minimap: { enabled: false } }}
-              />
-            </div>
-          )}
-          bottom={(
-            <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, background: '#fff' }}>
-              {result ? (
-                <>
-                  {result.statement_count > 1 && (
-                    <Tabs
-                      size="small"
-                      activeKey={activeResultTab}
-                      onChange={setActiveResultTab}
-                      style={{ padding: '0 8px', flexShrink: 0 }}
-                      items={result.statements.map(s => ({
-                        key: String(s.index),
-                        label: s.error ? `语句 ${s.index + 1} ✕` : `语句 ${s.index + 1}`,
-                      }))}
-                    />
-                  )}
-                  {activeStmt?.error ? (
-                    <Alert type="error" showIcon message="执行失败" description={activeStmt.error} style={{ margin: 12 }} />
-                  ) : (
-                    <QueryResultPanel
-                      dataSource={dataSource}
-                      columns={tableColumns}
-                      toolbar={(
-                        <div style={{ padding: '8px 12px', fontSize: 12, color: '#666' }}>
-                          共 <strong>{activeStmt?.total ?? 0}</strong> 行
-                          {activeStmt?.truncated ? `（已按上限 ${limit} 截断）` : ''}
-                          ；表头右上角为类型徽章；支持多条语句（分号分隔）
+        {resultPanelOpen ? (
+          <ResizableVerticalSplit
+            storageKey="gido.probe.editorResultSplitRatio"
+            defaultTopRatio={0.42}
+            minTopRatio={0.2}
+            minBottomRatio={0.22}
+            top={(
+              <div style={{ position: 'relative', height: '100%' }}>
+                <MonacoFindBar getEditor={() => editorRef.current} apiRef={findApiRef} theme={editorAppearance.theme} />
+                <Editor
+                  key={activeScript?.id ?? 'probe'}
+                  height="100%"
+                  language="sql"
+                  value={sql}
+                  onChange={v => {
+                    patchActiveScript({ sql: v || '' })
+                    setSqlDirty(true)
+                  }}
+                  beforeMount={registerDwMonacoThemes}
+                  onMount={(ed, monaco) => {
+                    editorRef.current = ed
+                    bindMonacoFindKeybindings(ed, monaco, () => findApiRef.current)
+                  }}
+                  theme={editorAppearance.theme}
+                  options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), minimap: { enabled: false } }}
+                />
+              </div>
+            )}
+            bottom={(
+              <EditorResultDock
+                activeKey="result"
+                onClose={() => setResultPanelOpen(false)}
+                tabs={[{
+                  key: 'result',
+                  label: (
+                    <>
+                      查询结果
+                      {activeStmt && !activeStmt.error && (
+                        <EditorResultRowBadge count={activeStmt.total} />
+                      )}
+                      {loading && <span style={{ marginLeft: 8, color: '#999', fontSize: 12, fontWeight: 400 }}>执行中…</span>}
+                    </>
+                  ),
+                  children: (
+                    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', height: '100%' }}>
+                      {result ? (
+                        <>
+                          {result.statement_count > 1 && (
+                            <Tabs
+                              size="small"
+                              activeKey={activeResultTab}
+                              onChange={setActiveResultTab}
+                              style={{ padding: '0 8px', flexShrink: 0 }}
+                              items={result.statements.map(s => ({
+                                key: String(s.index),
+                                label: s.error ? `语句 ${s.index + 1} ✕` : `语句 ${s.index + 1}`,
+                              }))}
+                            />
+                          )}
+                          {activeStmt?.error ? (
+                            <Alert type="error" showIcon message="执行失败" description={activeStmt.error} style={{ margin: 12 }} />
+                          ) : (
+                            <QueryResultPanel
+                              dataSource={dataSource}
+                              columns={tableColumns}
+                              toolbar={(
+                                <div style={{ padding: '8px 12px', fontSize: 12, color: '#666' }}>
+                                  共 <strong>{activeStmt?.total ?? 0}</strong> 行
+                                  {activeStmt?.truncated ? `（已按上限 ${limit} 截断）` : ''}
+                                  ；表头右上角为类型徽章；支持多条语句（分号分隔）
+                                </div>
+                              )}
+                            />
+                          )}
+                        </>
+                      ) : (
+                        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999', fontSize: 13 }}>
+                          {loading ? '执行中…' : '运行后在此展示查询结果（可用分号分隔多条 SELECT）'}
                         </div>
                       )}
-                    />
-                  )}
-                </>
-              ) : (
-                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999', fontSize: 13 }}>
-                  运行后在此展示查询结果（可用分号分隔多条 SELECT）
-                </div>
-              )}
-            </div>
-          )}
-        />
+                    </div>
+                  ),
+                }]}
+              />
+            )}
+          />
+        ) : (
+          <div style={{ position: 'relative', height: '100%', minHeight: 0 }}>
+            <MonacoFindBar getEditor={() => editorRef.current} apiRef={findApiRef} theme={editorAppearance.theme} />
+            <Editor
+              key={activeScript?.id ?? 'probe'}
+              height="100%"
+              language="sql"
+              value={sql}
+              onChange={v => {
+                patchActiveScript({ sql: v || '' })
+                setSqlDirty(true)
+              }}
+              beforeMount={registerDwMonacoThemes}
+              onMount={(ed, monaco) => {
+                editorRef.current = ed
+                bindMonacoFindKeybindings(ed, monaco, () => findApiRef.current)
+              }}
+              theme={editorAppearance.theme}
+              options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), minimap: { enabled: false } }}
+            />
+          </div>
+        )}
       </div>
     </div>
   )
@@ -733,6 +792,7 @@ export default function ProbePage() {
                   if (sid) {
                     setProbeState(prev => ({ ...prev, activeScriptId: sid }))
                     setResult(null)
+                    setResultPanelOpen(false)
                   }
                 }}
                 style={{ background: 'transparent' }}

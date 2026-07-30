@@ -8,7 +8,12 @@ export const probeStorageKey = (wsId: number) => `gido.probe.tree.v1.w${wsId}`
 
 export type ProbeFolder = { id: string; name: string; parentId: string | null }
 
-export type ProbeResultColMeta = { order: string[]; widths: Record<string, number> }
+/** sourceKeys：产生 order 时的结果列序（跟 SQL）；列签名变化后展示改跟新 SQL */
+export type ProbeResultColMeta = {
+  order: string[]
+  widths: Record<string, number>
+  sourceKeys?: string[]
+}
 
 export type ProbeScript = {
   id: string
