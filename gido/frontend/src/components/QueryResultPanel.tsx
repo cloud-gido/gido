@@ -4,12 +4,14 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, isValidElement } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, isValidElement, startTransition } from 'react'
 import { Pagination, Table, message } from 'antd'
-import type { ColumnType, ColumnsType } from 'antd/es/table'
+import type { ColumnType, ColumnsType, SorterResult } from 'antd/es/table/interface'
+import type { TableProps } from 'antd'
 import type { QueryRowRec } from './QueryResultTable'
 import { queryResultTableComponents } from './QueryResultTable'
 import { formatCellDisplay } from '../utils/cellDisplay'
+import { sortQueryRows, queryResultDataFingerprint, type QuerySortOrder } from '../utils/queryCellSort'
 import './queryResultPanel.css'
 
 export function formatQueryCellValue(v: unknown): string {
@@ -72,21 +74,46 @@ export default function QueryResultPanel({
   const [ctx, setCtx] = useState<CtxMenu | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(pagination === false ? 100 : (pagination?.pageSize ?? 100))
+  /** 全量结果排序后再分页（对齐 DataWorks：升序 → 降序 → 取消） */
+  const [sort, setSort] = useState<{ field: string; order: QuerySortOrder } | null>(null)
+
+  /** 同列升序结果缓存：切降序时 O(n) reverse，避免再排一遍 */
+  const ascendCacheRef = useRef<{ field: string; rows: QueryRowRec[]; fp: string } | null>(null)
+  const dataFingerprint = useMemo(() => queryResultDataFingerprint(dataSource), [dataSource])
 
   useEffect(() => {
     setPage(1)
-  }, [dataSource])
+    setSort(null)
+    ascendCacheRef.current = null
+  }, [dataFingerprint])
 
   const pagingEnabled = pagination !== false
   const pageSizeOptions = pagination === false
     ? []
     : (pagination?.pageSizeOptions ?? ['50', '100', '200', '500'])
 
+  const sortedData = useMemo(() => {
+    if (!sort?.field || !sort.order) return dataSource
+    const cached = ascendCacheRef.current
+    let ascendRows: QueryRowRec[]
+    if (cached && cached.field === sort.field && cached.fp === dataFingerprint) {
+      ascendRows = cached.rows
+    } else {
+      ascendRows = sortQueryRows(dataSource, sort.field, 'ascend')
+      ascendCacheRef.current = { field: sort.field, rows: ascendRows, fp: dataFingerprint }
+    }
+    if (sort.order === 'ascend') return ascendRows
+    // 降序 = 升序结果倒序（同列二次点击几乎零成本）
+    const desc = new Array<QueryRowRec>(ascendRows.length)
+    for (let i = 0, j = ascendRows.length - 1; j >= 0; i++, j--) desc[i] = ascendRows[j]
+    return desc
+  }, [dataSource, dataFingerprint, sort])
+
   const pagedData = useMemo(() => {
-    if (!pagingEnabled) return dataSource
+    if (!pagingEnabled) return sortedData
     const start = (page - 1) * pageSize
-    return dataSource.slice(start, start + pageSize)
-  }, [dataSource, pagingEnabled, page, pageSize])
+    return sortedData.slice(start, start + pageSize)
+  }, [sortedData, pagingEnabled, page, pageSize])
 
   const tableMinWidth = useMemo(() => {
     let w = 40
@@ -196,6 +223,11 @@ export default function QueryResultPanel({
       const origRender = leaf.render
       return {
         ...leaf,
+        // 排序在面板内对全量数据完成；compare 恒为 0，避免再对当前页二次排序打乱结果
+        sorter: field ? { compare: () => 0 } : undefined,
+        sortOrder: sort && field && sort.field === field ? sort.order : null,
+        sortDirections: ['ascend', 'descend'] as const,
+        showSorterTooltip: { title: '点击升序 · 再点降序 · 再点取消' },
         render: (value: unknown, record: QueryRowRec, index: number) => {
           const text = formatQueryCellValue(value)
           const cellKey = `${index}:${field}`
@@ -235,7 +267,22 @@ export default function QueryResultPanel({
         },
       }
     })
-  }, [columns, copiedKey, doCopy])
+  }, [columns, copiedKey, doCopy, sort])
+
+  const onTableChange: TableProps<QueryRowRec>['onChange'] = useCallback((_pag, _filters, sorter) => {
+    const s = (Array.isArray(sorter) ? sorter[0] : sorter) as SorterResult<QueryRowRec>
+    const field = s?.field != null ? String(s.field) : (s?.columnKey != null ? String(s.columnKey) : '')
+    const order = s?.order
+    // startTransition：大结果排序不阻塞点击反馈，降低「点一下卡死」感
+    startTransition(() => {
+      if (field && (order === 'ascend' || order === 'descend')) {
+        setSort({ field, order })
+        setPage(1)
+      } else {
+        setSort(null)
+      }
+    })
+  }, [])
 
   if (!dataSource.length && empty) {
     return <div className="dw-query-result">{empty}</div>
@@ -255,6 +302,8 @@ export default function QueryResultPanel({
             tableLayout="fixed"
             style={{ minWidth: tableMinWidth }}
             components={queryResultTableComponents}
+            onChange={onTableChange}
+            showSorterTooltip={{ title: '点击升序 · 再点降序 · 再点取消' }}
           />
         </div>
         <div ref={vTrackRef} className="dw-query-result__vscroll" title="纵向滚动">
@@ -271,7 +320,7 @@ export default function QueryResultPanel({
             size="small"
             current={page}
             pageSize={pageSize}
-            total={dataSource.length}
+            total={sortedData.length}
             showSizeChanger
             pageSizeOptions={pageSizeOptions}
             showTotal={(total, range) => `${range[0]}-${range[1]} / ${total} 行`}
