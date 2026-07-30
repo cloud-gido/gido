@@ -74,7 +74,7 @@ export default function QueryResultPanel({
   const [ctx, setCtx] = useState<CtxMenu | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(pagination === false ? 100 : (pagination?.pageSize ?? 100))
-  /** 全量结果排序后再分页（对齐 DataWorks：升序 → 降序 → 取消） */
+  /** 全量结果排序后再分页（升序 → 降序 → 取消） */
   const [sort, setSort] = useState<{ field: string; order: QuerySortOrder } | null>(null)
 
   /** 同列升序结果缓存：切降序时 O(n) reverse，避免再排一遍 */

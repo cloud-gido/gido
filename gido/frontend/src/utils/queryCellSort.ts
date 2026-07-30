@@ -2,7 +2,7 @@
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * 查询结果单元格比较 / 排序：对齐 DataWorks 升序·降序。
+ * 查询结果单元格比较 / 排序：表头升序·降序（升序 → 降序 → 取消）。
  * 先 O(n) 预计算可比键再 sort，避免每次比较都跑正则 / localeCompare（1 万行也不易卡死主线程）。
  */
 export function isQueryNullValue(v: unknown): boolean {
