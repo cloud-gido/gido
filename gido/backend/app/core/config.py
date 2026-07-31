@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
     REDIS_URL: str = ""
+    # 当 REDIS_URL 仅为短主机名 / host:6379 时配合使用（对齐 GiRisk INFRA_ARCHERY_REDIS_PASSWORD）
+    REDIS_PASSWORD: str = ""
     # 多副本生产必须为 true：Redis 不可用时 readiness 失败，且共享会话/限流不降级为进程内状态。
     SHARED_STATE_REQUIRED: bool = False
     SHARED_STATE_PREFIX: str = "gido"

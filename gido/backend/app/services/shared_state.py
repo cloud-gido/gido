@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from typing import Any, Optional
+from urllib.parse import quote, urlparse
 
 from app.core.config import settings
 
@@ -17,6 +19,12 @@ _client = None
 _client_url = ""
 _lock = threading.Lock()
 _retry_after = 0.0
+
+# rediss://host.example:AUTH_TOKEN 或 redis://host:TOKEN/db —— 密码被误写在端口位
+_MISPLACED_TOKEN_RE = re.compile(
+    r"^(?P<scheme>rediss?://)(?P<host>[^:/@]+):(?P<token>[^/@]+)(?P<path>/.*)?$",
+    re.IGNORECASE,
+)
 
 
 def shared_state_required() -> bool:
@@ -28,11 +36,77 @@ def key(*parts: object) -> str:
     return ":".join([prefix, *(str(part).strip(":") for part in parts)])
 
 
+def normalize_redis_url(raw: str, password: str = "") -> str:
+    """
+    规范化 Redis 连接串（对齐 GISO/GiRisk）：
+
+    - 完整 ``redis(s)://:token@host:6379/0`` 原样校验
+    - 短主机名 / ``host:6379`` + ``REDIS_PASSWORD`` → 组装 URL
+    - ``rediss://host:TOKEN``（token 误写在端口）→ ``rediss://:TOKEN@host:6379/0``
+    """
+    raw = (raw or "").strip()
+    password = (password or "").strip()
+    if not raw:
+        return ""
+
+    if "://" not in raw:
+        host = raw
+        port = 6379
+        if ":" in raw:
+            maybe_host, maybe_port = raw.rsplit(":", 1)
+            if maybe_port.isdigit():
+                host, port = maybe_host, int(maybe_port)
+        auth = f":{quote(password, safe='')}@" if password else ""
+        return f"redis://{auth}{host}:{port}/0"
+
+    try:
+        parsed = urlparse(raw)
+        _ = parsed.port  # 触发非法端口校验
+        if password and not parsed.password:
+            user = quote(parsed.username or "", safe="")
+            token = quote(password, safe="")
+            host = parsed.hostname or ""
+            port = parsed.port or 6379
+            path = parsed.path or "/0"
+            userinfo = f"{user}:{token}@" if user else f":{token}@"
+            return f"{parsed.scheme}://{userinfo}{host}:{port}{path}"
+        return raw
+    except ValueError as ex:
+        match = _MISPLACED_TOKEN_RE.match(raw)
+        if match:
+            scheme = match.group("scheme")
+            host = match.group("host")
+            token = quote(match.group("token"), safe="")
+            path = match.group("path") or "/0"
+            fixed = f"{scheme}:{token}@{host}:6379{path}"
+            logger.warning(
+                "REDIS_URL 疑似把密码写在端口位置，已改写为 redis(s)://:token@host:6379/…"
+            )
+            return fixed
+        raise RuntimeError(
+            "REDIS_URL 无法解析。请使用完整 URL：rediss://:URL编码密码@host:6379/0 "
+            "（常见错误：把 auth token 写在 host:TOKEN 端口位）。"
+            f" 底层错误: {ex}"
+        ) from ex
+
+
+def resolved_redis_url() -> str:
+    return normalize_redis_url(
+        settings.REDIS_URL or "",
+        getattr(settings, "REDIS_PASSWORD", "") or "",
+    )
+
+
 def redis_client(*, required: Optional[bool] = None):
     """Return a verified Redis client, or None for local-development fallback."""
     global _client, _client_url, _retry_after
     must_exist = settings.SHARED_STATE_REQUIRED if required is None else required
-    url = (settings.REDIS_URL or "").strip()
+    try:
+        url = resolved_redis_url()
+    except RuntimeError:
+        if must_exist:
+            raise
+        return None
     if not url:
         if must_exist:
             raise RuntimeError("多副本共享状态已启用，但 REDIS_URL 未配置")

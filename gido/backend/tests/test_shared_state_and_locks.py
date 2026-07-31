@@ -5,6 +5,24 @@ import pytest
 from app.services import shared_state
 from app.services.distributed_lock import try_distributed_lock
 from app.services.flink_operator_ui_tunnel import auto_ui_tunnel_enabled
+from app.services.shared_state import normalize_redis_url
+
+
+def test_normalize_redis_url_misplaced_token_as_port():
+    fixed = normalize_redis_url("rediss://master.example.cache.amazonaws.com:sTtNtokenXYZ")
+    assert fixed == "rediss://:sTtNtokenXYZ@master.example.cache.amazonaws.com:6379/0"
+
+
+def test_normalize_redis_url_host_plus_password():
+    fixed = normalize_redis_url("internal-redis:6379", "p@ss:word")
+    assert fixed.startswith("redis://:")
+    assert "@internal-redis:6379/0" in fixed
+    assert "p%40ss%3Aword" in fixed
+
+
+def test_normalize_redis_url_valid_passthrough():
+    url = "rediss://:abc@master.example.cache.amazonaws.com:6379/0"
+    assert normalize_redis_url(url) == url
 
 
 class _RedisStub:
