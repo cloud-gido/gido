@@ -8,8 +8,9 @@ import logging
 import re
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any, Optional
-from urllib.parse import quote, urlparse
+from urllib.parse import unquote, quote
 
 from app.core.config import settings
 
@@ -20,11 +21,35 @@ _client_url = ""
 _lock = threading.Lock()
 _retry_after = 0.0
 
-# rediss://host.example:AUTH_TOKEN 或 redis://host:TOKEN/db —— 密码被误写在端口位
+# rediss://host:TOKEN —— token 误写在端口位（无 @）
 _MISPLACED_TOKEN_RE = re.compile(
     r"^(?P<scheme>rediss?://)(?P<host>[^:/@]+):(?P<token>[^/@]+)(?P<path>/.*)?$",
     re.IGNORECASE,
 )
+
+
+@dataclass(frozen=True)
+class RedisEndpoint:
+    """对齐 GiRisk RedisUrlParser.Info / GISO RedisConnections。"""
+
+    scheme: str
+    host: str
+    port: int
+    username: str
+    password: str
+    database: int
+
+    @property
+    def ssl(self) -> bool:
+        return self.scheme.lower() == "rediss"
+
+    @property
+    def cache_key(self) -> str:
+        user = self.username or ""
+        auth = f"{user}:***" if (user or self.password) else ""
+        if auth:
+            auth = f"{auth}@"
+        return f"{self.scheme}://{auth}{self.host}:{self.port}/{self.database}"
 
 
 def shared_state_required() -> bool:
@@ -36,65 +61,134 @@ def key(*parts: object) -> str:
     return ":".join([prefix, *(str(part).strip(":") for part in parts)])
 
 
-def normalize_redis_url(raw: str, password: str = "") -> str:
-    """
-    规范化 Redis 连接串（对齐 GISO/GiRisk）：
+def _percent_decode(value: str) -> str:
+    if not value or "%" not in value:
+        return value
+    try:
+        return unquote(value)
+    except Exception:
+        return value
 
-    - 完整 ``redis(s)://:token@host:6379/0`` 原样校验
-    - 短主机名 / ``host:6379`` + ``REDIS_PASSWORD`` → 组装 URL
-    - ``rediss://host:TOKEN``（token 误写在端口）→ ``rediss://:TOKEN@host:6379/0``
+
+def parse_redis_endpoint(raw: str, override_password: str = "") -> RedisEndpoint:
+    """
+    解析 Redis 连接（对齐 GiRisk RedisUrlParser，不依赖 urllib 解析密码）。
+
+    平台 Doppler 常见：
+    ``rediss://:sTtN?Yo5q...=!@master.xxx.cache.amazonaws.com/0``
+    密码含 ``?`` ``=`` ``!`` 时，Python urllib / redis.from_url 会把 ``?`` 当成 query 截断。
     """
     raw = (raw or "").strip()
-    password = (password or "").strip()
+    override_password = (override_password or "").strip()
     if not raw:
-        return ""
+        raise ValueError("empty redis url")
 
-    if "://" not in raw:
+    # 短主机名 / host:6379 + 独立密码（GiRisk fromParts）
+    if not raw.lower().startswith(("redis://", "rediss://")):
         host = raw
         port = 6379
         if ":" in raw:
             maybe_host, maybe_port = raw.rsplit(":", 1)
             if maybe_port.isdigit():
                 host, port = maybe_host, int(maybe_port)
-        auth = f":{quote(password, safe='')}@" if password else ""
-        return f"redis://{auth}{host}:{port}/0"
+        scheme = "rediss" if ".amazonaws.com" in host else "redis"
+        return RedisEndpoint(scheme, host, port, "", override_password, 0)
 
-    try:
-        parsed = urlparse(raw)
-        _ = parsed.port  # 触发非法端口校验
-        if password and not parsed.password:
-            user = quote(parsed.username or "", safe="")
-            token = quote(password, safe="")
-            host = parsed.hostname or ""
-            port = parsed.port or 6379
-            path = parsed.path or "/0"
-            userinfo = f"{user}:{token}@" if user else f":{token}@"
-            return f"{parsed.scheme}://{userinfo}{host}:{port}{path}"
-        return raw
-    except ValueError as ex:
-        match = _MISPLACED_TOKEN_RE.match(raw)
-        if match:
-            scheme = match.group("scheme")
-            host = match.group("host")
-            token = quote(match.group("token"), safe="")
-            path = match.group("path") or "/0"
-            fixed = f"{scheme}:{token}@{host}:6379{path}"
-            logger.warning(
-                "REDIS_URL 疑似把密码写在端口位置，已改写为 redis(s)://:token@host:6379/…"
+    # token 误写在端口：rediss://host:TOKEN
+    misplaced = _MISPLACED_TOKEN_RE.match(raw)
+    if misplaced and "@" not in raw:
+        host = misplaced.group("host")
+        token = _percent_decode(misplaced.group("token"))
+        path = misplaced.group("path") or "/0"
+        db = 0
+        if path.strip("/").isdigit():
+            db = int(path.strip("/"))
+        scheme = "rediss" if misplaced.group("scheme").lower().startswith("rediss") else "redis"
+        if ".amazonaws.com" in host:
+            scheme = "rediss"
+            db = 0
+        return RedisEndpoint(scheme, host, 6379, "", token or override_password, db)
+
+    # 与 GiRisk 相同：用最后一个 @ 分割 auth / host（密码可含 ? = ! :）
+    at = raw.rfind("@")
+    if at < 0:
+        scheme = "rediss" if raw.lower().startswith("rediss://") else "redis"
+        tail = raw.split("://", 1)[1]
+        auth = ""
+    else:
+        head = raw[:at]
+        tail = raw[at + 1 :]
+        scheme = "rediss" if head.lower().startswith("rediss://") else "redis"
+        auth = head.split("://", 1)[1]
+
+    username = ""
+    password = ""
+    has_embedded = False
+    if auth:
+        if auth.startswith(":"):
+            password = auth[1:]
+            has_embedded = bool(password.strip())
+        elif ":" in auth:
+            username, password = auth.split(":", 1)
+            has_embedded = bool(password.strip())
+        else:
+            password = auth
+            has_embedded = bool(password.strip())
+    password = _percent_decode(password.strip())
+    username = _percent_decode(username.strip())
+    if not has_embedded and override_password:
+        password = override_password
+
+    database = 0
+    if "/" in tail:
+        host_port, db_part = tail.split("/", 1)
+        if db_part.strip().isdigit():
+            database = int(db_part.strip())
+    else:
+        host_port = tail
+
+    port = 6379
+    if ":" in host_port:
+        host, port_s = host_port.rsplit(":", 1)
+        if not port_s.isdigit():
+            raise ValueError(
+                f"Redis 端口非法: {port_s!r}（若密码写在 host:TOKEN 位置，请改为 "
+                "rediss://:TOKEN@host:6379/0）"
             )
-            return fixed
-        raise RuntimeError(
-            "REDIS_URL 无法解析。请使用完整 URL：rediss://:URL编码密码@host:6379/0 "
-            "（常见错误：把 auth token 写在 host:TOKEN 端口位）。"
-            f" 底层错误: {ex}"
-        ) from ex
+        port = int(port_s)
+    else:
+        host = host_port
+
+    host = (host or "").strip()
+    if not host:
+        raise ValueError("Redis host is empty")
+
+    # ElastiCache：强制 TLS + db0（对齐 GiRisk）
+    if ".amazonaws.com" in host:
+        return RedisEndpoint("rediss", host, port, "", password, 0)
+    return RedisEndpoint(scheme, host, port, username, password, database)
 
 
-def resolved_redis_url() -> str:
-    return normalize_redis_url(
-        settings.REDIS_URL or "",
-        getattr(settings, "REDIS_PASSWORD", "") or "",
-    )
+def resolved_redis_endpoint() -> Optional[RedisEndpoint]:
+    raw = (settings.REDIS_URL or "").strip()
+    password = (getattr(settings, "REDIS_PASSWORD", None) or "").strip()
+    if not raw:
+        return None
+    return parse_redis_endpoint(raw, password)
+
+
+def normalize_redis_url(raw: str, password: str = "") -> str:
+    """测试/兼容：解析后再拼回可展示的 URL（密码会做 quote）。"""
+    if not (raw or "").strip():
+        return ""
+    ep = parse_redis_endpoint(raw, password)
+    user = quote(ep.username, safe="") if ep.username else ""
+    token = quote(ep.password, safe="") if ep.password else ""
+    if ep.password or ep.username:
+        userinfo = f"{user}:{token}@" if ep.username else f":{token}@"
+    else:
+        userinfo = ""
+    return f"{ep.scheme}://{userinfo}{ep.host}:{ep.port}/{ep.database}"
 
 
 def redis_client(*, required: Optional[bool] = None):
@@ -102,35 +196,47 @@ def redis_client(*, required: Optional[bool] = None):
     global _client, _client_url, _retry_after
     must_exist = settings.SHARED_STATE_REQUIRED if required is None else required
     try:
-        url = resolved_redis_url()
-    except RuntimeError:
+        endpoint = resolved_redis_endpoint()
+    except Exception as ex:
         if must_exist:
-            raise
+            raise RuntimeError(f"REDIS_URL 无法解析: {ex}") from ex
+        logger.debug("REDIS_URL 无法解析，使用单进程开发回退: %s", ex)
         return None
-    if not url:
+    if endpoint is None:
         if must_exist:
             raise RuntimeError("多副本共享状态已启用，但 REDIS_URL 未配置")
         return None
 
+    cache_key = endpoint.cache_key
     now = time.monotonic()
     with _lock:
-        if _client is not None and _client_url == url:
+        if _client is not None and _client_url == cache_key:
             return _client
         if now < _retry_after and not must_exist:
             return None
         try:
             import redis
 
-            candidate = redis.Redis.from_url(
-                url,
-                decode_responses=True,
-                socket_connect_timeout=2,
-                socket_timeout=3,
-                health_check_interval=30,
-            )
+            kwargs: dict[str, Any] = {
+                "host": endpoint.host,
+                "port": endpoint.port,
+                "db": endpoint.database,
+                "decode_responses": True,
+                "socket_connect_timeout": 2,
+                "socket_timeout": 3,
+                "health_check_interval": 30,
+            }
+            if endpoint.password:
+                kwargs["password"] = endpoint.password
+            if endpoint.username:
+                kwargs["username"] = endpoint.username
+            if endpoint.ssl:
+                kwargs["ssl"] = True
+                kwargs["ssl_cert_reqs"] = None
+            candidate = redis.Redis(**kwargs)
             candidate.ping()
             _client = candidate
-            _client_url = url
+            _client_url = cache_key
             _retry_after = 0.0
             return candidate
         except Exception as ex:

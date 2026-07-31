@@ -5,7 +5,23 @@ import pytest
 from app.services import shared_state
 from app.services.distributed_lock import try_distributed_lock
 from app.services.flink_operator_ui_tunnel import auto_ui_tunnel_enabled
-from app.services.shared_state import normalize_redis_url
+from app.services.shared_state import normalize_redis_url, parse_redis_endpoint
+
+
+def test_parse_redis_endpoint_girisk_style_special_password():
+    """与 GiRisk RedisUrlParserTest 同构：密码含 ? = ! 时不能走 urllib。"""
+    url = (
+        "rediss://:sTtN?Yo5q-qaHGpP6=kEWJRT!WOTFPI@"
+        "master.gamelinelab-dev-sharedcache.cddsor.sae1.cache.amazonaws.com/0"
+    )
+    ep = parse_redis_endpoint(url)
+    assert ep.scheme == "rediss"
+    assert ep.ssl is True
+    assert ep.host == "master.gamelinelab-dev-sharedcache.cddsor.sae1.cache.amazonaws.com"
+    assert ep.port == 6379
+    assert ep.database == 0
+    assert ep.password == "sTtN?Yo5q-qaHGpP6=kEWJRT!WOTFPI"
+    assert ep.username == ""
 
 
 def test_normalize_redis_url_misplaced_token_as_port():
@@ -20,9 +36,11 @@ def test_normalize_redis_url_host_plus_password():
     assert "p%40ss%3Aword" in fixed
 
 
-def test_normalize_redis_url_valid_passthrough():
+def test_normalize_redis_url_valid_passthrough_shape():
     url = "rediss://:abc@master.example.cache.amazonaws.com:6379/0"
-    assert normalize_redis_url(url) == url
+    ep = parse_redis_endpoint(url)
+    assert ep.host == "master.example.cache.amazonaws.com"
+    assert ep.password == "abc"
 
 
 class _RedisStub:
