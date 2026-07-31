@@ -19,6 +19,7 @@ from app.models.workspace import User
 from app.services.copilot.orchestrator import CopilotOrchestrator
 from app.services.copilot.session_store import session_store
 from app.services.copilot_runtime import get_copilot_runtime
+from app.services.shared_state import rate_limit_hit
 
 router = APIRouter(prefix="/copilot", tags=["玑渡 Copilot"])
 
@@ -36,6 +37,14 @@ class CopilotChatIn(BaseModel):
 
 def _check_rate_limit(user_id: int) -> None:
     limit = max(settings.COPILOT_RATE_LIMIT_PER_MINUTE, 1)
+    try:
+        exceeded = rate_limit_hit(f"copilot:{user_id}", limit, 60)
+    except RuntimeError as ex:
+        raise HTTPException(status_code=503, detail=str(ex)) from ex
+    if exceeded is not None:
+        if exceeded:
+            raise HTTPException(status_code=429, detail="Copilot 请求过于频繁，请稍后再试")
+        return
     now = time.time()
     with _rate_lock:
         bucket = _rate_buckets.setdefault(user_id, [])
@@ -71,17 +80,24 @@ def copilot_status(
     }
 
 
+def _session_store_call(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except RuntimeError as ex:
+        raise HTTPException(status_code=503, detail=str(ex)) from ex
+
+
 @router.get("/sessions")
 def list_sessions(
     workspace_id: Optional[int] = None,
     current_user: User = Depends(get_current_user),
 ):
-    return {"sessions": session_store.list_for_user(current_user.id, workspace_id)}
+    return {"sessions": _session_store_call(session_store.list_for_user, current_user.id, workspace_id)}
 
 
 @router.get("/sessions/{session_id}")
 def get_session(session_id: str, current_user: User = Depends(get_current_user)):
-    s = session_store.get(session_id, current_user.id)
+    s = _session_store_call(session_store.get, session_id, current_user.id)
     if not s:
         raise HTTPException(status_code=404, detail="会话不存在")
     return {
@@ -94,7 +110,7 @@ def get_session(session_id: str, current_user: User = Depends(get_current_user))
 
 @router.delete("/sessions/{session_id}")
 def delete_session(session_id: str, current_user: User = Depends(get_current_user)):
-    if not session_store.delete(session_id, current_user.id):
+    if not _session_store_call(session_store.delete, session_id, current_user.id):
         raise HTTPException(status_code=404, detail="会话不存在")
     return {"ok": True}
 
@@ -109,8 +125,19 @@ def copilot_chat(
     _require_configured(db, body.workspace_id)
     runtime = get_copilot_runtime(db, body.workspace_id)
     orch = CopilotOrchestrator(runtime)
-    if body.stream:
-        gen = orch.run_chat_stream(
+    try:
+        if body.stream:
+            gen = orch.run_chat_stream(
+                db,
+                current_user,
+                body.workspace_id,
+                body.message.strip(),
+                body.session_id,
+                body.datasource_id,
+            )
+            return StreamingResponse(gen, media_type="text/event-stream")
+
+        _, payload = orch.run_chat(
             db,
             current_user,
             body.workspace_id,
@@ -118,14 +145,6 @@ def copilot_chat(
             body.session_id,
             body.datasource_id,
         )
-        return StreamingResponse(gen, media_type="text/event-stream")
-
-    _, payload = orch.run_chat(
-        db,
-        current_user,
-        body.workspace_id,
-        body.message.strip(),
-        body.session_id,
-        body.datasource_id,
-    )
-    return payload
+        return payload
+    except RuntimeError as ex:
+        raise HTTPException(status_code=503, detail=str(ex)) from ex

@@ -28,10 +28,13 @@ def _tunnel_key(deployment_name: str, namespace: str) -> str:
 
 
 def auto_ui_tunnel_enabled() -> bool:
+    """kubectl UI tunnel is single-pod only; never enable outside DEV_LOCAL."""
+    if not bool(getattr(settings, "FLINK_OPERATOR_DEV_LOCAL", False)):
+        return False
     explicit = getattr(settings, "FLINK_OPERATOR_AUTO_UI_TUNNEL", None)
     if explicit is not None:
         return bool(explicit)
-    return bool(getattr(settings, "FLINK_OPERATOR_DEV_LOCAL", False))
+    return True
 
 
 def _port_offset(job_id: int) -> int:

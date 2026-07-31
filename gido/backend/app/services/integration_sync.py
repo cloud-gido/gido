@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.models.workspace import DataSource, SyncRecord, SyncTask
+from app.services.distributed_lock import DistributedLockHandle, acquire_distributed_lock
 from app.services.integration_runtime import (
     assert_supported_ds,
     list_columns,
@@ -209,7 +210,7 @@ def _pg_primary_keys(cur, schema: str, table: str) -> List[str]:
     return [r[0] for r in cur.fetchall()]
 
 
-def run_sync_record(record_id: int, task_id: int) -> None:
+def run_sync_record(record_id: int, task_id: int, lock_handle: DistributedLockHandle) -> None:
     db = SessionLocal()
     try:
         record = db.query(SyncRecord).filter(SyncRecord.id == record_id).first()
@@ -253,13 +254,18 @@ def run_sync_record(record_id: int, task_id: int) -> None:
             db.commit()
     finally:
         db.close()
+        lock_handle.release()
         with _run_lock:
             _running_tasks.discard(task_id)
 
 
 def start_sync_async(task_id: int, trigger_type: str = "manual") -> SyncRecord:
+    lock_handle = acquire_distributed_lock(f"integration-sync:{int(task_id)}")
+    if lock_handle is None:
+        raise RuntimeError("该任务正在其他 backend 副本执行中，请稍后再试")
     with _run_lock:
         if task_id in _running_tasks:
+            lock_handle.release()
             raise RuntimeError("该任务正在执行中，请稍后再试")
         _running_tasks.add(task_id)
 
@@ -281,11 +287,27 @@ def start_sync_async(task_id: int, trigger_type: str = "manual") -> SyncRecord:
         db.commit()
         db.refresh(record)
         rid, tid = record.id, task_id
+    except Exception:
+        lock_handle.release()
+        with _run_lock:
+            _running_tasks.discard(task_id)
+        raise
     finally:
         db.close()
 
-    t = threading.Thread(target=run_sync_record, args=(rid, tid), daemon=True, name=f"sync-{tid}")
-    t.start()
+    t = threading.Thread(
+        target=run_sync_record,
+        args=(rid, tid, lock_handle),
+        daemon=True,
+        name=f"sync-{tid}",
+    )
+    try:
+        t.start()
+    except Exception:
+        lock_handle.release()
+        with _run_lock:
+            _running_tasks.discard(task_id)
+        raise
     return record
 
 

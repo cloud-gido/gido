@@ -5342,7 +5342,7 @@ def download_library_jar_version(
     """供 Flink Operator 拉取制品库版本 JAR。"""
     from app.services.jar_artifact import (
         artifact_download_token_is_valid,
-        library_version_file_path,
+        ensure_library_version_file,
     )
 
     if not artifact_download_token_is_valid(token):
@@ -5350,8 +5350,8 @@ def download_library_jar_version(
     ver = db.query(StreamingJarVersion).filter(StreamingJarVersion.id == version_id).first()
     if not ver:
         raise HTTPException(status_code=404, detail="JAR 版本不存在")
-    path = library_version_file_path(int(ver.artifact_id), int(ver.version))
-    if not path.is_file():
+    path = ensure_library_version_file(int(ver.artifact_id), int(ver.version))
+    if not path:
         raise HTTPException(status_code=404, detail="JAR 文件不存在")
     return FileResponse(path, media_type="application/java-archive", filename=ver.file_name or "artifact.jar")
 
@@ -5739,12 +5739,12 @@ def backfill_jar_artifacts(workspace_id: int, db: Session = Depends(get_db), cur
 @router.get("/jobs/{job_id}/artifact.jar")
 def download_jar_artifact(job_id: int, token: str = Query(..., description="与 FLINK_OPERATOR_ARTIFACT_TOKEN 一致")):
     """供 Flink Operator Pod HTTP 拉取 JAR（无 JWT；校验 artifact token）。"""
-    from app.services.jar_artifact import artifact_file_path, artifact_download_token_is_valid
+    from app.services.jar_artifact import ensure_artifact_file, artifact_download_token_is_valid
 
     if not artifact_download_token_is_valid(token):
         raise HTTPException(status_code=403, detail="无效 artifact token")
-    path = artifact_file_path(job_id)
-    if not path.is_file():
+    path = ensure_artifact_file(job_id)
+    if not path:
         raise HTTPException(status_code=404, detail="JAR 制品不存在")
     return FileResponse(path, media_type="application/java-archive", filename="artifact.jar")
 
@@ -5753,12 +5753,12 @@ def download_jar_artifact(job_id: int, token: str = Query(..., description="与 
 def download_sql_artifact(job_id: int, token: str = Query(..., description="与 FLINK_OPERATOR_ARTIFACT_TOKEN 一致")):
     """供调试/备用：SQL Operator 主路径为 ConfigMap 挂载；此端点供 HTTP 拉取场景。"""
     from app.services.jar_artifact import artifact_download_token_is_valid
-    from app.services.sql_artifact import sql_script_file_path
+    from app.services.sql_artifact import ensure_sql_script_file
 
     if not artifact_download_token_is_valid(token):
         raise HTTPException(status_code=403, detail="无效 artifact token")
-    path = sql_script_file_path(job_id)
-    if not path.is_file():
+    path = ensure_sql_script_file(job_id)
+    if not path:
         raise HTTPException(status_code=404, detail="SQL 制品不存在")
     return FileResponse(path, media_type="text/plain; charset=utf-8", filename="artifact.sql")
 

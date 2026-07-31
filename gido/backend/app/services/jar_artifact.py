@@ -33,6 +33,21 @@ def artifact_file_path(job_id: int) -> Path:
     return artifact_dir_for_job(job_id) / JAR_ARTIFACT_FILENAME
 
 
+def ensure_artifact_file(job_id: int) -> Optional[Path]:
+    path = artifact_file_path(job_id)
+    if path.is_file() and path.stat().st_size > 0:
+        return path
+    if artifact_s3_enabled():
+        from app.services.artifact_s3 import download_artifact_bytes_at_key, s3_key_for_artifact
+
+        key = s3_key_for_artifact(job_id, JAR_ARTIFACT_FILENAME)
+        content = download_artifact_bytes_at_key(key) if key else None
+        if content:
+            path.write_bytes(content)
+            return path
+    return None
+
+
 def save_jar_bytes(job_id: int, content: bytes) -> Path:
     path = artifact_file_path(job_id)
     path.write_bytes(content)
@@ -68,6 +83,21 @@ def library_version_dir(artifact_id: int, version: int) -> Path:
 
 def library_version_file_path(artifact_id: int, version: int) -> Path:
     return library_version_dir(artifact_id, version) / JAR_ARTIFACT_FILENAME
+
+
+def ensure_library_version_file(artifact_id: int, version: int) -> Optional[Path]:
+    path = library_version_file_path(artifact_id, version)
+    if path.is_file() and path.stat().st_size > 0:
+        return path
+    if artifact_s3_enabled():
+        from app.services.artifact_s3 import download_artifact_bytes_at_key, s3_key_for_library_version
+
+        key = s3_key_for_library_version(artifact_id, version, JAR_ARTIFACT_FILENAME)
+        content = download_artifact_bytes_at_key(key) if key else None
+        if content:
+            path.write_bytes(content)
+            return path
+    return None
 
 
 def save_library_jar_bytes(artifact_id: int, version: int, content: bytes) -> Path:

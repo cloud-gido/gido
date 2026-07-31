@@ -181,6 +181,21 @@ def upload_artifact_bytes_at_key(
     return uri
 
 
+def download_artifact_bytes_at_key(key: str) -> Optional[bytes]:
+    prefix = artifact_s3_prefix()
+    if not prefix:
+        return None
+    bucket, _ = _parse_s3_prefix(prefix)
+    try:
+        response = _s3_client().get_object(Bucket=bucket, Key=key)
+        return response["Body"].read()
+    except Exception as ex:
+        code = getattr(ex, "response", {}).get("Error", {}).get("Code", "")
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return None
+        raise
+
+
 def artifact_exists_in_s3_key(key: str) -> bool:
     prefix = artifact_s3_prefix()
     if not prefix:
@@ -195,3 +210,55 @@ def artifact_exists_in_s3_key(key: str) -> bool:
             return False
         logger.debug("S3 head_object 失败 key=%s: %s", key, ex)
         return False
+
+
+def shared_object_key(namespace: str, filename: str) -> str:
+    prefix = artifact_s3_prefix()
+    if not prefix:
+        raise RuntimeError("共享对象存储需要配置 FLINK_OPERATOR_JAR_S3_PREFIX 或 GIDO_ARTIFACT_S3_PREFIX")
+    _, key_prefix = _parse_s3_prefix(prefix)
+    return "/".join(
+        part for part in (key_prefix, namespace.strip("/"), filename.strip("/")) if part
+    )
+
+
+def put_shared_object(namespace: str, filename: str, content: bytes, content_type: str) -> None:
+    prefix = artifact_s3_prefix()
+    if not prefix:
+        raise RuntimeError("共享对象存储 S3 未配置")
+    bucket, _ = _parse_s3_prefix(prefix)
+    _s3_client().put_object(
+        Bucket=bucket,
+        Key=shared_object_key(namespace, filename),
+        Body=content,
+        ContentType=content_type,
+    )
+
+
+def get_shared_object(namespace: str, filename: str) -> Optional[bytes]:
+    prefix = artifact_s3_prefix()
+    if not prefix:
+        return None
+    bucket, _ = _parse_s3_prefix(prefix)
+    try:
+        response = _s3_client().get_object(
+            Bucket=bucket,
+            Key=shared_object_key(namespace, filename),
+        )
+        return response["Body"].read()
+    except Exception as ex:
+        code = getattr(ex, "response", {}).get("Error", {}).get("Code", "")
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return None
+        raise
+
+
+def delete_shared_object(namespace: str, filename: str) -> None:
+    prefix = artifact_s3_prefix()
+    if not prefix:
+        return
+    bucket, _ = _parse_s3_prefix(prefix)
+    _s3_client().delete_object(
+        Bucket=bucket,
+        Key=shared_object_key(namespace, filename),
+    )

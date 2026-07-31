@@ -7,6 +7,10 @@
 # 不包含：DolphinScheduler、Flink Session/Gateway、Redis、Kafka。
 # 实时 JAR 走 Flink Kubernetes Operator（须已装 Operator + namespace flink）。
 #
+# 本地开发默认 backend/frontend replicas=1（无需 Redis）。
+# 生产多副本（backend=2）须 Redis + S3 + SHARED_STATE_REQUIRED=true，
+# 见 k8s/eks/gido-eks-external-pg.yaml 与 deployment apps/bigdata/gido/。
+#
 # 镜像占位符由 k8s/apply-gido-stack.sh 替换：
 #   __BACKEND_IMAGE__ / __FRONTEND_IMAGE__ / __FLINK_OPERATOR_IMAGE__
 #
@@ -214,6 +218,7 @@ metadata:
     app: gido
     component: backend
 spec:
+  # 本地单副本；扩到 2 前须配置 REDIS_URL + SHARED_STATE_REQUIRED + S3（见 EKS 样例）
   replicas: 1
   strategy:
     type: Recreate
@@ -249,7 +254,7 @@ spec:
                 name: gido-secrets
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: 8001
             initialDelaySeconds: 20
             periodSeconds: 5

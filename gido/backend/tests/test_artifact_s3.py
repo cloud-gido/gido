@@ -97,6 +97,18 @@ def test_jar_artifact_exists_checks_s3_when_local_missing(mock_client_fn, monkey
     mock_s3.head_object.assert_called_once_with(Bucket="test-bucket", Key="jars/11/artifact.jar")
 
 
+def test_ensure_artifact_file_backfills_from_s3(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://test-bucket/jars")
+    monkeypatch.setattr(settings, "JAR_ARTIFACT_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "app.services.artifact_s3.download_artifact_bytes_at_key",
+        lambda key: b"from-s3",
+    )
+    path = ja.ensure_artifact_file(21)
+    assert path is not None
+    assert path.read_bytes() == b"from-s3"
+
+
 @patch("app.services.artifact_s3._s3_client")
 def test_save_sql_script_uploads_to_s3(mock_client_fn, monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "FLINK_OPERATOR_JAR_S3_PREFIX", "s3://test-bucket/artifacts")

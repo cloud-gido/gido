@@ -38,7 +38,10 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "gido-secret-key-change-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
-    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_URL: str = ""
+    # 多副本生产必须为 true：Redis 不可用时 readiness 失败，且共享会话/限流不降级为进程内状态。
+    SHARED_STATE_REQUIRED: bool = False
+    SHARED_STATE_PREFIX: str = "gido"
 
     # 告警配置
     ALERT_WEBHOOK_URL: Optional[str] = None
@@ -185,6 +188,8 @@ class Settings(BaseSettings):
     # 用户自定义头像（容器内建议挂卷持久化）
     AVATAR_UPLOAD_DIR: str = "/data/user-avatars"
     AVATAR_MAX_BYTES: int = 2 * 1024 * 1024
+    # 多副本生产头像写入与回源使用同一 S3 bucket；默认复用制品前缀下的 avatars/。
+    AVATAR_S3_ENABLED: bool = False
 
     # 数据开发 publish / 实时作业提交 Flink 成功后是否自动锁定脚本与配置。生产建议 true（对齐 GIDO）；灰度/回滚可设 false
     STUDIO_LOCK_ON_PUBLISH: bool = True

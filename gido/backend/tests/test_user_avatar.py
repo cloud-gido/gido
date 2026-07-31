@@ -41,3 +41,30 @@ def test_upload_and_replace_avatar(tmp_path, monkeypatch):
     assert avatar_file_path(stored2) is not None
     delete_uploaded_avatar(stored2)
     assert avatar_file_path(stored2) is None
+
+
+def test_avatar_s3_backfills_replica_local_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.user_avatar.settings.AVATAR_UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr("app.services.user_avatar.settings.AVATAR_S3_ENABLED", True)
+    objects = {}
+    monkeypatch.setattr(
+        "app.services.user_avatar.put_shared_object",
+        lambda namespace, name, content, content_type: objects.__setitem__((namespace, name), content),
+    )
+    monkeypatch.setattr(
+        "app.services.user_avatar.get_shared_object",
+        lambda namespace, name: objects.get((namespace, name)),
+    )
+    monkeypatch.setattr(
+        "app.services.user_avatar.delete_shared_object",
+        lambda namespace, name: objects.pop((namespace, name), None),
+    )
+
+    stored, _ = replace_avatar_upload(1, None, _TINY_PNG, "image/png")
+    local_path = avatar_file_path(stored)
+    assert local_path is not None
+    local_path.unlink()
+
+    restored = avatar_file_path(stored)
+    assert restored is not None
+    assert restored.read_bytes() == _TINY_PNG

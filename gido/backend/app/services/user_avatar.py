@@ -6,11 +6,19 @@
 from __future__ import annotations
 
 import re
+import logging
 import uuid
 from pathlib import Path
 from typing import Optional, Tuple
 
 from app.core.config import settings
+from app.services.artifact_s3 import (
+    delete_shared_object,
+    get_shared_object,
+    put_shared_object,
+)
+
+logger = logging.getLogger(__name__)
 
 AVATAR_PRESET_PREFIX = "preset:"
 AVATAR_UPLOAD_PREFIX = "upload:"
@@ -70,6 +78,12 @@ def save_avatar_upload(user_id: int, content: bytes, content_type: str) -> str:
     stored = stored_upload_name(user_id, content_type)
     path = avatar_upload_dir() / stored
     path.write_bytes(content)
+    if settings.AVATAR_S3_ENABLED:
+        try:
+            put_shared_object("avatars", stored, content, content_type)
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
     return stored
 
 
@@ -79,6 +93,11 @@ def avatar_file_path(stored_name: str) -> Optional[Path]:
     path = avatar_upload_dir() / stored_name
     if path.is_file() and path.stat().st_size > 0:
         return path
+    if settings.AVATAR_S3_ENABLED:
+        content = get_shared_object("avatars", stored_name)
+        if content:
+            path.write_bytes(content)
+            return path
     return None
 
 
@@ -86,6 +105,11 @@ def delete_uploaded_avatar(stored_name: str) -> None:
     path = avatar_file_path(stored_name)
     if path and path.is_file():
         path.unlink(missing_ok=True)
+    if settings.AVATAR_S3_ENABLED and STORED_NAME_RE.match(stored_name or ""):
+        try:
+            delete_shared_object("avatars", stored_name)
+        except Exception as ex:
+            logger.warning("删除 S3 头像失败 stored_name=%s: %s", stored_name, ex)
 
 
 def parse_upload_stored_name(avatar: Optional[str]) -> Optional[str]:

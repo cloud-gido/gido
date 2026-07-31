@@ -27,12 +27,22 @@ def _executor_loop():
     while _running:
         db = SessionLocal()
         try:
-            # 查找 pending 实例（限制并发数）
-            pending = db.query(WorkflowInstance).filter(
-                WorkflowInstance.status == "pending"
-            ).order_by(WorkflowInstance.id).limit(5).all()
+            # PostgreSQL SKIP LOCKED 原子认领，多个 backend 副本不会执行同一实例。
+            for _ in range(5):
+                query = (
+                    db.query(WorkflowInstance)
+                    .filter(WorkflowInstance.status == "pending")
+                    .order_by(WorkflowInstance.id)
+                )
+                if db.bind and db.bind.dialect.name == "postgresql":
+                    query = query.with_for_update(skip_locked=True)
+                inst = query.first()
+                if not inst:
+                    break
+                inst.status = "running"
+                inst.started_at = datetime.utcnow()
+                db.commit()
 
-            for inst in pending:
                 wf = db.query(Workflow).filter(Workflow.id == inst.workflow_id).first()
                 if not wf:
                     inst.status = "failed"
@@ -40,9 +50,6 @@ def _executor_loop():
                     continue
 
                 logger.info(f"开始执行工作流实例 {inst.id} (工作流: {wf.name})")
-                inst.status = "running"
-                inst.started_at = datetime.utcnow()
-                db.commit()
 
                 dag = wf.dag_config or {}
                 ordered_nodes = _topo_sort(dag)

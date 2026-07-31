@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 
 from app.core.database import SessionLocal
 from app.models.workspace import DataSource, SyncRecord, SyncTask
+from app.services.distributed_lock import acquire_distributed_lock
 from app.services.integration_sync import _cfg, _execute_sync
 
 logger = logging.getLogger(__name__)
@@ -39,88 +40,88 @@ def _merge_cdc(task: SyncTask, patch: Dict[str, Any]) -> None:
 
 
 def _cdc_worker_loop(task_id: int) -> None:
+    lock_handle = acquire_distributed_lock(f"integration-cdc:{int(task_id)}")
+    if lock_handle is None:
+        logger.info("CDC task_id=%s 已由其他 backend 副本执行", task_id)
+        with _workers_lock:
+            _active_workers.pop(task_id, None)
+        return
     logger.info("CDC worker 启动 task_id=%s", task_id)
-    while _running:
-        db = SessionLocal()
-        poll = 10
-        try:
-            task = db.query(SyncTask).filter(SyncTask.id == task_id).first()
-            if not task or task.sync_mode != "cdc" or not task.is_active:
-                break
-            cdc = _cdc_cfg(task)
-            if not cdc.get("running"):
-                break
-            poll = max(3, int(cdc.get("poll_interval_sec") or 10))
-
-            if not (cdc.get("incremental_column") or (_cfg(task).get("incremental_column"))):
-                logger.error("CDC 任务 %s 缺少 incremental_column", task_id)
-                time.sleep(poll)
-                continue
-
-            src_ds = db.query(DataSource).filter(DataSource.id == task.src_datasource_id).first()
-            dst_ds = db.query(DataSource).filter(DataSource.id == task.dst_datasource_id).first()
-            if not src_ds or not dst_ds:
-                time.sleep(poll)
-                continue
-
-            record = SyncRecord(
-                sync_task_id=task_id,
-                status="running",
-                trigger_type="cdc",
-                started_at=datetime.utcnow(),
-            )
-            db.add(record)
-            task.last_run_status = "running"
-            db.commit()
-            db.refresh(record)
-
-            saved_mode = task.sync_mode
-            try:
-                task.sync_mode = "incremental"
-                if cdc.get("use_binlog") and (src_ds.ds_type or "").lower() in ("mysql", "doris"):
-                    try:
-                        _try_advance_binlog_watermark(task, src_ds, cdc)
-                    except Exception as be:
-                        logger.info("CDC task %s binlog 降级增量: %s", task_id, be)
-                rows_read, rows_written, wm = _execute_sync(task, src_ds, dst_ds)
-                record.rows_read = rows_read
-                record.rows_written = rows_written
-                record.status = "success"
-                task.last_run_status = "success"
-                task.last_sync_at = datetime.utcnow()
-                if wm is not None:
-                    cfg = _cfg(task)
-                    cfg["last_value"] = wm
-                    task.sync_config = cfg
-                _merge_cdc(task, {"last_tick": datetime.utcnow().isoformat()})
-                db.commit()
-            except Exception as e:
-                record.status = "failed"
-                record.error_msg = str(e)[:4000]
-                task.last_run_status = "failed"
-                db.commit()
-                logger.warning("CDC task %s tick failed: %s", task_id, e)
-            finally:
-                task.sync_mode = saved_mode
-                record.finished_at = datetime.utcnow()
-                if record.started_at:
-                    record.duration_ms = int((record.finished_at - record.started_at).total_seconds() * 1000)
-                db.commit()
-        finally:
-            db.close()
-
-        time.sleep(poll)
-
-    with _workers_lock:
-        _active_workers.pop(task_id, None)
-    db2 = SessionLocal()
     try:
-        t = db2.query(SyncTask).filter(SyncTask.id == task_id).first()
-        if t:
-            _merge_cdc(t, {"running": False})
-            db2.commit()
+        while _running:
+            db = SessionLocal()
+            poll = 10
+            try:
+                task = db.query(SyncTask).filter(SyncTask.id == task_id).first()
+                if not task or task.sync_mode != "cdc" or not task.is_active:
+                    break
+                cdc = _cdc_cfg(task)
+                if not cdc.get("running"):
+                    break
+                poll = max(3, int(cdc.get("poll_interval_sec") or 10))
+
+                if not (cdc.get("incremental_column") or (_cfg(task).get("incremental_column"))):
+                    logger.error("CDC 任务 %s 缺少 incremental_column", task_id)
+                    time.sleep(poll)
+                    continue
+
+                src_ds = db.query(DataSource).filter(DataSource.id == task.src_datasource_id).first()
+                dst_ds = db.query(DataSource).filter(DataSource.id == task.dst_datasource_id).first()
+                if not src_ds or not dst_ds:
+                    time.sleep(poll)
+                    continue
+
+                record = SyncRecord(
+                    sync_task_id=task_id,
+                    status="running",
+                    trigger_type="cdc",
+                    started_at=datetime.utcnow(),
+                )
+                db.add(record)
+                task.last_run_status = "running"
+                db.commit()
+                db.refresh(record)
+
+                saved_mode = task.sync_mode
+                try:
+                    task.sync_mode = "incremental"
+                    if cdc.get("use_binlog") and (src_ds.ds_type or "").lower() in ("mysql", "doris"):
+                        try:
+                            _try_advance_binlog_watermark(task, src_ds, cdc)
+                        except Exception as be:
+                            logger.info("CDC task %s binlog 降级增量: %s", task_id, be)
+                    rows_read, rows_written, wm = _execute_sync(task, src_ds, dst_ds)
+                    record.rows_read = rows_read
+                    record.rows_written = rows_written
+                    record.status = "success"
+                    task.last_run_status = "success"
+                    task.last_sync_at = datetime.utcnow()
+                    if wm is not None:
+                        cfg = _cfg(task)
+                        cfg["last_value"] = wm
+                        task.sync_config = cfg
+                    _merge_cdc(task, {"last_tick": datetime.utcnow().isoformat()})
+                    db.commit()
+                except Exception as e:
+                    record.status = "failed"
+                    record.error_msg = str(e)[:4000]
+                    task.last_run_status = "failed"
+                    db.commit()
+                    logger.warning("CDC task %s tick failed: %s", task_id, e)
+                finally:
+                    task.sync_mode = saved_mode
+                    record.finished_at = datetime.utcnow()
+                    if record.started_at:
+                        record.duration_ms = int((record.finished_at - record.started_at).total_seconds() * 1000)
+                    db.commit()
+            finally:
+                db.close()
+
+            time.sleep(poll)
     finally:
-        db2.close()
+        lock_handle.release()
+        with _workers_lock:
+            _active_workers.pop(task_id, None)
     logger.info("CDC worker 结束 task_id=%s", task_id)
 
 

@@ -16,6 +16,22 @@ scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
 
 def _run_workflow_job(workflow_id: int):
+    from app.services.distributed_lock import try_distributed_lock
+    from app.services.shared_state import claim_once
+
+    fire_key = datetime.utcnow().strftime("%Y%m%d%H%M")
+    claimed = claim_once(f"workflow-schedule:{int(workflow_id)}:{fire_key}", 120)
+    if claimed is False:
+        logger.info("工作流 %s 本周期已由其他 backend 副本触发", workflow_id)
+        return
+    with try_distributed_lock(f"workflow-schedule:{int(workflow_id)}") as acquired:
+        if not acquired:
+            logger.info("工作流 %s 已由其他 backend 副本触发，本副本跳过", workflow_id)
+            return
+        _run_workflow_job_unlocked(workflow_id)
+
+
+def _run_workflow_job_unlocked(workflow_id: int):
     from app.core.database import SessionLocal
     from app.models.workspace import Workflow, WorkflowInstance, TaskNode, NodeInstance
     from app.api.studio import _run_sql, _run_python, _run_shell
@@ -120,8 +136,14 @@ def _topo_sort(dag: dict) -> list:
 
 def _run_sync_task_job(task_id: int):
     from app.services.integration_sync import start_sync_async
+    from app.services.shared_state import claim_once
 
     try:
+        fire_key = datetime.utcnow().strftime("%Y%m%d%H%M")
+        claimed = claim_once(f"integration-schedule:{int(task_id)}:{fire_key}", 120)
+        if claimed is False:
+            logger.info("数据集成任务 %s 本周期已由其他 backend 副本触发", task_id)
+            return
         start_sync_async(task_id, trigger_type="schedule")
         logger.info("数据集成任务 %s 定时触发已提交", task_id)
     except RuntimeError as e:
@@ -132,6 +154,20 @@ def _run_sync_task_job(task_id: int):
 
 def _poll_scheduler_instances_job():
     """生产调度实例轮询补偿：回调丢失时仍能把实例状态写回 GIDO。"""
+    from app.services.distributed_lock import try_distributed_lock
+    from app.services.shared_state import claim_once
+
+    bucket = int(datetime.utcnow().timestamp() // 30)
+    claimed = claim_once(f"scheduler-instance-poll:{bucket}", 60)
+    if claimed is False:
+        return
+    with try_distributed_lock("scheduler-instance-poll") as acquired:
+        if not acquired:
+            return
+        _poll_scheduler_instances_unlocked()
+
+
+def _poll_scheduler_instances_unlocked():
     from app.core.database import SessionLocal
     from app.services.ds_runtime import get_dolphin_runtime, refresh_ds_client
     from app.services.dolphin import ds_client

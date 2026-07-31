@@ -32,6 +32,14 @@
 # 访问（无 Ingress 时）：
 #   kubectl -n gido port-forward svc/frontend 8080:80
 #
+# 生产多副本（对齐 GISO/GiRisk 共享 Redis）：
+#   - backend/frontend replicas: 2 + RollingUpdate + PDB
+#   - Secret 注入 REDIS_URL（完整 redis:// 或 rediss://）
+#   - SHARED_STATE_REQUIRED=true、AVATAR_S3_ENABLED=true
+#   - readiness → /ready（DB+Redis）；liveness → /health
+#   - 制品/头像以 S3 为准；RWO PVC 仅作可选本地缓存，多副本勿作唯一源
+#   - 正式 GitOps：deployment/apps/bigdata/gido/gido.yaml
+#
 # =============================================================================
 ---
 apiVersion: v1
@@ -51,7 +59,7 @@ data:
   DS_URL: ""
   DS_UI_URL: ""
   DS_PROJECT_NAME: "GIDO"
-  INTERNAL_TOKEN: ""
+  # INTERNAL_TOKEN 放 Secret，勿在 ConfigMap 留空（空值会触发错误的自签路径）
   GIDO_FLINK_K8S_API_PATCH: "disable"
   # --- Flink Operator（生产）---
   FLINK_K8S_NAMESPACE: "flink"
@@ -63,6 +71,10 @@ data:
   FLINK_OPERATOR_UI_PROXY_ENABLED: "true"
   FLINK_OPERATOR_DEV_LOCAL: "false"
   FLINK_OPERATOR_AUTO_UI_TUNNEL: "false"
+  # 多副本生产：Redis 会话/限流 + 头像走 S3（REDIS_URL 见下方 Secret）
+  SHARED_STATE_REQUIRED: "true"
+  SHARED_STATE_PREFIX: "gido"
+  AVATAR_S3_ENABLED: "true"
   FLINK_OPERATOR_JM_REST_TEMPLATE: "http://{deployment_name}-rest.{namespace}.svc.cluster.local:8081"
   FLINK_OPERATOR_JAR_HTTP_BASE: "http://backend.CHANGE_ME_GIDO_NAMESPACE.svc.cluster.local:8001"
   # Dolphin Worker 须能访问；与上项通常相同（如 http://backend.bigdata.svc.cluster.local:8001）
@@ -115,6 +127,10 @@ stringData:
   # INFRA_GIDO_DB_URL: "CHANGE_ME_DB_NAME"
   SECRET_KEY: "CHANGE_ME_SECRET_KEY"
   FLINK_OPERATOR_ARTIFACT_TOKEN: "CHANGE_ME_ARTIFACT_TOKEN"
+  # 与 GISO/GiRisk 同源平台 Redis；须为完整 URL（含协议与可选密码）
+  REDIS_URL: "CHANGE_ME_REDIS_URL"
+  # 多副本必须固定注入，禁止留空让进程自签
+  INTERNAL_TOKEN: "CHANGE_ME_INTERNAL_TOKEN"
   DS_TOKEN: ""
 ---
 apiVersion: v1
@@ -155,22 +171,6 @@ subjects:
     name: gido-backend
     namespace: gido
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: gido-jar-artifacts
-  namespace: gido
-  labels:
-    app: gido
-    component: backend
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 10Gi
-  storageClassName: gp3
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -180,9 +180,13 @@ metadata:
     app: gido
     component: backend
 spec:
-  replicas: 1
+  # 多副本：emptyDir 仅缓存；制品权威源为 S3（勿挂 RWO PVC）
+  replicas: 2
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: gido
@@ -194,6 +198,7 @@ spec:
         component: backend
     spec:
       serviceAccountName: gido-backend
+      terminationGracePeriodSeconds: 60
       containers:
         - name: backend
           image: CHANGE_ME_BACKEND_IMAGE
@@ -207,7 +212,7 @@ spec:
                 name: gido-secrets
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: 8001
             initialDelaySeconds: 30
             periodSeconds: 10
@@ -220,6 +225,11 @@ spec:
             initialDelaySeconds: 120
             periodSeconds: 20
             timeoutSeconds: 5
+            failureThreshold: 6
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 10"]
           resources:
             requests:
               cpu: "250m"
@@ -232,8 +242,22 @@ spec:
               mountPath: /data/jar-artifacts
       volumes:
         - name: jar-artifacts
-          persistentVolumeClaim:
-            claimName: gido-jar-artifacts
+          emptyDir: {}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gido-backend
+  namespace: gido
+  labels:
+    app: gido
+    component: backend
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: gido
+      component: backend
 ---
 apiVersion: v1
 kind: Service
@@ -259,9 +283,12 @@ metadata:
     app: gido
     component: frontend
 spec:
-  replicas: 1
+  replicas: 2
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: gido
@@ -279,7 +306,7 @@ spec:
             - /bin/sh
             - -c
             - |
-              until wget -qO- http://backend:8001/health >/dev/null 2>&1; do
+              until wget -qO- http://backend:8001/ready >/dev/null 2>&1; do
                 echo waiting backend; sleep 3
               done
       containers:
@@ -301,6 +328,21 @@ spec:
             limits:
               cpu: "500m"
               memory: "256Mi"
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gido-frontend
+  namespace: gido
+  labels:
+    app: gido
+    component: frontend
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: gido
+      component: frontend
 ---
 apiVersion: v1
 kind: Service

@@ -15,6 +15,8 @@ if not logging.getLogger().handlers:
     )
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
 from app.core.config import settings
 from app.core.database import Base, engine
 from app.api import auth, workspace, workspace_settings, workspace_variables, datasource, studio, workflow, integration, datamap, quality, operation, probe, copilot, adhoc_runs
@@ -27,8 +29,6 @@ from app.api import alert, approval
 from app.models import rbac_models  # noqa: F401  — 注册 RBAC 表
 from app.models.workspace import PlatformIntegration, FlinkSessionProfile, WorkspacePlatformIntegration, PublishApproval, WorkspaceVariable, AdhocRun  # noqa: F401
 from app.models import data_service as data_service_models  # noqa: F401
-
-Base.metadata.create_all(bind=engine)
 
 _log = logging.getLogger(__name__)
 
@@ -112,6 +112,11 @@ async def lifespan(app: FastAPI):
         run_rbac_bootstrap,
     )
     from app.core.database import SessionLocal
+    from app.services.distributed_lock import acquire_distributed_lock
+    from app.services.shared_state import redis_client
+    redis_client(required=settings.SHARED_STATE_REQUIRED)
+    migration_lock = acquire_distributed_lock("backend-startup-migrations", blocking=True)
+    Base.metadata.create_all(bind=engine)
     migrate_schema(engine)
     migrate_dw_users_avatar(engine)
     migrate_dw_task_nodes_owner_lock(engine)
@@ -161,6 +166,8 @@ async def lifespan(app: FastAPI):
         refresh_flink_client(db)
     finally:
         db.close()
+        if migration_lock is not None:
+            migration_lock.release()
     # 自动生成内部 token（供 DS worker 回调使用）
     _ensure_internal_token()
     scheduler.start()
@@ -191,24 +198,27 @@ async def lifespan(app: FastAPI):
 
 
 def _ensure_internal_token():
-    """admin 账号的长期 token，写入 .env 中供 DS worker 回调使用"""
+    """admin 账号的长期 token；仅本地开发可回写 .env，K8s/多副本必须由 Secret 注入。"""
     from app.core.config import settings
     from app.core.security import create_access_token
-    if not settings.INTERNAL_TOKEN:
-        token = create_access_token({"sub": "admin"}, expires_days=3650)
-        settings.INTERNAL_TOKEN = token
-        # 写入 .env
-        import os
-        env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
-        env_path = os.path.abspath(env_path)
-        lines = []
-        if os.path.exists(env_path):
-            with open(env_path) as f:
-                lines = f.readlines()
-        lines = [l for l in lines if not l.startswith('INTERNAL_TOKEN=')]
-        lines.append(f'INTERNAL_TOKEN={token}\n')
-        with open(env_path, 'w') as f:
-            f.writelines(lines)
+    import os
+
+    if settings.INTERNAL_TOKEN:
+        return
+    in_cluster = bool(os.environ.get("KUBERNETES_SERVICE_HOST"))
+    if in_cluster or settings.SHARED_STATE_REQUIRED:
+        raise RuntimeError("生产/多副本环境必须通过 Secret 注入固定 INTERNAL_TOKEN，禁止启动时自签")
+    token = create_access_token({"sub": "admin"}, expires_days=3650)
+    settings.INTERNAL_TOKEN = token
+    env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            lines = f.readlines()
+    lines = [l for l in lines if not l.startswith("INTERNAL_TOKEN=")]
+    lines.append(f"INTERNAL_TOKEN={token}\n")
+    with open(env_path, "w") as f:
+        f.writelines(lines)
 
 
 app = FastAPI(
@@ -260,3 +270,23 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
+
+@app.get("/ready")
+def ready():
+    checks = {"database": False, "redis": False}
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        checks["database"] = True
+    except Exception:
+        pass
+    try:
+        from app.services.shared_state import redis_ready
+
+        checks["redis"] = redis_ready()
+    except Exception:
+        pass
+    if not all(checks.values()):
+        return JSONResponse(status_code=503, content={"status": "not_ready", "checks": checks})
+    return {"status": "ready", "checks": checks}

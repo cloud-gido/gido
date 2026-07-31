@@ -30,6 +30,11 @@ from app.services.data_api_response import (  # noqa: F401 — re-export for cal
     wrap_count_sql,
 )
 from app.services.datasource_mysql_user import mysql_protocol_connect_user
+from app.services.shared_state import (
+    cache_get as shared_cache_get,
+    cache_set as shared_cache_set,
+    rate_limit_hit,
+)
 from app.services.sql_readonly import assert_readonly_statement, result_set_from_cursor
 
 _PARAM_RE = re.compile(r":([a-zA-Z_][a-zA-Z0-9_]*)")
@@ -75,6 +80,14 @@ def check_ip_whitelist(client_ip: str, whitelist: Optional[List[str]]) -> bool:
 
 def check_rate_limit(bucket_key: str, limit: int, window_sec: int = 60) -> None:
     if limit <= 0:
+        return
+    try:
+        exceeded = rate_limit_hit(f"data-api:{bucket_key}", limit, window_sec)
+    except RuntimeError as ex:
+        raise HTTPException(status_code=503, detail=str(ex)) from ex
+    if exceeded is not None:
+        if exceeded:
+            raise HTTPException(status_code=429, detail="请求过于频繁，请稍后重试")
         return
     now = time.time()
     with _rate_lock:
@@ -283,6 +296,9 @@ def apply_response_mask(rows: List[List[Any]], columns: List[str], schema: Optio
 def _cache_get(key: str, ttl: int) -> Optional[dict]:
     if ttl <= 0:
         return None
+    shared = shared_cache_get(f"data-api:{key}")
+    if shared is not None:
+        return shared
     with _cache_lock:
         item = _result_cache.get(key)
         if not item:
@@ -296,6 +312,8 @@ def _cache_get(key: str, ttl: int) -> Optional[dict]:
 
 def _cache_set(key: str, val: dict, ttl: int) -> None:
     if ttl <= 0:
+        return
+    if shared_cache_set(f"data-api:{key}", val, ttl):
         return
     with _cache_lock:
         _result_cache[key] = (time.time() + ttl, val)
