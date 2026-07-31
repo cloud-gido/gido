@@ -6,7 +6,7 @@
  */
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
-  Table, Button, Space, Tag, message, Popconfirm, Typography, Alert, Drawer, Tooltip, Input, Select, Card,
+  Table, Button, Space, Tag, message, Typography, Alert, Drawer, Tooltip, Input, Select, Card,
   Row, Col, Statistic, Tabs, Descriptions, Modal, Form, InputNumber, Radio, Switch,
 } from 'antd'
 import {
@@ -302,7 +302,7 @@ export default function StreamMonitorPage() {
     try {
       const res: any = await streamingApi.stopJob(row.id, { mode: 'savepoint' })
       message.success(res?.message || '已提交 Savepoint 停止')
-      await loadJobs()
+      await loadJobs(false)
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '停止失败')
     }
@@ -312,10 +312,32 @@ export default function StreamMonitorPage() {
     try {
       const res: any = await streamingApi.cancelJob(row.id)
       message.success(res?.message || '已提交强制停止')
-      await loadJobs()
+      await loadJobs(false)
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '强制停止失败')
     }
+  }
+
+  const confirmStop = (row: any) => {
+    Modal.confirm({
+      title: '默认创建 Savepoint 后停止作业？',
+      content: '若作业已失败或 TaskManager 未起来，Savepoint 可能失败；此时请改用「强停」。',
+      okText: '确定停止',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: () => handleStop(row),
+    })
+  }
+
+  const confirmForceStop = (row: any) => {
+    Modal.confirm({
+      title: '强制停止不会创建 Savepoint，确认继续？',
+      content: '将删除 FlinkDeployment / 清理集群资源，适合僵尸作业与调度失败场景。',
+      okText: '强制停止',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: () => handleForceStop(row),
+    })
   }
 
   const applyReleaseRuntimeDefaults = (source: any) => {
@@ -425,10 +447,12 @@ export default function StreamMonitorPage() {
   /** 轮询 Flink 回填库内 status；主表只展示统一作业状态，底层状态留在 tooltip / 诊断中。 */
   useEffect(() => {
     let alive = true
+    let inFlight = false
     const poll = async () => {
-      if (!wsId || !alive) return
+      if (!wsId || !alive || inFlight) return
       const list = jobsRef.current
       if (!list.some(jobNeedsFlinkStatusPoll)) return
+      inFlight = true
       try {
         const res: any = await streamingApi.syncJobsStatus(wsId)
         if (!alive) return
@@ -436,15 +460,34 @@ export default function StreamMonitorPage() {
         for (const s of res?.items || []) {
           nextMap[s.id] = { flink_status: s.flink_status, status: s.status }
         }
-        setFlinkMap(prev => ({ ...prev, ...nextMap }))
-        // 有状态变化时轻量刷新列表；避免每轮再打一遍 listJobs 加重负载
-        if ((res?.synced || 0) > 0) {
-          setJobs(prev => prev.map(j => {
+        setFlinkMap(prev => {
+          let changed = false
+          for (const [id, u] of Object.entries(nextMap)) {
+            const key = Number(id)
+            const old = prev[key]
+            if (!old || old.status !== u.status || old.flink_status !== u.flink_status) {
+              changed = true
+              break
+            }
+          }
+          return changed ? { ...prev, ...nextMap } : prev
+        })
+        // 仅当某作业 status 真有变化时改 jobs，避免 synced=需对账数量 导致整表每轮重建、Popconfirm 闪烁
+        setJobs(prev => {
+          let changed = false
+          const next = prev.map(j => {
             const u = nextMap[j.id]
-            return u?.status != null ? { ...j, status: u.status } : j
-          }))
-        }
-      } catch { /* ignore */ }
+            if (u?.status != null && u.status !== j.status) {
+              changed = true
+              return { ...j, status: u.status }
+            }
+            return j
+          })
+          return changed ? next : prev
+        })
+      } catch { /* ignore */ } finally {
+        inFlight = false
+      }
     }
     poll()
     const t = window.setInterval(poll, 8000)
@@ -785,12 +828,10 @@ export default function StreamMonitorPage() {
               onClick={() => void openLifecycleAction(row, 'restart')}>
               重启/恢复
             </Button>
-            <Popconfirm title="默认创建 Savepoint 后停止作业？" onConfirm={() => handleStop(row)}>
-              <Button size="small" danger disabled={!canStop} icon={<StopOutlined />}>停止</Button>
-            </Popconfirm>
-            <Popconfirm title="强制停止不会创建 Savepoint，确认继续？" onConfirm={() => handleForceStop(row)}>
-              <Button size="small" danger type="text" disabled={!canStop}>强停</Button>
-            </Popconfirm>
+            <Button size="small" danger disabled={!canStop} icon={<StopOutlined />}
+              onClick={() => confirmStop(row)}>停止</Button>
+            <Button size="small" danger type="text" disabled={!canStop}
+              onClick={() => confirmForceStop(row)}>强停</Button>
           </Space>
         )
       },

@@ -100,13 +100,17 @@ def ensure_stream_job_name_available(
 
 
 def _flink_http_session_for_get() -> requests.Session:
-    """对 JM / Gateway 的 GET 做短重试，缓解 JM 重启、Pod 未就绪或 LB 瞬断导致的 RemoteDisconnected。"""
+    """对 JM / Gateway 的 GET 做短重试，缓解 JM 重启、Pod 未就绪或 LB 瞬断导致的 RemoteDisconnected。
+
+    connect 次数须克制：JM Connection refused（僵尸 deployment / REST 未起）时，
+    过高 connect 重试会把 jobs-status-sync 拖成数十秒并刷爆日志，拖累运维页。
+    """
     sess = requests.Session()
     retry = Retry(
-        total=5,
-        connect=5,
-        read=3,
-        backoff_factor=0.35,
+        total=2,
+        connect=1,
+        read=2,
+        backoff_factor=0.2,
         status_forcelist=(502, 503, 504),
         allowed_methods=frozenset(["GET", "HEAD"]),
         raise_on_status=False,
