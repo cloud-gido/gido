@@ -1,3 +1,5 @@
+# Copyright 2026 玑渡 GIDO Contributors
+# SPDX-License-Identifier: Apache-2.0
 """Redis-backed state shared by all backend replicas."""
 from __future__ import annotations
 

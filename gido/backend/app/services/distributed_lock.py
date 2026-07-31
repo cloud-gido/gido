@@ -1,3 +1,5 @@
+# Copyright 2026 玑渡 GIDO Contributors
+# SPDX-License-Identifier: Apache-2.0
 """Cross-replica locks backed by PostgreSQL advisory locks."""
 from __future__ import annotations
 
