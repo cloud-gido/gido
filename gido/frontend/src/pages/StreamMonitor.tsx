@@ -769,6 +769,11 @@ export default function StreamMonitorPage() {
           || (row.current_approved_release_id && row.current_approved_release_id !== row.current_running_release_id)
           || (row.approval_status === 'approved' && !row.deployed_at)
         const active = state === 'active'
+        // 失败/需处理时平台可能仍挂着 FlinkDeployment，必须允许停止/强停清集群，否则部署会被 409 卡住
+        const canStop = active
+          || state === 'needs_attention'
+          || Boolean(isOperatorJob(row) && row.flink_operator_deployment_name)
+        const canRestart = active || state === 'stopped' || state === 'needs_attention'
         return (
           <Space size={4} wrap>
             <Button size="small" type={approved ? 'primary' : 'default'} icon={<RocketOutlined />}
@@ -776,15 +781,15 @@ export default function StreamMonitorPage() {
               onClick={() => void openLifecycleAction(row, 'deploy')}>
               部署
             </Button>
-            <Button size="small" icon={<RetweetOutlined />} disabled={!active && state !== 'stopped'}
+            <Button size="small" icon={<RetweetOutlined />} disabled={!canRestart}
               onClick={() => void openLifecycleAction(row, 'restart')}>
               重启/恢复
             </Button>
             <Popconfirm title="默认创建 Savepoint 后停止作业？" onConfirm={() => handleStop(row)}>
-              <Button size="small" danger disabled={!active} icon={<StopOutlined />}>停止</Button>
+              <Button size="small" danger disabled={!canStop} icon={<StopOutlined />}>停止</Button>
             </Popconfirm>
             <Popconfirm title="强制停止不会创建 Savepoint，确认继续？" onConfirm={() => handleForceStop(row)}>
-              <Button size="small" danger type="text" disabled={!active}>强停</Button>
+              <Button size="small" danger type="text" disabled={!canStop}>强停</Button>
             </Popconfirm>
           </Space>
         )
