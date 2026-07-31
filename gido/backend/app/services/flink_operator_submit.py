@@ -1628,7 +1628,7 @@ def submit_sql_via_operator(
 
     deployment_name = sql_deployment_name_for_job(job_id, workspace_id, job_name)
     namespace = _operator_namespace()
-    deployment_existed = flink_deployment_exists(
+    deployment_existed = flink_deployment_accessible(
         deployment_name, namespace=namespace
     )
     secret_name = ""
