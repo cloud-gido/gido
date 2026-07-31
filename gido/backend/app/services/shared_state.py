@@ -94,9 +94,9 @@ def parse_redis_endpoint(raw: str, override_password: str = "") -> RedisEndpoint
         scheme = "rediss" if ".amazonaws.com" in host else "redis"
         return RedisEndpoint(scheme, host, port, "", override_password, 0)
 
-    # token 误写在端口：rediss://host:TOKEN
+    # token 误写在端口：rediss://host:TOKEN（TOKEN 非纯数字；纯数字视为正常端口）
     misplaced = _MISPLACED_TOKEN_RE.match(raw)
-    if misplaced and "@" not in raw:
+    if misplaced and "@" not in raw and not misplaced.group("token").isdigit():
         host = misplaced.group("host")
         token = _percent_decode(misplaced.group("token"))
         path = misplaced.group("path") or "/0"

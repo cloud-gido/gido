@@ -29,6 +29,15 @@ def test_normalize_redis_url_misplaced_token_as_port():
     assert fixed == "rediss://:sTtNtokenXYZ@master.example.cache.amazonaws.com:6379/0"
 
 
+def test_parse_redis_endpoint_nondefault_numeric_port():
+    """纯数字端口不得被误判为「密码写在端口位」。"""
+    ep = parse_redis_endpoint("redis://127.0.0.1:16379/15")
+    assert ep.host == "127.0.0.1"
+    assert ep.port == 16379
+    assert ep.database == 15
+    assert ep.password == ""
+
+
 def test_normalize_redis_url_host_plus_password():
     fixed = normalize_redis_url("internal-redis:6379", "p@ss:word")
     assert fixed.startswith("redis://:")
