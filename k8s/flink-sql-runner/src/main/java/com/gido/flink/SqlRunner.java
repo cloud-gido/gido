@@ -32,6 +32,8 @@ public class SqlRunner {
             Pattern.compile("SET\\s+'(\\S+)'\\s+=\\s+'(.*)';", Pattern.CASE_INSENSITIVE);
 
     private static final String RUNTIME_MODE_KEY = "execution.runtime-mode";
+    private static final Pattern ENV_PLACEHOLDER_PATTERN =
+            Pattern.compile("\\$\\{env:([A-Z][A-Z0-9_]*)}");
 
     static RuntimeExecutionMode resolveRuntimeMode(List<String> statements) {
         for (String statement : statements) {
@@ -105,10 +107,10 @@ public class SqlRunner {
                 LOG.info("SET {} = {}", key, maskIfSensitive(key, value));
             } else if (preview.preview && isSelectLike(statement)) {
                 LOG.info("Preview SELECT:\n{}", statement);
-                lastSelectResult = tableEnv.executeSql(statement);
+                lastSelectResult = tableEnv.executeSql(expandEnvironmentVariables(statement));
             } else {
                 LOG.info("Executing:\n{}", statement);
-                tableEnv.executeSql(statement);
+                tableEnv.executeSql(expandEnvironmentVariables(statement));
             }
         }
 
@@ -130,6 +132,23 @@ public class SqlRunner {
             }
         }
         return values;
+    }
+
+    static String expandEnvironmentVariables(String statement) {
+        Matcher matcher = ENV_PLACEHOLDER_PATTERN.matcher(statement);
+        StringBuffer expanded = new StringBuffer();
+        while (matcher.find()) {
+            String name = matcher.group(1);
+            String value = System.getenv(name);
+            if (value == null) {
+                throw new IllegalStateException("缺少 SQL 运行时 Secret 环境变量: " + name);
+            }
+            matcher.appendReplacement(
+                    expanded,
+                    Matcher.quoteReplacement(value.replace("'", "''")));
+        }
+        matcher.appendTail(expanded);
+        return expanded.toString();
     }
 
     private static String maskIfSensitive(String key, String value) {

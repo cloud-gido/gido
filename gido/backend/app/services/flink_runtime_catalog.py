@@ -31,6 +31,20 @@ BUNDLED_CONNECTORS: List[dict] = [
         "connector": "postgres-cdc",
     },
     {
+        "id": "kafka",
+        "name": "Apache Flink SQL Kafka Connector",
+        "artifact": "org.apache.flink:flink-sql-connector-kafka",
+        "version": "4.0.1-2.0",
+        "path": "/opt/flink/lib/flink-sql-connector-kafka-4.0.1-2.0.jar",
+        "connector": "kafka",
+        "compatibility": {
+            "flink_release_line": "2.0.x",
+            "runtime_verified": "2.0.1",
+            "connector_release": "4.0.1",
+            "version_qualifier": "2.0",
+        },
+    },
+    {
         "id": "s3-fs-hadoop",
         "name": "Flink S3 Filesystem (Hadoop)",
         "artifact": "org.apache.flink:flink-s3-fs-hadoop",

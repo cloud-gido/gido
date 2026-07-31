@@ -544,6 +544,8 @@ class PublishApproval(Base):
     workspace_id = Column(Integer, ForeignKey("dw_workspaces.id"), nullable=False, index=True)
     resource_type = Column(String(32), nullable=False)  # workflow | studio_node
     resource_id = Column(Integer, nullable=False, index=True)
+    # 实时作业审批绑定不可变 release，避免审批期间新提交版本被误批准。
+    release_id = Column(Integer, nullable=True, index=True)
     resource_name = Column(String(256))
     action = Column(String(64), nullable=False)  # publish_to_ds | publish_node
     status = Column(String(32), default="pending", index=True)  # pending/approved/rejected/cancelled

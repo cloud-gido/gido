@@ -8,7 +8,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import type { Key } from 'react'
 import {
   Button, Space, Tag, message, Modal, Form, Input, InputNumber, Select, Card, Drawer,
-  Divider, Typography, Alert, notification, Tooltip,
+  Divider, Typography, Alert, Tooltip,
 } from 'antd'
 import {
   PlusOutlined, CloudUploadOutlined, SaveOutlined, ReloadOutlined,
@@ -18,7 +18,7 @@ import {
 import Editor from '@monaco-editor/react'
 import { streamingApi, approvalApi } from '../api'
 import { useAppStore } from '../store'
-import { isWorkspaceAdmin } from '../perm'
+import { can, isWorkspaceAdmin, P } from '../perm'
 import PublishApprovalModal from '../components/PublishApprovalModal'
 import { approvalPendingKey } from '../approvalLabels'
 import EditorAppearanceToolbar from '../components/EditorAppearanceToolbar'
@@ -47,6 +47,12 @@ import {
   scriptDraftStorageKey,
   writeScriptLocalDraft,
 } from '../utils/scriptLocalDraft'
+import StreamRuntimeConfig, {
+  buildStreamRuntimeProperties,
+  EMPTY_OPERATOR_RESOURCES,
+  parseStreamRuntimeConfig,
+  type OperatorResourceForm,
+} from '../components/StreamRuntimeConfig'
 
 const { Paragraph, Text } = Typography
 const STREAM_JOB_NAME_RULE = '3-50 位小写字母、数字、短横线，字母开头，字母或数字结尾，例如 s3-copy-users'
@@ -58,95 +64,6 @@ const JOB_TYPES = [
 ]
 
 type SqlSubmitMode = 'session' | 'kubernetes_application' | 'flink_operator'
-
-type OperatorResForm = {
-  jm_memory: string
-  jm_cpu: string
-  tm_memory: string
-  tm_cpu: string
-  task_slots: string
-  tm_replicas: string
-}
-
-const EMPTY_OPERATOR_RES: OperatorResForm = {
-  jm_memory: '',
-  jm_cpu: '',
-  tm_memory: '',
-  tm_cpu: '',
-  task_slots: '',
-  tm_replicas: '',
-}
-
-function parseResourceTier(sp: unknown): string {
-  if (sp == null || String(sp).trim() === '') return ''
-  try {
-    const t = JSON.parse(String(sp))?.resource_tier
-    return t != null ? String(t) : ''
-  } catch {
-    return ''
-  }
-}
-
-function parseOperatorResForm(sp: unknown): OperatorResForm {
-  if (sp == null || String(sp).trim() === '') return { ...EMPTY_OPERATOR_RES }
-  try {
-    const obj = JSON.parse(String(sp))
-    const or = obj?.operator_resources || {}
-    return {
-      jm_memory: or.jobManager?.memory != null ? String(or.jobManager.memory) : '',
-      jm_cpu: or.jobManager?.cpu != null ? String(or.jobManager.cpu) : '',
-      tm_memory: or.taskManager?.memory != null ? String(or.taskManager.memory) : '',
-      tm_cpu: or.taskManager?.cpu != null ? String(or.taskManager.cpu) : '',
-      task_slots: or.taskSlots != null ? String(or.taskSlots) : (or.numberOfTaskSlots != null ? String(or.numberOfTaskSlots) : ''),
-      tm_replicas: or.taskManager?.replicas != null ? String(or.taskManager.replicas) : '',
-    }
-  } catch {
-    return { ...EMPTY_OPERATOR_RES }
-  }
-}
-
-function buildStreamingPropertiesJson(
-  rawJson: string,
-  operatorForm: OperatorResForm,
-  includeOperatorRes: boolean,
-  resourceTier?: string,
-): string {
-  let base: Record<string, unknown> = {}
-  const trimmed = rawJson.trim()
-  if (trimmed && trimmed !== '{}') {
-    base = JSON.parse(trimmed)
-    if (typeof base !== 'object' || base === null || Array.isArray(base)) {
-      throw new Error('invalid')
-    }
-  }
-  if (includeOperatorRes) {
-    const tier = (resourceTier || '').trim()
-    if (tier) base.resource_tier = tier
-    else delete base.resource_tier
-    const or: Record<string, unknown> = {}
-    const jm: Record<string, unknown> = {}
-    const tm: Record<string, unknown> = {}
-    if (operatorForm.jm_memory.trim()) jm.memory = operatorForm.jm_memory.trim()
-    if (operatorForm.jm_cpu.trim()) jm.cpu = Number(operatorForm.jm_cpu)
-    if (operatorForm.tm_memory.trim()) tm.memory = operatorForm.tm_memory.trim()
-    if (operatorForm.tm_cpu.trim()) tm.cpu = Number(operatorForm.tm_cpu)
-    if (operatorForm.tm_replicas.trim()) tm.replicas = Number(operatorForm.tm_replicas)
-    if (Object.keys(jm).length) or.jobManager = jm
-    if (Object.keys(tm).length) or.taskManager = tm
-    if (operatorForm.task_slots.trim()) or.taskSlots = Number(operatorForm.task_slots)
-    if (Object.keys(or).length) base.operator_resources = or
-    else delete base.operator_resources
-  }
-  if (!Object.keys(base).length) return ''
-  return JSON.stringify(base)
-}
-
-function sqlModeLabel(mode: string | undefined) {
-  const m = (mode || 'flink_operator').toLowerCase()
-  if (m === 'kubernetes_application') return 'K8s Application'
-  if (m === 'flink_operator') return 'Flink Operator'
-  return 'Session'
-}
 
 function cdcPaimonSqlTemplate(warehouse: string) {
   const wh = warehouse || 's3://gido-paimon-warehouse'
@@ -202,6 +119,7 @@ export default function StreamStudioPage() {
   const { currentWorkspace, user } = useAppStore()
   const wsId = currentWorkspace?.id
   const canPublishDirect = isWorkspaceAdmin(user, currentWorkspace)
+  const canWrite = can(user, P.GIDO_STREAM_WRITE, currentWorkspace)
   const displayTz = currentWorkspace?.timezone || 'Asia/Shanghai'
   const [jobs, setJobs] = useState<any[]>([])
   const [folders, setFolders] = useState<any[]>([])
@@ -233,7 +151,7 @@ export default function StreamStudioPage() {
   const [flinkRuntime, setFlinkRuntime] = useState<any | null>(null)
   /** 终态产品：仅 Flink Operator；提交模式不再在 UI 暴露 */
   const [sqlSubmitMode] = useState<SqlSubmitMode>('flink_operator')
-  const [operatorResForm, setOperatorResForm] = useState<OperatorResForm>({ ...EMPTY_OPERATOR_RES })
+  const [operatorResForm, setOperatorResForm] = useState<OperatorResourceForm>({ ...EMPTY_OPERATOR_RESOURCES })
   const [resourceTier, setResourceTier] = useState<string>('')
   const [jarStreamingPropsJson, setJarStreamingPropsJson] = useState('{}')
   const [jarSubmitMode] = useState<'session' | 'flink_operator'>('flink_operator')
@@ -451,16 +369,13 @@ export default function StreamStudioPage() {
     setSqlParallelism(selected.parallelism ?? 1)
     const sp = selected.streaming_properties
     if (sp != null && String(sp).trim() !== '') {
-      try {
-        setStreamingPropsJson(JSON.stringify(JSON.parse(String(sp)), null, 2))
-      } catch {
-        setStreamingPropsJson(String(sp))
-      }
+      setStreamingPropsJson(parseStreamRuntimeConfig(sp).advancedJson)
     } else {
       setStreamingPropsJson('{}')
     }
-    setOperatorResForm(parseOperatorResForm(sp))
-    setResourceTier(parseResourceTier(sp))
+    const runtimeConfig = parseStreamRuntimeConfig(sp)
+    setOperatorResForm(runtimeConfig.operatorResources)
+    setResourceTier(runtimeConfig.resourceTier)
   }, [selected?.id, selected?.job_type, wsId])
 
   const streamDraftKey =
@@ -469,7 +384,7 @@ export default function StreamStudioPage() {
       : null
 
   const scriptAutosave = useScriptAutosave({
-    enabled: Boolean(wsId && selected?.job_type === 'SQL' && !selected.is_locked),
+    enabled: Boolean(wsId && canWrite && selected?.job_type === 'SQL' && !selected.is_locked),
     dirty: scriptDirty,
     value: scriptDraft,
     storageKey: streamDraftKey,
@@ -516,16 +431,13 @@ export default function StreamStudioPage() {
     if (selected?.job_type === 'JAR') {
       const sp = selected.streaming_properties
       if (sp != null && String(sp).trim() !== '') {
-        try {
-          setJarStreamingPropsJson(JSON.stringify(JSON.parse(String(sp)), null, 2))
-        } catch {
-          setJarStreamingPropsJson(String(sp))
-        }
+        setJarStreamingPropsJson(parseStreamRuntimeConfig(sp).advancedJson)
       } else {
         setJarStreamingPropsJson('{}')
       }
-      setOperatorResForm(parseOperatorResForm(sp))
-      setResourceTier(parseResourceTier(sp))
+      const runtimeConfig = parseStreamRuntimeConfig(sp)
+      setOperatorResForm(runtimeConfig.operatorResources)
+      setResourceTier(runtimeConfig.resourceTier)
     }
   }, [selected?.id, selected?.job_type, selected?.flink_jar_submit_mode, selected?.streaming_properties])
 
@@ -584,14 +496,16 @@ export default function StreamStudioPage() {
       || (selected.job_type === 'JAR' && effectiveJarMode === 'flink_operator')
     if (selected.job_type === 'SQL') {
       try {
-        streaming_properties = buildStreamingPropertiesJson(streamingPropsJson, operatorResForm, includeOperatorRes, resourceTier)
+        streaming_properties = includeOperatorRes
+          ? buildStreamRuntimeProperties(streamingPropsJson, operatorResForm, resourceTier)
+          : streamingPropsJson
       } catch {
         message.error('参数调优 JSON 格式无效，请检查')
         return false
       }
     } else if (selected.job_type === 'JAR' && effectiveJarMode === 'flink_operator') {
       try {
-        streaming_properties = buildStreamingPropertiesJson(jarStreamingPropsJson, operatorResForm, true, resourceTier)
+        streaming_properties = buildStreamRuntimeProperties(jarStreamingPropsJson, operatorResForm, resourceTier)
       } catch {
         message.error('高级配置 JSON 格式无效，请检查')
         return false
@@ -746,14 +660,15 @@ export default function StreamStudioPage() {
       message.warning('作业已锁定，请先解锁后再提交')
       return
     }
-    const raw = selected.job_type === 'JAR' ? jarStreamingPropsJson : streamingPropsJson
-    setOperatorResForm(parseOperatorResForm(raw))
-    setResourceTier(parseResourceTier(raw))
     setSubmitDrawerOpen(true)
   }
 
   const handleSubmit = async () => {
     if (!selected) return
+    if (!canWrite) {
+      message.warning('缺少实时作业写入权限')
+      return
+    }
     if (selected.is_locked) {
       message.warning('作业已锁定，请先解锁后再提交')
       return
@@ -770,55 +685,15 @@ export default function StreamStudioPage() {
     try {
       const saved = await handleSave()
       if (!saved) return
-      const res: any = await streamingApi.submitJob(selected.id, selected.job_type === 'SQL' ? scriptDraft : undefined)
-      await load()
-      if (res?.submit_warning) {
-        message.warning(String(res.submit_warning), 10)
-      }
-      const desc = (
-        <div>
-          <div>部署已提交到 Flink Operator。运行态、启停与诊断请到作业运维查看（对标实时计算：开发部署 / 运维启停）。</div>
-          {res?.flink_console_url && (
-            <div style={{ marginTop: 6 }}>
-              <a href={res.flink_console_url} target="_blank" rel="noreferrer">打开 Flink Web UI</a>
-            </div>
-          )}
-        </div>
-      )
-      notification.success({
-        message: '部署上线已提交',
-        description: desc,
-        duration: 12,
-        btn: (
-          <Button type="primary" size="small" onClick={() => {
-            notification.destroy()
-            navigate(R.stream.monitor)
-          }}>
-            前往作业运维
-          </Button>
-        ),
+      await streamingApi.createRelease(selected.id, {
+        release_note: '由作业开发提交',
       })
+      await load()
+      message.success('发布版本已提交，可在作业运维中部署')
     } catch (e: any) {
-      const d = e?.response?.data?.detail || '部署失败'
-      message.error(typeof d === 'string' ? d : '部署失败')
+      const d = e?.response?.data?.detail || '提交发布失败'
+      message.error(typeof d === 'string' ? d : '提交发布失败')
       await load()
-      notification.warning({
-        message: '部署失败',
-        description: (
-          <span>
-            详细错误已落库，请在 <Link to={R.stream.monitor}>作业运维</Link> 中打开「诊断」查看启动阶段日志。
-          </span>
-        ),
-        duration: 8,
-        btn: (
-          <Button type="primary" size="small" onClick={() => {
-            notification.destroy()
-            navigate(R.stream.monitor)
-          }}>
-            前往作业运维
-          </Button>
-        ),
-      })
     } finally {
       setSubmitting(false)
     }
@@ -826,20 +701,29 @@ export default function StreamStudioPage() {
 
   const submitPublishApproval = async () => {
     if (!selected || !wsId) return
+    setSubmitting(true)
     try {
+      const saved = await handleSave()
+      if (!saved) return
+      const release: any = await streamingApi.createRelease(selected.id, {
+        release_note: approvalNote || '提交发布审批',
+      })
       await approvalApi.submit({
         workspace_id: wsId,
         resource_type: 'stream_job',
         resource_id: selected.id,
         action: 'submit_job',
         submit_note: approvalNote || undefined,
+        release_id: release.id,
       })
-      message.success('已提交审批，通过后系统将提交到 Flink')
+      message.success('已提交审批，通过后可在作业运维中部署')
       setApprovalOpen(false)
       setApprovalNote('')
       await load()
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '提交失败')
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -926,7 +810,7 @@ export default function StreamStudioPage() {
       <Typography.Title level={4} style={{ marginBottom: 4 }}>作业开发</Typography.Title>
       <Paragraph type="secondary" style={{ marginBottom: 12, maxWidth: 900 }}>
         对标实时计算「数据开发」：编写 SQL / JAR、绑定
-        {' '}<Link to={R.stream.resources}>资源</Link>、保存版本与部署上线。
+        {' '}<Link to={R.stream.resources}>资源</Link>、保存版本与提交发布。
         本页只读库加载目录树（与批处理数据开发一致），不轮询集群运行态。
         启停、状态、诊断与 Flink UI 请到
         {' '}<Link to={R.stream.monitor}>作业运维</Link>。
@@ -938,7 +822,7 @@ export default function StreamStudioPage() {
             <Button icon={<MenuUnfoldOutlined />} onClick={() => setSidebarCollapsedPersist(false)} />
           </Tooltip>
         )}
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => { createForm.resetFields(); setCreateOpen(true) }}>
+        <Button type="primary" icon={<PlusOutlined />} disabled={!canWrite} onClick={() => { createForm.resetFields(); setCreateOpen(true) }}>
           新建实时作业
         </Button>
         <Button icon={<ReloadOutlined />} onClick={() => load(true)} loading={loading}>刷新</Button>
@@ -969,6 +853,7 @@ export default function StreamStudioPage() {
               leaves={jobs}
               folders={folders}
               selectedLeafId={selected?.id}
+              readOnly={!canWrite}
               expandedKeys={treeExpandedKeys}
               onExpandedKeysChange={setTreeExpandedKeys}
               onSelectLeaf={setSelected}
@@ -1022,7 +907,7 @@ export default function StreamStudioPage() {
                     type="link"
                     size="small"
                     icon={<EditOutlined />}
-                    disabled={selected.is_locked || (selected.status || '').toLowerCase() === 'running'}
+                    disabled={!canWrite || selected.is_locked || (selected.status || '').toLowerCase() === 'running'}
                     onClick={openRename}
                     title={(selected.status || '').toLowerCase() === 'running' ? '运行中的作业不可重命名' : '重命名'}
                   >
@@ -1048,7 +933,7 @@ export default function StreamStudioPage() {
                   <Button
                     icon={<SaveOutlined />}
                     onClick={handleSave}
-                    disabled={selected.is_locked}
+                    disabled={!canWrite || selected.is_locked}
                     type={selected.job_type === 'SQL' && scriptAutosave.versionDirty ? 'default' : 'text'}
                     title={selected.job_type === 'SQL'
                       ? '写入服务端并生成版本历史（后台自动落草稿，不记版本、无打扰提示）'
@@ -1068,9 +953,9 @@ export default function StreamStudioPage() {
                     icon={<CloudUploadOutlined />}
                     loading={submitting}
                     onClick={openSubmitDrawer}
-                    disabled={selected.is_locked || isJobPendingApproval}
+                    disabled={!canWrite || selected.is_locked || isJobPendingApproval}
                   >
-                    {isJobPendingApproval ? '审批中' : canPublishDirect ? '部署上线' : '提交审批'}
+                    {isJobPendingApproval ? '审批中' : canPublishDirect ? '提交发布' : '提交审批'}
                   </Button>
                   <Tooltip title="启停与运行态在作业运维（对标实时计算运维管理）">
                     <Button onClick={() => navigate(R.stream.monitor)}>作业运维</Button>
@@ -1147,7 +1032,7 @@ export default function StreamStudioPage() {
                   <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
                     <Button
                       size="small"
-                      disabled={selected.is_locked}
+                      disabled={!canWrite || selected.is_locked}
                       onClick={() => {
                         setScriptDraft(cdcPaimonSqlTemplate(flinkRuntime?.paimon_warehouse_default || ''))
                         setScriptDirty(true)
@@ -1162,7 +1047,7 @@ export default function StreamStudioPage() {
                       <MonacoFindBar
                         getEditor={() => editorRef.current}
                         apiRef={findApiRef}
-                        readOnly={Boolean(selected.is_locked)}
+                        readOnly={!canWrite || Boolean(selected.is_locked)}
                         theme={editorAppearance.theme}
                       />
                       <Editor
@@ -1170,7 +1055,7 @@ export default function StreamStudioPage() {
                         language="sql"
                         theme={editorAppearance.theme}
                         value={scriptDraft}
-                        onChange={selected.is_locked ? undefined : (v => {
+                        onChange={!canWrite || selected.is_locked ? undefined : (v => {
                           setScriptDraft(v ?? '')
                           setScriptDirty(true)
                         })}
@@ -1179,7 +1064,7 @@ export default function StreamStudioPage() {
                           editorRef.current = ed
                           bindMonacoFindKeybindings(ed, monaco, () => findApiRef.current)
                         }}
-                        options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: Boolean(selected.is_locked), minimap: { enabled: false } }}
+                        options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: !canWrite || Boolean(selected.is_locked), minimap: { enabled: false } }}
                       />
                     </div>
                     {resultPanelOpen ? (
@@ -1326,7 +1211,7 @@ export default function StreamStudioPage() {
                         showSearch
                         optionFilterProp="label"
                         value={selected.jar_artifact_id ?? undefined}
-                        disabled={selected.is_locked}
+                        disabled={!canWrite || selected.is_locked}
                         placeholder="选择 JAR 包"
                         options={jarArtifacts.map(a => ({ value: a.id, label: a.name }))}
                         onChange={v => void bindJarArtifact(v).catch((e: any) => {
@@ -1338,7 +1223,7 @@ export default function StreamStudioPage() {
                       <Select
                         allowClear
                         value={selected.jar_version_id ?? undefined}
-                        disabled={selected.is_locked || !selectedJarArtifact}
+                        disabled={!canWrite || selected.is_locked || !selectedJarArtifact}
                         placeholder="选择版本"
                         options={(selectedJarArtifact?.versions || []).map((v: any) => ({
                           value: v.id,
@@ -1365,7 +1250,7 @@ export default function StreamStudioPage() {
                   <Alert
                     type="info"
                     showIcon
-                    message="运行参数与资源配置在「部署上线」抽屉中设置"
+                    message="运行参数与资源配置在「提交发布」抽屉中设置"
                   />
                 </Space>
               )}
@@ -1384,7 +1269,7 @@ export default function StreamStudioPage() {
                     allowClear
                     showSearch
                     optionFilterProp="label"
-                    disabled={selected.is_locked}
+                    disabled={!canWrite || selected.is_locked}
                     placeholder="选择连接器版本（部署注入 pipeline.jars）"
                     value={selected.connector_version_ids || []}
                     options={connectorVersionOptions}
@@ -1402,7 +1287,7 @@ export default function StreamStudioPage() {
                     allowClear
                     showSearch
                     optionFilterProp="label"
-                    disabled={selected.is_locked}
+                    disabled={!canWrite || selected.is_locked}
                     placeholder="选择依赖文件版本（本轮仅落库绑定）"
                     value={selected.dependency_file_version_ids || []}
                     options={fileVersionOptions}
@@ -1508,7 +1393,7 @@ export default function StreamStudioPage() {
       </Modal>
 
       <Drawer
-        title={canPublishDirect ? '部署上线配置' : '提交审批配置'}
+        title={canPublishDirect ? '提交发布配置' : '提交审批配置'}
         placement="right"
         width={520}
         open={submitDrawerOpen}
@@ -1522,10 +1407,10 @@ export default function StreamStudioPage() {
               type="primary"
               icon={<CloudUploadOutlined />}
               loading={submitting}
-              disabled={Boolean(selected?.is_locked) || isJobPendingApproval}
+              disabled={!canWrite || Boolean(selected?.is_locked) || isJobPendingApproval}
               onClick={handleSubmit}
             >
-              {isJobPendingApproval ? '审批中' : canPublishDirect ? '确认部署上线' : '提交审批'}
+              {isJobPendingApproval ? '审批中' : canPublishDirect ? '确认提交发布' : '提交审批'}
             </Button>
           </div>
         )}
@@ -1554,7 +1439,7 @@ export default function StreamStudioPage() {
                     <Input
                       value={jarForm.main_class}
                       placeholder="com.example.StreamingJob"
-                      disabled={selected.is_locked}
+                      disabled={!canWrite || selected.is_locked}
                       onChange={e => setJarForm(f => ({ ...f, main_class: e.target.value }))}
                     />
                   </Form.Item>
@@ -1563,7 +1448,7 @@ export default function StreamStudioPage() {
                       <Input
                         value={jarForm.program_args}
                         placeholder="--key value"
-                        disabled={selected.is_locked}
+                        disabled={!canWrite || selected.is_locked}
                         onChange={e => setJarForm(f => ({ ...f, program_args: e.target.value }))}
                         style={{ flex: 1 }}
                       />
@@ -1588,73 +1473,21 @@ export default function StreamStudioPage() {
                     if (selected.job_type === 'SQL') setSqlParallelism(parallelism)
                     else setJarForm(f => ({ ...f, parallelism }))
                   }}
-                  disabled={selected.is_locked}
+                  disabled={!canWrite || selected.is_locked}
                 />
               </Form.Item>
-              <Form.Item label="规格模板">
-                <Select
-                  allowClear
-                  placeholder="平台默认（不套用模板）"
-                  value={resourceTier || undefined}
-                  disabled={selected.is_locked}
-                  onChange={v => setResourceTier(v || '')}
-                  options={[
-                    { value: 'small', label: '小 — 轻量 SQL / 探查' },
-                    { value: 'medium', label: '中 — 默认生产' },
-                    { value: 'large', label: '大 — 高并行 / 重 SQL' },
-                  ]}
-                />
-              </Form.Item>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
-                <Form.Item label="JM 内存" style={{ marginBottom: 0 }}>
-                  <Input placeholder="2048m" value={operatorResForm.jm_memory} disabled={selected.is_locked}
-                    onChange={e => setOperatorResForm(f => ({ ...f, jm_memory: e.target.value }))} />
-                </Form.Item>
-                <Form.Item label="JM CPU" style={{ marginBottom: 0 }}>
-                  <InputNumber min={0.1} step={0.5} style={{ width: '100%' }} placeholder="1"
-                    value={operatorResForm.jm_cpu ? Number(operatorResForm.jm_cpu) : undefined}
-                    disabled={selected.is_locked}
-                    onChange={v => setOperatorResForm(f => ({ ...f, jm_cpu: v != null ? String(v) : '' }))} />
-                </Form.Item>
-                <Form.Item label="TM 内存" style={{ marginBottom: 0 }}>
-                  <Input placeholder="4096m" value={operatorResForm.tm_memory} disabled={selected.is_locked}
-                    onChange={e => setOperatorResForm(f => ({ ...f, tm_memory: e.target.value }))} />
-                </Form.Item>
-                <Form.Item label="TM CPU" style={{ marginBottom: 0 }}>
-                  <InputNumber min={0.1} step={0.5} style={{ width: '100%' }} placeholder="1"
-                    value={operatorResForm.tm_cpu ? Number(operatorResForm.tm_cpu) : undefined}
-                    disabled={selected.is_locked}
-                    onChange={v => setOperatorResForm(f => ({ ...f, tm_cpu: v != null ? String(v) : '' }))} />
-                </Form.Item>
-                <Form.Item label="Task Slots" style={{ marginBottom: 0 }}>
-                  <InputNumber min={1} style={{ width: '100%' }} placeholder="2"
-                    value={operatorResForm.task_slots ? Number(operatorResForm.task_slots) : undefined}
-                    disabled={selected.is_locked}
-                    onChange={v => setOperatorResForm(f => ({ ...f, task_slots: v != null ? String(v) : '' }))} />
-                </Form.Item>
-                <Form.Item label="TM 副本数" style={{ marginBottom: 0 }}>
-                  <InputNumber min={1} style={{ width: '100%' }} placeholder="自动"
-                    value={operatorResForm.tm_replicas ? Number(operatorResForm.tm_replicas) : undefined}
-                    disabled={selected.is_locked}
-                    onChange={v => setOperatorResForm(f => ({ ...f, tm_replicas: v != null ? String(v) : '' }))} />
-                </Form.Item>
-              </div>
-              <Form.Item label="高级 Flink 配置" style={{ marginTop: 16 }}>
-                <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
-                  JSON 顶级键会合并进 FlinkDeployment flinkConfiguration；Operator 资源请用上方表单。
-                </Paragraph>
-                <Input.TextArea
-                  rows={8}
-                  value={selected.job_type === 'SQL' ? streamingPropsJson : jarStreamingPropsJson}
-                  onChange={e => {
-                    if (selected.job_type === 'SQL') setStreamingPropsJson(e.target.value)
-                    else setJarStreamingPropsJson(e.target.value)
-                  }}
-                  disabled={selected.is_locked}
-                  style={{ fontFamily: 'monospace', fontSize: 12 }}
-                  placeholder={'{\n  "execution.checkpointing.interval": "60000"\n}'}
-                />
-              </Form.Item>
+              <StreamRuntimeConfig
+                resourceTier={resourceTier}
+                onResourceTierChange={setResourceTier}
+                operatorResources={operatorResForm}
+                onOperatorResourcesChange={setOperatorResForm}
+                advancedJson={selected.job_type === 'SQL' ? streamingPropsJson : jarStreamingPropsJson}
+                onAdvancedJsonChange={value => {
+                  if (selected.job_type === 'SQL') setStreamingPropsJson(value)
+                  else setJarStreamingPropsJson(value)
+                }}
+                disabled={!canWrite || selected.is_locked}
+              />
             </Form>
             <Divider style={{ margin: '4px 0' }} />
             <div style={{ fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>
@@ -1670,7 +1503,7 @@ export default function StreamStudioPage() {
       <Modal title="版本历史" open={historyModal} onCancel={() => setHistoryModal(false)} footer={null} width={780} destroyOnClose>
         {historyList.length === 0 && (
           <div style={{ color: '#bbb', textAlign: 'center', padding: 24 }}>
-            暂无版本快照。保存时对 SQL / JAR 参数 / 并行度的修改、以及部署上线（SQL 正文变更或 JAR 提交）前，会自动保留上一版内容。
+            暂无版本快照。显式保存版本会记录 SQL / JAR 参数与并行度，后台草稿自动保存不写版本历史。
           </div>
         )}
         {historyList.map((h: any) => (
@@ -1706,7 +1539,7 @@ export default function StreamStudioPage() {
       <PublishApprovalModal
         open={approvalOpen}
         title={`提交发布审批 — ${selected?.name || ''}`}
-        hint="普通开发不能直接部署到 Flink 生产集群。审批通过后将使用当前已保存的作业定义部署上线。"
+        hint="提交的是当前已保存的发布定义，不会从作业开发直接部署。审批通过后由具备运行权限的人员在作业运维中部署。"
         note={approvalNote}
         onNoteChange={setApprovalNote}
         onCancel={() => { setApprovalOpen(false); setApprovalNote('') }}

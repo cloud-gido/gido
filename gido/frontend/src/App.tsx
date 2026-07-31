@@ -24,6 +24,7 @@ import ApprovalPage from './pages/Approval'
 import DatasourcePage from './pages/Datasource'
 import WorkflowPage from './pages/Workflow'
 import StreamStudioPage from './pages/StreamStudio'
+import StreamPipelinePage from './pages/StreamPipeline'
 import StreamResourcesPage from './pages/StreamResources'
 import StreamJarLibraryPage from './pages/StreamJarLibrary'
 import StreamConnectorLibraryPage from './pages/StreamConnectorLibrary'
@@ -38,6 +39,7 @@ import ServiceMonitorPage from './pages/service/ServiceMonitorPage'
 import ServiceGatewayPage from './pages/service/ServiceGatewayPage'
 import { R } from './routes'
 import RequireGidoBatchRoute from './components/RequireGidoBatchRoute'
+import RequireStreamRoute from './components/RequireStreamRoute'
 import RequireServiceRoute from './components/RequireServiceRoute'
 import { useAppStore } from './store'
 import { defaultBatchHome } from './workspaceMenuPolicy'
@@ -94,9 +96,10 @@ export default function App() {
             <Route path="system/integration" element={<RequireGidoBatchRoute><SystemRbacPage view="integration" /></RequireGidoBatchRoute>} />
           </Route>
 
-          <Route path={R.stream.root} element={<RequireAuth><StreamLayout /></RequireAuth>}>
+          <Route path={R.stream.root} element={<RequireAuth><RequireStreamRoute><StreamLayout /></RequireStreamRoute></RequireAuth>}>
             <Route index element={<Navigate to={R.stream.studio} replace />} />
             <Route path="studio" element={<StreamStudioPage />} />
+            <Route path="pipelines" element={<StreamPipelinePage />} />
             <Route path="resources" element={<StreamResourcesPage />} />
             <Route path="resources/jars" element={<StreamJarLibraryPage />} />
             <Route path="resources/connectors" element={<StreamConnectorLibraryPage />} />

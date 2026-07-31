@@ -111,7 +111,7 @@ PERMISSION_LABELS = {
     GIDO_SERVICE_RUN: "数据服务-发布/调用",
     GIDO_STREAM_READ: "实时计算-查看",
     GIDO_STREAM_WRITE: "实时计算-编辑",
-    GIDO_STREAM_RUN: "实时计算-提交/停止",
+    GIDO_STREAM_RUN: "实时计算-部署/停止/重启",
     AUDIT_READ: "审计日志-查看",
 }
 

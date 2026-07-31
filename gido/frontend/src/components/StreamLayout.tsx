@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  * @author felixzhu
  * @date 2026-06-05
- * Stream 侧栏：对标实时计算开发控制台 — 作业开发 / 资源管理 / 作业运维 / 发布审批。
+ * Stream 侧栏：作业开发 / 作业运维 / 资源管理 / 发布审批。
  */
 import { useEffect, useMemo, useState } from 'react'
 import { Layout, Menu } from 'antd'
@@ -11,7 +11,7 @@ import type { MenuProps } from 'antd'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import {
   CodeOutlined, MonitorOutlined, AuditOutlined, InboxOutlined,
-  AppstoreOutlined, ApiOutlined, FileZipOutlined,
+  AppstoreOutlined, ApiOutlined, FileZipOutlined, ApartmentOutlined,
 } from '@ant-design/icons'
 import ProductBrandBlock from './ProductBrandBlock'
 import WorkspaceHeaderBar from './shell/WorkspaceHeaderBar'
@@ -21,22 +21,23 @@ import { R } from '../routes'
 
 const { Sider, Content, Header } = Layout
 
-const RESOURCES_GROUP_KEY = 'stream-resources'
+const RESOURCE_GROUP_KEY = 'stream-resources'
 
 const MENU_ITEMS: MenuProps['items'] = [
   { key: R.stream.studio, icon: <CodeOutlined />, label: '作业开发' },
+  { key: R.stream.pipelines, icon: <ApartmentOutlined />, label: '数据管道' },
+  { key: R.stream.monitor, icon: <MonitorOutlined />, label: '作业运维' },
   {
-    key: RESOURCES_GROUP_KEY,
+    key: RESOURCE_GROUP_KEY,
     icon: <AppstoreOutlined />,
     label: '资源管理',
     children: [
-      { key: R.stream.resources, icon: <AppstoreOutlined />, label: '总览' },
+      { key: R.stream.resources, icon: <AppstoreOutlined />, label: '资源总览' },
       { key: R.stream.resourcesJars, icon: <InboxOutlined />, label: 'JAR 包' },
       { key: R.stream.resourcesConnectors, icon: <ApiOutlined />, label: '连接器' },
       { key: R.stream.resourcesFiles, icon: <FileZipOutlined />, label: '依赖文件' },
     ],
   },
-  { key: R.stream.monitor, icon: <MonitorOutlined />, label: '作业运维' },
   { key: R.stream.approval, icon: <AuditOutlined />, label: '发布审批' },
 ]
 
@@ -62,11 +63,11 @@ export default function StreamLayout() {
     || selectedKey === R.stream.resourcesConnectors
     || selectedKey === R.stream.resourcesFiles
 
-  const [openKeys, setOpenKeys] = useState<string[]>(() => (underResources ? [RESOURCES_GROUP_KEY] : []))
+  const [openKeys, setOpenKeys] = useState<string[]>(() => (underResources ? [RESOURCE_GROUP_KEY] : []))
 
   useEffect(() => {
     if (underResources) {
-      setOpenKeys(prev => (prev.includes(RESOURCES_GROUP_KEY) ? prev : [...prev, RESOURCES_GROUP_KEY]))
+      setOpenKeys(prev => (prev.includes(RESOURCE_GROUP_KEY) ? prev : [...prev, RESOURCE_GROUP_KEY]))
     }
   }, [underResources])
 
@@ -91,13 +92,7 @@ export default function StreamLayout() {
           openKeys={openKeys}
           onOpenChange={keys => setOpenKeys(keys as string[])}
           items={MENU_ITEMS}
-          onClick={({ key }) => {
-            if (key === RESOURCES_GROUP_KEY) {
-              navigate(R.stream.resources)
-              return
-            }
-            navigate(key)
-          }}
+          onClick={({ key }) => navigate(key)}
           style={{ borderInlineEnd: 'none', paddingTop: 8, paddingBottom: 16, background: 'transparent' }}
         />
       </Sider>

@@ -39,7 +39,7 @@ def _perm_for_resource(resource_type: str) -> str:
     return {
         "workflow": PC.GIDO_BATCH_WORKFLOW_RUN,
         "studio_node": PC.GIDO_BATCH_STUDIO_RUN,
-        "stream_job": PC.GIDO_STREAM_RUN,
+        "stream_job": PC.GIDO_STREAM_WRITE,
         "data_service_api": PC.GIDO_SERVICE_RUN,
     }[resource_type]
 
@@ -112,6 +112,7 @@ def serialize_approval(db: Session, row: PublishApproval) -> Dict[str, Any]:
         "workspace_id": row.workspace_id,
         "resource_type": row.resource_type,
         "resource_id": row.resource_id,
+        "release_id": getattr(row, "release_id", None),
         "resource_name": row.resource_name,
         "action": row.action,
         "status": row.status,
@@ -159,6 +160,7 @@ def submit_publish_approval(
     resource_id: int,
     action: str,
     submit_note: Optional[str] = None,
+    release_id: Optional[int] = None,
 ) -> PublishApproval:
     if resource_type not in VALID_RESOURCE_TYPES:
         raise HTTPException(status_code=400, detail=f"不支持的资源类型: {resource_type}")
@@ -194,6 +196,25 @@ def submit_publish_approval(
         submit_note=(submit_note or "").strip() or None,
         submitted_by=user.id,
     )
+    if resource_type == "stream_job":
+        from app.api.streaming import StreamingJobRelease
+
+        release_query = db.query(StreamingJobRelease).filter(
+            StreamingJobRelease.job_id == resource_id,
+            StreamingJobRelease.approval_status == "pending",
+        )
+        if release_id is not None:
+            release_query = release_query.filter(
+                StreamingJobRelease.id == release_id
+            )
+        else:
+            release_query = release_query.order_by(
+                StreamingJobRelease.version.desc()
+            )
+        release = release_query.first()
+        if not release:
+            raise HTTPException(status_code=409, detail="请先提交不可变实时作业发布版本")
+        row.release_id = release.id
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -225,12 +246,34 @@ def _execute_approval_action(db: Session, row: PublishApproval, reviewer) -> Dic
         return {"message": "节点已发布"}
 
     if row.action == "submit_job":
-        from app.api.streaming import StreamingJob, execute_streaming_job_submit
+        from app.api.streaming import (
+            StreamingJob,
+            StreamingJobRelease,
+            approve_streaming_job_release,
+        )
 
         job = db.query(StreamingJob).filter(StreamingJob.id == row.resource_id).first()
         if not job:
             raise HTTPException(status_code=404, detail="实时作业不存在")
-        return execute_streaming_job_submit(db, job, reviewer, script_content=None)
+        release = db.query(StreamingJobRelease).filter(
+            StreamingJobRelease.id == getattr(row, "release_id", None),
+            StreamingJobRelease.job_id == job.id,
+        ).first()
+        if not release:
+            raise HTTPException(status_code=409, detail="审批绑定的实时作业发布版本不存在")
+        approve_streaming_job_release(
+            db,
+            job,
+            release,
+            reviewer.id if reviewer else row.reviewed_by,
+            comment=row.review_note,
+        )
+        db.flush()
+        return {
+            "message": f"实时作业发布版本 v{release.version} 已批准，可在作业运维中部署",
+            "release_id": release.id,
+            "release_version": release.version,
+        }
 
     if row.action == "publish_api":
         from app.services.data_service_publish import execute_data_api_publish
@@ -251,6 +294,26 @@ def _execute_approval_action(db: Session, row: PublishApproval, reviewer) -> Dic
     raise HTTPException(status_code=400, detail=f"未知动作: {row.action}")
 
 
+def _refresh_stream_job_release_lifecycle(db: Session, job_id: int) -> None:
+    from app.api.streaming import StreamingJob, StreamingJobRelease
+
+    job = db.query(StreamingJob).filter(StreamingJob.id == job_id).first()
+    if not job or getattr(job, "current_running_release_id", None):
+        return
+    has_approved = db.query(StreamingJobRelease.id).filter(
+        StreamingJobRelease.job_id == job_id,
+        StreamingJobRelease.approval_status == "approved",
+    ).first()
+    has_pending = db.query(StreamingJobRelease.id).filter(
+        StreamingJobRelease.job_id == job_id,
+        StreamingJobRelease.approval_status == "pending",
+    ).first()
+    job.lifecycle_state = (
+        "approved" if has_approved else ("pending_approval" if has_pending else "draft")
+    )
+    job.updated_at = datetime.utcnow()
+
+
 def approve_publish_approval(
     db: Session, user, approval_id: int, review_note: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -261,6 +324,9 @@ def approve_publish_approval(
     if row.status != "pending":
         raise HTTPException(status_code=400, detail=f"当前状态不可审批: {row.status}")
 
+    row.review_note = (review_note or "").strip() or None
+    row.reviewed_by = user.id
+    row.reviewed_at = datetime.utcnow()
     try:
         exec_out = _execute_approval_action(db, row, user)
     except HTTPException:
@@ -271,9 +337,6 @@ def approve_publish_approval(
         raise HTTPException(status_code=500, detail=f"发布执行失败: {e}")
 
     row.status = "approved"
-    row.review_note = (review_note or "").strip() or None
-    row.reviewed_by = user.id
-    row.reviewed_at = datetime.utcnow()
     if row.resource_type == "workflow":
         wf = db.query(Workflow).filter(Workflow.id == row.resource_id).first()
         if wf:
@@ -297,6 +360,18 @@ def reject_publish_approval(
     row.review_note = (review_note or "").strip() or None
     row.reviewed_by = user.id
     row.reviewed_at = datetime.utcnow()
+    if row.resource_type == "stream_job" and getattr(row, "release_id", None):
+        from app.api.streaming import StreamingJobRelease
+
+        release = db.query(StreamingJobRelease).filter(
+            StreamingJobRelease.id == row.release_id
+        ).first()
+        if release and release.approval_status == "pending":
+            release.approval_status = "rejected"
+            release.approved_by = user.id
+            release.approved_at = row.reviewed_at
+            release.approval_comment = row.review_note
+        _refresh_stream_job_release_lifecycle(db, row.resource_id)
     db.commit()
     db.refresh(row)
     return row
@@ -313,6 +388,16 @@ def cancel_publish_approval(db: Session, user, approval_id: int) -> PublishAppro
     row.status = "cancelled"
     row.reviewed_by = user.id
     row.reviewed_at = datetime.utcnow()
+    if row.resource_type == "stream_job" and getattr(row, "release_id", None):
+        from app.api.streaming import StreamingJobRelease
+
+        release = db.query(StreamingJobRelease).filter(
+            StreamingJobRelease.id == row.release_id
+        ).first()
+        if release and release.approval_status == "pending":
+            release.approval_status = "cancelled"
+            release.approval_comment = "发布审批已撤回"
+        _refresh_stream_job_release_lifecycle(db, row.resource_id)
     db.commit()
     db.refresh(row)
     return row

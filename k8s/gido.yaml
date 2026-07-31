@@ -293,7 +293,7 @@ rules:
     resources: ["flinkdeployments", "flinksessionjobs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
-    resources: ["services", "pods", "configmaps", "pods/log"]
+    resources: ["services", "pods", "configmaps", "secrets", "pods/log"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["batch"]
     resources: ["jobs", "jobs/status"]

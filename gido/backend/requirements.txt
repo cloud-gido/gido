@@ -17,6 +17,7 @@ croniter==2.0.1
 sqlparse==0.4.4
 aiofiles==23.2.1
 requests==2.31.0
+kafka-python==3.0.9
 kubernetes==28.1.0
 httpx==0.26.0
 psycopg2-binary==2.9.9

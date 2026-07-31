@@ -253,6 +253,7 @@ export const approvalApi = {
     resource_id: number
     action: string
     submit_note?: string
+    release_id?: number
   }) => request.post('/approvals/submit', data),
   pendingCount: (workspaceId: number) =>
     request.get('/approvals/pending-count', { params: { workspace_id: workspaceId } }),
@@ -302,6 +303,111 @@ export const adminApi = {
     request.get('/admin/integration/flink/sql-gateway-k8s-yml', { responseType: 'text' as const }) as Promise<string>,
 }
 
+export type StreamPipelineMode = 'append' | 'upsert' | 'cdc'
+
+export type StreamPipelineDefinition = {
+  id?: number
+  workspace_id: number
+  name: string
+  description?: string
+  status?: 'draft' | 'validated' | 'pending_approval' | 'approved' | 'running' | 'failed'
+  mode: StreamPipelineMode
+  source: {
+    datasource_id?: number
+    connection_profile_id?: number
+    connector: string
+    table: string
+    credential_ref?: string
+    startup_mode?: string
+    consumer_group?: string
+    format?: string
+  }
+  schema: {
+    evolution: 'strict' | 'additive'
+    contract_id?: number
+    version?: number
+    source_columns?: Array<{ name: string; type: string; nullable?: boolean }>
+    columns: Array<{ name: string; type: string; nullable?: boolean; primary_key?: boolean }>
+  }
+  mapping: {
+    fields: Array<{ source: string; target: string; expression?: string }>
+    filter?: string
+  }
+  sink: {
+    catalog: string
+    database: string
+    table: string
+    connection_profile_id?: number
+    warehouse_ref?: string
+    primary_keys: string[]
+    partitions: string[]
+    bucket?: number
+  }
+  runtime: {
+    parallelism: number
+    resource_tier?: string
+    streaming_properties?: string
+  }
+  placement: {
+    pool?: string
+    namespace?: string
+    node_selector?: Record<string, string>
+    requested_mode?: 'dedicated' | 'grouped' | 'recommend-only'
+    sla_tier?: 'best-effort' | 'standard' | 'high' | 'critical'
+    expected_records_per_second?: number
+    state_size_gb?: number
+    security_domain?: string
+  }
+  created_at?: string
+  updated_at?: string
+}
+
+export type StreamPipelineExplain = {
+  generated_artifact: {
+    kind: 'flink_sql' | 'runner_spec'
+    content: string
+    runner?: Record<string, unknown>
+    redacted: true
+  }
+  schema_diff: Array<{ column: string; change: string; type?: string; detail?: string }>
+  placement: { decision: string; resource_tier?: string; parallelism?: number; capacity?: string }
+  risks: Array<{ code: string; level: 'low' | 'medium' | 'high' | 'blocker'; message: string; requires_confirmation?: boolean }>
+  valid: boolean
+  local_fallback?: boolean
+}
+
+export type StreamPipelineSpec = {
+  spec_version: '1.0'
+  kind: 'kafka_to_paimon'
+  mode: StreamPipelineMode
+  schema_evolution: 'strict' | 'additive'
+  error_policy: 'fail-fast'
+  schema_contract_id?: number
+  schema_version?: number
+  source: {
+    connector: 'kafka'
+    connection_profile_id: number
+    topic: string
+    consumer_group: string
+    format: 'json' | 'debezium-json' | 'canal-json' | 'maxwell-json'
+    startup_mode: 'earliest-offset' | 'latest-offset' | 'group-offsets'
+    options: Record<string, string>
+  }
+  sink: {
+    connector: 'paimon'
+    connection_profile_id: number
+    database: string
+    table: string
+    primary_keys: string[]
+    partition_keys: string[]
+    options: Record<string, string>
+  }
+  source_schema?: Array<{ name: string; data_type: string; nullable: boolean }>
+  schema: Array<{ name: string; data_type: string; nullable: boolean }>
+  transform?: { projections: Record<string, string>; filter?: string }
+  description?: string
+}
+
 // 实时开发
 export const streamingApi = {
   operatorOverview: (workspaceId: number) =>
@@ -327,6 +433,17 @@ export const streamingApi = {
       `/streaming/jobs/${id}/submit`,
       scriptContent !== undefined ? { script_content: scriptContent } : {},
     ),
+  listReleases: (id: number) => request.get(`/streaming/jobs/${id}/releases`),
+  createRelease: (id: number, data?: Record<string, unknown>) =>
+    request.post(`/streaming/jobs/${id}/releases`, data || {}),
+  deployJob: (id: number, data: Record<string, unknown>) =>
+    request.post(`/streaming/jobs/${id}/deploy`, data),
+  stopJob: (id: number, data?: Record<string, unknown>) =>
+    request.post(`/streaming/jobs/${id}/stop`, data || { mode: 'savepoint' }),
+  restartJob: (id: number, data: Record<string, unknown>) =>
+    request.post(`/streaming/jobs/${id}/restart`, data),
+  getRestorePoints: (id: number) => request.get(`/streaming/jobs/${id}/restore-points`),
+  getOperations: (id: number) => request.get(`/streaming/jobs/${id}/operations`),
   cancelJob: (id: number) => request.post(`/streaming/jobs/${id}/cancel`),
   getStatus: (id: number) => request.get(`/streaming/jobs/${id}/status`),
   /** 工作空间批量状态同步（替代 N 路 getStatus） */
@@ -411,6 +528,32 @@ export const streamingApi = {
   },
   deprecateFileVersion: (versionId: number) =>
     request.post(`/streaming/file-versions/${versionId}/deprecate`),
+
+  /**
+   * Typed Kafka → Paimon foundation contract. Definitions are regular streaming
+   * jobs with definition_kind=pipeline; profile responses expose secret_ref_keys
+   * only, and compile artifacts use runtime profile references.
+   */
+  listPipelineProfiles: (workspaceId: number) =>
+    request.get('/streaming/pipeline/connection-profiles', { params: { workspace_id: workspaceId } }),
+  createPipelineProfile: (data: Record<string, unknown>) =>
+    request.post('/streaming/pipeline/connection-profiles', data),
+  discoverPipelineProfile: (profileId: number) =>
+    request.post(`/streaming/pipeline/connection-profiles/${profileId}/discover`),
+  compilePipeline: (spec: StreamPipelineSpec) =>
+    request.post('/streaming/pipeline/compile', spec),
+  preflightPipeline: (spec: StreamPipelineSpec) =>
+    request.post('/streaming/pipeline/preflight', spec),
+  previewPipelinePlacement: (data: Record<string, unknown>) =>
+    request.post('/streaming/pipeline/placement/preview', data),
+  saveJobPipelineSpec: (jobId: number, spec: StreamPipelineSpec) =>
+    request.put(`/streaming/pipeline/jobs/${jobId}/spec`, spec),
+  getPipelineObservability: (jobId: number) =>
+    request.get(`/streaming/pipeline/jobs/${jobId}/observability`),
+  createPipelineSchemaContract: (data: Record<string, unknown>) =>
+    request.post('/streaming/pipeline/schema-contracts', data),
+  createPipelineSchemaVersion: (contractId: number, data: Record<string, unknown>) =>
+    request.post(`/streaming/pipeline/schema-contracts/${contractId}/versions`, data),
 }
 
 // 数据服务

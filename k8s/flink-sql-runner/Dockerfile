@@ -1,7 +1,7 @@
 
 
 # GIDO 统一 Flink 运行时（gido-flink-runtime）
-# Flink 2.0.1 + sql-runner.jar + Paimon + CDC + S3 插件 + Hadoop 白名单（Paimon catalog）
+# Flink 2.0.1 + sql-runner.jar + Paimon + CDC + Kafka SQL + S3 插件 + Hadoop 白名单（Paimon catalog）
 #
 # 平台由构建脚本自动检测，见 k8s/build-flink-runtime.sh
 # 构建后校验：bash k8s/flink-sql-runner/verify-image.sh <tag>
@@ -49,6 +49,7 @@ RUN mv /tmp/connectors/flink-s3-fs-hadoop-*.jar /opt/flink/plugins/s3-fs-hadoop/
     && test -n "$(ls /opt/flink/lib/commons-configuration2-*.jar)" \
     && test -n "$(ls /opt/flink/lib/woodstox-core-*.jar)" \
     && test -n "$(ls /opt/flink/lib/paimon-flink-2.0-*.jar)" \
+    && test -n "$(ls /opt/flink/lib/flink-sql-connector-kafka-4.0.1-2.0.jar)" \
     && test -n "$(ls /opt/flink/plugins/s3-fs-hadoop/flink-s3-fs-hadoop-*.jar)" \
     && rm -f /opt/flink/lib/commons-cli-1.2.jar /opt/flink/lib/log4j-1.2.17.jar \
     && rm -rf /tmp/connectors

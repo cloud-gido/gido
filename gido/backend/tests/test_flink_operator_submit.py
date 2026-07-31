@@ -73,6 +73,53 @@ def test_apply_flink_deployment_replace_sets_resource_version(monkeypatch):
     assert out["metadata"]["resourceVersion"] == "12345"
 
 
+def test_pipeline_runtime_secret_is_injected_via_secret_env(monkeypatch):
+    from app.services import flink_operator_submit as fos
+
+    captured = {}
+
+    class FakeCoreApi:
+        def create_namespaced_secret(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(fos, "_core_v1_api", lambda: FakeCoreApi())
+    name = fos.ensure_sql_runtime_secret(
+        "pipeline-secrets",
+        {"GIDO_PIPELINE_SECRET_ABC": "super-secret"},
+        "flink",
+    )
+    assert name == "pipeline-secrets"
+    assert captured["body"]["stringData"] == {
+        "GIDO_PIPELINE_SECRET_ABC": "super-secret"
+    }
+    template = fos._build_pod_template_for_runtime_secret(name)
+    container = template["spec"]["containers"][0]
+    assert container["envFrom"] == [
+        {"secretRef": {"name": "pipeline-secrets"}}
+    ]
+
+
+def test_sql_deployment_delete_cleans_runtime_secret(monkeypatch):
+    from app.services import flink_operator_submit as fos
+
+    cleaned = []
+
+    class FakeCustomApi:
+        def delete_namespaced_custom_object(self, **kwargs):
+            return {}
+
+    monkeypatch.setattr(fos, "_custom_objects_api", lambda: FakeCustomApi())
+    monkeypatch.setattr(
+        fos,
+        "delete_sql_runtime_secret",
+        lambda deployment_name, namespace=None: cleaned.append(
+            (deployment_name, namespace)
+        ),
+    )
+    assert fos.delete_flink_deployment("gido-sql-1-2", "flink") is True
+    assert cleaned == [("gido-sql-1-2", "flink")]
+
+
 def test_artifact_token_stable_without_internal_token(monkeypatch):
     from app.core.config import settings
     from app.services import jar_artifact as ja
@@ -162,4 +209,227 @@ def test_resolve_operator_jm_rest_dev_local_skips_cluster_dns(monkeypatch):
     monkeypatch.setattr(fos.settings, "FLINK_K8S_REST_EXPOSED_TYPE", "LoadBalancer")
     url = fos.resolve_operator_jm_rest("gido-jar-3", "flink", job_id=3)
     assert url is None
+
+
+def test_patch_suspend_and_resume_lifecycle_fields(monkeypatch):
+    from app.services import flink_operator_submit as fos
+
+    calls = []
+
+    class FakeApi:
+        def patch_namespaced_custom_object(self, **kwargs):
+            calls.append(kwargs)
+            return kwargs["body"]
+
+    monkeypatch.setattr(fos, "_custom_objects_api", lambda: FakeApi())
+    fos.suspend_flink_deployment("job-1", "operator-ns")
+    fos.resume_flink_deployment("job-1", "operator-ns", restart_nonce=7)
+
+    assert calls[0]["namespace"] == "operator-ns"
+    assert calls[0]["body"] == {
+        "spec": {"job": {"state": "suspended", "upgradeMode": "savepoint"}}
+    }
+    assert calls[1]["body"] == {
+        "spec": {
+            "job": {
+                "state": "running",
+                "upgradeMode": "savepoint",
+                "restartNonce": 7,
+            }
+        }
+    }
+
+
+def test_extract_savepoint_status_across_operator_field_names():
+    from app.services import flink_operator_submit as fos
+
+    completed = {
+        "status": {
+            "jobStatus": {
+                "savepointInfo": {
+                    "triggerStatus": "in_progress",
+                    "lastSavepoint": {"location": "s3://bucket/savepoint-1"},
+                }
+            }
+        }
+    }
+    assert fos.extract_savepoint_status_from_cr(completed) == (
+        "IN_PROGRESS",
+        "s3://bucket/savepoint-1",
+        None,
+    )
+
+    failed = {
+        "status": {
+            "job_status": {
+                "savepoint_info": {
+                    "state": "pending",
+                    "last_savepoint": {"failure_cause": "checkpoint storage unavailable"},
+                }
+            }
+        }
+    }
+    assert fos.extract_savepoint_status_from_cr(failed) == (
+        "FAILED",
+        None,
+        "checkpoint storage unavailable",
+    )
+
+
+def test_wait_for_completed_savepoint_success(monkeypatch):
+    from app.services import flink_operator_submit as fos
+
+    responses = iter(
+        [
+            {
+                "status": {
+                    "jobStatus": {
+                        "savepointInfo": {"triggerId": "trigger-1", "status": "PENDING"}
+                    }
+                }
+            },
+            {
+                "status": {
+                    "jobStatus": {
+                        "savepointInfo": {
+                            "lastSavepoint": {"path": "s3://bucket/savepoint-2"}
+                        }
+                    }
+                }
+            },
+        ]
+    )
+    monkeypatch.setattr(fos, "read_flink_deployment", lambda *a, **k: next(responses))
+    monkeypatch.setattr(fos.time, "sleep", lambda _: None)
+
+    assert (
+        fos.wait_for_completed_savepoint(
+            "job-1", "operator-ns", timeout_seconds=5, poll_interval_seconds=0
+        )
+        == "s3://bucket/savepoint-2"
+    )
+
+
+def test_wait_for_completed_savepoint_ignores_previous_path(monkeypatch):
+    from app.services import flink_operator_submit as fos
+
+    responses = iter(
+        [
+            {
+                "status": {
+                    "jobStatus": {
+                        "savepointInfo": {
+                            "lastSavepoint": {"path": "s3://bucket/old"}
+                        }
+                    }
+                }
+            },
+            {
+                "status": {
+                    "jobStatus": {
+                        "savepointInfo": {
+                            "lastSavepoint": {"path": "s3://bucket/new"}
+                        }
+                    }
+                }
+            },
+        ]
+    )
+    monkeypatch.setattr(fos, "read_flink_deployment", lambda *a, **k: next(responses))
+    monkeypatch.setattr(fos.time, "sleep", lambda _: None)
+
+    assert fos.wait_for_completed_savepoint(
+        "job-1",
+        timeout_seconds=5,
+        poll_interval_seconds=0,
+        previous_path="s3://bucket/old",
+    ) == "s3://bucket/new"
+
+
+def test_wait_for_completed_savepoint_failure_never_returns_path(monkeypatch):
+    import pytest
+
+    from app.services import flink_operator_submit as fos
+
+    cr = {
+        "status": {
+            "jobStatus": {
+                "savepointInfo": {
+                    "lastSavepoint": {
+                        "location": "s3://bucket/incomplete",
+                        "failureCause": "savepoint failed",
+                    }
+                }
+            }
+        }
+    }
+    monkeypatch.setattr(fos, "read_flink_deployment", lambda *a, **k: cr)
+
+    with pytest.raises(RuntimeError, match="savepoint failed"):
+        fos.wait_for_completed_savepoint("job-1", timeout_seconds=0)
+
+
+def test_wait_for_suspended_success_and_timeout(monkeypatch):
+    import pytest
+
+    from app.services import flink_operator_submit as fos
+
+    suspended = {
+        "spec": {"job": {"state": "suspended"}},
+        "status": {
+            "jobStatus": {"state": "SUSPENDED"},
+            "reconciliationStatus": {"state": "DEPLOYED"},
+        },
+    }
+    monkeypatch.setattr(fos, "read_flink_deployment", lambda *a, **k: suspended)
+    assert fos.wait_for_flink_deployment_suspended("job-1", timeout_seconds=0) is suspended
+
+    pending = {
+        "spec": {"job": {"state": "suspended"}},
+        "status": {"reconciliationStatus": {"state": "UPGRADING"}},
+    }
+    monkeypatch.setattr(fos, "read_flink_deployment", lambda *a, **k: pending)
+    with pytest.raises(TimeoutError, match="to suspend"):
+        fos.wait_for_flink_deployment_suspended("job-1", timeout_seconds=0)
+
+
+def test_wait_for_running_requires_reconciled_job(monkeypatch):
+    import pytest
+
+    from app.services import flink_operator_submit as fos
+
+    running = {
+        "spec": {"job": {"state": "running"}},
+        "status": {"jobStatus": {"state": "RUNNING", "jobId": "jid-1"}},
+    }
+    monkeypatch.setattr(fos, "read_flink_deployment", lambda *a, **k: running)
+    assert fos.wait_for_flink_deployment_running("job-1", timeout_seconds=0) is running
+
+    pending = {
+        "spec": {"job": {"state": "running"}},
+        "status": {"jobStatus": {"state": "SUSPENDED", "jobId": "old-jid"}},
+    }
+    monkeypatch.setattr(fos, "read_flink_deployment", lambda *a, **k: pending)
+    with pytest.raises(TimeoutError, match="to resume"):
+        fos.wait_for_flink_deployment_running("job-1", timeout_seconds=0)
+
+
+def test_prepare_flink_deployment_for_savepoint_redeploy_is_non_mutating():
+    from app.services import flink_operator_submit as fos
+
+    original = {"spec": {"job": {"state": "running"}}}
+    prepared = fos.prepare_flink_deployment_for_savepoint_redeploy(
+        original,
+        "s3://bucket/savepoint-3",
+        savepoint_redeploy_nonce=11,
+        allow_non_restored_state=True,
+    )
+
+    assert original == {"spec": {"job": {"state": "running"}}}
+    assert prepared["spec"]["job"] == {
+        "state": "running",
+        "initialSavepointPath": "s3://bucket/savepoint-3",
+        "savepointRedeployNonce": 11,
+        "allowNonRestoredState": True,
+    }
 

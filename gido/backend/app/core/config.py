@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     SMTP_PORT: int = 25
     SMTP_FROM: str = "gido@example.com"
     ALERT_EMAIL: Optional[str] = None
+    # Stream Pipeline 指标查询端点；为空时继续使用 Kafka Admin/Flink REST 直读快照。
+    STREAM_PROMETHEUS_URL: Optional[str] = None
 
     # DolphinScheduler 集成（须单独部署 DS；下列仅为「连到哪里」，不保证该地址已有服务）
     DS_ENABLED: bool = False

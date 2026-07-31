@@ -20,7 +20,7 @@ from app.core.database import Base, engine
 from app.api import auth, workspace, workspace_settings, workspace_variables, datasource, studio, workflow, integration, datamap, quality, operation, probe, copilot, adhoc_runs
 from app.api import scheduler as scheduler_api
 from app.api import audit
-from app.api import streaming
+from app.api import streaming, stream_pipeline
 from app.api import admin_rbac, admin_integration
 from app.api import data_service, data_service_open
 from app.api import alert, approval
@@ -79,6 +79,8 @@ async def lifespan(app: FastAPI):
         migrate_default_workspace_to_infras,
         migrate_workspace_owner_members,
         migrate_dw_streaming_jobs,
+        migrate_dw_streaming_release_lifecycle,
+        migrate_dw_stream_pipeline,
         migrate_dw_streaming_job_history,
         migrate_dw_streaming_jobs_streaming_properties,
         migrate_dw_streaming_job_history_streaming_properties,
@@ -119,6 +121,8 @@ async def lifespan(app: FastAPI):
     migrate_dw_workflow_instance_submitted_by(engine)
     migrate_dw_quality_dolphin_refs(engine)
     migrate_dw_streaming_jobs(engine)
+    migrate_dw_streaming_release_lifecycle(engine)
+    migrate_dw_stream_pipeline(engine)
     migrate_dw_streaming_job_history(engine)
     migrate_dw_streaming_jobs_streaming_properties(engine)
     migrate_dw_streaming_job_history_streaming_properties(engine)
@@ -238,6 +242,7 @@ app.include_router(probe.router, prefix="/api")
 app.include_router(scheduler_api.router, prefix="/api")
 app.include_router(audit.router, prefix="/api")
 app.include_router(streaming.router, prefix="/api")
+app.include_router(stream_pipeline.router, prefix="/api")
 app.include_router(admin_rbac.router, prefix="/api")
 app.include_router(admin_integration.router, prefix="/api")
 app.include_router(data_service.router, prefix="/api")

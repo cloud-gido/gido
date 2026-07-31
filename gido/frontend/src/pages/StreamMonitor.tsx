@@ -7,12 +7,13 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   Table, Button, Space, Tag, message, Popconfirm, Typography, Alert, Drawer, Tooltip, Input, Select, Card,
-  Row, Col, Statistic, Tabs, Descriptions,
+  Row, Col, Statistic, Tabs, Descriptions, Modal, Form, InputNumber, Radio, Switch,
 } from 'antd'
 import {
   ReloadOutlined, LinkOutlined, BugOutlined, StopOutlined, SearchOutlined,
   ClusterOutlined, CloseCircleOutlined, ContainerOutlined, SyncOutlined, ThunderboltOutlined,
   CloudServerOutlined,
+  RocketOutlined, HistoryOutlined, RetweetOutlined,
 } from '@ant-design/icons'
 import { streamingApi } from '../api'
 import { useAppStore } from '../store'
@@ -21,6 +22,12 @@ import { R } from '../routes'
 import { Link } from 'react-router-dom'
 import { formatInTimeZone } from '../utils/datetime'
 import { openFlinkConsoleUrl } from '../utils/flinkConsole'
+import StreamRuntimeConfig, {
+  buildStreamRuntimeProperties,
+  EMPTY_OPERATOR_RESOURCES,
+  parseStreamRuntimeConfig,
+  type OperatorResourceForm,
+} from '../components/StreamRuntimeConfig'
 
 const { Paragraph, Text } = Typography
 
@@ -131,6 +138,37 @@ function diagnosticsButtonLabel(row: any) {
   return '诊断'
 }
 
+function asItems(value: any, key?: string): any[] {
+  if (Array.isArray(value)) return value
+  if (key && Array.isArray(value?.[key])) return value[key]
+  if (Array.isArray(value?.items)) return value.items
+  return []
+}
+
+function parseJsonObject(value: unknown): Record<string, any> {
+  if (value && typeof value === 'object') return value as Record<string, any>
+  if (typeof value !== 'string' || !value.trim()) return {}
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function releaseStatus(release: any): string {
+  return String(release?.status || release?.approval_status || release?.state || '').toLowerCase()
+}
+
+function isApprovedNotDeployed(release: any, job?: any): boolean {
+  const status = releaseStatus(release)
+  const deployment = String(release?.deployment_status || '').toLowerCase()
+  return (status === 'approved' || release?.approved === true)
+    && (!job?.current_running_release_id || Number(job.current_running_release_id) !== Number(release?.id))
+    && !release?.deployed_at
+    && !['deployed', 'deploying', 'running'].includes(deployment)
+}
+
 export default function StreamMonitorPage() {
   const { currentWorkspace, user } = useAppStore()
   const wsId = currentWorkspace?.id
@@ -143,12 +181,32 @@ export default function StreamMonitorPage() {
   const [diagExceptions, setDiagExceptions] = useState<any>(null)
   const [diagSync, setDiagSync] = useState<any>(null)
   const [diagCheckpoints, setDiagCheckpoints] = useState<any>(null)
+  const [diagObservability, setDiagObservability] = useState<any>(null)
   const [overview, setOverview] = useState<Record<string, any> | null>(null)
   const [overviewErr, setOverviewErr] = useState<string | null>(null)
   const [keyword, setKeyword] = useState('')
   const [typeFilter, setTypeFilter] = useState<string | undefined>()
   const [deployFilter, setDeployFilter] = useState<string | undefined>()
   const [stateFilter, setStateFilter] = useState<string | undefined>()
+  const [releaseMap, setReleaseMap] = useState<Record<number, any[]>>({})
+  const [actionOpen, setActionOpen] = useState(false)
+  const [actionKind, setActionKind] = useState<'deploy' | 'restart'>('deploy')
+  const [actionRow, setActionRow] = useState<any | null>(null)
+  const [actionLoading, setActionLoading] = useState(false)
+  const [releaseId, setReleaseId] = useState<number | string | undefined>()
+  const [parallelism, setParallelism] = useState(1)
+  const [advancedJson, setAdvancedJson] = useState('{}')
+  const [resourceTier, setResourceTier] = useState('')
+  const [operatorResources, setOperatorResources] = useState<OperatorResourceForm>({ ...EMPTY_OPERATOR_RESOURCES })
+  const [restoreMode, setRestoreMode] = useState<'latest' | 'specific' | 'stateless'>('latest')
+  const [restorePointId, setRestorePointId] = useState<number | string | undefined>()
+  const [allowNonRestoredState, setAllowNonRestoredState] = useState(false)
+  const [restorePoints, setRestorePoints] = useState<any[]>([])
+  const [restoreDrawerOpen, setRestoreDrawerOpen] = useState(false)
+  const [operationDrawerOpen, setOperationDrawerOpen] = useState(false)
+  const [operationRow, setOperationRow] = useState<any | null>(null)
+  const [operations, setOperations] = useState<any[]>([])
+  const [drawerLoading, setDrawerLoading] = useState(false)
 
   const jobsRef = useRef<any[]>([])
 
@@ -168,6 +226,15 @@ export default function StreamMonitorPage() {
         }),
       ])
       setJobs(list)
+      const releases = await Promise.all((Array.isArray(list) ? list : []).map(async (job: any) => {
+        try {
+          const value: any = await streamingApi.listReleases(job.id)
+          return [job.id, asItems(value, 'releases')] as const
+        } catch {
+          return [job.id, []] as const
+        }
+      }))
+      setReleaseMap(Object.fromEntries(releases))
       if (ov) {
         setOverview(ov)
         setOverviewErr(null)
@@ -200,6 +267,7 @@ export default function StreamMonitorPage() {
     setDiagExceptions(null)
     setDiagSync(null)
     setDiagCheckpoints(null)
+    setDiagObservability(null)
     setDiagOpen(true)
     try {
       const s: any = await streamingApi.getStatus(row.id)
@@ -219,17 +287,138 @@ export default function StreamMonitorPage() {
     } catch (e: any) {
       setDiagExceptions({ error: e?.response?.data?.detail || e.message })
     }
+    if (row.definition_kind === 'pipeline') {
+      try {
+        setDiagObservability(await streamingApi.getPipelineObservability(row.id))
+      } catch (e: any) {
+        setDiagObservability({ error: e?.response?.data?.detail || e.message })
+      }
+    }
   }
 
   const canRun = can(user, P.GIDO_STREAM_RUN, currentWorkspace)
 
   const handleStop = async (row: any) => {
     try {
-      const res: any = await streamingApi.cancelJob(row.id)
-      message.success(res?.message || '已删除集群 Deployment，等待 Pod 回收；状态以集群为准')
+      const res: any = await streamingApi.stopJob(row.id, { mode: 'savepoint' })
+      message.success(res?.message || '已提交 Savepoint 停止')
       await loadJobs()
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '停止失败')
+    }
+  }
+
+  const handleForceStop = async (row: any) => {
+    try {
+      const res: any = await streamingApi.cancelJob(row.id)
+      message.success(res?.message || '已提交强制停止')
+      await loadJobs()
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '强制停止失败')
+    }
+  }
+
+  const applyReleaseRuntimeDefaults = (source: any) => {
+    const config = parseStreamRuntimeConfig(source?.streaming_properties)
+    setParallelism(Number(source?.parallelism) || 1)
+    setAdvancedJson('{}')
+    setResourceTier(config.resourceTier)
+    setOperatorResources(config.operatorResources)
+  }
+
+  const openLifecycleAction = async (row: any, kind: 'deploy' | 'restart') => {
+    const releases = releaseMap[row.id] || []
+    const approved = releases.find(release => isApprovedNotDeployed(release, row))
+    const selectedReleaseId = approved?.id ?? row.current_approved_release_id ?? row.latest_release_id ?? row.release_id
+    const selectedRelease = releases.find(release => Number(release.id) === Number(selectedReleaseId))
+    setActionRow(row)
+    setActionKind(kind)
+    setReleaseId(selectedReleaseId)
+    applyReleaseRuntimeDefaults(selectedRelease || row)
+    setRestoreMode('latest')
+    setRestorePointId(undefined)
+    setAllowNonRestoredState(false)
+    setRestorePoints([])
+    setActionOpen(true)
+    if (kind === 'restart') {
+      try {
+        const value: any = await streamingApi.getRestorePoints(row.id)
+        setRestorePoints(asItems(value, 'restore_points'))
+      } catch {
+        setRestorePoints([])
+      }
+    }
+  }
+
+  const submitLifecycleAction = async () => {
+    if (!actionRow) return
+    let streamingProperties: string
+    try {
+      streamingProperties = buildStreamRuntimeProperties(advancedJson, operatorResources, resourceTier)
+    } catch {
+      message.error('高级 Flink 配置 JSON 格式无效')
+      return
+    }
+    if (actionKind === 'restart' && restoreMode === 'specific' && restorePointId == null) {
+      message.warning('请选择恢复点')
+      return
+    }
+    const config = {
+      release_id: releaseId,
+      parallelism,
+      streaming_properties: streamingProperties,
+    }
+    const payload = actionKind === 'deploy'
+      ? { ...config }
+      : {
+          ...config,
+          restore_mode: restoreMode,
+          restore_point_id: restoreMode === 'specific' ? restorePointId : undefined,
+          allow_non_restored_state: allowNonRestoredState,
+          confirm_stateless: restoreMode === 'stateless',
+        }
+    setActionLoading(true)
+    try {
+      const res: any = actionKind === 'deploy'
+        ? await streamingApi.deployJob(actionRow.id, payload)
+        : await streamingApi.restartJob(actionRow.id, payload)
+      message.success(res?.message || (actionKind === 'deploy' ? '已提交部署' : '已提交重启/恢复'))
+      setActionOpen(false)
+      await loadJobs()
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || (actionKind === 'deploy' ? '部署失败' : '重启失败'))
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  const openRestorePoints = async (row: any) => {
+    setOperationRow(row)
+    setRestoreDrawerOpen(true)
+    setDrawerLoading(true)
+    try {
+      const value: any = await streamingApi.getRestorePoints(row.id)
+      setRestorePoints(asItems(value, 'restore_points'))
+    } catch (e: any) {
+      setRestorePoints([])
+      message.error(e?.response?.data?.detail || '恢复点历史加载失败')
+    } finally {
+      setDrawerLoading(false)
+    }
+  }
+
+  const openOperations = async (row: any) => {
+    setOperationRow(row)
+    setOperationDrawerOpen(true)
+    setDrawerLoading(true)
+    try {
+      const value: any = await streamingApi.getOperations(row.id)
+      setOperations(asItems(value, 'operations'))
+    } catch (e: any) {
+      setOperations([])
+      message.error(e?.response?.data?.detail || '操作记录加载失败')
+    } finally {
+      setDrawerLoading(false)
     }
   }
 
@@ -268,11 +457,29 @@ export default function StreamMonitorPage() {
   const unifiedJobState = (row: any) => {
     const platform = String(flinkMap[row.id]?.status || row.status || '').toLowerCase()
     const flink = String(flinkMap[row.id]?.flink_status || row.flink_status || '')
+    const lifecycle = String(row.lifecycle_state || '').toUpperCase()
+    const transitions: Record<string, { key: string; label: string; color: string }> = {
+      SAVING_STATE: { key: 'active', label: '正在保存状态', color: 'processing' },
+      SUSPENDING: { key: 'active', label: '正在挂起', color: 'processing' },
+      DEPLOYING: { key: 'active', label: '正在部署', color: 'processing' },
+      RESTORING: { key: 'active', label: '正在恢复', color: 'processing' },
+      SUSPENDED: { key: 'stopped', label: '已挂起', color: 'warning' },
+      RESTORE_FAILED: { key: 'needs_attention', label: '恢复失败', color: 'error' },
+      DEPLOY_FAILED: { key: 'needs_attention', label: '部署失败', color: 'error' },
+      STOP_FAILED: { key: 'needs_attention', label: '停止失败待确认', color: 'error' },
+      FORCE_STOPPED: { key: 'stopped', label: '已强制停止', color: 'error' },
+    }
+    if (transitions[lifecycle]) return transitions[lifecycle]
     if (/NOT_FOUND_ON_OPERATOR|SUSPENDED/i.test(flink) || platform === 'cancelled') {
       return { key: 'stopped', label: '已停止', color: 'warning' }
     }
     if (row.last_submit_error || platform === 'failed' || /FAILED/i.test(flink)) {
       return { key: 'needs_attention', label: '需处理', color: 'error' }
+    }
+    if ((releaseMap[row.id] || []).some(release => isApprovedNotDeployed(release, row))
+      || (row.current_approved_release_id && row.current_approved_release_id !== row.current_running_release_id)
+      || (row.approval_status === 'approved' && !row.deployed_at && !row.flink_operator_deployment_name)) {
+      return { key: 'ready_to_deploy', label: '已批准待部署', color: 'cyan' }
     }
     if (platform === 'draft') return { key: 'draft', label: '草稿', color: 'default' }
     if (/DEPLOY|START|INITIALIZING|CREATED|PENDING/i.test(flink)) {
@@ -308,17 +515,19 @@ export default function StreamMonitorPage() {
         row.flink_application_cluster_id,
         row.flink_job_id,
         row.last_submitted_by_username,
+        row.pipeline_spec?.source?.topic,
+        row.pipeline_spec?.sink?.table,
       ].filter(Boolean).join(' ').toLowerCase()
       return hay.includes(kw)
     })
-  }, [jobs, flinkMap, keyword, typeFilter, deployFilter, stateFilter])
+  }, [jobs, flinkMap, keyword, typeFilter, deployFilter, stateFilter, releaseMap])
 
   const renderUnifiedState = (row: any) => {
     const platform = flinkMap[row.id]?.status || row.status
     const flink = flinkMap[row.id]?.flink_status
     const state = unifiedJobState(row)
     return (
-      <Tooltip title={`平台记录：${PLATFORM_STATUS_LABEL[platform] || platform || '—'}；Flink 原始状态：${flink ? (FLINK_STATUS_LABEL[flink] || flink) : '—'}`}>
+      <Tooltip title={`生命周期：${row.lifecycle_state || '—'}；平台记录：${PLATFORM_STATUS_LABEL[platform] || platform || '—'}；Flink 原始状态：${flink ? (FLINK_STATUS_LABEL[flink] || flink) : '—'}`}>
         <Tag color={state.color}>{state.label}</Tag>
       </Tooltip>
     )
@@ -403,7 +612,15 @@ export default function StreamMonitorPage() {
 
   const columns = [
     { title: '作业名', dataIndex: 'name', key: 'name', width: 180, ellipsis: true },
-    { title: '类型', dataIndex: 'job_type', key: 'job_type', width: 64, render: (t: string) => <Tag>{t}</Tag> },
+    {
+      title: '类型',
+      dataIndex: 'job_type',
+      key: 'job_type',
+      width: 120,
+      render: (t: string, row: any) => row.definition_kind === 'pipeline'
+        ? <Space size={4}><Tag color="cyan">Pipeline</Tag><Tag>{String(row.pipeline_spec?.mode || 'append').toUpperCase()}</Tag></Space>
+        : <Tag>{t}</Tag>,
+    },
     {
       title: '部署',
       key: 'deploy',
@@ -427,6 +644,22 @@ export default function StreamMonitorPage() {
       key: 'state',
       width: 128,
       render: (_: any, row: any) => renderUnifiedState(row),
+    },
+    {
+      title: '发布版本',
+      key: 'release',
+      width: 130,
+      render: (_: unknown, row: any) => {
+        const releases = releaseMap[row.id] || []
+        const latest = releases[0] || row.latest_release
+        if (!latest) return <Text type="secondary">—</Text>
+        return (
+          <Space size={4} wrap>
+            <Text code>{latest.version != null ? `v${latest.version}` : `#${latest.id || '—'}`}</Text>
+            <Tag color={isApprovedNotDeployed(latest, row) ? 'cyan' : undefined}>{releaseStatus(latest) || '未知'}</Tag>
+          </Space>
+        )
+      },
     },
     {
       title: '部署标识',
@@ -510,38 +743,53 @@ export default function StreamMonitorPage() {
     },
     { title: 'Flink Job ID', dataIndex: 'flink_job_id', key: 'flink_job_id', ellipsis: true, width: 140 },
     { title: '并行度', dataIndex: 'parallelism', key: 'parallelism', width: 64 },
-    ...(canRun
-      ? [{
-          title: '停止',
-          key: 'stop',
-          width: 76,
-          render: (_: unknown, row: any) => {
-            const opJar =
-              row.job_type === 'JAR'
-              && (row.flink_jar_submit_mode || '').toString() === 'flink_operator'
-            if (row.flink_job_id || opJar) {
-              return (
-                <Popconfirm
-                  title={opJar ? '删除 FlinkDeployment 并回收 JM/TM Pod？' : '在 Flink 上停止该作业？'}
-                  onConfirm={() => handleStop(row)}
-                >
-                  <Button type="link" size="small" danger icon={<StopOutlined />} />
-                </Popconfirm>
-              )
-            }
-            const cid = row.flink_application_cluster_id
-            const isApp = (row.flink_sql_submit_mode || '').toString().toLowerCase() === 'kubernetes_application'
-            if (isApp && cid) {
-              return (
-                <Tooltip title="尚无 Job ID 时无法在平台侧调用 JM 停止接口；请配置 FLINK_K8S_APPLICATION_JM_REST_TEMPLATE 或在 Flink/K8s 控制台停止该 Application 集群。">
-                  <Text type="secondary">—</Text>
-                </Tooltip>
-              )
-            }
-            return <Text type="secondary">—</Text>
-          },
-        }]
-      : []),
+    {
+      title: '历史',
+      key: 'history',
+      width: 100,
+      render: (_: unknown, row: any) => (
+        <Space size={0}>
+          <Tooltip title="恢复点历史">
+            <Button type="text" size="small" icon={<HistoryOutlined />} onClick={() => openRestorePoints(row)} />
+          </Tooltip>
+          <Tooltip title="操作记录">
+            <Button type="text" size="small" icon={<RetweetOutlined />} onClick={() => openOperations(row)} />
+          </Tooltip>
+        </Space>
+      ),
+    },
+    ...(canRun ? [{
+      title: '生命周期操作',
+      key: 'lifecycle-actions',
+      fixed: 'right' as const,
+      width: 280,
+      render: (_: unknown, row: any) => {
+        const state = unifiedJobState(row).key
+        const approved = (releaseMap[row.id] || []).some(release => isApprovedNotDeployed(release, row))
+          || (row.current_approved_release_id && row.current_approved_release_id !== row.current_running_release_id)
+          || (row.approval_status === 'approved' && !row.deployed_at)
+        const active = state === 'active'
+        return (
+          <Space size={4} wrap>
+            <Button size="small" type={approved ? 'primary' : 'default'} icon={<RocketOutlined />}
+              disabled={active || (!approved && !row.current_approved_release_id && !row.latest_release_id && !(releaseMap[row.id] || []).length)}
+              onClick={() => void openLifecycleAction(row, 'deploy')}>
+              部署
+            </Button>
+            <Button size="small" icon={<RetweetOutlined />} disabled={!active && state !== 'stopped'}
+              onClick={() => void openLifecycleAction(row, 'restart')}>
+              重启/恢复
+            </Button>
+            <Popconfirm title="默认创建 Savepoint 后停止作业？" onConfirm={() => handleStop(row)}>
+              <Button size="small" danger disabled={!active} icon={<StopOutlined />}>停止</Button>
+            </Popconfirm>
+            <Popconfirm title="强制停止不会创建 Savepoint，确认继续？" onConfirm={() => handleForceStop(row)}>
+              <Button size="small" danger type="text" disabled={!active}>强停</Button>
+            </Popconfirm>
+          </Space>
+        )
+      },
+    }] : []),
   ]
 
   return (
@@ -551,8 +799,10 @@ export default function StreamMonitorPage() {
           <Typography.Title level={4} style={{ marginBottom: 4 }}>作业运维</Typography.Title>
           <Paragraph type="secondary" style={{ marginBottom: 0, maxWidth: 920 }}>
             对标实时计算「运维管理」：查看作业与 FlinkDeployment 运行态、停止、诊断与 Flink UI。
-            本页周期性同步集群状态；逻辑编辑与部署上线请到
+            本页周期性同步集群状态，并负责发布版本部署、Savepoint 停止与恢复；逻辑编辑请到
             {' '}<Link to={R.stream.studio}>作业开发</Link>
+            ，Source → Paimon 标准链路请到
+            {' '}<Link to={R.stream.pipelines}>数据管道</Link>
             ，依赖包请到
             {' '}<Link to={R.stream.resources}>资源管理</Link>。
           </Paragraph>
@@ -603,7 +853,7 @@ export default function StreamMonitorPage() {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 18, padding: '4px 0', flexWrap: 'wrap' }}>
           <div style={{ textAlign: 'center', minWidth: 120 }}>
             <div style={{ fontSize: 22, color: '#722ed1' }}><ContainerOutlined /></div>
-            <Text strong>作业开发</Text>
+            <Text strong>作业开发 / 数据管道</Text>
           </div>
           <Text type="secondary">→</Text>
           <div style={{ textAlign: 'center', minWidth: 120 }}>
@@ -658,6 +908,7 @@ export default function StreamMonitorPage() {
                         { value: 'active', label: '运行中' },
                         { value: 'terminal', label: '已结束' },
                         { value: 'stopped', label: '已停止' },
+                        { value: 'ready_to_deploy', label: '已批准待部署' },
                         { value: 'draft', label: '草稿' },
                         { value: 'needs_attention', label: '需处理' },
                       ]}
@@ -665,7 +916,7 @@ export default function StreamMonitorPage() {
                     <Text type="secondary">共 {filteredJobs.length} / {jobs.length} 个作业</Text>
                   </Space>
                 </Card>
-                <Table rowKey="id" loading={loading} dataSource={filteredJobs} columns={columns as any} scroll={{ x: 1320 }} pagination={{ pageSize: 12 }} />
+                <Table rowKey="id" loading={loading} dataSource={filteredJobs} columns={columns as any} scroll={{ x: 1750 }} pagination={{ pageSize: 12 }} />
               </>
             ),
           },
@@ -699,11 +950,162 @@ export default function StreamMonitorPage() {
         ]}
       />
 
+      <Modal
+        title={`${actionKind === 'deploy' ? '部署发布版本' : '重启 / 恢复'} · ${actionRow?.name || ''}`}
+        open={actionOpen}
+        onCancel={() => setActionOpen(false)}
+        onOk={submitLifecycleAction}
+        okText={actionKind === 'deploy' ? '确认部署' : '确认重启'}
+        confirmLoading={actionLoading}
+        width={720}
+        destroyOnClose
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={actionKind === 'deploy'
+            ? '部署已批准且尚未部署的发布版本'
+            : '默认从最近成功 Savepoint 恢复；普通 Checkpoint 仅用于故障恢复和诊断'}
+        />
+        <Form layout="vertical">
+          <Form.Item label="发布版本">
+            <Select
+              allowClear
+              value={releaseId}
+              onChange={value => {
+                setReleaseId(value)
+                const release = (actionRow ? releaseMap[actionRow.id] || [] : [])
+                  .find((item: any) => Number(item.id) === Number(value))
+                if (release) applyReleaseRuntimeDefaults(release)
+              }}
+              placeholder="后端未返回版本时使用作业当前发布定义"
+              options={(actionRow ? releaseMap[actionRow.id] || [] : []).map((release: any) => ({
+                value: release.id,
+                label: `${release.version != null ? `v${release.version}` : `#${release.id}`} · ${releaseStatus(release) || '未知'}`,
+                disabled: actionKind === 'deploy' && !isApprovedNotDeployed(release, actionRow),
+              }))}
+            />
+          </Form.Item>
+          <Form.Item label="并行度">
+            <InputNumber min={1} value={parallelism} onChange={value => setParallelism(Number(value) || 1)} style={{ width: '100%' }} />
+          </Form.Item>
+          {actionKind === 'restart' && (
+            <>
+              <Form.Item label="恢复方式">
+                <Radio.Group value={restoreMode} onChange={e => setRestoreMode(e.target.value)}>
+                  <Space direction="vertical">
+                    <Radio value="latest">最近可用恢复点</Radio>
+                    <Radio value="specific">指定恢复点</Radio>
+                    <Radio value="stateless">无状态启动</Radio>
+                  </Space>
+                </Radio.Group>
+              </Form.Item>
+              {restoreMode === 'specific' && (
+                <Form.Item label="恢复点">
+                  <Select
+                    value={restorePointId}
+                    onChange={setRestorePointId}
+                    placeholder={restorePoints.length ? '选择成功 Savepoint' : '暂无可用恢复点'}
+                    options={restorePoints
+                      .filter(point => (!point.status || point.status === 'completed') && (!point.point_type || point.point_type === 'savepoint'))
+                      .map(point => ({
+                      value: point.id ?? point.path ?? point.location,
+                      label: `${point.point_type || point.type || point.kind || 'Savepoint'} · ${point.path || point.location || point.id || '—'}`,
+                    }))}
+                  />
+                </Form.Item>
+              )}
+              {restoreMode === 'stateless' && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: 16 }}
+                  message="无状态启动会丢弃已有状态"
+                  description="点击“确认重启”即表示明确接受从头启动；该操作会写入运维审计。"
+                />
+              )}
+              <Form.Item label="高级恢复选项">
+                <Space>
+                  <Switch checked={allowNonRestoredState} onChange={setAllowNonRestoredState} />
+                  <span>允许未恢复状态（allowNonRestoredState）</span>
+                </Space>
+                <Paragraph type="secondary" style={{ marginTop: 6, marginBottom: 0 }}>
+                  默认关闭。仅在确认作业拓扑变更导致旧状态无法映射时开启。
+                </Paragraph>
+              </Form.Item>
+            </>
+          )}
+          <StreamRuntimeConfig
+            resourceTier={resourceTier}
+            onResourceTierChange={setResourceTier}
+            operatorResources={operatorResources}
+            onOperatorResourcesChange={setOperatorResources}
+            advancedJson={advancedJson}
+            onAdvancedJsonChange={setAdvancedJson}
+            showAdvanced={false}
+          />
+        </Form>
+      </Modal>
+
+      <Drawer
+        title={`恢复点历史 · ${operationRow?.name || ''}`}
+        open={restoreDrawerOpen}
+        onClose={() => setRestoreDrawerOpen(false)}
+        width={760}
+      >
+        <Table
+          rowKey={(row: any) => row.id ?? row.path ?? row.location}
+          loading={drawerLoading}
+          dataSource={restorePoints}
+          pagination={{ pageSize: 10 }}
+          scroll={{ x: 1100 }}
+          columns={[
+            { title: '类型', key: 'type', width: 110, render: (_: unknown, row: any) => <Tag>{row.point_type || row.type || row.kind || '未知'}</Tag> },
+            { title: '状态', key: 'status', width: 110, render: (_: unknown, row: any) => row.status ? <Tag>{row.status}</Tag> : '—' },
+            { title: '路径', key: 'path', ellipsis: true, render: (_: unknown, row: any) => <Text code>{row.path || row.location || row.external_pointer || '—'}</Text> },
+            { title: '发布版本', key: 'release', width: 100, render: (_: unknown, row: any) => row.release_id ? `#${row.release_id}` : '—' },
+            { title: '并行度', key: 'parallelism', width: 86, render: (_: unknown, row: any) => parseJsonObject(row.metadata_json).parallelism ?? '—' },
+            { title: '创建时间', key: 'time', width: 180, render: (_: unknown, row: any) => formatInTimeZone(row.created_at || row.completed_at || row.timestamp, displayTz) },
+            { title: '错误', key: 'error', ellipsis: true, render: (_: unknown, row: any) => row.error_message || '—' },
+          ] as any}
+          locale={{ emptyText: '暂无恢复点，或后端尚未返回 restore_points 字段' }}
+        />
+      </Drawer>
+
+      <Drawer
+        title={`操作记录 · ${operationRow?.name || ''}`}
+        open={operationDrawerOpen}
+        onClose={() => setOperationDrawerOpen(false)}
+        width={820}
+      >
+        <Table
+          rowKey={(row: any) => row.id ?? `${row.operation || row.action}-${row.created_at || row.started_at}`}
+          loading={drawerLoading}
+          dataSource={operations}
+          pagination={{ pageSize: 10 }}
+          columns={[
+            { title: '操作', key: 'operation', width: 130, render: (_: unknown, row: any) => row.operation_type || row.operation || row.action || row.type || '—' },
+            { title: '状态', key: 'status', width: 110, render: (_: unknown, row: any) => row.status ? <Tag>{row.status}</Tag> : '—' },
+            { title: '操作人', key: 'user', width: 120, render: (_: unknown, row: any) => row.operator_username || row.created_by_username || row.username || row.requested_by || '—' },
+            { title: '时间', key: 'time', width: 180, render: (_: unknown, row: any) => formatInTimeZone(row.requested_at || row.created_at || row.started_at, displayTz) },
+            { title: '详情', key: 'detail', ellipsis: true, render: (_: unknown, row: any) => row.message || row.detail || row.error_message || row.error || '—' },
+          ] as any}
+          locale={{ emptyText: '暂无操作记录，或后端尚未返回 operations 字段' }}
+        />
+      </Drawer>
+
       <Drawer
         title={diagRow ? `诊断 · ${diagRow.name}` : '诊断'}
         width={720}
         open={diagOpen}
-        onClose={() => { setDiagOpen(false); setDiagRow(null); setDiagExceptions(null); setDiagSync(null) }}
+        onClose={() => {
+          setDiagOpen(false)
+          setDiagRow(null)
+          setDiagExceptions(null)
+          setDiagSync(null)
+          setDiagObservability(null)
+        }}
         destroyOnClose
       >
         <Typography.Title level={5} style={{ marginTop: 0 }}>平台侧同步（最近一次拉取）</Typography.Title>
@@ -786,6 +1188,31 @@ export default function StreamMonitorPage() {
                 </ul>
               )}
             />
+          </>
+        ) : null}
+
+        {diagRow?.definition_kind === 'pipeline' ? (
+          <>
+            <Typography.Title level={5} style={{ marginTop: 16 }}>Pipeline 实时指标</Typography.Title>
+            {!diagObservability ? (
+              <Text type="secondary">加载中…</Text>
+            ) : diagObservability.error ? (
+              <Alert type="warning" showIcon message="指标暂不可用"
+                description={String(diagObservability.error)} />
+            ) : (
+              <Descriptions size="small" bordered column={1}>
+                {(diagObservability.observations || []).map((observation: any) => (
+                  <Descriptions.Item key={observation.source}
+                    label={`${String(observation.source).toUpperCase()} · ${observation.status}`}>
+                    {observation.status === 'unavailable'
+                      ? (observation.error || '暂不可用')
+                      : <pre style={{ margin: 0, whiteSpace: 'pre-wrap', maxHeight: 180, overflow: 'auto' }}>
+                          {JSON.stringify(observation.data, null, 2)}
+                        </pre>}
+                  </Descriptions.Item>
+                ))}
+              </Descriptions>
+            )}
           </>
         ) : null}
 

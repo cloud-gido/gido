@@ -2,7 +2,7 @@
 
 面向内部联调与运维：说明 GIDO 如何通过 **Flink Kubernetes Operator** 提交 JAR/SQL，以及停止后再上线时状态如何处理。
 
-> 相关总览见 [FLINK_ARCHITECTURE.md](./FLINK_ARCHITECTURE.md)。现网作业 CR 一般在命名空间 **`bigdata`**（停止逻辑固定操作该 ns）。
+> 相关总览见 [FLINK_ARCHITECTURE.md](./FLINK_ARCHITECTURE.md)。作业 CR 所在命名空间由 `FLINK_OPERATOR_NAMESPACE` 统一配置；提交、状态同步与停止都使用同一配置，不再猜测其它命名空间。
 
 ---
 
@@ -35,7 +35,9 @@ sequenceDiagram
   participant JM as JobManager Pod
   participant TM as TaskManager Pod
 
-  U->>B: 提交 JAR / SQL 作业
+  U->>B: 在作业开发提交不可变版本
+  Note over B: 提交只发布版本，不启动集群作业
+  U->>B: 在作业运维选择版本并部署
   B->>B: 解析制品 URI / 参数 / 资源
   B->>API: 创建 FlinkDeployment CR
   Note over API: 写入 etcd（现网 ns=bigdata）
@@ -50,7 +52,7 @@ sequenceDiagram
   B->>API: 读 CR.status 回填 GIDO
 ```
 
-### 停止时序
+### 默认停止时序（Savepoint 挂起）
 
 ```mermaid
 sequenceDiagram
@@ -61,11 +63,13 @@ sequenceDiagram
   participant JM as JobManager / TM
 
   U->>B: 停止作业
-  B->>API: DELETE FlinkDeployment（仅 bigdata）
-  OP->>API: watch 到 CR 删除
-  OP->>API: 回收 JM / TM 等工作负载
-  API->>JM: Pod 终止
-  Note over B: 平台状态标为已停止<br/>默认不自动 savepoint 续跑
+  B->>API: PATCH state=suspended<br/>upgradeMode=savepoint
+  OP->>JM: 触发 Savepoint
+  JM->>OP: Savepoint 完成并返回路径
+  OP->>API: 回写 savepointInfo 与 suspended 状态
+  B->>API: 轮询状态
+  B->>B: 持久化恢复点与操作审计
+  Note over B: Savepoint 失败则不宣告停止<br/>作业保持运行并返回错误
 ```
 
 ### 文字链路（对照）
@@ -74,7 +78,7 @@ sequenceDiagram
 你（GIDO UI）
     → gido-backend
     → 调用集群自带的 Kubernetes API
-    → 创建 / 更新 / 删除 FlinkDeployment（CR）
+    → 创建 / 更新 FlinkDeployment（CR）
     → Flink Operator（集群里的控制器）watch 到 CR
     → Operator 创建 JM / TM 等工作负载
     → JM 拉取 JAR（HTTP 制品或 S3）并启动 Flink Job
@@ -87,7 +91,7 @@ sequenceDiagram
 
 | 角色 | 做什么 |
 |------|--------|
-| **GIDO** | 写 CR（jarURI、入口类、并行度、资源、配置…）；读 status；停止时删 CR |
+| **GIDO** | 写 CR（jarURI、入口类、并行度、资源、配置…）；读 status；默认停止时用 Savepoint 挂起；恢复时显式选择恢复点 |
 | **K8s API** | 集群自带的控制面接口（见下节）；所有对象经它读写 |
 | **Flink Operator** | 根据 CR 期望状态落地 / 回收 JM、TM，回写 status |
 | **JM / TM** | 真正跑 Flink；作业期通信是 Flink 自己的，**不经过** Operator |
@@ -131,45 +135,45 @@ sequenceDiagram
 
 ---
 
-## 5. 点「停止」再「上线」，会从 checkpoint / savepoint 续跑吗？
+## 5. 点「停止」再「重启」，会从 checkpoint / savepoint 续跑吗？
 
 ### 结论（当前默认）
 
-**不会自动续跑。**  
-同名 `gido-jar-1-204` 可以再出现，但是**新建的一条 CR**，默认 **`upgradeMode: stateless`（无状态重新开跑）**。
+**计划停止会先生成 Savepoint，再把 FlinkDeployment 挂起。**
+下次重启默认选择最近一个成功 Savepoint，也可以在作业运维中选择历史 Savepoint，或显式选择无状态启动。
 
 ### 停止时
 
-1. GIDO **删除** `FlinkDeployment`
-2. Operator 回收 JM / TM
-3. **不会**先做正式 savepoint 再删（当前为直接删 CR）
+1. GIDO 把 `spec.job.upgradeMode` 设为 `savepoint`
+2. GIDO 把 `spec.job.state` 设为 `suspended`
+3. Operator 触发并完成 Savepoint 后停止作业
+4. GIDO 保存 Savepoint 路径、作业版本、并行度和操作者审计
 
-因此：CR / JM / TM 没了；内存中作业状态没了。  
-若配置了 `state.checkpoints.dir`（如 S3），**存储上可能残留旧 checkpoint 文件**，但默认**下次不会自动加载**。
+若 Savepoint 失败或超时，GIDO 不会把作业标成“已停止”，也不会静默退化为无状态停止。
 
 ### 再次上线时
 
-1. GIDO 再创建同名 CR（名字由 workspace + job id 推导，故常相同）
-2. 新 JM / TM、**新的 Flink `jobId`**
-3. 默认不填 `initialSavepointPath`，不按 last-state 恢复
+1. 在作业运维选择已发布版本
+2. 选择“最近 Savepoint / 指定 Savepoint / 无状态启动”
+3. 可覆盖并行度、JM/TM CPU/内存、Slots、TM 副本数和高级 Flink 参数
+4. 对保留的 suspended CR 恢复为 `running`；需要重建时写入 `initialSavepointPath`
 
 | 东西 | 停止后 | 再次上线默认 |
 |------|--------|----------------|
-| CR / JM / TM | 删除 | 新建 |
-| 同名 `gido-jar-*` | 对象没了 | 名字复用，对象是新的 |
-| 运行中状态 | 丢失 | 不自动恢复 |
-| 存储上旧 checkpoint 文件 | 可能仍在 | **默认不用** |
-| 从 savepoint 续跑 | — | **默认不会** |
+| CR / JM / TM | CR 保留并进入 suspended；运行 Pod 由 Operator 回收 | CR 恢复或按选择重建 |
+| 运行中状态 | 保存为可审计 Savepoint | 默认从最近成功 Savepoint 恢复 |
+| 普通 checkpoint | 继续作为故障恢复/诊断信息 | 不当作用户长期恢复点 |
+| 无状态启动 | 不默认执行 | 必须显式选择并确认会丢状态 |
 
-若以后要「停了再上线接着算」，需要额外能力（停止前 savepoint、再次提交带恢复路径，或配置 `upgradeMode=savepoint` / `last-state` 等）。**不是当前停止按钮的默认行为。**
+“强制停止”仍可删除 CR，但属于高风险操作，只在默认 Savepoint 停止无法完成且用户明确确认时使用。
 
 ---
 
-## 6. 停止报 403 但 Kuboard 里已经没了？
+## 6. 为什么停止/状态同步不能猜多个 namespace？
 
-曾出现过：对 **`bigdata` 删除成功**，又对无权的 **`flink` ns 再猜一次 DELETE → 403**，接口失败，但 CR 已在 bigdata 删掉。
+曾出现过：对一个命名空间操作成功，又对无权命名空间继续猜测，最终接口报 403，但集群对象已变化。
 
-当前停止逻辑已改为**只操作 `bigdata`**，避免「集群已停、平台却报失败」。若平台状态未对齐，在运维页做一次**状态同步**即可（CR 不存在则回填已停止）。
+现在提交、状态同步、Savepoint 挂起、恢复和强制删除都只使用 `FLINK_OPERATOR_NAMESPACE`。这既避免误操作，也让 RBAC 权限边界可预测。
 
 ---
 
@@ -182,8 +186,9 @@ sequenceDiagram
 | **JM** | JobManager，控制面 |
 | **TM** | TaskManager，执行面 |
 | **K8s API** | 集群控制面接口（系统自带） |
-| **stateless** | 默认升级/重建模式：不从状态恢复 |
-| **checkpoint / savepoint** | Flink 状态快照；有目录不等于停止后再上线会自动用 |
+| **stateless** | 无状态启动：明确丢弃已有状态，只能在高级操作中显式选择 |
+| **checkpoint** | Flink 自动故障恢复状态，由 Flink 管理生命周期 |
+| **savepoint** | 用户/平台管理的持久恢复点，用于计划停止、升级和恢复 |
 
 ---
 
@@ -192,5 +197,6 @@ sequenceDiagram
 | 行为 | 位置（约） |
 |------|------------|
 | 组装并提交 `FlinkDeployment` | `gido/backend/app/services/flink_operator_submit.py` |
-| 默认 `upgradeMode` | `FLINK_OPERATOR_UPGRADE_MODE`，默认 `stateless`（`operator_resources.py` / `config.py`） |
-| 停止：删 CR（仅 bigdata） | `streaming.py` → `cancel_job` + `delete_flink_deployment` |
+| 默认有状态停止 | `streaming.py` → `stop_job`；`flink_operator_submit.py` → Savepoint suspend/wait |
+| 部署与恢复 | `streaming.py` → `deploy_job` / `restart_job` |
+| 强制无状态停止 | `streaming.py` → 兼容 `cancel_job` + `delete_flink_deployment` |

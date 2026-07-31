@@ -11,10 +11,13 @@ from app.core.security import get_password_hash
 from app.models.workspace import User, Workspace, WorkspaceMember
 from app.models import rbac_models  # noqa: F401
 import app.api.streaming  # noqa: F401 — 注册 dw_streaming_jobs / dw_streaming_job_history 于 Base.metadata（须先于 create_all）
+import app.api.stream_pipeline  # noqa: F401 — 注册实时管道/schema/部署组表
 import app.models.data_service  # noqa: F401
 from app.services.rbac_seed import (
     migrate_schema,
     migrate_dw_streaming_jobs,
+    migrate_dw_streaming_release_lifecycle,
+    migrate_dw_stream_pipeline,
     migrate_dw_streaming_job_history,
     migrate_dw_streaming_jobs_streaming_properties,
     migrate_dw_streaming_job_history_streaming_properties,
@@ -60,6 +63,8 @@ migrate_dw_workflow_updated_by(engine)
 migrate_dw_workflow_instance_submitted_by(engine)
 migrate_dw_quality_dolphin_refs(engine)
 migrate_dw_streaming_jobs(engine)
+migrate_dw_streaming_release_lifecycle(engine)
+migrate_dw_stream_pipeline(engine)
 migrate_dw_streaming_job_history(engine)
 migrate_dw_streaming_jobs_streaming_properties(engine)
 migrate_dw_streaming_job_history_streaming_properties(engine)

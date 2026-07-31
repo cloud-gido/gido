@@ -300,17 +300,18 @@ def test_find_refs_only_adds_accessible_preferred(monkeypatch):
     monkeypatch.setattr(fos, "list_flink_deployments", lambda **k: [])
 
     def _accessible(name, namespace=None):
-        return namespace == "bigdata" and name == "gido-jar-1-204"
+        return namespace == "flink" and name == "gido-jar-1-204"
 
     monkeypatch.setattr(fos, "flink_deployment_accessible", _accessible)
     refs = fos.find_flink_deployment_refs_for_job(204, preferred_name="gido-jar-1-204")
-    assert refs == [("bigdata", "gido-jar-1-204")]
+    assert refs == [("flink", "gido-jar-1-204")]
 
 
-def test_operator_candidates_bigdata_only(monkeypatch):
+def test_operator_candidates_use_one_explicit_or_configured_namespace(monkeypatch):
     from app.services import flink_operator_submit as fos
 
-    assert fos._operator_namespace_candidates("flink") == ["bigdata"]
+    monkeypatch.setattr(fos, "_operator_namespace", lambda: "operator-system")
+    assert fos._operator_namespace_candidates("flink") == ["flink"]
     assert fos._operator_namespace_candidates("bigdata") == ["bigdata"]
-    assert fos._operator_namespace_candidates(None) == ["bigdata"]
+    assert fos._operator_namespace_candidates(None) == ["operator-system"]
 

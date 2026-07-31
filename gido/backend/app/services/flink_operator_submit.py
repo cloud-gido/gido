@@ -9,7 +9,8 @@ import logging
 import os
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from copy import deepcopy
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from app.core.config import settings
 from app.services.jar_artifact import resolve_jar_uri_for_operator
@@ -128,6 +129,112 @@ def _custom_objects_api():
     return client.CustomObjectsApi()
 
 
+def _core_v1_api():
+    from kubernetes import client  # type: ignore
+
+    _load_k8s_config()
+    return client.CoreV1Api()
+
+
+def ensure_sql_runtime_secret(
+    secret_name: str,
+    values: Dict[str, str],
+    namespace: str,
+) -> str:
+    """Create/replace the write-only runtime Secret referenced by SqlRunner env."""
+    if not values:
+        return ""
+    api = _core_v1_api()
+    body = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+            "name": secret_name,
+            "namespace": namespace,
+            "labels": {
+                "app.kubernetes.io/managed-by": "gido",
+                "gido.io/secret-purpose": "pipeline-runtime",
+            },
+        },
+        "type": "Opaque",
+        "stringData": {str(key): str(value) for key, value in values.items()},
+    }
+    try:
+        api.create_namespaced_secret(namespace=namespace, body=body)
+    except Exception as exc:
+        from kubernetes.client import ApiException  # type: ignore
+
+        if not isinstance(exc, ApiException) or getattr(exc, "status", None) != 409:
+            raise
+        existing = api.read_namespaced_secret(secret_name, namespace)
+        resource_version = getattr(
+            getattr(existing, "metadata", None), "resource_version", None
+        )
+        if resource_version:
+            body["metadata"]["resourceVersion"] = resource_version
+        api.replace_namespaced_secret(
+            name=secret_name, namespace=namespace, body=body
+        )
+    return secret_name
+
+
+def sql_runtime_secret_name(deployment_name: str) -> str:
+    return f"{deployment_name[:45].rstrip('-')}-pipeline-secrets"
+
+
+def delete_sql_runtime_secret(
+    deployment_name: str,
+    namespace: Optional[str] = None,
+) -> bool:
+    secret_name = sql_runtime_secret_name(deployment_name)
+    ns = namespace or _operator_namespace()
+    try:
+        _core_v1_api().delete_namespaced_secret(
+            name=secret_name,
+            namespace=ns,
+            propagation_policy="Background",
+        )
+        return True
+    except Exception as exc:
+        from kubernetes.client import ApiException  # type: ignore
+
+        if isinstance(exc, ApiException) and getattr(exc, "status", None) == 404:
+            return False
+        raise
+
+
+def _set_sql_runtime_secret_owner(
+    secret_name: str,
+    namespace: str,
+    deployment: Mapping[str, Any],
+) -> None:
+    metadata = deployment.get("metadata") or {}
+    uid = metadata.get("uid")
+    name = metadata.get("name")
+    if not uid or not name:
+        return
+    _core_v1_api().patch_namespaced_secret(
+        name=secret_name,
+        namespace=namespace,
+        body={
+            "metadata": {
+                "ownerReferences": [
+                    {
+                        "apiVersion": (
+                            f"{FLINK_DEPLOYMENT_GROUP}/{FLINK_DEPLOYMENT_VERSION}"
+                        ),
+                        "kind": "FlinkDeployment",
+                        "name": name,
+                        "uid": uid,
+                        "controller": False,
+                        "blockOwnerDeletion": False,
+                    }
+                ]
+            }
+        },
+    )
+
+
 def _parse_program_args(program_args: Optional[str]) -> List[str]:
     if not program_args or not str(program_args).strip():
         return []
@@ -217,6 +324,21 @@ def _build_pod_template_for_sql_configmap(configmap_name: str) -> Dict[str, Any]
                     "configMap": {"name": configmap_name},
                 }
             ],
+        }
+    }
+
+
+def _build_pod_template_for_runtime_secret(secret_name: str) -> Dict[str, Any]:
+    if not secret_name:
+        return {}
+    return {
+        "spec": {
+            "containers": [
+                {
+                    "name": "flink-main-container",
+                    "envFrom": [{"secretRef": {"name": secret_name}}],
+                }
+            ]
         }
     }
 
@@ -470,11 +592,9 @@ def list_flink_deployments(
 
 
 def _operator_namespace_candidates(primary: Optional[str] = None) -> List[str]:
-    """停止/查找时的命名空间：现网固定只查 bigdata，不猜测 flink。
-
-    primary 参数保留兼容旧调用，但不再参与候选列表。
-    """
-    return ["bigdata"]
+    """停止/查找只使用一个明确命名空间，禁止跨命名空间猜测。"""
+    namespace = (primary or "").strip() or _operator_namespace()
+    return [namespace]
 
 
 def flink_deployment_accessible(
@@ -516,7 +636,7 @@ def find_flink_deployment_refs_for_job(
     preferred_name: Optional[str] = None,
     namespace: Optional[str] = None,
 ) -> List[Tuple[str, str]]:
-    """返回待删除的 (namespace, name)，仅在 bigdata。"""
+    """返回待删除的 (namespace, name)，仅在显式或配置的 Operator 命名空间。"""
     candidates = _operator_namespace_candidates(namespace)
 
     refs: List[Tuple[str, str]] = []
@@ -585,12 +705,16 @@ def delete_flink_deployment(deployment_name: str, namespace: Optional[str] = Non
             propagation_policy="Background",
         )
         logger.info("已删除 FlinkDeployment %s/%s", ns, deployment_name)
+        if deployment_name.startswith("gido-sql-"):
+            delete_sql_runtime_secret(deployment_name, ns)
         return True
     except Exception as e:
         from kubernetes.client import ApiException  # type: ignore
 
         if isinstance(e, ApiException) and getattr(e, "status", None) == 404:
             logger.debug("FlinkDeployment 已不存在 %s/%s", ns, deployment_name)
+            if deployment_name.startswith("gido-sql-"):
+                delete_sql_runtime_secret(deployment_name, ns)
             return False
         if isinstance(e, ApiException) and getattr(e, "status", None) == 403:
             # 无权删该 ns：不吞掉——调用方应只对 accessible 的 ref 调用；
@@ -728,19 +852,348 @@ def operator_overview_payload(*, workspace_id: Optional[int] = None) -> Dict[str
     }
 
 
-def suspend_flink_deployment(deployment_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
-    """将 FlinkDeployment.spec.job.state 设为 suspended。"""
+def patch_flink_deployment_job_state(
+    deployment_name: str,
+    state: str,
+    *,
+    namespace: Optional[str] = None,
+    upgrade_mode: Optional[str] = None,
+    restart_nonce: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Patch Operator job lifecycle fields without replacing the CR."""
+    desired_state = (state or "").strip().lower()
+    if desired_state not in ("running", "suspended"):
+        raise ValueError("FlinkDeployment job state must be running or suspended")
+    job_patch: Dict[str, Any] = {"state": desired_state}
+    if upgrade_mode is not None:
+        mode = str(upgrade_mode).strip().lower()
+        if mode not in ("savepoint", "last-state", "stateless"):
+            raise ValueError("unsupported FlinkDeployment upgradeMode")
+        job_patch["upgradeMode"] = mode
+    if restart_nonce is not None:
+        job_patch["restartNonce"] = int(restart_nonce)
+
     api = _custom_objects_api()
     ns = namespace or _operator_namespace()
-    patch = {"spec": {"job": {"state": "suspended"}}}
     return api.patch_namespaced_custom_object(
         group=FLINK_DEPLOYMENT_GROUP,
         version=FLINK_DEPLOYMENT_VERSION,
         namespace=ns,
         plural=FLINK_DEPLOYMENT_PLURAL,
         name=deployment_name,
-        body=patch,
+        body={"spec": {"job": job_patch}},
     )
+
+
+def suspend_flink_deployment(
+    deployment_name: str,
+    namespace: Optional[str] = None,
+    *,
+    upgrade_mode: str = "savepoint",
+) -> Dict[str, Any]:
+    """Suspend a deployment through an Operator-managed savepoint."""
+    return patch_flink_deployment_job_state(
+        deployment_name,
+        "suspended",
+        namespace=namespace,
+        upgrade_mode=upgrade_mode,
+    )
+
+
+def resume_flink_deployment(
+    deployment_name: str,
+    namespace: Optional[str] = None,
+    *,
+    restart_nonce: Optional[int] = None,
+    upgrade_mode: str = "savepoint",
+) -> Dict[str, Any]:
+    """Resume an existing suspended CR, optionally forcing a restart reconciliation."""
+    return patch_flink_deployment_job_state(
+        deployment_name,
+        "running",
+        namespace=namespace,
+        upgrade_mode=upgrade_mode,
+        restart_nonce=restart_nonce,
+    )
+
+
+def _first_text(*values: Any) -> Optional[str]:
+    for value in values:
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def extract_savepoint_status_from_cr(
+    cr: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Return normalized ``(status, path, error)`` from Operator savepointInfo."""
+    status = cr.get("status") or {}
+    job_status = status.get("jobStatus") or status.get("job_status") or {}
+    info = job_status.get("savepointInfo") or job_status.get("savepoint_info") or {}
+    if not isinstance(info, dict):
+        return None, None, None
+    last = (
+        info.get("lastSavepoint")
+        or info.get("last_savepoint")
+        or info.get("savepoint")
+        or {}
+    )
+    if not isinstance(last, dict):
+        last = {}
+
+    path = _first_text(
+        last.get("location"),
+        last.get("path"),
+        last.get("savepointPath"),
+        last.get("savepoint_path"),
+        info.get("location"),
+        info.get("path"),
+        info.get("savepointPath"),
+        info.get("savepoint_path"),
+    )
+    raw_state = _first_text(
+        info.get("status"),
+        info.get("state"),
+        info.get("triggerStatus"),
+        info.get("trigger_status"),
+        last.get("status"),
+        last.get("state"),
+    )
+    savepoint_state = raw_state.upper().replace("-", "_").replace(" ", "_") if raw_state else None
+    failure_state = savepoint_state in ("FAILED", "FAILURE", "ERROR")
+    error = _first_text(
+        info.get("failureCause"),
+        info.get("failure_cause"),
+        info.get("error"),
+        info.get("errorMessage"),
+        info.get("message") if failure_state else None,
+        last.get("failureCause"),
+        last.get("failure_cause"),
+        last.get("error"),
+        last.get("errorMessage"),
+    )
+    nonterminal_states = {
+        "PENDING",
+        "IN_PROGRESS",
+        "INPROGRESS",
+        "TRIGGERED",
+        "RUNNING",
+    }
+    if error:
+        savepoint_state = "FAILED"
+    elif path and not savepoint_state:
+        savepoint_state = "COMPLETED"
+    elif path and savepoint_state not in nonterminal_states | {
+        "FAILED",
+        "FAILURE",
+        "ERROR",
+    }:
+        savepoint_state = "COMPLETED"
+    elif not savepoint_state and _first_text(
+        info.get("triggerId"), info.get("trigger_id"), info.get("triggerTimestamp")
+    ):
+        savepoint_state = "PENDING"
+    return savepoint_state, path, error
+
+
+def extract_savepoint_trigger_from_cr(
+    cr: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return the Operator savepoint trigger identity and timestamp when exposed."""
+    status = cr.get("status") or {}
+    job_status = status.get("jobStatus") or status.get("job_status") or {}
+    info = job_status.get("savepointInfo") or job_status.get("savepoint_info") or {}
+    if not isinstance(info, dict):
+        return None, None
+    last = (
+        info.get("lastSavepoint")
+        or info.get("last_savepoint")
+        or info.get("savepoint")
+        or {}
+    )
+    if not isinstance(last, dict):
+        last = {}
+    trigger_id = _first_text(
+        info.get("triggerId"),
+        info.get("trigger_id"),
+        last.get("triggerId"),
+        last.get("trigger_id"),
+    )
+    trigger_timestamp = _first_text(
+        last.get("triggerTimestamp"),
+        last.get("trigger_timestamp"),
+        info.get("triggerTimestamp"),
+        info.get("trigger_timestamp"),
+    )
+    return trigger_id, trigger_timestamp
+
+
+def _operator_failure_from_cr(cr: Dict[str, Any]) -> Optional[str]:
+    _, lifecycle, error = extract_status_from_cr(cr)
+    if error:
+        return error
+    job_status = (cr.get("status") or {}).get("jobStatus") or {}
+    job_state = _first_text(job_status.get("state"), job_status.get("jobState"))
+    failed_states = {"FAILED", "FAILING", "ERROR"}
+    if lifecycle and lifecycle.upper() in failed_states:
+        return f"FlinkDeployment entered {lifecycle}"
+    if job_state and job_state.upper() in failed_states:
+        return f"Flink job entered {job_state}"
+    return None
+
+
+def wait_for_flink_deployment_suspended(
+    deployment_name: str,
+    namespace: Optional[str] = None,
+    *,
+    timeout_seconds: float = 60.0,
+    poll_interval_seconds: float = 1.0,
+) -> Dict[str, Any]:
+    """Wait until the Operator has reconciled the requested suspended state."""
+    ns = namespace or _operator_namespace()
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    while True:
+        cr = read_flink_deployment(deployment_name, ns)
+        failure = _operator_failure_from_cr(cr)
+        if failure:
+            raise RuntimeError(
+                f"FlinkDeployment {ns}/{deployment_name} failed while suspending: {failure}"
+            )
+        spec_state = _first_text(((cr.get("spec") or {}).get("job") or {}).get("state"))
+        status = cr.get("status") or {}
+        job_status = status.get("jobStatus") or {}
+        job_state = _first_text(job_status.get("state"), job_status.get("jobState"))
+        lifecycle = _first_text(status.get("lifecycleState"), status.get("state"))
+        reconciled = (
+            (job_state or "").upper() in ("SUSPENDED", "FINISHED")
+            or (lifecycle or "").upper() == "SUSPENDED"
+        )
+        if (spec_state or "").lower() == "suspended" and reconciled:
+            return cr
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"Timed out waiting for FlinkDeployment {ns}/{deployment_name} to suspend"
+            )
+        time.sleep(max(0.0, float(poll_interval_seconds)))
+
+
+def wait_for_flink_deployment_running(
+    deployment_name: str,
+    namespace: Optional[str] = None,
+    *,
+    timeout_seconds: float = 60.0,
+    poll_interval_seconds: float = 1.0,
+) -> Dict[str, Any]:
+    """Wait until a running desired state is reconciled to a live Flink job."""
+    ns = namespace or _operator_namespace()
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    while True:
+        cr = read_flink_deployment(deployment_name, ns)
+        failure = _operator_failure_from_cr(cr)
+        if failure:
+            raise RuntimeError(
+                f"FlinkDeployment {ns}/{deployment_name} failed while resuming: {failure}"
+            )
+        spec_state = _first_text(
+            ((cr.get("spec") or {}).get("job") or {}).get("state")
+        )
+        status = cr.get("status") or {}
+        job_status = status.get("jobStatus") or {}
+        job_state = _first_text(
+            job_status.get("state"),
+            job_status.get("jobState"),
+        )
+        job_id = _first_text(job_status.get("jobId"), job_status.get("jobID"))
+        lifecycle = _first_text(status.get("lifecycleState"), status.get("state"))
+        reconciled = (job_state or "").upper() == "RUNNING" or (
+            bool(job_id)
+            and (lifecycle or "").upper() in ("STABLE", "DEPLOYED", "RUNNING")
+        )
+        if (spec_state or "").lower() == "running" and reconciled:
+            return cr
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"Timed out waiting for FlinkDeployment {ns}/{deployment_name} to resume"
+            )
+        time.sleep(max(0.0, float(poll_interval_seconds)))
+
+
+def wait_for_completed_savepoint(
+    deployment_name: str,
+    namespace: Optional[str] = None,
+    *,
+    timeout_seconds: float = 60.0,
+    poll_interval_seconds: float = 1.0,
+    previous_path: Optional[str] = None,
+    previous_trigger_id: Optional[str] = None,
+    previous_trigger_timestamp: Optional[str] = None,
+) -> str:
+    """Wait for a completed savepoint and return its durable path."""
+    ns = namespace or _operator_namespace()
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    while True:
+        cr = read_flink_deployment(deployment_name, ns)
+        operator_failure = _operator_failure_from_cr(cr)
+        savepoint_state, path, savepoint_error = extract_savepoint_status_from_cr(cr)
+        trigger_id, trigger_timestamp = extract_savepoint_trigger_from_cr(cr)
+        if savepoint_error or savepoint_state in ("FAILED", "FAILURE", "ERROR"):
+            raise RuntimeError(
+                f"Savepoint for FlinkDeployment {ns}/{deployment_name} failed: "
+                f"{savepoint_error or savepoint_state}"
+            )
+        if operator_failure:
+            raise RuntimeError(
+                f"FlinkDeployment {ns}/{deployment_name} failed while saving: {operator_failure}"
+            )
+        trigger_changed = (
+            (
+                previous_trigger_id is not None
+                and trigger_id is not None
+                and trigger_id != previous_trigger_id
+            )
+            or (
+                previous_trigger_timestamp is not None
+                and trigger_timestamp is not None
+                and trigger_timestamp != previous_trigger_timestamp
+            )
+        )
+        has_previous_trigger = (
+            previous_trigger_id is not None
+            or previous_trigger_timestamp is not None
+        )
+        is_fresh = (
+            trigger_changed
+            if has_previous_trigger
+            else (not previous_path or path != previous_path)
+        )
+        if savepoint_state == "COMPLETED" and path and is_fresh:
+            return path
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"Timed out waiting for savepoint of FlinkDeployment {ns}/{deployment_name}"
+            )
+        time.sleep(max(0.0, float(poll_interval_seconds)))
+
+
+def prepare_flink_deployment_for_savepoint_redeploy(
+    body: Dict[str, Any],
+    savepoint_path: str,
+    *,
+    savepoint_redeploy_nonce: Optional[int] = None,
+    allow_non_restored_state: bool = False,
+) -> Dict[str, Any]:
+    """Copy a CR body and configure Operator restoration from a savepoint."""
+    path = (savepoint_path or "").strip()
+    if not path:
+        raise ValueError("savepoint_path is required")
+    prepared = deepcopy(body)
+    job = prepared.setdefault("spec", {}).setdefault("job", {})
+    job["initialSavepointPath"] = path
+    job["allowNonRestoredState"] = bool(allow_non_restored_state)
+    if savepoint_redeploy_nonce is not None:
+        job["savepointRedeployNonce"] = int(savepoint_redeploy_nonce)
+    return prepared
 
 
 def extract_status_from_cr(cr: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -1100,6 +1553,9 @@ def submit_jar_via_operator(
     jar_version_id: Optional[int] = None,
     jar_artifact_id: Optional[int] = None,
     jar_version_num: Optional[int] = None,
+    restore_path: Optional[str] = None,
+    savepoint_redeploy_nonce: Optional[int] = None,
+    allow_non_restored_state: bool = False,
 ) -> Dict[str, Any]:
     if not (entry_class or "").strip():
         raise RuntimeError("Flink Operator 提交 JAR 须填写入口类（Main Class）。")
@@ -1128,6 +1584,13 @@ def submit_jar_via_operator(
         extra_flink_props=extra_flink_props,
         deployment_meta=meta,
     )
+    if restore_path:
+        body = prepare_flink_deployment_for_savepoint_redeploy(
+            body,
+            restore_path,
+            savepoint_redeploy_nonce=savepoint_redeploy_nonce,
+            allow_non_restored_state=allow_non_restored_state,
+        )
     apply_flink_deployment(body)
     return _submit_flink_deployment_and_wait(
         job_id=job_id,
@@ -1148,6 +1611,10 @@ def submit_sql_via_operator(
     extra_flink_props: Optional[Dict[str, Any]] = None,
     deployment_meta: Optional[GidoDeploymentMeta] = None,
     sql_source: str = "mount",
+    restore_path: Optional[str] = None,
+    savepoint_redeploy_nonce: Optional[int] = None,
+    allow_non_restored_state: bool = False,
+    runtime_secret_env: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     if not (sql_content or "").strip():
         raise RuntimeError("SQL 内容为空")
@@ -1161,6 +1628,17 @@ def submit_sql_via_operator(
 
     deployment_name = sql_deployment_name_for_job(job_id, workspace_id, job_name)
     namespace = _operator_namespace()
+    deployment_existed = flink_deployment_exists(
+        deployment_name, namespace=namespace
+    )
+    secret_name = ""
+    if runtime_secret_env:
+        secret_name = sql_runtime_secret_name(deployment_name)
+        secret_name = ensure_sql_runtime_secret(
+            secret_name,
+            runtime_secret_env,
+            namespace,
+        )
     save_sql_script(job_id, sql_content)
 
     source = effective_sql_source(sql_source)
@@ -1188,6 +1666,10 @@ def submit_sql_via_operator(
     else:
         cm_name = ensure_sql_script_configmap(job_id, workspace_id, sql_content, namespace)
         pod_template = _build_pod_template_for_sql_configmap(cm_name)
+    pod_template = merge_pod_templates(
+        pod_template,
+        _build_pod_template_for_runtime_secret(secret_name),
+    )
 
     meta = deployment_meta or GidoDeploymentMeta(
         workspace_id=int(workspace_id),
@@ -1211,7 +1693,29 @@ def submit_sql_via_operator(
         pod_template=pod_template,
         enable_http_artifacts=http_artifacts,
     )
-    apply_flink_deployment(body)
+    if restore_path:
+        body = prepare_flink_deployment_for_savepoint_redeploy(
+            body,
+            restore_path,
+            savepoint_redeploy_nonce=savepoint_redeploy_nonce,
+            allow_non_restored_state=allow_non_restored_state,
+        )
+    try:
+        applied = apply_flink_deployment(body)
+    except Exception:
+        if secret_name and not deployment_existed:
+            delete_sql_runtime_secret(deployment_name, namespace)
+        raise
+    if secret_name:
+        try:
+            _set_sql_runtime_secret_owner(secret_name, namespace, applied)
+        except Exception:
+            logger.warning(
+                "设置 Pipeline Secret ownerReference 失败 %s/%s",
+                namespace,
+                secret_name,
+                exc_info=True,
+            )
     return _submit_flink_deployment_and_wait(
         job_id=job_id,
         deployment_name=deployment_name,

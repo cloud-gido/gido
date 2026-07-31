@@ -30,6 +30,7 @@ class ApprovalSubmitIn(BaseModel):
     resource_id: int
     action: str  # publish_to_ds | publish_node
     submit_note: Optional[str] = None
+    release_id: Optional[int] = None
 
 
 class ApprovalReviewIn(BaseModel):
@@ -46,6 +47,7 @@ def submit_approval(body: ApprovalSubmitIn, db: Session = Depends(get_db), curre
         body.resource_id,
         body.action,
         body.submit_note,
+        body.release_id,
     )
     return {"message": "已提交审批，等待空间/平台管理员处理", "approval": serialize_approval(db, row)}
 

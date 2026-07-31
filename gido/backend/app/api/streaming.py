@@ -12,7 +12,22 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, 
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from app.core import perm_codes as PC
 from sqlalchemy.orm import Session
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, JSON, BigInteger, func
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Text,
+    DateTime,
+    Boolean,
+    ForeignKey,
+    JSON,
+    BigInteger,
+    UniqueConstraint,
+    Index,
+    event,
+    inspect as sa_inspect,
+    func,
+)
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Tuple, Set, Dict, Any
 from datetime import datetime
@@ -49,6 +64,7 @@ from urllib.parse import urlparse, quote
 import re
 import time
 import json
+import hashlib
 
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -593,6 +609,9 @@ def _streaming_job_public_dict(
         "last_submitted_at": getattr(job, "last_submitted_at", None),
         "last_submitted_by": getattr(job, "last_submitted_by", None),
         "last_submitted_by_username": lsub_name,
+        "current_approved_release_id": getattr(job, "current_approved_release_id", None),
+        "current_running_release_id": getattr(job, "current_running_release_id", None),
+        "lifecycle_state": getattr(job, "lifecycle_state", None) or "draft",
         "parallelism": job.parallelism,
         "streaming_properties": getattr(job, "streaming_properties", None),
         "folder_id": job.folder_id,
@@ -601,6 +620,11 @@ def _streaming_job_public_dict(
         "jar_version_id": getattr(job, "jar_version_id", None),
         "connector_version_ids": _parse_version_id_list(getattr(job, "connector_version_ids", None)),
         "dependency_file_version_ids": _parse_version_id_list(getattr(job, "dependency_file_version_ids", None)),
+        "definition_kind": getattr(job, "definition_kind", None) or ("jar" if job.job_type == "JAR" else "sql"),
+        "pipeline_spec": getattr(job, "pipeline_spec", None),
+        "compiler_version": getattr(job, "compiler_version", None),
+        "generated_artifact": getattr(job, "generated_artifact", None),
+        "spec_hash": getattr(job, "spec_hash", None),
         "script_content": job.script_content,
         "main_class": job.main_class,
         "program_args": job.program_args,
@@ -652,11 +676,25 @@ class StreamingJob(Base):
     # JSON 数组字符串：连接器版本 id / 依赖文件版本 id
     connector_version_ids = Column(Text, nullable=True)
     dependency_file_version_ids = Column(Text, nullable=True)
+    # 兼容 SQL/JAR 草稿；pipeline 使用版本化 typed spec 与确定性编译产物。
+    definition_kind = Column(String(32), nullable=False, default="sql")
+    pipeline_spec = Column(JSON, nullable=True)
+    compiler_version = Column(String(64), nullable=True)
+    generated_artifact = Column(JSON, nullable=True)
+    spec_hash = Column(String(64), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_by = Column(Integer, ForeignKey("dw_users.id"))
     owner_id = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
     is_locked = Column(Boolean, default=False, nullable=False)
+    # 发布/运行指针与旧 status 并存；status 继续服务现有 Flink 状态同步。
+    current_approved_release_id = Column(
+        Integer, ForeignKey("dw_streaming_job_releases.id"), nullable=True
+    )
+    current_running_release_id = Column(
+        Integer, ForeignKey("dw_streaming_job_releases.id"), nullable=True
+    )
+    lifecycle_state = Column(String(32), default="draft", nullable=False)
 
 
 class StreamingJobHistory(Base):
@@ -674,6 +712,148 @@ class StreamingJobHistory(Base):
     flink_jar_submit_mode = Column(String(32), nullable=True)
     saved_at = Column(DateTime, default=datetime.utcnow)
     saved_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+
+
+class StreamingJobRelease(Base):
+    """已提交的不可变发布快照；审批字段不属于快照内容，可独立更新。"""
+
+    __tablename__ = "dw_streaming_job_releases"
+    __table_args__ = (
+        UniqueConstraint("job_id", "version", name="uq_streaming_release_job_version"),
+        Index("idx_streaming_release_job_submitted", "job_id", "submitted_at"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(
+        Integer, ForeignKey("dw_streaming_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    version = Column(Integer, nullable=False)
+    job_name = Column(String(128), nullable=False)
+    job_type = Column(String(16), nullable=False)
+    script_content = Column(Text, nullable=True)
+    jar_path = Column(String(512), nullable=True)
+    main_class = Column(String(256), nullable=True)
+    program_args = Column(Text, nullable=True)
+    parallelism = Column(Integer, nullable=False, default=1)
+    streaming_properties = Column(Text, nullable=True)
+    flink_sql_submit_mode = Column(String(32), nullable=True)
+    flink_jar_submit_mode = Column(String(32), nullable=True)
+    flink_session_profile_id = Column(Integer, nullable=True)
+    jar_artifact_id = Column(Integer, nullable=True)
+    jar_version_id = Column(Integer, nullable=True)
+    connector_version_ids = Column(Text, nullable=True)
+    dependency_file_version_ids = Column(Text, nullable=True)
+    definition_kind = Column(String(32), nullable=False, default="sql")
+    pipeline_spec = Column(JSON, nullable=True)
+    compiler_version = Column(String(64), nullable=True)
+    generated_artifact = Column(JSON, nullable=True)
+    spec_hash = Column(String(64), nullable=True)
+    content_hash = Column(String(64), nullable=False)
+    release_note = Column(Text, nullable=True)
+    approval_status = Column(String(24), nullable=False, default="pending")
+    submitted_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    submitted_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    approved_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    approval_comment = Column(Text, nullable=True)
+
+
+class StreamingRestorePoint(Base):
+    """可跨进程恢复使用的 checkpoint/savepoint 目录。"""
+
+    __tablename__ = "dw_streaming_restore_points"
+    __table_args__ = (
+        Index("idx_streaming_restore_job_created", "job_id", "created_at"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(
+        Integer, ForeignKey("dw_streaming_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    release_id = Column(
+        Integer, ForeignKey("dw_streaming_job_releases.id"), nullable=True
+    )
+    operation_id = Column(Integer, nullable=True)
+    point_type = Column(String(24), nullable=False, default="savepoint")
+    status = Column(String(24), nullable=False, default="pending")
+    path = Column(String(2048), nullable=True)
+    flink_job_id = Column(String(64), nullable=True)
+    trigger_reason = Column(String(64), nullable=True)
+    metadata_json = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+
+class StreamingOperation(Base):
+    """部署、停止、重启与恢复等生命周期操作的持久审计记录。"""
+
+    __tablename__ = "dw_streaming_operations"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_streaming_operation_idempotency"),
+        Index("idx_streaming_operation_job_requested", "job_id", "requested_at"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(
+        Integer, ForeignKey("dw_streaming_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    release_id = Column(
+        Integer, ForeignKey("dw_streaming_job_releases.id"), nullable=True
+    )
+    restore_point_id = Column(
+        Integer, ForeignKey("dw_streaming_restore_points.id"), nullable=True
+    )
+    operation_type = Column(String(32), nullable=False)
+    status = Column(String(24), nullable=False, default="pending")
+    idempotency_key = Column(String(128), nullable=True)
+    requested_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    requested_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    flink_job_id = Column(String(64), nullable=True)
+    flink_deployment_name = Column(String(128), nullable=True)
+    restore_path = Column(String(2048), nullable=True)
+    request_json = Column(Text, nullable=True)
+    result_json = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+
+
+_STREAMING_RELEASE_MODEL_SNAPSHOT_FIELDS = (
+    "job_name",
+    "job_type",
+    "script_content",
+    "jar_path",
+    "main_class",
+    "program_args",
+    "parallelism",
+    "streaming_properties",
+    "flink_sql_submit_mode",
+    "flink_jar_submit_mode",
+    "flink_session_profile_id",
+    "jar_artifact_id",
+    "jar_version_id",
+    "connector_version_ids",
+    "dependency_file_version_ids",
+    "definition_kind",
+    "pipeline_spec",
+    "compiler_version",
+    "generated_artifact",
+    "spec_hash",
+    "content_hash",
+    "release_note",
+)
+
+
+@event.listens_for(StreamingJobRelease, "before_update")
+def _prevent_streaming_release_snapshot_update(mapper, connection, target) -> None:
+    """允许审批元数据变化，但拒绝修改已提交的发布内容。"""
+    state = sa_inspect(target)
+    changed = [
+        name
+        for name in _STREAMING_RELEASE_MODEL_SNAPSHOT_FIELDS
+        if state.attrs[name].history.has_changes()
+    ]
+    if changed:
+        raise ValueError(f"streaming release snapshot is immutable: {', '.join(changed)}")
 
 
 class StreamingJarArtifact(Base):
@@ -1582,6 +1762,8 @@ class JobCreate(BaseModel):
     jar_version_id: Optional[int] = None
     connector_version_ids: Optional[List[int]] = None
     dependency_file_version_ids: Optional[List[int]] = None
+    definition_kind: Optional[str] = None
+    pipeline_spec: Optional[Dict[str, Any]] = None
 
     @field_validator("flink_sql_submit_mode")
     @classmethod
@@ -1615,6 +1797,8 @@ class JobUpdate(BaseModel):
     jar_version_id: Optional[int] = None
     connector_version_ids: Optional[List[int]] = None
     dependency_file_version_ids: Optional[List[int]] = None
+    definition_kind: Optional[str] = None
+    pipeline_spec: Optional[Dict[str, Any]] = None
 
     @field_validator("flink_sql_submit_mode")
     @classmethod
@@ -1640,6 +1824,122 @@ class JobUpdate(BaseModel):
 class SubmitJobBody(BaseModel):
     """POST /streaming/jobs/{id}/submit：大段 SQL 请放 body，勿用 query（易超长或被代理截断）。"""
     script_content: Optional[str] = None
+
+
+class ReleaseSubmitBody(BaseModel):
+    """创建发布快照，不触发 Flink 部署，也不覆盖编辑中的草稿。"""
+
+    script_content: Optional[str] = None
+    release_note: Optional[str] = Field(default=None, max_length=4000)
+
+
+class StreamingReleaseResponse(BaseModel):
+    id: int
+    job_id: int
+    version: int
+    job_name: str
+    job_type: str
+    script_content: Optional[str] = None
+    jar_path: Optional[str] = None
+    main_class: Optional[str] = None
+    program_args: Optional[str] = None
+    parallelism: int
+    streaming_properties: Optional[str] = None
+    flink_sql_submit_mode: Optional[str] = None
+    flink_jar_submit_mode: Optional[str] = None
+    flink_session_profile_id: Optional[int] = None
+    jar_artifact_id: Optional[int] = None
+    jar_version_id: Optional[int] = None
+    connector_version_ids: List[int] = Field(default_factory=list)
+    dependency_file_version_ids: List[int] = Field(default_factory=list)
+    definition_kind: str = "sql"
+    pipeline_spec: Optional[Dict[str, Any]] = None
+    compiler_version: Optional[str] = None
+    generated_artifact: Optional[Dict[str, Any]] = None
+    spec_hash: Optional[str] = None
+    content_hash: str
+    release_note: Optional[str] = None
+    approval_status: str
+    submitted_by: Optional[int] = None
+    submitted_by_username: Optional[str] = None
+    submitted_at: datetime
+    approved_by: Optional[int] = None
+    approved_by_username: Optional[str] = None
+    approved_at: Optional[datetime] = None
+    approval_comment: Optional[str] = None
+
+
+class StreamingRestorePointResponse(BaseModel):
+    id: int
+    job_id: int
+    release_id: Optional[int] = None
+    operation_id: Optional[int] = None
+    point_type: str
+    status: str
+    path: Optional[str] = None
+    flink_job_id: Optional[str] = None
+    trigger_reason: Optional[str] = None
+    metadata_json: Optional[str] = None
+    error_message: Optional[str] = None
+    created_by: Optional[int] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+
+class StreamingOperationResponse(BaseModel):
+    id: int
+    job_id: int
+    release_id: Optional[int] = None
+    restore_point_id: Optional[int] = None
+    operation_type: str
+    status: str
+    idempotency_key: Optional[str] = None
+    requested_by: Optional[int] = None
+    requested_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    flink_job_id: Optional[str] = None
+    flink_deployment_name: Optional[str] = None
+    restore_path: Optional[str] = None
+    request_json: Optional[str] = None
+    result_json: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+class StreamingDeployBody(BaseModel):
+    release_id: Optional[int] = None
+    parallelism: Optional[int] = Field(default=None, ge=1)
+    streaming_properties: Optional[str] = None
+    idempotency_key: Optional[str] = Field(default=None, max_length=128)
+
+
+class StreamingRestartBody(StreamingDeployBody):
+    restore_mode: str = "latest"
+    restore_point_id: Optional[int] = None
+    allow_non_restored_state: bool = False
+    confirm_stateless: bool = False
+
+    @field_validator("restore_mode")
+    @classmethod
+    def _validate_restore_mode(cls, value: str) -> str:
+        mode = (value or "latest").strip().lower()
+        if mode not in ("latest", "specific", "stateless"):
+            raise ValueError("restore_mode 须为 latest、specific 或 stateless")
+        return mode
+
+
+class StreamingStopBody(BaseModel):
+    mode: str = "savepoint"
+    timeout_seconds: float = Field(default=120.0, ge=5.0, le=900.0)
+    idempotency_key: Optional[str] = Field(default=None, max_length=128)
+
+    @field_validator("mode")
+    @classmethod
+    def _validate_stop_mode(cls, value: str) -> str:
+        mode = (value or "savepoint").strip().lower()
+        if mode != "savepoint":
+            raise ValueError("默认停止仅支持 savepoint；强制删除请使用 cancel")
+        return mode
 
 
 class StreamPreviewSqlIn(BaseModel):
@@ -2470,6 +2770,32 @@ def create_job(job_in: JobCreate, db: Session = Depends(get_db), current_user: U
     assert_workspace_data_capability(db, current_user, job_in.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
     _require_flink_profile_in_workspace(db, job_in.workspace_id, job_in.flink_session_profile_id)
     data = job_in.model_dump()
+    data["definition_kind"] = data.get("definition_kind") or (
+        "jar" if data.get("job_type") == "JAR" else "sql"
+    )
+    if data["definition_kind"] not in ("sql", "jar", "pipeline"):
+        raise HTTPException(status_code=422, detail="definition_kind 须为 sql、jar 或 pipeline")
+    if data.get("definition_kind") == "pipeline":
+        if not data.get("pipeline_spec"):
+            raise HTTPException(status_code=422, detail="pipeline 作业必须提供 pipeline_spec")
+        from app.api.stream_pipeline import _preflight_with_runtime
+        from app.services.stream_pipeline_compiler import compile_pipeline
+        from app.services.stream_pipeline_spec import PipelineSpec
+
+        parsed_spec = PipelineSpec.model_validate(data["pipeline_spec"])
+        check = _preflight_with_runtime(
+            db, parsed_spec, workspace_id=int(job_in.workspace_id)
+        )
+        if not check["ok"]:
+            raise HTTPException(status_code=422, detail=check)
+        data["pipeline_spec"] = parsed_spec.model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        )
+        artifact = compile_pipeline(parsed_spec)
+        data["compiler_version"] = artifact["compiler_version"]
+        data["generated_artifact"] = artifact
+        data["spec_hash"] = artifact["spec_hash"]
+        data["script_content"] = artifact["sql"]
     data["name"] = normalize_stream_job_name(data.get("name") or "")
     ensure_stream_job_name_available(db, int(job_in.workspace_id), data["name"])
     folder_id = data.get("folder_id")
@@ -2508,6 +2834,20 @@ def _sql_script_for_submit(db: Session, job: StreamingJob, script: Optional[str]
     from app.services.workspace_variables import substitute_script_variables
 
     raw = script if script is not None else (job.script_content or "")
+    if (
+        script is None
+        and getattr(job, "definition_kind", None) == "pipeline"
+        and getattr(job, "pipeline_spec", None)
+    ):
+        from app.services.stream_pipeline_runtime import resolve_pipeline_runtime
+
+        runtime = resolve_pipeline_runtime(
+            db,
+            workspace_id=int(job.workspace_id or 0),
+            spec=job.pipeline_spec,
+        )
+        raw = runtime.sql
+        setattr(job, "_pipeline_secret_env", runtime.secret_env)
     return substitute_script_variables(db, int(job.workspace_id or 0), raw, "stream")
 
 
@@ -2540,6 +2880,11 @@ def copy_streaming_job(
         jar_version_id=getattr(src, "jar_version_id", None),
         connector_version_ids=getattr(src, "connector_version_ids", None),
         dependency_file_version_ids=getattr(src, "dependency_file_version_ids", None),
+        definition_kind=getattr(src, "definition_kind", None) or ("jar" if src.job_type == "JAR" else "sql"),
+        pipeline_spec=getattr(src, "pipeline_spec", None),
+        compiler_version=getattr(src, "compiler_version", None),
+        generated_artifact=getattr(src, "generated_artifact", None),
+        spec_hash=getattr(src, "spec_hash", None),
         status="draft",
         is_locked=False,
         created_by=current_user.id,
@@ -2566,6 +2911,47 @@ def update_job(
     if getattr(job, "is_locked", False):
         raise HTTPException(status_code=403, detail="作业已锁定，请先解锁后再修改")
     patch = job_in.model_dump(exclude_unset=True)
+    if "definition_kind" in patch and patch["definition_kind"] not in ("sql", "jar", "pipeline"):
+        raise HTTPException(status_code=422, detail="definition_kind 须为 sql、jar 或 pipeline")
+    effective_definition_kind = patch.get("definition_kind") or job.definition_kind
+    if effective_definition_kind == "pipeline":
+        effective_pipeline_spec = (
+            patch["pipeline_spec"]
+            if "pipeline_spec" in patch
+            else getattr(job, "pipeline_spec", None)
+        )
+        if effective_pipeline_spec is None:
+            raise HTTPException(status_code=422, detail="pipeline 作业必须提供 pipeline_spec")
+        from app.api.stream_pipeline import (
+            _job_previous_release_schema,
+            _preflight_with_runtime,
+        )
+        from app.services.stream_pipeline_compiler import compile_pipeline
+        from app.services.stream_pipeline_spec import PipelineSpec
+
+        parsed_spec = PipelineSpec.model_validate(effective_pipeline_spec)
+        check = _preflight_with_runtime(
+            db,
+            parsed_spec,
+            workspace_id=int(job.workspace_id),
+            previous_schema=_job_previous_release_schema(db, job),
+        )
+        if not check["ok"]:
+            raise HTTPException(status_code=422, detail=check)
+        patch["pipeline_spec"] = parsed_spec.model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        )
+        artifact = compile_pipeline(parsed_spec)
+        patch["definition_kind"] = "pipeline"
+        patch["compiler_version"] = artifact["compiler_version"]
+        patch["generated_artifact"] = artifact
+        patch["spec_hash"] = artifact["spec_hash"]
+        patch["script_content"] = artifact["sql"]
+    elif "definition_kind" in patch:
+        patch["pipeline_spec"] = None
+        patch["compiler_version"] = None
+        patch["generated_artifact"] = None
+        patch["spec_hash"] = None
     if "name" in patch and patch["name"] is not None:
         new_name = normalize_stream_job_name(str(patch["name"]))
         if new_name != (job.name or ""):
@@ -2703,6 +3089,1187 @@ def list_streaming_job_history(job_id: int, db: Session = Depends(get_db), curre
     return out
 
 
+_STREAMING_RELEASE_SNAPSHOT_FIELDS = tuple(
+    field
+    for field in _STREAMING_RELEASE_MODEL_SNAPSHOT_FIELDS
+    if field not in ("content_hash", "release_note")
+)
+
+
+def _streaming_release_snapshot(
+    job: StreamingJob, *, script_content: Optional[str] = None
+) -> dict:
+    script = job.script_content if script_content is None else script_content
+    definition_kind = getattr(job, "definition_kind", None) or (
+        "jar" if job.job_type == "JAR" else "sql"
+    )
+    pipeline_spec = getattr(job, "pipeline_spec", None)
+    compiler_version = getattr(job, "compiler_version", None)
+    generated_artifact = getattr(job, "generated_artifact", None)
+    spec_hash = getattr(job, "spec_hash", None)
+    if definition_kind == "pipeline":
+        if script_content is not None:
+            raise HTTPException(status_code=400, detail="pipeline 发布不接受 script_content 覆盖")
+        if not pipeline_spec:
+            raise HTTPException(status_code=400, detail="pipeline_spec 为空，无法创建发布")
+        from app.services.stream_pipeline_compiler import compile_pipeline
+
+        generated_artifact = compile_pipeline(pipeline_spec)
+        compiler_version = generated_artifact["compiler_version"]
+        spec_hash = generated_artifact["spec_hash"]
+        script = generated_artifact["sql"]
+    return {
+        "job_name": job.name,
+        "job_type": job.job_type,
+        "script_content": script,
+        "jar_path": job.jar_path,
+        "main_class": job.main_class,
+        "program_args": job.program_args,
+        "parallelism": int(job.parallelism or 1),
+        "streaming_properties": getattr(job, "streaming_properties", None),
+        "flink_sql_submit_mode": _normalize_sql_submit_mode(
+            getattr(job, "flink_sql_submit_mode", None)
+        ),
+        "flink_jar_submit_mode": _normalize_jar_submit_mode(
+            getattr(job, "flink_jar_submit_mode", None)
+        ),
+        "flink_session_profile_id": getattr(job, "flink_session_profile_id", None),
+        "jar_artifact_id": getattr(job, "jar_artifact_id", None),
+        "jar_version_id": getattr(job, "jar_version_id", None),
+        "connector_version_ids": _dump_version_id_list(
+            getattr(job, "connector_version_ids", None)
+        ),
+        "dependency_file_version_ids": _dump_version_id_list(
+            getattr(job, "dependency_file_version_ids", None)
+        ),
+        "definition_kind": definition_kind,
+        "pipeline_spec": pipeline_spec,
+        "compiler_version": compiler_version,
+        "generated_artifact": generated_artifact,
+        "spec_hash": spec_hash,
+    }
+
+
+def _streaming_release_hash(snapshot: dict) -> str:
+    canonical = json.dumps(
+        snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def create_streaming_job_release(
+    db: Session,
+    job: StreamingJob,
+    submitted_by: int,
+    *,
+    script_content: Optional[str] = None,
+    release_note: Optional[str] = None,
+) -> StreamingJobRelease:
+    """创建不可变候选发布；仅 flush，由调用方控制事务与审批/部署。"""
+    if getattr(job, "definition_kind", None) == "pipeline":
+        from app.api.stream_pipeline import (
+            StreamConnectionProfile,
+            _job_previous_release_schema,
+            _preflight_with_runtime,
+        )
+        from app.services.stream_pipeline_spec import PipelineSpec
+
+        parsed_spec = PipelineSpec.model_validate(job.pipeline_spec)
+        profile_ids = {
+            parsed_spec.source.connection_profile_id,
+            parsed_spec.sink.connection_profile_id,
+        }
+        (
+            db.query(StreamConnectionProfile.id)
+            .filter(StreamConnectionProfile.id.in_(profile_ids))
+            .with_for_update()
+            .all()
+        )
+        check = _preflight_with_runtime(
+            db,
+            parsed_spec,
+            workspace_id=int(job.workspace_id),
+            previous_schema=_job_previous_release_schema(db, job),
+        )
+        if not check["ok"]:
+            raise HTTPException(status_code=422, detail=check)
+    snapshot = _streaming_release_snapshot(job, script_content=script_content)
+    if job.job_type == "SQL" and not (snapshot["script_content"] or "").strip():
+        raise HTTPException(status_code=400, detail="SQL 内容为空，无法创建发布")
+    if job.job_type not in ("SQL", "JAR"):
+        raise HTTPException(status_code=400, detail=f"不支持的任务类型: {job.job_type}")
+    # 串行化同一作业的版本号分配；唯一约束仍是最后一道保护。
+    (
+        db.query(StreamingJob.id)
+        .filter(StreamingJob.id == job.id)
+        .with_for_update()
+        .first()
+    )
+    last_version = (
+        db.query(func.max(StreamingJobRelease.version))
+        .filter(StreamingJobRelease.job_id == job.id)
+        .scalar()
+    )
+    release = StreamingJobRelease(
+        job_id=job.id,
+        version=int(last_version or 0) + 1,
+        content_hash=_streaming_release_hash(snapshot),
+        release_note=(release_note or "").strip() or None,
+        approval_status="pending",
+        submitted_by=submitted_by,
+        submitted_at=datetime.utcnow(),
+        **snapshot,
+    )
+    db.add(release)
+    if not getattr(job, "current_running_release_id", None):
+        job.lifecycle_state = "pending_approval"
+    job.updated_at = datetime.utcnow()
+    db.flush()
+    return release
+
+
+def approve_streaming_job_release(
+    db: Session,
+    job: StreamingJob,
+    release: StreamingJobRelease,
+    approved_by: int,
+    *,
+    comment: Optional[str] = None,
+) -> StreamingJobRelease:
+    """审批 helper；调用方必须先完成空间管理员/平台管理员鉴权。"""
+    if int(release.job_id) != int(job.id):
+        raise ValueError("release does not belong to job")
+    if release.approval_status == "approved":
+        return release
+    if release.approval_status != "pending":
+        raise HTTPException(status_code=409, detail="仅待审批发布可批准")
+    release.approval_status = "approved"
+    release.approved_by = approved_by
+    release.approved_at = datetime.utcnow()
+    release.approval_comment = (comment or "").strip() or None
+    job.current_approved_release_id = release.id
+    if not getattr(job, "current_running_release_id", None):
+        job.lifecycle_state = "approved"
+    job.updated_at = datetime.utcnow()
+    db.flush()
+    return release
+
+
+def reject_streaming_job_release(
+    db: Session,
+    job: StreamingJob,
+    release: StreamingJobRelease,
+    reviewed_by: int,
+    *,
+    comment: Optional[str] = None,
+) -> StreamingJobRelease:
+    """拒绝 helper；快照内容保持不变。"""
+    if int(release.job_id) != int(job.id):
+        raise ValueError("release does not belong to job")
+    if release.approval_status != "pending":
+        raise HTTPException(status_code=409, detail="仅待审批发布可拒绝")
+    release.approval_status = "rejected"
+    release.approved_by = reviewed_by
+    release.approved_at = datetime.utcnow()
+    release.approval_comment = (comment or "").strip() or None
+    if not getattr(job, "current_running_release_id", None):
+        job.lifecycle_state = "draft"
+    job.updated_at = datetime.utcnow()
+    db.flush()
+    return release
+
+
+def _streaming_release_public_dict(
+    db: Session, release: StreamingJobRelease, *, username_by_id: Optional[dict] = None
+) -> dict:
+    umap = username_by_id
+    if umap is None:
+        umap = _username_map(db, [release.submitted_by, release.approved_by])
+    return {
+        "id": release.id,
+        "job_id": release.job_id,
+        "version": release.version,
+        **{field: getattr(release, field) for field in _STREAMING_RELEASE_SNAPSHOT_FIELDS},
+        "connector_version_ids": _parse_version_id_list(release.connector_version_ids),
+        "dependency_file_version_ids": _parse_version_id_list(
+            release.dependency_file_version_ids
+        ),
+        "content_hash": release.content_hash,
+        "release_note": release.release_note,
+        "approval_status": release.approval_status,
+        "submitted_by": release.submitted_by,
+        "submitted_by_username": umap.get(release.submitted_by),
+        "submitted_at": release.submitted_at,
+        "approved_by": release.approved_by,
+        "approved_by_username": umap.get(release.approved_by),
+        "approved_at": release.approved_at,
+        "approval_comment": release.approval_comment,
+    }
+
+
+def create_streaming_operation(
+    db: Session,
+    job: StreamingJob,
+    operation_type: str,
+    requested_by: int,
+    *,
+    release_id: Optional[int] = None,
+    restore_point_id: Optional[int] = None,
+    idempotency_key: Optional[str] = None,
+    request_payload: Optional[dict] = None,
+) -> StreamingOperation:
+    """创建生命周期审计；相同 idempotency_key 返回原记录。"""
+    key = (idempotency_key or "").strip() or None
+    if key:
+        existing = (
+            db.query(StreamingOperation)
+            .filter(StreamingOperation.idempotency_key == key)
+            .first()
+        )
+        if existing:
+            if int(existing.job_id) != int(job.id):
+                raise HTTPException(status_code=409, detail="幂等键已被其他作业使用")
+            expected_request = (
+                json.dumps(request_payload, ensure_ascii=False, sort_keys=True)
+                if request_payload is not None
+                else None
+            )
+            if (
+                existing.operation_type != operation_type
+                or existing.release_id != release_id
+                or existing.restore_point_id != restore_point_id
+                or existing.request_json != expected_request
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="幂等键已用于不同的生命周期请求",
+                )
+            return existing
+    operation = StreamingOperation(
+        job_id=job.id,
+        release_id=release_id,
+        restore_point_id=restore_point_id,
+        operation_type=operation_type,
+        status="pending",
+        idempotency_key=key,
+        requested_by=requested_by,
+        request_json=(
+            json.dumps(request_payload, ensure_ascii=False, sort_keys=True)
+            if request_payload is not None
+            else None
+        ),
+    )
+    db.add(operation)
+    db.flush()
+    return operation
+
+
+def finish_streaming_operation(
+    operation: StreamingOperation,
+    *,
+    status: str,
+    result_payload: Optional[dict] = None,
+    error_message: Optional[str] = None,
+) -> StreamingOperation:
+    operation.status = status
+    operation.completed_at = datetime.utcnow()
+    operation.result_json = (
+        json.dumps(result_payload, ensure_ascii=False, sort_keys=True)
+        if result_payload is not None
+        else None
+    )
+    operation.error_message = error_message
+    return operation
+
+
+def create_streaming_restore_point(
+    db: Session,
+    job: StreamingJob,
+    created_by: int,
+    *,
+    release_id: Optional[int] = None,
+    operation_id: Optional[int] = None,
+    point_type: str = "savepoint",
+    trigger_reason: Optional[str] = None,
+) -> StreamingRestorePoint:
+    restore = StreamingRestorePoint(
+        job_id=job.id,
+        release_id=release_id,
+        operation_id=operation_id,
+        point_type=point_type,
+        status="pending",
+        trigger_reason=trigger_reason,
+        created_by=created_by,
+    )
+    db.add(restore)
+    db.flush()
+    return restore
+
+
+def _streaming_restore_point_public_dict(row: StreamingRestorePoint) -> dict:
+    return {
+        "id": row.id,
+        "job_id": row.job_id,
+        "release_id": row.release_id,
+        "operation_id": row.operation_id,
+        "point_type": row.point_type,
+        "status": row.status,
+        "path": row.path,
+        "flink_job_id": row.flink_job_id,
+        "trigger_reason": row.trigger_reason,
+        "metadata_json": row.metadata_json,
+        "error_message": row.error_message,
+        "created_by": row.created_by,
+        "created_at": row.created_at,
+        "completed_at": row.completed_at,
+    }
+
+
+def _streaming_operation_public_dict(row: StreamingOperation) -> dict:
+    return {
+        "id": row.id,
+        "job_id": row.job_id,
+        "release_id": row.release_id,
+        "restore_point_id": row.restore_point_id,
+        "operation_type": row.operation_type,
+        "status": row.status,
+        "idempotency_key": row.idempotency_key,
+        "requested_by": row.requested_by,
+        "requested_at": row.requested_at,
+        "started_at": row.started_at,
+        "completed_at": row.completed_at,
+        "flink_job_id": row.flink_job_id,
+        "flink_deployment_name": row.flink_deployment_name,
+        "restore_path": row.restore_path,
+        "request_json": row.request_json,
+        "result_json": row.result_json,
+        "error_message": row.error_message,
+    }
+
+
+def _approved_release_for_operation(
+    db: Session,
+    job: StreamingJob,
+    release_id: Optional[int],
+) -> StreamingJobRelease:
+    query = db.query(StreamingJobRelease).filter(
+        StreamingJobRelease.job_id == job.id,
+        StreamingJobRelease.approval_status == "approved",
+    )
+    if release_id is not None:
+        query = query.filter(StreamingJobRelease.id == release_id)
+    elif getattr(job, "current_approved_release_id", None):
+        query = query.filter(
+            StreamingJobRelease.id == job.current_approved_release_id
+        )
+    else:
+        query = query.order_by(StreamingJobRelease.version.desc())
+    release = query.first()
+    if not release:
+        raise HTTPException(status_code=409, detail="请选择已批准的发布版本")
+    return release
+
+
+def _runtime_job_from_release(
+    job: StreamingJob,
+    release: StreamingJobRelease,
+    *,
+    parallelism: Optional[int] = None,
+    streaming_properties: Optional[str] = None,
+) -> StreamingJob:
+    """构造不加入 Session 的运行快照，避免部署历史 release 覆盖 Studio 草稿。"""
+    runtime_job = StreamingJob()
+    for column in StreamingJob.__table__.columns:
+        name = column.name
+        if hasattr(job, name):
+            setattr(runtime_job, name, getattr(job, name))
+    release_to_job = {
+        "job_name": "name",
+        "job_type": "job_type",
+        "script_content": "script_content",
+        "jar_path": "jar_path",
+        "main_class": "main_class",
+        "program_args": "program_args",
+        "parallelism": "parallelism",
+        "streaming_properties": "streaming_properties",
+        "flink_sql_submit_mode": "flink_sql_submit_mode",
+        "flink_jar_submit_mode": "flink_jar_submit_mode",
+        "flink_session_profile_id": "flink_session_profile_id",
+        "jar_artifact_id": "jar_artifact_id",
+        "jar_version_id": "jar_version_id",
+        "connector_version_ids": "connector_version_ids",
+        "dependency_file_version_ids": "dependency_file_version_ids",
+        "definition_kind": "definition_kind",
+        "pipeline_spec": "pipeline_spec",
+        "compiler_version": "compiler_version",
+        "generated_artifact": "generated_artifact",
+        "spec_hash": "spec_hash",
+    }
+    for release_name, job_name in release_to_job.items():
+        setattr(runtime_job, job_name, getattr(release, release_name))
+    if parallelism is not None:
+        runtime_job.parallelism = parallelism
+    if streaming_properties is not None:
+        runtime_job.streaming_properties = streaming_properties
+    runtime_job.is_locked = False
+    return runtime_job
+
+
+def _copy_runtime_submit_result(
+    runtime_job: StreamingJob,
+    job: StreamingJob,
+    *,
+    release_id: int,
+    lifecycle_state: str,
+) -> None:
+    for name in (
+        "flink_job_id",
+        "flink_operator_deployment_name",
+        "flink_application_cluster_id",
+        "flink_application_jm_rest",
+        "last_submit_error",
+        "last_submitted_at",
+        "last_submitted_by",
+        "status",
+    ):
+        setattr(job, name, getattr(runtime_job, name, None))
+    job.current_running_release_id = release_id
+    job.lifecycle_state = lifecycle_state
+    job.updated_at = datetime.utcnow()
+
+
+def _validate_streaming_runtime_capacity(
+    parallelism: int,
+    streaming_properties: Optional[str],
+) -> None:
+    from app.services.operator_resources import split_streaming_properties_for_operator
+
+    props = _parse_job_streaming_properties(streaming_properties)
+    _, resources = split_streaming_properties_for_operator(props or None)
+    if resources.tm_replicas is not None:
+        capacity = int(resources.task_slots) * int(resources.tm_replicas)
+        if int(parallelism) > capacity:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"并行度 {parallelism} 超过显式资源容量 {capacity} "
+                    f"（Task Slots {resources.task_slots} × TM 副本 {resources.tm_replicas}）"
+                ),
+            )
+
+
+def _merge_release_runtime_properties(
+    release_properties: Optional[str],
+    override_properties: Optional[str],
+) -> Optional[str]:
+    if override_properties is None:
+        return release_properties
+    base = _parse_job_streaming_properties(release_properties)
+    override = _parse_job_streaming_properties(override_properties)
+    allowed_top_level = {"resource_tier", "operator_resources"}
+    rejected = sorted(set(override) - allowed_top_level)
+    if rejected:
+        raise HTTPException(
+            status_code=400,
+            detail=f"运行时覆盖仅允许资源字段，不能修改已批准发布内容: {rejected}",
+        )
+    resources = override.get("operator_resources")
+    if resources is not None:
+        if not isinstance(resources, dict):
+            raise HTTPException(status_code=400, detail="operator_resources 须为对象")
+        allowed_resource_keys = {
+            "jobManager",
+            "taskManager",
+            "taskSlots",
+            "numberOfTaskSlots",
+        }
+        unknown_resources = sorted(set(resources) - allowed_resource_keys)
+        if unknown_resources:
+            raise HTTPException(
+                status_code=400,
+                detail=f"operator_resources 含不可覆盖字段: {unknown_resources}",
+            )
+        for section in ("jobManager", "taskManager"):
+            value = resources.get(section)
+            if value is None:
+                continue
+            if not isinstance(value, dict):
+                raise HTTPException(
+                    status_code=400, detail=f"operator_resources.{section} 须为对象"
+                )
+            allowed_nested = (
+                {"memory", "cpu", "replicas"}
+                if section == "taskManager"
+                else {"memory", "cpu"}
+            )
+            unknown_nested = sorted(set(value) - allowed_nested)
+            if unknown_nested:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"operator_resources.{section} 含不可覆盖字段: "
+                        f"{unknown_nested}"
+                    ),
+                )
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            nested = dict(merged[key])
+            nested.update(value)
+            merged[key] = nested
+        else:
+            merged[key] = value
+    return json.dumps(merged, ensure_ascii=False, sort_keys=True)
+
+
+def _assert_durable_restore_path(path: str) -> str:
+    value = (path or "").strip()
+    if not value:
+        raise HTTPException(status_code=409, detail="恢复点没有可用路径")
+    durable_prefixes = (
+        "s3://",
+        "s3a://",
+        "hdfs://",
+        "oss://",
+        "gs://",
+        "abfs://",
+        "abfss://",
+        "file:///",
+    )
+    if not value.lower().startswith(durable_prefixes):
+        raise HTTPException(
+            status_code=409,
+            detail="恢复点路径不是受支持的持久存储 URI",
+        )
+    return value
+
+
+@router.post(
+    "/jobs/{job_id}/releases",
+    response_model=StreamingReleaseResponse,
+    status_code=201,
+)
+def submit_streaming_job_release(
+    job_id: int,
+    body: ReleaseSubmitBody = Body(default_factory=ReleaseSubmitBody),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """提交不可变候选发布；不会部署、停止或重启 Flink 作业。"""
+    job = require_streaming_job(
+        db, current_user, job_id, "developer", PC.GIDO_STREAM_WRITE
+    )
+    release = create_streaming_job_release(
+        db,
+        job,
+        current_user.id,
+        script_content=body.script_content,
+        release_note=body.release_note,
+    )
+    if workspace_data_full_control(db, current_user, job.workspace_id):
+        approve_streaming_job_release(
+            db,
+            job,
+            release,
+            current_user.id,
+            comment="管理员直接批准",
+        )
+    db.commit()
+    db.refresh(release)
+    return _streaming_release_public_dict(db, release)
+
+
+@router.get(
+    "/jobs/{job_id}/releases",
+    response_model=List[StreamingReleaseResponse],
+)
+def list_streaming_job_releases(
+    job_id: int,
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_streaming_job(db, current_user, job_id, "viewer", PC.GIDO_STREAM_READ)
+    releases = (
+        db.query(StreamingJobRelease)
+        .filter(StreamingJobRelease.job_id == job_id)
+        .order_by(StreamingJobRelease.version.desc())
+        .limit(limit)
+        .all()
+    )
+    umap = _username_map(
+        db,
+        [uid for r in releases for uid in (r.submitted_by, r.approved_by)],
+    )
+    return [
+        _streaming_release_public_dict(db, release, username_by_id=umap)
+        for release in releases
+    ]
+
+
+@router.get(
+    "/jobs/{job_id}/releases/{release_id}",
+    response_model=StreamingReleaseResponse,
+)
+def get_streaming_job_release(
+    job_id: int,
+    release_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_streaming_job(db, current_user, job_id, "viewer", PC.GIDO_STREAM_READ)
+    release = (
+        db.query(StreamingJobRelease)
+        .filter(
+            StreamingJobRelease.id == release_id,
+            StreamingJobRelease.job_id == job_id,
+        )
+        .first()
+    )
+    if not release:
+        raise HTTPException(status_code=404, detail="发布版本不存在")
+    return _streaming_release_public_dict(db, release)
+
+
+@router.get(
+    "/jobs/{job_id}/restore-points",
+    response_model=List[StreamingRestorePointResponse],
+)
+def list_streaming_restore_points(
+    job_id: int,
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_streaming_job(db, current_user, job_id, "viewer", PC.GIDO_STREAM_READ)
+    rows = (
+        db.query(StreamingRestorePoint)
+        .filter(StreamingRestorePoint.job_id == job_id)
+        .order_by(StreamingRestorePoint.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [_streaming_restore_point_public_dict(row) for row in rows]
+
+
+@router.get(
+    "/jobs/{job_id}/operations",
+    response_model=List[StreamingOperationResponse],
+)
+def list_streaming_operations(
+    job_id: int,
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_streaming_job(db, current_user, job_id, "viewer", PC.GIDO_STREAM_READ)
+    rows = (
+        db.query(StreamingOperation)
+        .filter(StreamingOperation.job_id == job_id)
+        .order_by(StreamingOperation.requested_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [_streaming_operation_public_dict(row) for row in rows]
+
+
+def _execute_approved_release_deployment(
+    db: Session,
+    job: StreamingJob,
+    release: StreamingJobRelease,
+    current_user: User,
+    *,
+    parallelism: Optional[int],
+    streaming_properties: Optional[str],
+    restore_path: Optional[str] = None,
+    allow_non_restored_state: bool = False,
+) -> tuple[StreamingJob, dict]:
+    sql_mode = _normalize_sql_submit_mode(release.flink_sql_submit_mode)
+    jar_mode = _normalize_jar_submit_mode(release.flink_jar_submit_mode)
+    if (release.job_type == "SQL" and sql_mode != "flink_operator") or (
+        release.job_type == "JAR" and jar_mode != "flink_operator"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="新运维生命周期仅支持 Flink Operator 发布版本",
+        )
+    effective_parallelism = int(parallelism or release.parallelism or 1)
+    effective_properties = _merge_release_runtime_properties(
+        release.streaming_properties,
+        streaming_properties,
+    )
+    _validate_streaming_runtime_capacity(
+        effective_parallelism,
+        effective_properties,
+    )
+    runtime_job = _runtime_job_from_release(
+        job,
+        release,
+        parallelism=effective_parallelism,
+        streaming_properties=effective_properties,
+    )
+    result = execute_streaming_job_submit(
+        db,
+        runtime_job,
+        current_user,
+        restore_path=restore_path,
+        savepoint_redeploy_nonce=(
+            int(datetime.utcnow().timestamp() * 1000) if restore_path else None
+        ),
+        allow_non_restored_state=allow_non_restored_state,
+        record_history=False,
+        release_version=release.version,
+        release_content_hash=release.content_hash,
+    )
+    return runtime_job, result
+
+
+@router.post("/jobs/{job_id}/deploy")
+def deploy_streaming_job_release(
+    job_id: int,
+    body: StreamingDeployBody,
+    db: Session = Depends(get_db_flink),
+    current_user: User = Depends(get_current_user),
+):
+    job = require_streaming_job(
+        db, current_user, job_id, "developer", PC.GIDO_STREAM_RUN
+    )
+    if str(job.status or "").lower() == "running":
+        raise HTTPException(status_code=409, detail="作业正在运行，请使用重启/恢复")
+    release = _approved_release_for_operation(db, job, body.release_id)
+    operation = create_streaming_operation(
+        db,
+        job,
+        "deploy",
+        current_user.id,
+        release_id=release.id,
+        idempotency_key=body.idempotency_key,
+        request_payload=body.model_dump(),
+    )
+    if operation.status in ("succeeded", "failed"):
+        return _streaming_operation_public_dict(operation)
+    operation.status = "running"
+    operation.started_at = datetime.utcnow()
+    job.lifecycle_state = "DEPLOYING"
+    db.commit()
+    try:
+        runtime_job, result = _execute_approved_release_deployment(
+            db,
+            job,
+            release,
+            current_user,
+            parallelism=body.parallelism,
+            streaming_properties=body.streaming_properties,
+        )
+        _copy_runtime_submit_result(
+            runtime_job,
+            job,
+            release_id=release.id,
+            lifecycle_state="RUNNING",
+        )
+        operation.flink_job_id = job.flink_job_id
+        operation.flink_deployment_name = job.flink_operator_deployment_name
+        finish_streaming_operation(
+            operation,
+            status="succeeded",
+            result_payload=result,
+        )
+        db.commit()
+        return {
+            "message": f"发布版本 v{release.version} 已部署",
+            "release_id": release.id,
+            "operation_id": operation.id,
+            **result,
+        }
+    except Exception as exc:
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        job.lifecycle_state = "DEPLOY_FAILED"
+        job.last_submit_error = str(detail)
+        finish_streaming_operation(
+            operation,
+            status="failed",
+            error_message=str(detail),
+        )
+        db.commit()
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=500, detail=f"部署失败: {detail}") from exc
+
+
+@router.post("/jobs/{job_id}/stop")
+def stop_streaming_job_with_savepoint(
+    job_id: int,
+    body: StreamingStopBody = Body(default_factory=StreamingStopBody),
+    db: Session = Depends(get_db_flink),
+    current_user: User = Depends(get_current_user),
+):
+    from app.services.flink_operator_submit import (
+        _operator_namespace,
+        extract_savepoint_status_from_cr,
+        extract_savepoint_trigger_from_cr,
+        read_flink_deployment,
+        suspend_flink_deployment,
+        wait_for_completed_savepoint,
+        wait_for_flink_deployment_running,
+        wait_for_flink_deployment_suspended,
+    )
+
+    job = require_streaming_job(
+        db, current_user, job_id, "developer", PC.GIDO_STREAM_RUN
+    )
+    deployment_name = _operator_deployment_name_for_job(job)
+    if not deployment_name:
+        raise HTTPException(status_code=409, detail="作业没有可挂起的 FlinkDeployment")
+    namespace = _operator_namespace()
+    try:
+        before = read_flink_deployment(deployment_name, namespace)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f"读取 FlinkDeployment 失败: {exc}") from exc
+    flink_conf = (before.get("spec") or {}).get("flinkConfiguration") or {}
+    savepoint_dir = (
+        (settings.FLINK_OPERATOR_SAVEPOINT_DIR or "").strip()
+        or str(flink_conf.get("state.savepoints.dir") or "").strip()
+    )
+    if not savepoint_dir:
+        raise HTTPException(
+            status_code=409,
+            detail="未配置持久 Savepoint 目录，拒绝把默认停止退化为无状态停止",
+        )
+    _, previous_path, _ = extract_savepoint_status_from_cr(before)
+    previous_trigger_id, previous_trigger_timestamp = (
+        extract_savepoint_trigger_from_cr(before)
+    )
+    operation = create_streaming_operation(
+        db,
+        job,
+        "stop",
+        current_user.id,
+        release_id=job.current_running_release_id,
+        idempotency_key=body.idempotency_key,
+        request_payload=body.model_dump(),
+    )
+    if operation.status in ("succeeded", "failed"):
+        return _streaming_operation_public_dict(operation)
+    restore = create_streaming_restore_point(
+        db,
+        job,
+        current_user.id,
+        release_id=job.current_running_release_id,
+        operation_id=operation.id,
+        trigger_reason="planned_stop",
+    )
+    operation.status = "running"
+    operation.started_at = datetime.utcnow()
+    operation.flink_deployment_name = deployment_name
+    job.lifecycle_state = "SAVING_STATE"
+    db.commit()
+    try:
+        suspend_flink_deployment(
+            deployment_name,
+            namespace,
+            upgrade_mode="savepoint",
+        )
+        job.lifecycle_state = "SUSPENDING"
+        db.commit()
+        savepoint_path = wait_for_completed_savepoint(
+            deployment_name,
+            namespace,
+            timeout_seconds=body.timeout_seconds,
+            previous_path=previous_path,
+            previous_trigger_id=previous_trigger_id,
+            previous_trigger_timestamp=previous_trigger_timestamp,
+        )
+        final_cr = wait_for_flink_deployment_suspended(
+            deployment_name,
+            namespace,
+            timeout_seconds=body.timeout_seconds,
+        )
+        restore.status = "completed"
+        restore.path = _assert_durable_restore_path(savepoint_path)
+        restore.flink_job_id = job.flink_job_id
+        restore.completed_at = datetime.utcnow()
+        restore.metadata_json = json.dumps(
+            {
+                "namespace": namespace,
+                "deployment_name": deployment_name,
+                "flink_version": (final_cr.get("spec") or {}).get("flinkVersion"),
+                "parallelism": ((final_cr.get("spec") or {}).get("job") or {}).get(
+                    "parallelism"
+                ),
+                "release_id": job.current_running_release_id,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        operation.restore_point_id = restore.id
+        operation.restore_path = restore.path
+        operation.flink_job_id = job.flink_job_id
+        finish_streaming_operation(
+            operation,
+            status="succeeded",
+            result_payload={"savepoint_path": restore.path},
+        )
+        job.status = "cancelled"
+        job.lifecycle_state = "SUSPENDED"
+        job.updated_at = datetime.utcnow()
+        db.commit()
+        return {
+            "message": "Savepoint 已完成，作业已挂起",
+            "operation_id": operation.id,
+            "restore_point": _streaming_restore_point_public_dict(restore),
+        }
+    except Exception as exc:
+        cluster_state = "unknown"
+        try:
+            from app.services.flink_operator_submit import resume_flink_deployment
+
+            resume_flink_deployment(
+                deployment_name,
+                namespace,
+                upgrade_mode="savepoint",
+            )
+            after_resume = wait_for_flink_deployment_running(
+                deployment_name,
+                namespace,
+                timeout_seconds=min(body.timeout_seconds, 60.0),
+            )
+            cluster_state = str(
+                (((after_resume.get("spec") or {}).get("job") or {}).get("state"))
+                or ""
+            ).strip().lower() or "unknown"
+        except Exception:
+            cluster_state = "unknown"
+        restore.status = "failed"
+        restore.error_message = str(exc)
+        restore.completed_at = datetime.utcnow()
+        finish_streaming_operation(
+            operation,
+            status="failed",
+            error_message=str(exc),
+        )
+        if cluster_state == "running":
+            job.status = "running"
+            job.lifecycle_state = "RUNNING"
+        elif cluster_state == "suspended":
+            job.status = "cancelled"
+            job.lifecycle_state = "SUSPENDED"
+        else:
+            job.status = "failed"
+            job.lifecycle_state = "STOP_FAILED"
+        job.updated_at = datetime.utcnow()
+        db.commit()
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Savepoint 停止失败；集群状态={cluster_state}，"
+                f"请在作业运维确认后重试: {exc}"
+            ),
+        ) from exc
+
+
+@router.post("/jobs/{job_id}/restart")
+def restart_streaming_job(
+    job_id: int,
+    body: StreamingRestartBody,
+    db: Session = Depends(get_db_flink),
+    current_user: User = Depends(get_current_user),
+):
+    from app.services.flink_operator_submit import (
+        _operator_namespace,
+        read_flink_deployment,
+        resume_flink_deployment,
+    )
+
+    job = require_streaming_job(
+        db, current_user, job_id, "developer", PC.GIDO_STREAM_RUN
+    )
+    release = _approved_release_for_operation(db, job, body.release_id)
+    restore: Optional[StreamingRestorePoint] = None
+    restore_path: Optional[str] = None
+    if body.restore_mode == "stateless":
+        if not body.confirm_stateless:
+            raise HTTPException(
+                status_code=400,
+                detail="无状态启动会丢弃已有状态，必须显式确认",
+            )
+    else:
+        restore_query = db.query(StreamingRestorePoint).filter(
+            StreamingRestorePoint.job_id == job.id,
+            StreamingRestorePoint.point_type == "savepoint",
+            StreamingRestorePoint.status == "completed",
+        )
+        if body.restore_mode == "specific":
+            if body.restore_point_id is None:
+                raise HTTPException(status_code=400, detail="请选择恢复点")
+            restore_query = restore_query.filter(
+                StreamingRestorePoint.id == body.restore_point_id
+            )
+        else:
+            restore_query = restore_query.order_by(
+                StreamingRestorePoint.completed_at.desc()
+            )
+        restore = restore_query.first()
+        if not restore:
+            same_running_restart = (
+                body.restore_mode == "latest"
+                and str(job.status or "").lower() == "running"
+                and int(job.current_running_release_id or 0) == int(release.id)
+                and (
+                    body.parallelism is None
+                    or int(body.parallelism) == int(release.parallelism or 1)
+                )
+                and (
+                    body.streaming_properties is None
+                    or _parse_job_streaming_properties(body.streaming_properties)
+                    == _parse_job_streaming_properties(release.streaming_properties)
+                )
+            )
+            if not same_running_restart:
+                raise HTTPException(status_code=409, detail="没有可用的成功 Savepoint")
+        else:
+            restore_path = _assert_durable_restore_path(restore.path or "")
+            metadata = {}
+            try:
+                metadata = json.loads(restore.metadata_json or "{}")
+            except Exception:
+                metadata = {}
+            saved_version = str(metadata.get("flink_version") or "").strip()
+            runtime_version = str(settings.FLINK_OPERATOR_FLINK_VERSION or "").strip()
+            if saved_version and runtime_version and saved_version != runtime_version:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"恢复点 Flink 版本 {saved_version} 与当前运行时 "
+                        f"{runtime_version} 不兼容"
+                    ),
+                )
+    prior_lifecycle = str(job.lifecycle_state or "").upper()
+    prior_status = str(job.status or "").lower()
+    operation_type = (
+        "stateless-start" if body.restore_mode == "stateless" else "restart"
+    )
+    operation = create_streaming_operation(
+        db,
+        job,
+        operation_type,
+        current_user.id,
+        release_id=release.id,
+        restore_point_id=restore.id if restore else None,
+        idempotency_key=body.idempotency_key,
+        request_payload=body.model_dump(),
+    )
+    if operation.status in ("succeeded", "failed"):
+        return _streaming_operation_public_dict(operation)
+    operation.status = "running"
+    operation.started_at = datetime.utcnow()
+    operation.restore_path = restore_path
+    job.lifecycle_state = "RESTORING"
+    db.commit()
+    try:
+        same_release = int(job.current_running_release_id or 0) == int(release.id)
+        parallelism_unchanged = (
+            body.parallelism is None
+            or int(body.parallelism) == int(release.parallelism or 1)
+        )
+        properties_unchanged = (
+            body.streaming_properties is None
+            or _parse_job_streaming_properties(body.streaming_properties)
+            == _parse_job_streaming_properties(release.streaming_properties)
+        )
+        no_runtime_override = parallelism_unchanged and properties_unchanged
+        deployment_name = _operator_deployment_name_for_job(job)
+        can_patch_existing = False
+        if deployment_name and (
+            prior_status == "running" or prior_lifecycle == "SUSPENDED"
+        ):
+            try:
+                current_cr = read_flink_deployment(
+                    deployment_name,
+                    _operator_namespace(),
+                )
+                current_state = str(
+                    (((current_cr.get("spec") or {}).get("job") or {}).get("state"))
+                    or ""
+                ).strip().lower()
+                can_patch_existing = (
+                    (prior_status == "running" and current_state == "running")
+                    or (
+                        prior_lifecycle == "SUSPENDED"
+                        and current_state == "suspended"
+                    )
+                )
+            except Exception:
+                can_patch_existing = False
+        if (
+            can_patch_existing
+            and same_release
+            and no_runtime_override
+            and body.restore_mode == "latest"
+        ):
+            was_running = prior_status == "running"
+            resume_flink_deployment(
+                deployment_name,
+                _operator_namespace(),
+                restart_nonce=int(datetime.utcnow().timestamp() * 1000),
+                upgrade_mode="savepoint",
+            )
+            result = {
+                "message": (
+                    "已通过 restartNonce 触发同配置有状态重启"
+                    if was_running
+                    else "已从最近 Savepoint 恢复 suspended FlinkDeployment"
+                ),
+                "flink_operator_deployment_name": deployment_name,
+            }
+            job.status = "running"
+            job.lifecycle_state = "RUNNING"
+        else:
+            runtime_job, result = _execute_approved_release_deployment(
+                db,
+                job,
+                release,
+                current_user,
+                parallelism=body.parallelism,
+                streaming_properties=body.streaming_properties,
+                restore_path=restore_path,
+                allow_non_restored_state=body.allow_non_restored_state,
+            )
+            _copy_runtime_submit_result(
+                runtime_job,
+                job,
+                release_id=release.id,
+                lifecycle_state="RUNNING",
+            )
+        operation.flink_job_id = job.flink_job_id
+        operation.flink_deployment_name = _operator_deployment_name_for_job(job)
+        finish_streaming_operation(
+            operation,
+            status="succeeded",
+            result_payload=result,
+        )
+        db.commit()
+        return {
+            "message": "作业已提交重启/恢复",
+            "operation_id": operation.id,
+            "release_id": release.id,
+            "restore_point_id": restore.id if restore else None,
+            **result,
+        }
+    except Exception as exc:
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        job.lifecycle_state = "RESTORE_FAILED"
+        job.last_submit_error = str(detail)
+        finish_streaming_operation(
+            operation,
+            status="failed",
+            error_message=str(detail),
+        )
+        db.commit()
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=500, detail=f"恢复失败: {detail}") from exc
+
+
 @router.post("/jobs/{job_id}/history/{history_id}/rollback")
 def rollback_streaming_job_history(
     job_id: int, history_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
@@ -2751,14 +4318,14 @@ def unlock_streaming_job(job_id: int, db: Session = Depends(get_db), current_use
     return {"message": "已解锁", "job": _streaming_job_public_dict(db, job)}
 
 
-@router.post("/jobs/{job_id}/submit")
+@router.post("/jobs/{job_id}/submit", deprecated=True)
 def submit_job(
     job_id: int,
     body: SubmitJobBody = Body(default_factory=SubmitJobBody),
     db: Session = Depends(get_db_flink),
     current_user: User = Depends(get_current_user),
 ):
-    """提交任务到 Flink（大段 SQL 仅接受 JSON body，勿用 query）。"""
+    """兼容旧客户端的直接部署接口；新客户端应先创建 release，再从作业运维部署。"""
     job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_RUN)
     assert_can_publish_production(db, current_user, job.workspace_id)
     try:
@@ -2769,7 +4336,19 @@ def submit_job(
         raise HTTPException(status_code=500, detail=f"提交失败: {e}")
 
 
-def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: User, script_content: Optional[str] = None):
+def execute_streaming_job_submit(
+    db: Session,
+    job: StreamingJob,
+    current_user: User,
+    script_content: Optional[str] = None,
+    *,
+    restore_path: Optional[str] = None,
+    savepoint_redeploy_nonce: Optional[int] = None,
+    allow_non_restored_state: bool = False,
+    record_history: bool = True,
+    release_version: Optional[int] = None,
+    release_content_hash: Optional[str] = None,
+):
     """提交实时作业到 Flink（直接提交与审批通过后共用）。"""
     if getattr(job, "is_locked", False):
         raise HTTPException(status_code=403, detail="作业已锁定，请先解锁后再提交")
@@ -2777,7 +4356,7 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
         job.owner_id = current_user.id
     incoming = script_content
     if incoming is not None:
-        if (job.script_content or "") != (incoming or ""):
+        if record_history and (job.script_content or "") != (incoming or ""):
             _append_streaming_job_history_snapshot(db, job, current_user.id)
         job.script_content = incoming
 
@@ -2786,6 +4365,14 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
         if not (job.script_content or "").strip():
             raise HTTPException(status_code=400, detail="SQL 内容为空")
         mode = _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None))
+        if (
+            getattr(job, "definition_kind", None) == "pipeline"
+            and mode != "flink_operator"
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="数据管道仅允许通过 Flink Operator 提交，以使用运行时 Secret 注入",
+            )
         fc = _flink_client_for_job(db, job)
         if mode == "flink_operator":
             from app.services.flink_operator_submit import sql_operator_submit_ready
@@ -2870,7 +4457,10 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
             if mode == "flink_operator":
                 from app.services.flink_operator_submit import submit_sql_via_operator
 
-                sql_version, sql_hash = _record_submit_history_version(db, job, current_user.id)
+                if record_history:
+                    sql_version, sql_hash = _record_submit_history_version(db, job, current_user.id)
+                else:
+                    sql_version, sql_hash = release_version, release_content_hash
                 dep_meta = _build_operator_deployment_meta(
                     job, user=current_user, sql_version=sql_version, sql_hash=sql_hash
                 )
@@ -2884,6 +4474,12 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                     extra_flink_props=flink_extra or None,
                     deployment_meta=dep_meta,
                     sql_source=sql_source,
+                    restore_path=restore_path,
+                    savepoint_redeploy_nonce=savepoint_redeploy_nonce,
+                    allow_non_restored_state=allow_non_restored_state,
+                    runtime_secret_env=getattr(
+                        job, "_pipeline_secret_env", None
+                    ),
                 )
                 job.flink_operator_deployment_name = out.get("deployment_name")
                 job.flink_application_jm_rest = out.get("application_jm_rest")
@@ -2908,7 +4504,8 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                     sql_to_run or "", job.parallelism, extra_properties=props_only or None
                 )
         elif job.job_type == "JAR":
-            _append_streaming_job_history_snapshot(db, job, current_user.id)
+            if record_history:
+                _append_streaming_job_history_snapshot(db, job, current_user.id)
             jar_mode = _normalize_jar_submit_mode(getattr(job, "flink_jar_submit_mode", None))
             if jar_mode == "flink_operator":
                 from app.services.flink_operator_submit import submit_jar_via_operator
@@ -2917,7 +4514,10 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                 jar_extra = _parse_job_streaming_properties(getattr(job, "streaming_properties", None))
                 flink_extra, op_resources = split_streaming_properties_for_operator(jar_extra or None)
                 flink_extra = _merge_connector_pipeline_jars(db, job, flink_extra)
-                hist_version, _ = _record_submit_history_version(db, job, current_user.id)
+                if record_history:
+                    hist_version, _ = _record_submit_history_version(db, job, current_user.id)
+                else:
+                    hist_version = release_version
                 dep_meta = _build_operator_deployment_meta(
                     job,
                     user=current_user,
@@ -2937,6 +4537,9 @@ def execute_streaming_job_submit(db: Session, job: StreamingJob, current_user: U
                     jar_version_id=getattr(job, "jar_version_id", None),
                     jar_artifact_id=(int(lib_ver.artifact_id) if lib_ver else getattr(job, "jar_artifact_id", None)),
                     jar_version_num=(int(lib_ver.version) if lib_ver else None),
+                    restore_path=restore_path,
+                    savepoint_redeploy_nonce=savepoint_redeploy_nonce,
+                    allow_non_restored_state=allow_non_restored_state,
                 )
                 job.flink_operator_deployment_name = out.get("deployment_name")
                 job.flink_application_jm_rest = out.get("application_jm_rest")
@@ -3061,6 +4664,17 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
     并校验删除后集群侧已无 CR；禁止「删错名字 → 404 却报成功」导致 Flink 仍在跑。
     """
     job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_RUN)
+    operation = create_streaming_operation(
+        db,
+        job,
+        "force-stop",
+        current_user.id,
+        release_id=getattr(job, "current_running_release_id", None),
+        request_payload={"confirmation": "ui-secondary-confirmation"},
+    )
+    operation.status = "running"
+    operation.started_at = datetime.utcnow()
+    db.flush()
     dep_name = _operator_deployment_name_for_job(job)
     is_operator = bool(dep_name) or (
         (job.job_type or "").upper() == "SQL"
@@ -3072,19 +4686,20 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
     if is_operator:
         try:
             from app.services.flink_operator_submit import (
+                _operator_namespace,
                 delete_flink_deployment,
                 find_flink_deployment_refs_for_job,
                 wait_flink_deployment_reclaimed,
             )
 
-            primary_ns = "bigdata"
+            primary_ns = _operator_namespace()
             refs = find_flink_deployment_refs_for_job(
                 int(job.id),
                 workspace_id=int(job.workspace_id or 0) or None,
                 preferred_name=dep_name,
                 namespace=primary_ns,
             )
-            # 停止只操作 bigdata，不猜测 flink（SA 对 flink DELETE 会 403）。
+            # 强制停止只操作统一配置的 Operator namespace，不跨命名空间猜测。
 
             deleted_ok: List[str] = []
             deleted_ns: List[str] = []
@@ -3139,12 +4754,12 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
                 raise RuntimeError(
                     "已请求删除但 FlinkDeployment 仍未进入回收: "
                     + ", ".join(stuck)
-                    + f"。当前停止命名空间固定为 bigdata；"
-                    "请核对 RBAC（flink-service-account-dev）与 CR 是否在 bigdata。"
+                    + f"。当前停止命名空间为 {primary_ns}；"
+                    "请核对 FLINK_OPERATOR_NAMESPACE 与 ServiceAccount RBAC。"
                 )
             if not deleted_ok and not terminating and not check_refs and skipped_forbidden:
                 raise RuntimeError(
-                    "停止失败：对 bigdata 无删除权限 "
+                    f"停止失败：对 {primary_ns} 无删除权限 "
                     + f"（跳过: {', '.join(skipped_forbidden)}）。"
                     "请检查 Role/RoleBinding 是否允许 delete flinkdeployments。"
                 )
@@ -3153,7 +4768,7 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
             if job.job_type == "SQL" and _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None)) == "flink_operator":
                 from app.services.sql_artifact import delete_sql_script_configmap
 
-                # SQL ConfigMap 也可能在 bigdata
+                # SQL ConfigMap 与 FlinkDeployment 使用同一配置命名空间。
                 for ns in sorted({primary_ns, *[n for n, _ in refs]}):
                     try:
                         delete_sql_script_configmap(job.id, int(job.workspace_id or 0), ns)
@@ -3165,7 +4780,18 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
             job.flink_job_id = None
             job.flink_application_jm_rest = None
             job.status = "cancelled"
+            job.lifecycle_state = "FORCE_STOPPED"
             job.updated_at = datetime.utcnow()
+            operation.flink_deployment_name = primary
+            finish_streaming_operation(
+                operation,
+                status="succeeded",
+                result_payload={
+                    "deleted": deleted_ok,
+                    "terminating": terminating,
+                    "namespace": ",".join(deleted_ns or [primary_ns]),
+                },
+            )
             db.commit()
             ns_note = ",".join(deleted_ns or [primary_ns])
             if deleted_ok or terminating:
@@ -3185,33 +4811,72 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
             return {
                 "message": (
                     f"已停止：集群中已无对应 FlinkDeployment"
-                    f"（已查 bigdata），已将平台状态标为已停止"
+                    f"（已查 {primary_ns}），已将平台状态标为已停止"
                 ),
                 "deleted": [],
                 "namespace": primary_ns,
             }
         except HTTPException:
+            finish_streaming_operation(
+                operation,
+                status="failed",
+                error_message="强制停止失败",
+            )
+            db.commit()
             raise
         except Exception as e:
+            finish_streaming_operation(
+                operation,
+                status="failed",
+                error_message=str(e),
+            )
+            db.commit()
             raise HTTPException(status_code=500, detail=f"停止失败: {e}")
-    jm_ov = _jm_base_for_job(job, prefer_stored=True, deadline_seconds=2.0)
     if not job.flink_job_id:
         if getattr(job, "flink_application_cluster_id", None):
+            detail = (
+                f"当前为 K8s Application 且尚未回填 jobId（clusterID={job.flink_application_cluster_id}）。"
+                " 请在「系统管理 → 集成」配置 JM REST 模板（含 {cluster_id}）或环境变量 "
+                "FLINK_K8S_APPLICATION_JM_REST_TEMPLATE 后重试，或在 Flink/K8s 控制台停止该集群。"
+            )
+            finish_streaming_operation(
+                operation,
+                status="failed",
+                error_message=detail,
+            )
+            db.commit()
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    f"当前为 K8s Application 且尚未回填 jobId（clusterID={job.flink_application_cluster_id}）。"
-                    " 请在「系统管理 → 集成」配置 JM REST 模板（含 {cluster_id}）或环境变量 FLINK_K8S_APPLICATION_JM_REST_TEMPLATE 后重试，或在 Flink/K8s 控制台停止该集群。"
-                ),
+                detail=detail,
             )
+        finish_streaming_operation(
+            operation,
+            status="failed",
+            error_message="任务尚未提交",
+        )
+        db.commit()
         raise HTTPException(status_code=400, detail="任务尚未提交")
     try:
+        jm_ov = _jm_base_for_job(job, prefer_stored=True, deadline_seconds=2.0)
         _flink_client_for_job(db, job).cancel_job(job.flink_job_id, jm_base=jm_ov)
         job.status = "cancelled"
+        job.lifecycle_state = "FORCE_STOPPED"
         job.updated_at = datetime.utcnow()
+        operation.flink_job_id = job.flink_job_id
+        finish_streaming_operation(
+            operation,
+            status="succeeded",
+            result_payload={"flink_job_id": job.flink_job_id},
+        )
         db.commit()
         return {"message": "已停止"}
     except Exception as e:
+        finish_streaming_operation(
+            operation,
+            status="failed",
+            error_message=str(e),
+        )
+        db.commit()
         raise HTTPException(status_code=500, detail=f"停止失败: {e}")
 
 
@@ -3317,9 +4982,10 @@ def _apply_status_from_operator_cr(db: Session, job: StreamingJob, cr: Dict[str,
     lifecycle_up = (lifecycle or "").strip().upper()
 
     if spec_state == "suspended":
-        if job.status != "cancelled":
+        if job.status != "cancelled" or getattr(job, "lifecycle_state", None) != "SUSPENDED":
             _mark_job_stopped(db, job, clear_runtime=True)
             job.flink_operator_deployment_name = dep_name
+            job.lifecycle_state = "SUSPENDED"
             db.commit()
         return {
             "flink_status": "SUSPENDED",
@@ -3336,8 +5002,9 @@ def _apply_status_from_operator_cr(db: Session, job: StreamingJob, cr: Dict[str,
     if lifecycle_up in ("STABLE", "DEPLOYED", "CREATED", "RUNNING") or (
         jid and lifecycle_up not in ("FAILED", "FAILING", "")
     ):
-        if job.status != "running":
+        if job.status != "running" or getattr(job, "lifecycle_state", None) != "RUNNING":
             job.status = "running"
+            job.lifecycle_state = "RUNNING"
             job.updated_at = datetime.utcnow()
             db.commit()
         if jid:
@@ -3348,6 +5015,8 @@ def _apply_status_from_operator_cr(db: Session, job: StreamingJob, cr: Dict[str,
         flink_st = "FAILED"
         if job.status != "failed":
             job.status = "failed"
+            if getattr(job, "lifecycle_state", None) != "RESTORE_FAILED":
+                job.lifecycle_state = "FAILED"
             if err:
                 job.last_submit_error = err
             job.updated_at = datetime.utcnow()
@@ -3356,6 +5025,10 @@ def _apply_status_from_operator_cr(db: Session, job: StreamingJob, cr: Dict[str,
 
     if not job.flink_job_id:
         flink_st = lifecycle_up or "STARTING"
+        if getattr(job, "lifecycle_state", None) in (None, "draft", "approved"):
+            job.lifecycle_state = "DEPLOYING"
+            job.updated_at = datetime.utcnow()
+            db.commit()
         note = err or (f"Operator lifecycle: {lifecycle}" if lifecycle else "等待 Flink Job ID 回填")
         return {"flink_status": flink_st, "note": note, "status": job.status}
     return None
@@ -3936,8 +5609,19 @@ def deprecate_jar_version(version_id: int, db: Session = Depends(get_db), curren
         raise HTTPException(status_code=404, detail="制品不存在")
     assert_workspace_data_capability(db, current_user, art.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
     refs = db.query(StreamingJob).filter(StreamingJob.jar_version_id == version_id).count()
+    refs += (
+        db.query(StreamingJobRelease)
+        .filter(
+            StreamingJobRelease.jar_version_id == version_id,
+            StreamingJobRelease.approval_status.in_(("pending", "approved")),
+        )
+        .count()
+    )
     if refs:
-        raise HTTPException(status_code=409, detail=f"仍有 {refs} 个作业绑定该版本，请先改绑后再废弃")
+        raise HTTPException(
+            status_code=409,
+            detail=f"仍有 {refs} 个作业或待用发布版本引用该版本，不能废弃",
+        )
     ver.status = "deprecated"
     art.updated_at = datetime.utcnow()
     db.commit()

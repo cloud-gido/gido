@@ -38,6 +38,13 @@ def _job_refs_connector(db: Session, version_id: int) -> int:
     for job in db.query(st.StreamingJob).all():
         if version_id in st._parse_version_id_list(getattr(job, "connector_version_ids", None)):
             n += 1
+    for release in db.query(st.StreamingJobRelease).filter(
+        st.StreamingJobRelease.approval_status.in_(("pending", "approved"))
+    ).all():
+        if version_id in st._parse_version_id_list(
+            getattr(release, "connector_version_ids", None)
+        ):
+            n += 1
     return n
 
 
@@ -45,6 +52,13 @@ def _job_refs_file(db: Session, version_id: int) -> int:
     n = 0
     for job in db.query(st.StreamingJob).all():
         if version_id in st._parse_version_id_list(getattr(job, "dependency_file_version_ids", None)):
+            n += 1
+    for release in db.query(st.StreamingJobRelease).filter(
+        st.StreamingJobRelease.approval_status.in_(("pending", "approved"))
+    ).all():
+        if version_id in st._parse_version_id_list(
+            getattr(release, "dependency_file_version_ids", None)
+        ):
             n += 1
     return n
 
@@ -62,6 +76,13 @@ def _job_refs_connector_artifact(db: Session, artifact_id: int) -> int:
     for job in db.query(st.StreamingJob).all():
         if vids.intersection(st._parse_version_id_list(getattr(job, "connector_version_ids", None))):
             n += 1
+    for release in db.query(st.StreamingJobRelease).filter(
+        st.StreamingJobRelease.approval_status.in_(("pending", "approved"))
+    ).all():
+        if vids.intersection(
+            st._parse_version_id_list(getattr(release, "connector_version_ids", None))
+        ):
+            n += 1
     return n
 
 
@@ -77,6 +98,15 @@ def _job_refs_file_artifact(db: Session, artifact_id: int) -> int:
     n = 0
     for job in db.query(st.StreamingJob).all():
         if vids.intersection(st._parse_version_id_list(getattr(job, "dependency_file_version_ids", None))):
+            n += 1
+    for release in db.query(st.StreamingJobRelease).filter(
+        st.StreamingJobRelease.approval_status.in_(("pending", "approved"))
+    ).all():
+        if vids.intersection(
+            st._parse_version_id_list(
+                getattr(release, "dependency_file_version_ids", None)
+            )
+        ):
             n += 1
     return n
 

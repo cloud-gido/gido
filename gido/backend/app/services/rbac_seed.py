@@ -580,6 +580,381 @@ def migrate_dw_streaming_jobs(engine: Engine) -> None:
         )
 
 
+def migrate_dw_streaming_release_lifecycle(engine: Engine) -> None:
+    """实时作业发布快照、恢复点和生命周期审计（MySQL/PostgreSQL/SQLite 幂等）。"""
+    insp = inspect(engine)
+    if insp.has_table("dw_publish_approvals"):
+        approval_cols = {
+            c["name"] for c in insp.get_columns("dw_publish_approvals")
+        }
+        if "release_id" not in approval_cols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "ALTER TABLE dw_publish_approvals "
+                        "ADD COLUMN release_id INTEGER NULL"
+                    )
+                )
+        approval_indexes = {
+            idx["name"] for idx in inspect(engine).get_indexes("dw_publish_approvals")
+        }
+        if "idx_publish_approval_release_id" not in approval_indexes:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "CREATE INDEX idx_publish_approval_release_id "
+                        "ON dw_publish_approvals (release_id)"
+                    )
+                )
+    if not insp.has_table("dw_streaming_jobs"):
+        return
+    job_cols = {c["name"] for c in insp.get_columns("dw_streaming_jobs")}
+    with engine.begin() as conn:
+        if "current_approved_release_id" not in job_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE dw_streaming_jobs ADD COLUMN "
+                    "current_approved_release_id INTEGER NULL"
+                )
+            )
+        if "current_running_release_id" not in job_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE dw_streaming_jobs ADD COLUMN "
+                    "current_running_release_id INTEGER NULL"
+                )
+            )
+        if "lifecycle_state" not in job_cols:
+            nullable = " NOT NULL" if engine.dialect.name in ("mysql", "postgresql") else ""
+            conn.execute(
+                text(
+                    "ALTER TABLE dw_streaming_jobs ADD COLUMN lifecycle_state "
+                    f"VARCHAR(32){nullable} DEFAULT 'draft'"
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    UPDATE dw_streaming_jobs
+                    SET lifecycle_state = CASE
+                        WHEN status = 'running' THEN 'running'
+                        WHEN status = 'failed' THEN 'failed'
+                        WHEN status IN ('cancelled', 'canceled', 'finished') THEN 'stopped'
+                        ELSE 'draft'
+                    END
+                    WHERE lifecycle_state IS NULL OR lifecycle_state = 'draft'
+                    """
+                )
+            )
+
+    insp = inspect(engine)
+    dialect = engine.dialect.name
+    if not insp.has_table("dw_streaming_job_releases"):
+        if dialect == "mysql":
+            ddl = """
+                CREATE TABLE dw_streaming_job_releases (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    job_id INT NOT NULL,
+                    version INT NOT NULL,
+                    job_name VARCHAR(128) NOT NULL,
+                    job_type VARCHAR(16) NOT NULL,
+                    script_content TEXT NULL,
+                    jar_path VARCHAR(512) NULL,
+                    main_class VARCHAR(256) NULL,
+                    program_args TEXT NULL,
+                    parallelism INT NOT NULL DEFAULT 1,
+                    streaming_properties TEXT NULL,
+                    flink_sql_submit_mode VARCHAR(32) NULL,
+                    flink_jar_submit_mode VARCHAR(32) NULL,
+                    flink_session_profile_id INT NULL,
+                    jar_artifact_id INT NULL,
+                    jar_version_id INT NULL,
+                    connector_version_ids TEXT NULL,
+                    dependency_file_version_ids TEXT NULL,
+                    content_hash VARCHAR(64) NOT NULL,
+                    release_note TEXT NULL,
+                    approval_status VARCHAR(24) NOT NULL DEFAULT 'pending',
+                    submitted_by INT NULL,
+                    submitted_at DATETIME NOT NULL,
+                    approved_by INT NULL,
+                    approved_at DATETIME NULL,
+                    approval_comment TEXT NULL,
+                    CONSTRAINT fk_stream_release_job FOREIGN KEY (job_id)
+                        REFERENCES dw_streaming_jobs(id) ON DELETE CASCADE,
+                    UNIQUE KEY uq_streaming_release_job_version (job_id, version),
+                    INDEX idx_streaming_release_job_submitted (job_id, submitted_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        elif dialect == "postgresql":
+            ddl = """
+                CREATE TABLE dw_streaming_job_releases (
+                    id SERIAL PRIMARY KEY,
+                    job_id INTEGER NOT NULL,
+                    version INTEGER NOT NULL,
+                    job_name VARCHAR(128) NOT NULL,
+                    job_type VARCHAR(16) NOT NULL,
+                    script_content TEXT,
+                    jar_path VARCHAR(512),
+                    main_class VARCHAR(256),
+                    program_args TEXT,
+                    parallelism INTEGER NOT NULL DEFAULT 1,
+                    streaming_properties TEXT,
+                    flink_sql_submit_mode VARCHAR(32),
+                    flink_jar_submit_mode VARCHAR(32),
+                    flink_session_profile_id INTEGER,
+                    jar_artifact_id INTEGER,
+                    jar_version_id INTEGER,
+                    connector_version_ids TEXT,
+                    dependency_file_version_ids TEXT,
+                    content_hash VARCHAR(64) NOT NULL,
+                    release_note TEXT,
+                    approval_status VARCHAR(24) NOT NULL DEFAULT 'pending',
+                    submitted_by INTEGER,
+                    submitted_at TIMESTAMP NOT NULL,
+                    approved_by INTEGER,
+                    approved_at TIMESTAMP,
+                    approval_comment TEXT,
+                    CONSTRAINT fk_stream_release_job FOREIGN KEY (job_id)
+                        REFERENCES dw_streaming_jobs(id) ON DELETE CASCADE,
+                    CONSTRAINT uq_streaming_release_job_version UNIQUE (job_id, version)
+                )
+            """
+        else:
+            ddl = """
+                CREATE TABLE dw_streaming_job_releases (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id INTEGER NOT NULL,
+                    version INTEGER NOT NULL,
+                    job_name VARCHAR(128) NOT NULL,
+                    job_type VARCHAR(16) NOT NULL,
+                    script_content TEXT,
+                    jar_path VARCHAR(512),
+                    main_class VARCHAR(256),
+                    program_args TEXT,
+                    parallelism INTEGER NOT NULL DEFAULT 1,
+                    streaming_properties TEXT,
+                    flink_sql_submit_mode VARCHAR(32),
+                    flink_jar_submit_mode VARCHAR(32),
+                    flink_session_profile_id INTEGER,
+                    jar_artifact_id INTEGER,
+                    jar_version_id INTEGER,
+                    connector_version_ids TEXT,
+                    dependency_file_version_ids TEXT,
+                    content_hash VARCHAR(64) NOT NULL,
+                    release_note TEXT,
+                    approval_status VARCHAR(24) NOT NULL DEFAULT 'pending',
+                    submitted_by INTEGER,
+                    submitted_at TIMESTAMP NOT NULL,
+                    approved_by INTEGER,
+                    approved_at TIMESTAMP,
+                    approval_comment TEXT,
+                    CONSTRAINT fk_stream_release_job FOREIGN KEY (job_id)
+                        REFERENCES dw_streaming_jobs(id) ON DELETE CASCADE,
+                    CONSTRAINT uq_streaming_release_job_version UNIQUE (job_id, version)
+                )
+            """
+        with engine.begin() as conn:
+            conn.execute(text(ddl))
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE dw_streaming_job_releases "
+                "SET approval_status = 'pending' "
+                "WHERE approval_status = 'submitted'"
+            )
+        )
+
+    insp = inspect(engine)
+    if not insp.has_table("dw_streaming_restore_points"):
+        pk = (
+            "INT AUTO_INCREMENT PRIMARY KEY"
+            if dialect == "mysql"
+            else ("SERIAL PRIMARY KEY" if dialect == "postgresql" else "INTEGER PRIMARY KEY AUTOINCREMENT")
+        )
+        dt = "DATETIME" if dialect == "mysql" else "TIMESTAMP"
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE dw_streaming_restore_points (
+                        id {pk},
+                        job_id INTEGER NOT NULL,
+                        release_id INTEGER NULL,
+                        operation_id INTEGER NULL,
+                        point_type VARCHAR(24) NOT NULL DEFAULT 'savepoint',
+                        status VARCHAR(24) NOT NULL DEFAULT 'pending',
+                        path VARCHAR(2048) NULL,
+                        flink_job_id VARCHAR(64) NULL,
+                        trigger_reason VARCHAR(64) NULL,
+                        metadata_json TEXT NULL,
+                        error_message TEXT NULL,
+                        created_by INTEGER NULL,
+                        created_at {dt} NOT NULL,
+                        completed_at {dt} NULL,
+                        CONSTRAINT fk_stream_restore_job FOREIGN KEY (job_id)
+                            REFERENCES dw_streaming_jobs(id) ON DELETE CASCADE,
+                        CONSTRAINT fk_stream_restore_release FOREIGN KEY (release_id)
+                            REFERENCES dw_streaming_job_releases(id)
+                    )
+                    """
+                )
+            )
+
+    insp = inspect(engine)
+    if not insp.has_table("dw_streaming_operations"):
+        pk = (
+            "INT AUTO_INCREMENT PRIMARY KEY"
+            if dialect == "mysql"
+            else ("SERIAL PRIMARY KEY" if dialect == "postgresql" else "INTEGER PRIMARY KEY AUTOINCREMENT")
+        )
+        dt = "DATETIME" if dialect == "mysql" else "TIMESTAMP"
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE dw_streaming_operations (
+                        id {pk},
+                        job_id INTEGER NOT NULL,
+                        release_id INTEGER NULL,
+                        restore_point_id INTEGER NULL,
+                        operation_type VARCHAR(32) NOT NULL,
+                        status VARCHAR(24) NOT NULL DEFAULT 'pending',
+                        idempotency_key VARCHAR(128) NULL,
+                        requested_by INTEGER NULL,
+                        requested_at {dt} NOT NULL,
+                        started_at {dt} NULL,
+                        completed_at {dt} NULL,
+                        flink_job_id VARCHAR(64) NULL,
+                        flink_deployment_name VARCHAR(128) NULL,
+                        restore_path VARCHAR(2048) NULL,
+                        request_json TEXT NULL,
+                        result_json TEXT NULL,
+                        error_message TEXT NULL,
+                        CONSTRAINT fk_stream_operation_job FOREIGN KEY (job_id)
+                            REFERENCES dw_streaming_jobs(id) ON DELETE CASCADE,
+                        CONSTRAINT fk_stream_operation_release FOREIGN KEY (release_id)
+                            REFERENCES dw_streaming_job_releases(id),
+                        CONSTRAINT fk_stream_operation_restore FOREIGN KEY (restore_point_id)
+                            REFERENCES dw_streaming_restore_points(id),
+                        CONSTRAINT uq_streaming_operation_idempotency UNIQUE (idempotency_key)
+                    )
+                    """
+                )
+            )
+
+    # MySQL 在 CREATE TABLE 中已创建 release 索引；其余索引统一按 inspector 幂等补齐。
+    index_specs = {
+        "dw_streaming_job_releases": (
+            "idx_streaming_release_job_submitted",
+            "job_id, submitted_at",
+        ),
+        "dw_streaming_restore_points": (
+            "idx_streaming_restore_job_created",
+            "job_id, created_at",
+        ),
+        "dw_streaming_operations": (
+            "idx_streaming_operation_job_requested",
+            "job_id, requested_at",
+        ),
+    }
+    for table_name, (index_name, columns) in index_specs.items():
+        existing = {idx["name"] for idx in inspect(engine).get_indexes(table_name)}
+        if index_name not in existing:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(f"CREATE INDEX {index_name} ON {table_name} ({columns})")
+                )
+
+
+def migrate_dw_stream_pipeline(engine: Engine) -> None:
+    """Typed pipeline/compiler/schema center foundation (idempotent, cross-dialect)."""
+    from app.api.streaming import StreamingJob, StreamingJobRelease
+    from app.api.stream_pipeline import (
+        StreamConnectionProfile,
+        StreamDeploymentGroup,
+        StreamDeploymentGroupMember,
+        StreamPipelineSloPolicy,
+        StreamSchemaContract,
+        StreamSchemaEvolutionAudit,
+        StreamSchemaVersion,
+    )
+
+    insp = inspect(engine)
+    json_type = "JSON" if engine.dialect.name in ("mysql", "postgresql") else "JSON"
+    columns = {
+        "definition_kind": "VARCHAR(32)",
+        "pipeline_spec": json_type,
+        "compiler_version": "VARCHAR(64)",
+        "generated_artifact": json_type,
+        "spec_hash": "VARCHAR(64)",
+    }
+    for table in ("dw_streaming_jobs", "dw_streaming_job_releases"):
+        if not insp.has_table(table):
+            continue
+        existing = {col["name"] for col in inspect(engine).get_columns(table)}
+        with engine.begin() as conn:
+            for name, ddl in columns.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+            if table == "dw_streaming_jobs":
+                conn.execute(
+                    text(
+                        "UPDATE dw_streaming_jobs SET definition_kind = "
+                        "CASE WHEN job_type = 'JAR' THEN 'jar' ELSE 'sql' END "
+                        "WHERE definition_kind IS NULL"
+                    )
+                )
+            else:
+                conn.execute(
+                    text(
+                        "UPDATE dw_streaming_job_releases SET definition_kind = "
+                        "CASE WHEN job_type = 'JAR' THEN 'jar' ELSE 'sql' END "
+                        "WHERE definition_kind IS NULL"
+                    )
+                )
+
+    # Models are ordered by dependency; checkfirst keeps startup/bootstrap repeatable.
+    for model in (
+        StreamConnectionProfile,
+        StreamSchemaContract,
+        StreamSchemaVersion,
+        StreamSchemaEvolutionAudit,
+        StreamDeploymentGroup,
+        StreamDeploymentGroupMember,
+        StreamPipelineSloPolicy,
+    ):
+        model.__table__.create(bind=engine, checkfirst=True)
+
+    if inspect(engine).has_table("dw_stream_deployment_groups"):
+        group_columns = {
+            col["name"]
+            for col in inspect(engine).get_columns("dw_stream_deployment_groups")
+        }
+        group_additions = {
+            "security_domain": "VARCHAR(64) DEFAULT 'default'",
+            "runtime_version": "VARCHAR(32) DEFAULT '2.0.1'",
+            "checkpoint_backend": "VARCHAR(64) DEFAULT 'filesystem'",
+            "custom_dependencies": json_type,
+            "capacity_slots": "INTEGER DEFAULT 4",
+            "allows_stateful": (
+                "BOOLEAN DEFAULT TRUE"
+                if engine.dialect.name == "postgresql"
+                else "BOOLEAN DEFAULT 1"
+            ),
+            "highest_sla_tier": "VARCHAR(32) DEFAULT 'standard'",
+        }
+        with engine.begin() as conn:
+            for name, ddl in group_additions.items():
+                if name not in group_columns:
+                    conn.execute(
+                        text(
+                            f"ALTER TABLE dw_stream_deployment_groups "
+                            f"ADD COLUMN {name} {ddl}"
+                        )
+                    )
+
+
 def migrate_dw_streaming_jobs_streaming_properties(engine: Engine) -> None:
     """Flink SQL Gateway 会话级参数调优（JSON 对象字符串，合并进 Open Session properties）。"""
     insp = inspect(engine)

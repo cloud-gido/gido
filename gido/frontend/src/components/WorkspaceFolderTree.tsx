@@ -45,6 +45,7 @@ type Props = {
     folderChanged: boolean
   }) => Promise<void>
   folderMenuExtra?: (folder: FolderRow) => { key: string; label: React.ReactNode; onClick?: () => void }[]
+  readOnly?: boolean
 }
 
 function sortLeaves(list: LeafRow[]) {
@@ -70,6 +71,7 @@ export default function WorkspaceFolderTree({
   onCopyLeaf,
   onMoveAndReorder,
   folderMenuExtra,
+  readOnly = false,
 }: Props) {
   const [renamingFolderId, setRenamingFolderId] = useState<number | null>(null)
   const [renamingFolderName, setRenamingFolderName] = useState('')
@@ -121,10 +123,10 @@ export default function WorkspaceFolderTree({
         ) : (
           <div
             style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}
-            onDoubleClick={() => { setRenamingFolderId(f.id); setRenamingFolderName(f.name) }}
+            onDoubleClick={readOnly ? undefined : () => { setRenamingFolderId(f.id); setRenamingFolderName(f.name) }}
           >
             <span><FolderOutlined style={{ marginRight: 6, color: '#faad14' }} />{f.name}</span>
-            <Dropdown
+            {!readOnly && <Dropdown
               menu={{
                 items: [
                   ...(folderMenuExtra?.(f) || []),
@@ -140,7 +142,7 @@ export default function WorkspaceFolderTree({
               trigger={['click']}
             >
               <MoreOutlined style={{ padding: '0 4px', color: '#999' }} onClick={e => e.stopPropagation()} />
-            </Dropdown>
+            </Dropdown>}
           </div>
         ),
         children: [] as any[],
@@ -168,13 +170,13 @@ export default function WorkspaceFolderTree({
         ) : (
           <div
             style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}
-            onDoubleClick={() => { setRenamingLeafId(n.id); setRenamingLeafName(n.name) }}
+            onDoubleClick={readOnly ? undefined : () => { setRenamingLeafId(n.id); setRenamingLeafName(n.name) }}
           >
             <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               <FileOutlined style={{ marginRight: 6, color: n.job_type === 'JAR' ? '#fa8c16' : '#1677ff' }} />
               {n.name}
             </span>
-            <Dropdown
+            {!readOnly && <Dropdown
               menu={{
                 items: [
                   { key: 'open', label: '打开', onClick: () => onSelectLeaf(n) },
@@ -186,7 +188,7 @@ export default function WorkspaceFolderTree({
               trigger={['click']}
             >
               <MoreOutlined style={{ padding: '0 4px', color: '#999' }} onClick={e => e.stopPropagation()} />
-            </Dropdown>
+            </Dropdown>}
           </div>
         ),
         isLeaf: true,
@@ -220,7 +222,7 @@ export default function WorkspaceFolderTree({
         title: (
           <span style={{ fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
             <span><FolderOutlined style={{ marginRight: 6 }} />{rootTitle}</span>
-            <Button type="link" size="small" onClick={(e) => { e.stopPropagation(); onCreateFolder(null) }}>新建目录</Button>
+            {!readOnly && <Button type="link" size="small" onClick={(e) => { e.stopPropagation(); onCreateFolder(null) }}>新建目录</Button>}
           </span>
         ),
         children: [...rootFolders, ...rootLeaves],
@@ -228,7 +230,7 @@ export default function WorkspaceFolderTree({
     ] as DataNode[]
   }, [
     folders, leaves, renamingFolderId, renamingLeafId, rootTitle,
-    folderMenuExtra, onCreateFolder, onDeleteFolder, onDeleteLeaf, onCopyLeaf, onSelectLeaf,
+    folderMenuExtra, onCreateFolder, onDeleteFolder, onDeleteLeaf, onCopyLeaf, onSelectLeaf, readOnly,
   ])
 
   const onDrop: TreeProps['onDrop'] = async (info) => {
@@ -276,7 +278,7 @@ export default function WorkspaceFolderTree({
     <Tree
       className={treeClassName}
       blockNode
-      draggable
+      draggable={!readOnly}
       allowDrop={({ dropNode, dragNode }) => {
         const dragKey = String(dragNode.key)
         if (dragKey.startsWith('folder-') || dragKey === 'root') return false

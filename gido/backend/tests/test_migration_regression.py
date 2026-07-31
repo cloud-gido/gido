@@ -81,6 +81,129 @@ def test_migrate_streaming_jobs_owner_lock_idempotent():
     assert "is_locked" in cols
 
 
+def test_migrate_streaming_release_lifecycle_idempotent_on_legacy_table():
+    from sqlalchemy import text
+    from app.services.rbac_seed import migrate_dw_streaming_release_lifecycle
+
+    eng = _fresh_engine()
+    with eng.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE dw_streaming_jobs (
+                  id INTEGER PRIMARY KEY,
+                  workspace_id INTEGER,
+                  name VARCHAR(128),
+                  job_type VARCHAR(16),
+                  status VARCHAR(32)
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO dw_streaming_jobs "
+                "(id, workspace_id, name, job_type, status) "
+                "VALUES (1, 1, 'legacy-job', 'SQL', 'running')"
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE dw_publish_approvals (
+                  id INTEGER PRIMARY KEY,
+                  workspace_id INTEGER,
+                  resource_id INTEGER,
+                  status VARCHAR(32)
+                )
+                """
+            )
+        )
+
+    migrate_dw_streaming_release_lifecycle(eng)
+    migrate_dw_streaming_release_lifecycle(eng)
+
+    inspector = inspect(eng)
+    job_cols = {c["name"] for c in inspector.get_columns("dw_streaming_jobs")}
+    assert {
+        "current_approved_release_id",
+        "current_running_release_id",
+        "lifecycle_state",
+    }.issubset(job_cols)
+    assert inspector.has_table("dw_streaming_job_releases")
+    assert inspector.has_table("dw_streaming_restore_points")
+    assert inspector.has_table("dw_streaming_operations")
+    assert any(
+        fk["referred_table"] == "dw_streaming_jobs"
+        and fk["constrained_columns"] == ["job_id"]
+        for fk in inspector.get_foreign_keys("dw_streaming_job_releases")
+    )
+    assert "release_id" in {
+        c["name"] for c in inspector.get_columns("dw_publish_approvals")
+    }
+    with eng.connect() as conn:
+        assert conn.execute(
+            text("SELECT lifecycle_state FROM dw_streaming_jobs WHERE id = 1")
+        ).scalar_one() == "running"
+
+
+def test_migrate_stream_pipeline_foundation_idempotent():
+    from app.core.database import Base
+    from app.services.rbac_seed import (
+        migrate_dw_stream_pipeline,
+        migrate_dw_streaming_release_lifecycle,
+    )
+
+    _load_models()
+    import app.api.streaming  # noqa: F401
+    import app.api.stream_pipeline  # noqa: F401
+
+    eng = _fresh_engine()
+    Base.metadata.create_all(eng)
+    migrate_dw_streaming_release_lifecycle(eng)
+    migrate_dw_stream_pipeline(eng)
+    migrate_dw_stream_pipeline(eng)
+
+    inspector = inspect(eng)
+    expected_columns = {
+        "definition_kind",
+        "pipeline_spec",
+        "compiler_version",
+        "generated_artifact",
+        "spec_hash",
+    }
+    assert expected_columns.issubset(
+        {column["name"] for column in inspector.get_columns("dw_streaming_jobs")}
+    )
+    assert expected_columns.issubset(
+        {column["name"] for column in inspector.get_columns("dw_streaming_job_releases")}
+    )
+    for table in (
+        "dw_stream_connection_profiles",
+        "dw_stream_schema_contracts",
+        "dw_stream_schema_versions",
+        "dw_stream_schema_evolution_audits",
+        "dw_stream_deployment_groups",
+        "dw_stream_deployment_group_members",
+        "dw_stream_pipeline_slo_policies",
+    ):
+        assert inspector.has_table(table)
+    assert {
+        "security_domain",
+        "runtime_version",
+        "checkpoint_backend",
+        "custom_dependencies",
+        "capacity_slots",
+        "allows_stateful",
+        "highest_sla_tier",
+    }.issubset(
+        {
+            column["name"]
+            for column in inspector.get_columns("dw_stream_deployment_groups")
+        }
+    )
+
+
 def test_migrate_streaming_job_history_idempotent():
     from app.core.database import Base
     from app.services.rbac_seed import migrate_dw_streaming_jobs, migrate_dw_streaming_job_history

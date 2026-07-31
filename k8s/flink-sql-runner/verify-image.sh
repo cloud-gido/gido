@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# 校验 gido-flink-runtime 镜像：Paimon S3 依赖齐全且无冲突 jar
+# 校验 gido-flink-runtime 镜像：Paimon/Kafka/S3 依赖齐全且无冲突 jar
 # 用法：bash k8s/flink-sql-runner/verify-image.sh ghcr.io/cloud-gido/gido/gido-flink-runtime:dev
 set -euo pipefail
 
 IMAGE="${1:?用法: verify-image.sh <镜像名:tag>}"
 
-echo "==> 校验镜像 ${IMAGE} (verify-image v8)"
+echo "==> 校验镜像 ${IMAGE} (verify-image v9)"
 
 docker run --rm "${IMAGE}" bash -c '
 set -euo pipefail
@@ -14,6 +14,7 @@ test -x "${JAVA}" || JAVA="$(command -v java)"
 
 for j in \
   /opt/flink/lib/paimon-flink-2.0-*.jar \
+  /opt/flink/lib/flink-sql-connector-kafka-4.0.1-2.0.jar \
   /opt/flink/lib/hadoop-common-*.jar \
   /opt/flink/lib/hadoop-hdfs-client-*.jar \
   /opt/flink/lib/hadoop-mapreduce-client-core-*.jar \

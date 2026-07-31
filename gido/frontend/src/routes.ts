@@ -29,6 +29,7 @@ export const R = {
   stream: {
     root: '/gido/stream',
     studio: '/gido/stream/studio',
+    pipelines: '/gido/stream/pipelines',
     /** 资源管理总览 */
     resources: '/gido/stream/resources',
     /** JAR 包（资源管理子页） */

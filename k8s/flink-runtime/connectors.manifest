@@ -21,6 +21,20 @@ flink_cdc:
     artifact: org.apache.flink:flink-sql-connector-postgres-cdc
     version: "3.5.0"
 
+kafka_sql:
+  artifact: org.apache.flink:flink-sql-connector-kafka
+  version: "4.0.1-2.0"
+  path: /opt/flink/lib/flink-sql-connector-kafka-4.0.1-2.0.jar
+  connector: kafka
+  compatibility:
+    flink_release_line: "2.0.x"
+    runtime_verified: "2.0.1"
+    connector_release: "4.0.1"
+    version_qualifier: "2.0"
+  note: >
+    Kafka connector releases are decoupled from Flink. The -2.0 qualifier is required:
+    do not replace this with an unqualified 4.0.1 or a connector built for another Flink line.
+
 s3_filesystem:
   artifact: org.apache.flink:flink-s3-fs-hadoop
   version: "2.0.1"
