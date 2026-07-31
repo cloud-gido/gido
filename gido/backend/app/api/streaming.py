@@ -1935,6 +1935,9 @@ class StreamingRestartBody(StreamingDeployBody):
 class StreamingStopBody(BaseModel):
     mode: str = "savepoint"
     timeout_seconds: float = Field(default=120.0, ge=5.0, le=900.0)
+    # False（默认）：触发挂起后立即返回，Savepoint 在后台完成，避免运维页弹窗卡死
+    # True：同步等到完成/失败（单测与脚本）
+    wait: bool = False
     idempotency_key: Optional[str] = Field(default=None, max_length=128)
 
     @field_validator("mode")
@@ -3900,6 +3903,197 @@ def deploy_streaming_job_release(
         raise HTTPException(status_code=500, detail=f"部署失败: {detail}") from exc
 
 
+def _finalize_savepoint_stop(
+    *,
+    db: Session,
+    job: StreamingJob,
+    operation: StreamingOperation,
+    restore: StreamingRestorePoint,
+    deployment_name: str,
+    namespace: str,
+    timeout_seconds: float,
+    previous_path: Optional[str],
+    previous_trigger_id: Optional[str],
+    previous_trigger_timestamp: Optional[str],
+) -> dict:
+    """等待 Savepoint 完成并回填；供同步 wait=true 与后台线程共用。"""
+    from app.services.flink_operator_submit import (
+        resume_flink_deployment,
+        wait_for_completed_savepoint,
+        wait_for_flink_deployment_running,
+        wait_for_flink_deployment_suspended,
+    )
+
+    try:
+        savepoint_path = wait_for_completed_savepoint(
+            deployment_name,
+            namespace,
+            timeout_seconds=timeout_seconds,
+            previous_path=previous_path,
+            previous_trigger_id=previous_trigger_id,
+            previous_trigger_timestamp=previous_trigger_timestamp,
+        )
+        final_cr = wait_for_flink_deployment_suspended(
+            deployment_name,
+            namespace,
+            timeout_seconds=timeout_seconds,
+        )
+        restore.status = "completed"
+        restore.path = _assert_durable_restore_path(savepoint_path)
+        restore.flink_job_id = job.flink_job_id
+        restore.completed_at = datetime.utcnow()
+        restore.metadata_json = json.dumps(
+            {
+                "namespace": namespace,
+                "deployment_name": deployment_name,
+                "flink_version": (final_cr.get("spec") or {}).get("flinkVersion"),
+                "parallelism": ((final_cr.get("spec") or {}).get("job") or {}).get(
+                    "parallelism"
+                ),
+                "release_id": job.current_running_release_id,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        operation.restore_point_id = restore.id
+        operation.restore_path = restore.path
+        operation.flink_job_id = job.flink_job_id
+        finish_streaming_operation(
+            operation,
+            status="succeeded",
+            result_payload={"savepoint_path": restore.path},
+        )
+        job.status = "cancelled"
+        job.lifecycle_state = "SUSPENDED"
+        job.updated_at = datetime.utcnow()
+        db.commit()
+        return {
+            "message": "Savepoint 已完成，作业已挂起",
+            "operation_id": operation.id,
+            "restore_point": _streaming_restore_point_public_dict(restore),
+        }
+    except Exception as exc:
+        cluster_state = "unknown"
+        try:
+            resume_flink_deployment(
+                deployment_name,
+                namespace,
+                upgrade_mode="savepoint",
+            )
+            after_resume = wait_for_flink_deployment_running(
+                deployment_name,
+                namespace,
+                timeout_seconds=min(float(timeout_seconds), 60.0),
+            )
+            cluster_state = str(
+                (((after_resume.get("spec") or {}).get("job") or {}).get("state"))
+                or ""
+            ).strip().lower() or "unknown"
+        except Exception:
+            cluster_state = "unknown"
+        restore.status = "failed"
+        restore.error_message = str(exc)
+        restore.completed_at = datetime.utcnow()
+        finish_streaming_operation(
+            operation,
+            status="failed",
+            error_message=str(exc),
+        )
+        if cluster_state == "running":
+            job.status = "running"
+            job.lifecycle_state = "RUNNING"
+        elif cluster_state == "suspended":
+            job.status = "cancelled"
+            job.lifecycle_state = "SUSPENDED"
+        else:
+            job.status = "failed"
+            job.lifecycle_state = "STOP_FAILED"
+        job.updated_at = datetime.utcnow()
+        db.commit()
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Savepoint 停止失败；集群状态={cluster_state}，"
+                f"请在作业运维确认后重试: {exc}"
+            ),
+        ) from exc
+
+
+def _finalize_savepoint_stop_background(
+    *,
+    job_id: int,
+    operation_id: int,
+    restore_id: int,
+    deployment_name: str,
+    namespace: str,
+    timeout_seconds: float,
+    previous_path: Optional[str],
+    previous_trigger_id: Optional[str],
+    previous_trigger_timestamp: Optional[str],
+) -> None:
+    from app.core.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        job = db.query(StreamingJob).filter(StreamingJob.id == job_id).first()
+        operation = db.query(StreamingOperation).filter(StreamingOperation.id == operation_id).first()
+        restore = db.query(StreamingRestorePoint).filter(StreamingRestorePoint.id == restore_id).first()
+        if not job or not operation or not restore:
+            return
+        if operation.status in ("succeeded", "failed"):
+            return
+        try:
+            _finalize_savepoint_stop(
+                db=db,
+                job=job,
+                operation=operation,
+                restore=restore,
+                deployment_name=deployment_name,
+                namespace=namespace,
+                timeout_seconds=timeout_seconds,
+                previous_path=previous_path,
+                previous_trigger_id=previous_trigger_id,
+                previous_trigger_timestamp=previous_trigger_timestamp,
+            )
+        except HTTPException:
+            # 失败态已写入库；后台线程不再向外抛
+            logger.warning(
+                "后台 Savepoint 停止失败 job_id=%s operation_id=%s",
+                job_id,
+                operation_id,
+                exc_info=True,
+            )
+        except Exception:
+            logger.exception(
+                "后台 Savepoint 停止异常 job_id=%s operation_id=%s",
+                job_id,
+                operation_id,
+            )
+            try:
+                job = db.query(StreamingJob).filter(StreamingJob.id == job_id).first()
+                operation = db.query(StreamingOperation).filter(StreamingOperation.id == operation_id).first()
+                restore = db.query(StreamingRestorePoint).filter(StreamingRestorePoint.id == restore_id).first()
+                if restore and restore.status == "pending":
+                    restore.status = "failed"
+                    restore.error_message = "后台 Savepoint 停止异常"
+                    restore.completed_at = datetime.utcnow()
+                if operation and operation.status == "running":
+                    finish_streaming_operation(
+                        operation,
+                        status="failed",
+                        error_message="后台 Savepoint 停止异常",
+                    )
+                if job and str(job.lifecycle_state or "").upper() in ("SAVING_STATE", "SUSPENDING"):
+                    job.lifecycle_state = "STOP_FAILED"
+                    job.status = "failed"
+                    job.updated_at = datetime.utcnow()
+                db.commit()
+            except Exception:
+                logger.exception("回写后台停止失败态再次异常 job_id=%s", job_id)
+    finally:
+        db.close()
+
+
 @router.post("/jobs/{job_id}/stop")
 def stop_streaming_job_with_savepoint(
     job_id: int,
@@ -3907,20 +4101,26 @@ def stop_streaming_job_with_savepoint(
     db: Session = Depends(get_db_flink),
     current_user: User = Depends(get_current_user),
 ):
+    """Savepoint 停止：默认异步提交（立刻返回），后台等待完成；wait=true 时同步等待。"""
+    import threading
+
     from app.services.flink_operator_submit import (
         _operator_namespace,
         extract_savepoint_status_from_cr,
         extract_savepoint_trigger_from_cr,
         read_flink_deployment,
         suspend_flink_deployment,
-        wait_for_completed_savepoint,
-        wait_for_flink_deployment_running,
-        wait_for_flink_deployment_suspended,
     )
 
     job = require_streaming_job(
         db, current_user, job_id, "developer", PC.GIDO_STREAM_RUN
     )
+    lifecycle = str(getattr(job, "lifecycle_state", None) or "").upper()
+    if lifecycle in ("SAVING_STATE", "SUSPENDING"):
+        raise HTTPException(
+            status_code=409,
+            detail="作业正在 Savepoint 停止中，请稍候查看状态或操作记录；勿重复点击",
+        )
     deployment_name = _operator_deployment_name_for_job(job)
     if not deployment_name:
         raise HTTPException(status_code=409, detail="作业没有可挂起的 FlinkDeployment")
@@ -3975,100 +4175,51 @@ def stop_streaming_job_with_savepoint(
         )
         job.lifecycle_state = "SUSPENDING"
         db.commit()
-        savepoint_path = wait_for_completed_savepoint(
-            deployment_name,
-            namespace,
-            timeout_seconds=body.timeout_seconds,
-            previous_path=previous_path,
-            previous_trigger_id=previous_trigger_id,
-            previous_trigger_timestamp=previous_trigger_timestamp,
-        )
-        final_cr = wait_for_flink_deployment_suspended(
-            deployment_name,
-            namespace,
-            timeout_seconds=body.timeout_seconds,
-        )
-        restore.status = "completed"
-        restore.path = _assert_durable_restore_path(savepoint_path)
-        restore.flink_job_id = job.flink_job_id
-        restore.completed_at = datetime.utcnow()
-        restore.metadata_json = json.dumps(
-            {
-                "namespace": namespace,
-                "deployment_name": deployment_name,
-                "flink_version": (final_cr.get("spec") or {}).get("flinkVersion"),
-                "parallelism": ((final_cr.get("spec") or {}).get("job") or {}).get(
-                    "parallelism"
-                ),
-                "release_id": job.current_running_release_id,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        operation.restore_point_id = restore.id
-        operation.restore_path = restore.path
-        operation.flink_job_id = job.flink_job_id
-        finish_streaming_operation(
-            operation,
-            status="succeeded",
-            result_payload={"savepoint_path": restore.path},
-        )
-        job.status = "cancelled"
-        job.lifecycle_state = "SUSPENDED"
-        job.updated_at = datetime.utcnow()
-        db.commit()
-        return {
-            "message": "Savepoint 已完成，作业已挂起",
-            "operation_id": operation.id,
-            "restore_point": _streaming_restore_point_public_dict(restore),
-        }
     except Exception as exc:
-        cluster_state = "unknown"
-        try:
-            from app.services.flink_operator_submit import resume_flink_deployment
-
-            resume_flink_deployment(
-                deployment_name,
-                namespace,
-                upgrade_mode="savepoint",
-            )
-            after_resume = wait_for_flink_deployment_running(
-                deployment_name,
-                namespace,
-                timeout_seconds=min(body.timeout_seconds, 60.0),
-            )
-            cluster_state = str(
-                (((after_resume.get("spec") or {}).get("job") or {}).get("state"))
-                or ""
-            ).strip().lower() or "unknown"
-        except Exception:
-            cluster_state = "unknown"
         restore.status = "failed"
         restore.error_message = str(exc)
         restore.completed_at = datetime.utcnow()
-        finish_streaming_operation(
-            operation,
-            status="failed",
-            error_message=str(exc),
-        )
-        if cluster_state == "running":
-            job.status = "running"
-            job.lifecycle_state = "RUNNING"
-        elif cluster_state == "suspended":
-            job.status = "cancelled"
-            job.lifecycle_state = "SUSPENDED"
-        else:
-            job.status = "failed"
-            job.lifecycle_state = "STOP_FAILED"
+        finish_streaming_operation(operation, status="failed", error_message=str(exc))
+        job.lifecycle_state = "STOP_FAILED"
+        job.status = "failed"
         job.updated_at = datetime.utcnow()
         db.commit()
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"Savepoint 停止失败；集群状态={cluster_state}，"
-                f"请在作业运维确认后重试: {exc}"
-            ),
-        ) from exc
+        raise HTTPException(status_code=500, detail=f"触发 Savepoint 停止失败: {exc}") from exc
+
+    finalize_kwargs = dict(
+        deployment_name=deployment_name,
+        namespace=namespace,
+        timeout_seconds=float(body.timeout_seconds),
+        previous_path=previous_path,
+        previous_trigger_id=previous_trigger_id,
+        previous_trigger_timestamp=previous_trigger_timestamp,
+    )
+    if body.wait:
+        return _finalize_savepoint_stop(
+            db=db,
+            job=job,
+            operation=operation,
+            restore=restore,
+            **finalize_kwargs,
+        )
+
+    threading.Thread(
+        target=_finalize_savepoint_stop_background,
+        kwargs={
+            "job_id": int(job.id),
+            "operation_id": int(operation.id),
+            "restore_id": int(restore.id),
+            **finalize_kwargs,
+        },
+        name=f"gido-savepoint-stop-{job.id}",
+        daemon=True,
+    ).start()
+    return {
+        "message": "已提交 Savepoint 停止，后台执行中；状态变为「正在保存/挂起」，完成后自动更新，可在操作记录查看进度",
+        "operation_id": operation.id,
+        "accepted": True,
+        "lifecycle_state": job.lifecycle_state,
+    }
 
 
 @router.post("/jobs/{job_id}/restart")

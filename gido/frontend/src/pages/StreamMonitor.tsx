@@ -302,9 +302,16 @@ export default function StreamMonitorPage() {
     try {
       const res: any = await streamingApi.stopJob(row.id, { mode: 'savepoint' })
       message.success(res?.message || '已提交 Savepoint 停止')
+      setJobs(prev => prev.map(j => (
+        j.id === row.id
+          ? { ...j, lifecycle_state: res?.lifecycle_state || 'SUSPENDING' }
+          : j
+      )))
       await loadJobs(false)
     } catch (e: any) {
-      message.error(e?.response?.data?.detail || '停止失败')
+      const detail = e?.response?.data?.detail || e?.message || '停止失败'
+      message.error(typeof detail === 'string' ? detail : '停止失败')
+      throw e
     }
   }
 
@@ -315,14 +322,27 @@ export default function StreamMonitorPage() {
       await loadJobs(false)
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '强制停止失败')
+      throw e
     }
   }
 
   const confirmStop = (row: any) => {
     Modal.confirm({
-      title: '默认创建 Savepoint 后停止作业？',
-      content: '若作业已失败或 TaskManager 未起来，Savepoint 可能失败；此时请改用「强停」。',
-      okText: '确定停止',
+      title: 'Savepoint 停止作业？',
+      content: (
+        <div>
+          <p style={{ marginBottom: 8 }}>
+            确认后立即提交并关闭弹窗，不阻塞运维页。集群在后台做 Savepoint（通常几十秒到两分钟）。
+          </p>
+          <p style={{ marginBottom: 8, color: 'rgba(0,0,0,0.65)' }}>
+            行状态会变为「正在保存状态 / 正在挂起」；完成后自动变为已停止。可在「操作记录」查看进度。
+          </p>
+          <p style={{ marginBottom: 0, color: 'rgba(0,0,0,0.65)' }}>
+            若失败或卡住，请用「强停」清集群。请勿在停止进行中重复点击。
+          </p>
+        </div>
+      ),
+      okText: '提交停止',
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: () => handleStop(row),
@@ -332,7 +352,7 @@ export default function StreamMonitorPage() {
   const confirmForceStop = (row: any) => {
     Modal.confirm({
       title: '强制停止不会创建 Savepoint，确认继续？',
-      content: '将删除 FlinkDeployment / 清理集群资源，适合僵尸作业与调度失败场景。',
+      content: '立即删除 FlinkDeployment / 清理集群资源。适合僵尸作业、Savepoint 失败或调度失败。',
       okText: '强制停止',
       okButtonProps: { danger: true },
       cancelText: '取消',
@@ -808,19 +828,21 @@ export default function StreamMonitorPage() {
       width: 280,
       render: (_: unknown, row: any) => {
         const state = unifiedJobState(row).key
+        const lifecycle = String(row.lifecycle_state || '').toUpperCase()
+        const stopping = lifecycle === 'SAVING_STATE' || lifecycle === 'SUSPENDING'
         const approved = (releaseMap[row.id] || []).some(release => isApprovedNotDeployed(release, row))
           || (row.current_approved_release_id && row.current_approved_release_id !== row.current_running_release_id)
           || (row.approval_status === 'approved' && !row.deployed_at)
         const active = state === 'active'
         // 失败/需处理时平台可能仍挂着 FlinkDeployment，必须允许停止/强停清集群，否则部署会被 409 卡住
-        const canStop = active
+        const canStop = !stopping && (active
           || state === 'needs_attention'
-          || Boolean(isOperatorJob(row) && row.flink_operator_deployment_name)
-        const canRestart = active || state === 'stopped' || state === 'needs_attention'
+          || Boolean(isOperatorJob(row) && row.flink_operator_deployment_name))
+        const canRestart = !stopping && (active || state === 'stopped' || state === 'needs_attention')
         return (
           <Space size={4} wrap>
             <Button size="small" type={approved ? 'primary' : 'default'} icon={<RocketOutlined />}
-              disabled={active || (!approved && !row.current_approved_release_id && !row.latest_release_id && !(releaseMap[row.id] || []).length)}
+              disabled={active || stopping || (!approved && !row.current_approved_release_id && !row.latest_release_id && !(releaseMap[row.id] || []).length)}
               onClick={() => void openLifecycleAction(row, 'deploy')}>
               部署
             </Button>
@@ -828,9 +850,11 @@ export default function StreamMonitorPage() {
               onClick={() => void openLifecycleAction(row, 'restart')}>
               重启/恢复
             </Button>
-            <Button size="small" danger disabled={!canStop} icon={<StopOutlined />}
-              onClick={() => confirmStop(row)}>停止</Button>
-            <Button size="small" danger type="text" disabled={!canStop}
+            <Tooltip title={stopping ? 'Savepoint 停止进行中，请稍候或查看操作记录' : undefined}>
+              <Button size="small" danger disabled={!canStop} icon={<StopOutlined />}
+                onClick={() => confirmStop(row)}>{stopping ? '停止中' : '停止'}</Button>
+            </Tooltip>
+            <Button size="small" danger type="text" disabled={!canStop && !stopping}
               onClick={() => confirmForceStop(row)}>强停</Button>
           </Space>
         )

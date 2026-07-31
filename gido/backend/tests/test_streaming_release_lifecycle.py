@@ -411,7 +411,7 @@ def test_stop_persists_new_savepoint_and_suspends(monkeypatch):
 
     out = stop_streaming_job_with_savepoint(
         job.id,
-        StreamingStopBody(timeout_seconds=10),
+        StreamingStopBody(timeout_seconds=10, wait=True),
         db=db,
         current_user=SimpleNamespace(id=7),
     )
@@ -473,7 +473,7 @@ def test_stop_timeout_keeps_job_running_and_audits_failure(monkeypatch):
     with pytest.raises(HTTPException, match="集群状态=running"):
         stop_streaming_job_with_savepoint(
             job.id,
-            StreamingStopBody(timeout_seconds=10),
+            StreamingStopBody(timeout_seconds=10, wait=True),
             db=db,
             current_user=SimpleNamespace(id=7),
         )
