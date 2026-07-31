@@ -692,9 +692,11 @@ def delete_flink_deployment(deployment_name: str, namespace: Optional[str] = Non
     """删除 FlinkDeployment CR。返回 True=本次发出删除；False=CR 本就不存在(404)。其它错误抛出。
 
     使用与历史可用路径相同的简单 DELETE（propagation_policy 走 query 参数，勿塞错误 body）。
+    SQL 作业附带的 runtime Secret 做 best-effort 清理，失败不回滚已删除的 CR。
     """
     api = _custom_objects_api()
     ns = namespace or _operator_namespace()
+    deleted = False
     try:
         api.delete_namespaced_custom_object(
             group=FLINK_DEPLOYMENT_GROUP,
@@ -705,18 +707,14 @@ def delete_flink_deployment(deployment_name: str, namespace: Optional[str] = Non
             propagation_policy="Background",
         )
         logger.info("已删除 FlinkDeployment %s/%s", ns, deployment_name)
-        if deployment_name.startswith("gido-sql-"):
-            delete_sql_runtime_secret(deployment_name, ns)
-        return True
+        deleted = True
     except Exception as e:
         from kubernetes.client import ApiException  # type: ignore
 
         if isinstance(e, ApiException) and getattr(e, "status", None) == 404:
             logger.debug("FlinkDeployment 已不存在 %s/%s", ns, deployment_name)
-            if deployment_name.startswith("gido-sql-"):
-                delete_sql_runtime_secret(deployment_name, ns)
-            return False
-        if isinstance(e, ApiException) and getattr(e, "status", None) == 403:
+            deleted = False
+        elif isinstance(e, ApiException) and getattr(e, "status", None) == 403:
             # 无权删该 ns：不吞掉——调用方应只对 accessible 的 ref 调用；
             # 这里改写为更短的运维可读错误，避免把整段 HTTP headers 抛到前端。
             raise PermissionError(
@@ -724,8 +722,20 @@ def delete_flink_deployment(deployment_name: str, namespace: Optional[str] = Non
                 f"（ServiceAccount 对该命名空间缺少 delete flinkdeployments）。"
                 f"请确认作业所在 ns 与 FLINK_OPERATOR_NAMESPACE，并检查 RBAC。"
             ) from e
-        raise
+        else:
+            raise
 
+    if deployment_name.startswith("gido-sql-"):
+        try:
+            delete_sql_runtime_secret(deployment_name, ns)
+        except Exception:
+            logger.warning(
+                "清理 Pipeline runtime Secret 失败 %s/%s（FlinkDeployment 已处理，忽略）",
+                ns,
+                deployment_name,
+                exc_info=True,
+            )
+    return deleted
 
 def flink_deployment_deletion_state(
     deployment_name: str, namespace: Optional[str] = None

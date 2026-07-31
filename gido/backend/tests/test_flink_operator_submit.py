@@ -120,6 +120,24 @@ def test_sql_deployment_delete_cleans_runtime_secret(monkeypatch):
     assert cleaned == [("gido-sql-1-2", "flink")]
 
 
+def test_sql_deployment_delete_ignores_secret_cleanup_errors(monkeypatch):
+    from app.services import flink_operator_submit as fos
+
+    class FakeCustomApi:
+        def delete_namespaced_custom_object(self, **kwargs):
+            return {}
+
+    monkeypatch.setattr(fos, "_custom_objects_api", lambda: FakeCustomApi())
+
+    def boom(deployment_name, namespace=None):
+        from kubernetes.client import ApiException
+
+        raise ApiException(status=403, reason="Forbidden")
+
+    monkeypatch.setattr(fos, "delete_sql_runtime_secret", boom)
+    assert fos.delete_flink_deployment("gido-sql-1-237", "bigdata") is True
+
+
 def test_artifact_token_stable_without_internal_token(monkeypatch):
     from app.core.config import settings
     from app.services import jar_artifact as ja
