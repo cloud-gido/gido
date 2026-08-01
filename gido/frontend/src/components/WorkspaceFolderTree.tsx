@@ -3,7 +3,7 @@ import { Button, Dropdown, Input, Tree, message } from 'antd'
 import type { DataNode, TreeProps } from 'antd/es/tree'
 import { FileOutlined, FolderOutlined, MoreOutlined } from '@ant-design/icons'
 import { sortLeavesByOrderThenName, sortFoldersByOrderThenName } from '../utils/treeSort'
-import { ancestorFolderKeys, insertAmongPeers, orderLeavesAfterDrop } from '../utils/treeDropOrder'
+import { ancestorFolderKeys, insertAmongPeers, orderLeavesAfterDrop, resolveFolderDropIntent } from '../utils/treeDropOrder'
 
 /** Studio / Stream 用 number；Probe 本地目录用 string */
 export type TreeId = string | number
@@ -319,65 +319,59 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
       if (!cur) return
 
       const dropKey = String(info.node.key)
-      let targetParentId: T | null = null
-      let relativeFolderId: T | null = null
-      let position: 'before' | 'after' = 'after'
-      let nestAsChild = false
+      const dropLeafFolderId = dropKey.startsWith('folder-') || dropKey === 'root'
+        ? undefined
+        : (leaves.find(l => sameId(l.id, leafKeyToId(dropKey, leaves)))?.folder_id ?? null)
+      const dropFolderRaw = dropKey.startsWith('folder-') ? parseFolderKey(dropKey) : null
+      const dropFolderExpanded = dropFolderRaw != null
+        && expandedKeys.map(String).includes(`folder-${dropFolderRaw}`)
 
-      if (dropKey.startsWith('folder-')) {
-        const dropRaw = parseFolderKey(dropKey)
-        const dropFolderId = dropRaw != null ? folderKeyToId(dropRaw, folders) : null
-        if (dropFolderId == null) return
-        if (info.dropToGap) {
-          const dropFolder = folders.find(f => sameId(f.id, dropFolderId))
-          targetParentId = (dropFolder?.parent_id ?? null) as T | null
-          relativeFolderId = dropFolderId
-          const dropPos = String(info.node.pos || '').split('-')
-          const dropPosition = info.dropPosition - Number(dropPos[dropPos.length - 1] || 0)
-          position = dropPosition <= 0 ? 'before' : 'after'
-        } else {
-          nestAsChild = true
-          targetParentId = dropFolderId
-        }
-      } else if (dropKey === 'root') {
-        targetParentId = null
-      } else {
-        const dropLeaf = leaves.find(l => sameId(l.id, leafKeyToId(dropKey, leaves)))
-        targetParentId = (dropLeaf?.folder_id ?? null) as T | null
-      }
+      const intent = resolveFolderDropIntent({
+        draggedId: folderId,
+        draggedParentId: (cur.parent_id ?? null) as T | null,
+        dropKey,
+        dropToGap: Boolean(info.dropToGap),
+        dropPosition: info.dropPosition,
+        nodePos: String(info.node.pos || ''),
+        folders,
+        dropLeafFolderId,
+        dropFolderExpanded,
+      })
+      if (!intent) return
 
-      const sameParent = sameId(cur.parent_id, targetParentId)
       try {
-        if (nestAsChild || !sameParent) {
+        if (intent.kind === 'reparent') {
           if (!onMoveFolder) {
             message.info('暂不支持移动目录到其他父级')
             return
           }
-          if (!sameId(cur.parent_id, targetParentId)) {
-            await onMoveFolder({ folderId, targetParentId })
-            message.success('目录已移动')
-          }
-        } else {
-          if (!onReorderFolders) {
-            message.info('暂不支持目录排序')
-            return
-          }
-          const peers = sortFolders(
-            folders.filter(f => sameId(f.parent_id, targetParentId) && !sameId(f.id, folderId)),
-          )
-          const orderedIds = insertAmongPeers({
-            peerIdsExcludingDragged: peers.map(f => f.id),
-            draggedId: folderId,
-            relativeId: relativeFolderId,
-            position,
-          })
-          const prevIds = sortFolders(
-            folders.filter(f => sameId(f.parent_id, targetParentId)),
-          ).map(f => f.id)
-          if (orderedIds.map(String).join(',') === prevIds.map(String).join(',')) return
-          await onReorderFolders({ parentId: targetParentId, orderedFolderIds: orderedIds })
-          message.success('目录顺序已更新')
+          if (sameId(cur.parent_id, intent.targetParentId)) return
+          await onMoveFolder({ folderId, targetParentId: intent.targetParentId })
+          message.success('目录已移动')
+          return
         }
+
+        if (!onReorderFolders) {
+          message.info('暂不支持目录排序')
+          return
+        }
+        const targetParentId = intent.parentId
+        const peers = sortFolders(
+          folders.filter(f => sameId(f.parent_id, targetParentId) && !sameId(f.id, folderId)),
+        )
+        const orderedIds = insertAmongPeers({
+          peerIdsExcludingDragged: peers.map(f => f.id),
+          draggedId: folderId,
+          relativeId: intent.relativeId,
+          position: intent.position,
+          insertIndex: intent.insertIndex,
+        })
+        const prevIds = sortFolders(
+          folders.filter(f => sameId(f.parent_id, targetParentId)),
+        ).map(f => f.id)
+        if (orderedIds.map(String).join(',') === prevIds.map(String).join(',')) return
+        await onReorderFolders({ parentId: targetParentId, orderedFolderIds: orderedIds })
+        message.success('目录顺序已更新')
       } catch (e: any) {
         message.error(e?.response?.data?.detail || '目录移动失败')
       }

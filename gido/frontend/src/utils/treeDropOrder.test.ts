@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import { describe, expect, it } from 'vitest'
-import { ancestorFolderKeys, insertAmongPeers, orderLeavesAfterDrop } from './treeDropOrder'
+import { ancestorFolderKeys, insertAmongPeers, orderLeavesAfterDrop, resolveFolderDropIntent } from './treeDropOrder'
 
 describe('treeDropOrder', () => {
   it('目录同级：插到 relative 之前/之后', () => {
@@ -28,7 +28,7 @@ describe('treeDropOrder', () => {
   it('无 relative 时追加到末尾', () => {
     expect(
       insertAmongPeers({
-        peerIdsExcludingDragged: ['a', 'b'],
+        peerIdsExcludingDragged: ['a', 'b'] as string[],
         draggedId: 'c',
         relativeId: null,
         position: 'after',
@@ -36,10 +36,79 @@ describe('treeDropOrder', () => {
     ).toEqual(['a', 'b', 'c'])
   })
 
+  it('把 b 拖到未展开的同级 a 上（dropToGap=false）→ 排到 a 前', () => {
+    const folders = [
+      { id: 1 as number, parent_id: null as number | null },
+      { id: 2 as number, parent_id: null as number | null },
+    ]
+    const intent = resolveFolderDropIntent({
+      draggedId: 2,
+      draggedParentId: null,
+      dropKey: 'folder-1',
+      dropToGap: false,
+      dropPosition: 0,
+      nodePos: '0-0-0',
+      folders,
+      dropFolderExpanded: false,
+    })
+    expect(intent).toEqual({
+      kind: 'reorder',
+      parentId: null,
+      relativeId: 1,
+      position: 'before',
+    })
+    expect(
+      insertAmongPeers({
+        peerIdsExcludingDragged: [1] as number[],
+        draggedId: 2,
+        relativeId: 1,
+        position: 'before',
+      }),
+    ).toEqual([2, 1])
+  })
+
+  it('缝隙拖到 a 后 → after', () => {
+    const intent = resolveFolderDropIntent({
+      draggedId: 2,
+      draggedParentId: null,
+      dropKey: 'folder-1',
+      dropToGap: true,
+      dropPosition: 2,
+      nodePos: '0-0-1',
+      folders: [
+        { id: 1, parent_id: null },
+        { id: 2, parent_id: null },
+      ] as { id: number; parent_id: number | null }[],
+    })
+    expect(intent?.kind).toBe('reorder')
+    if (intent?.kind === 'reorder') {
+      expect(intent.position).toBe('after')
+      expect(intent.relativeId).toBe(1)
+    }
+  })
+
+  it('拖到已展开的同级目录内容上 → 嵌套为子目录', () => {
+    expect(
+      resolveFolderDropIntent({
+        draggedId: 2,
+        draggedParentId: null,
+        dropKey: 'folder-1',
+        dropToGap: false,
+        dropPosition: 0,
+        nodePos: '0-0-0',
+        folders: [
+          { id: 1, parent_id: null },
+          { id: 2, parent_id: null },
+        ] as { id: number; parent_id: number | null }[],
+        dropFolderExpanded: true,
+      }),
+    ).toEqual({ kind: 'reparent', targetParentId: 1 })
+  })
+
   it('叶子落到目录内：非 gap 置顶，gap 追加', () => {
     expect(
       orderLeavesAfterDrop({
-        peerIdsExcludingDragged: [10, 20],
+        peerIdsExcludingDragged: [10, 20] as number[],
         draggedId: 30,
         dropRelativeLeafId: null,
         dropToGap: false,
@@ -47,7 +116,7 @@ describe('treeDropOrder', () => {
     ).toEqual([30, 10, 20])
     expect(
       orderLeavesAfterDrop({
-        peerIdsExcludingDragged: [10, 20],
+        peerIdsExcludingDragged: [10, 20] as number[],
         draggedId: 30,
         dropRelativeLeafId: null,
         dropToGap: true,
@@ -84,7 +153,7 @@ describe('treeDropOrder', () => {
           { id: 1, parent_id: null },
           { id: 2, parent_id: 1 },
           { id: 3, parent_id: 2 },
-        ],
+        ] as { id: number; parent_id: number | null }[],
       }),
     ).toEqual(['root', 'folder-3', 'folder-2', 'folder-1'])
   })
