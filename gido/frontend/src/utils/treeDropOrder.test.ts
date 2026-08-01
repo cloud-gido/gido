@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import { describe, expect, it } from 'vitest'
-import { ancestorFolderKeys, insertAmongPeers, orderLeavesAfterDrop, resolveFolderDropIntent } from './treeDropOrder'
+import { ancestorFolderKeys, folderReorderNeedsReparent, insertAmongPeers, orderLeavesAfterDrop, resolveFolderDropIntent } from './treeDropOrder'
 
 describe('treeDropOrder', () => {
   it('目录同级：插到 relative 之前/之后', () => {
@@ -103,6 +103,61 @@ describe('treeDropOrder', () => {
         dropFolderExpanded: true,
       }),
     ).toEqual({ kind: 'reparent', targetParentId: 1 })
+  })
+
+  it('子目录拖到根 → 目标父级为 null，且需要先 reparent', () => {
+    const folders = [
+      { id: 1, parent_id: null },
+      { id: 2, parent_id: 1 },
+    ] as { id: number; parent_id: number | null }[]
+    const intent = resolveFolderDropIntent({
+      draggedId: 2,
+      draggedParentId: 1,
+      dropKey: 'root',
+      dropToGap: true,
+      dropPosition: 0,
+      nodePos: '0-0',
+      folders,
+    })
+    expect(intent).toMatchObject({ kind: 'reorder', parentId: null })
+    if (intent?.kind === 'reorder') {
+      expect(folderReorderNeedsReparent(1, intent)).toBe(true)
+    }
+  })
+
+  it('子目录拖到父目录旁缝隙 → 提到与父同级', () => {
+    const folders = [
+      { id: 1, parent_id: null },
+      { id: 2, parent_id: 1 },
+      { id: 3, parent_id: null },
+    ] as { id: number; parent_id: number | null }[]
+    // 拖 folder-2 到 folder-1 上方缝隙
+    const intent = resolveFolderDropIntent({
+      draggedId: 2,
+      draggedParentId: 1,
+      dropKey: 'folder-1',
+      dropToGap: true,
+      dropPosition: 0,
+      nodePos: '0-0-0',
+      folders,
+    })
+    expect(intent).toEqual({
+      kind: 'reorder',
+      parentId: null,
+      relativeId: 1,
+      position: 'before',
+    })
+    if (intent?.kind === 'reorder') {
+      expect(folderReorderNeedsReparent(1, intent)).toBe(true)
+      expect(
+        insertAmongPeers({
+          peerIdsExcludingDragged: [1, 3],
+          draggedId: 2,
+          relativeId: 1,
+          position: 'before',
+        }),
+      ).toEqual([2, 1, 3])
+    }
   })
 
   it('叶子落到目录内：非 gap 置顶，gap 追加', () => {

@@ -18,9 +18,11 @@ function sameId(a: string | number | null | undefined, b: string | number | null
 }
 
 /**
- * 解析目录拖拽意图。
- * Ant Tree 把「拖到同级目录节点上」常标成 dropToGap=false（嵌套）；
- * 对同级且目标未展开，按「排序到目标前/后」处理，避免只能嵌套、无法 a|b 换序。
+ * 解析目录拖拽意图（对齐 IDEA Project 视图：可拖出到父级/根，也可嵌套进目录）。
+ *
+ * - 拖到根 / 拖到某目录的同级缝隙 → 目标 parent 为该层；若当前不在该层，调用方须先 reparent 再排序
+ * - 拖到未展开的同级目录上 → 同级排序
+ * - 拖到已展开目录内容 / 非同级目录上 → 嵌套为子目录
  */
 export function resolveFolderDropIntent<T extends string | number>(opts: {
   draggedId: T
@@ -53,18 +55,17 @@ export function resolveFolderDropIntent<T extends string | number>(opts: {
   const gapPosition: DropPosition = relative <= 0 ? 'before' : 'after'
 
   if (dropKey === 'root') {
+    // 拖到根：提到最外层（若本就在根则仅排序）
     return {
       kind: 'reorder',
       parentId: null,
       relativeId: null,
       position: 'after',
-      // root 下 children 含目录+叶子，dropPosition 近似插入下标；目录排序时按目录同级列表裁剪
       insertIndex: Math.max(0, dropPosition),
     }
   }
 
   if (!dropKey.startsWith('folder-')) {
-    // 落到脚本/作业叶子：在叶子所在目录的同级目录末尾排序（或已在该父级则按 insertIndex）
     const parentId = (dropLeafFolderId ?? null) as T | null
     if (!sameId(draggedParentId, parentId)) {
       return { kind: 'reparent', targetParentId: parentId }
@@ -88,6 +89,7 @@ export function resolveFolderDropIntent<T extends string | number>(opts: {
   const sameLevel = sameId(draggedParentId, dropParentId)
 
   if (dropToGap) {
+    // 缝隙 = 与 drop 目录同级；子目录拖到父目录旁即可「提出来」（IDEA 同款）
     return {
       kind: 'reorder',
       parentId: dropParentId,
@@ -96,7 +98,7 @@ export function resolveFolderDropIntent<T extends string | number>(opts: {
     }
   }
 
-  // 落到目录内容上：同级且未展开 → 排序（常见「把 b 拖到 a 上/前」）；否则嵌套为子目录
+  // 落到目录内容上：同级且未展开 → 排序；否则嵌套为子目录
   if (sameLevel && !dropFolderExpanded) {
     return {
       kind: 'reorder',
@@ -107,6 +109,14 @@ export function resolveFolderDropIntent<T extends string | number>(opts: {
   }
 
   return { kind: 'reparent', targetParentId: dropFolderId }
+}
+
+/** 若「排序」目标父级与当前父级不同，须先 reparent（提出/迁入）再写同级顺序 */
+export function folderReorderNeedsReparent<T extends string | number>(
+  draggedParentId: T | null,
+  intent: Extract<FolderDropIntent<T>, { kind: 'reorder' }>,
+): boolean {
+  return !sameId(draggedParentId, intent.parentId)
 }
 
 /** 同级插入：把 draggedId 插到 relativeId 前/后；无 relative 则按 insertIndex 或追加 */

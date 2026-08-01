@@ -7,7 +7,7 @@ import { Button, Dropdown, Input, Tree, message } from 'antd'
 import type { DataNode, TreeProps } from 'antd/es/tree'
 import { FileOutlined, FolderOutlined, MoreOutlined } from '@ant-design/icons'
 import { sortLeavesByOrderThenName, sortFoldersByOrderThenName } from '../utils/treeSort'
-import { ancestorFolderKeys, insertAmongPeers, orderLeavesAfterDrop, resolveFolderDropIntent } from '../utils/treeDropOrder'
+import { ancestorFolderKeys, folderReorderNeedsReparent, insertAmongPeers, orderLeavesAfterDrop, resolveFolderDropIntent } from '../utils/treeDropOrder'
 
 /** Studio / Stream 用 number；Probe 本地目录用 string */
 export type TreeId = string | number
@@ -170,6 +170,28 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
                 items: [
                   ...(folderMenuExtra?.(f) || []),
                   { key: 'add-folder', label: '新建子目录', onClick: () => onCreateFolder(f.id) },
+                  ...(onMoveFolder && f.parent_id != null ? [
+                    {
+                      key: 'move-up',
+                      label: '移到上一级',
+                      onClick: () => {
+                        const parent = folders.find(x => sameId(x.id, f.parent_id))
+                        const targetParentId = (parent?.parent_id ?? null) as T | null
+                        void onMoveFolder({ folderId: f.id, targetParentId })
+                          .then(() => message.success('已移到上一级'))
+                          .catch((e: any) => message.error(e?.response?.data?.detail || '移动失败'))
+                      },
+                    },
+                    {
+                      key: 'move-root',
+                      label: '移到根目录',
+                      onClick: () => {
+                        void onMoveFolder({ folderId: f.id, targetParentId: null })
+                          .then(() => message.success('已移到根目录'))
+                          .catch((e: any) => message.error(e?.response?.data?.detail || '移动失败'))
+                      },
+                    },
+                  ] : []),
                   { key: 'rename', label: '重命名', onClick: () => { setRenamingFolderId(f.id); setRenamingFolderName(f.name) } },
                   {
                     key: 'delete',
@@ -304,7 +326,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
   }, [
     folders, leaves, renamingFolderId, renamingLeafId, rootTitle,
     folderMenuExtra, onCreateFolder, onDeleteFolder, onDeleteLeaf, onCopyLeaf, onSelectLeaf, readOnly,
-    showRootCreateButton,
+    showRootCreateButton, onMoveFolder,
   ])
 
   const onDrop: TreeProps['onDrop'] = async (info) => {
@@ -355,11 +377,21 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
           return
         }
 
+        // reorder：目标父级可能与当前不同（子目录拖到根/父目录旁 → 先提出再排序）
+        const targetParentId = intent.parentId
+        const needsReparent = folderReorderNeedsReparent((cur.parent_id ?? null) as T | null, intent)
+        if (needsReparent) {
+          if (!onMoveFolder) {
+            message.info('暂不支持移动目录到其他父级')
+            return
+          }
+          await onMoveFolder({ folderId, targetParentId })
+        }
         if (!onReorderFolders) {
-          message.info('暂不支持目录排序')
+          if (needsReparent) message.success('目录已移动')
+          else message.info('暂不支持目录排序')
           return
         }
-        const targetParentId = intent.parentId
         const peers = sortFolders(
           folders.filter(f => sameId(f.parent_id, targetParentId) && !sameId(f.id, folderId)),
         )
@@ -370,12 +402,16 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
           position: intent.position,
           insertIndex: intent.insertIndex,
         })
-        const prevIds = sortFolders(
+        const prevAtTarget = sortFolders(
           folders.filter(f => sameId(f.parent_id, targetParentId)),
         ).map(f => f.id)
-        if (orderedIds.map(String).join(',') === prevIds.map(String).join(',')) return
+        const orderUnchanged = !needsReparent
+          && orderedIds.map(String).join(',') === prevAtTarget.map(String).join(',')
+        if (orderUnchanged) {
+          return
+        }
         await onReorderFolders({ parentId: targetParentId, orderedFolderIds: orderedIds })
-        message.success('目录顺序已更新')
+        message.success(needsReparent ? '目录已移出并更新顺序' : '目录顺序已更新')
       } catch (e: any) {
         message.error(e?.response?.data?.detail || '目录移动失败')
       }

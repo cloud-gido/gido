@@ -231,3 +231,42 @@ def test_reorder_rejects_cross_parent_folders(client: TestClient):
         json={"workspace_id": ws_id, "parent_id": None, "folder_ids": [fa, fb]},
     )
     assert bad.status_code == 400
+
+
+def test_nested_folder_move_out_to_root_then_reorder(client: TestClient):
+    """对齐「提出子目录」：先 PATCH parent=null，再在根级 reorder（前端拖到根/父旁缝隙的路径）。"""
+    token, ws_id = _login(client)
+    h = _h(token)
+    parent = client.post(
+        "/api/studio/folders", headers=h, json={"workspace_id": ws_id, "name": "outer", "parent_id": None}
+    ).json()["id"]
+    child = client.post(
+        "/api/studio/folders", headers=h, json={"workspace_id": ws_id, "name": "inner", "parent_id": parent}
+    ).json()["id"]
+
+    # 未提出时不能直接按根排序
+    assert (
+        client.put(
+            "/api/studio/folders/reorder",
+            headers=h,
+            json={"workspace_id": ws_id, "parent_id": None, "folder_ids": [child, parent]},
+        ).status_code
+        == 400
+    )
+
+    out = client.patch(f"/api/studio/folders/{child}/parent", headers=h, json={"parent_id": None})
+    assert out.status_code == 200, out.text
+    assert out.json()["parent_id"] is None
+
+    ok = client.put(
+        "/api/studio/folders/reorder",
+        headers=h,
+        json={"workspace_id": ws_id, "parent_id": None, "folder_ids": [child, parent]},
+    )
+    assert ok.status_code == 200, ok.text
+
+    listed = client.get("/api/studio/folders", headers=h, params={"workspace_id": ws_id})
+    by_id = {x["id"]: x for x in listed.json()}
+    assert by_id[child]["parent_id"] is None
+    assert by_id[parent]["parent_id"] is None
+    assert by_id[child]["sort_order"] < by_id[parent]["sort_order"]
