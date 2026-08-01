@@ -1,3 +1,7 @@
+/**
+ * Copyright 2026 玑渡 GIDO Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
 import React, { useMemo, useState } from 'react'
 import { Button, Dropdown, Input, Tree, message } from 'antd'
 import type { DataNode, TreeProps } from 'antd/es/tree'
