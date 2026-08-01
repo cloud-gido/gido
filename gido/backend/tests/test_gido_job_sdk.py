@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -156,3 +157,136 @@ def test_substitute_sql_macros_bizdate_and_bracket():
 def test_substitute_sql_macros_never_raises():
     # 畸形宏保留原文，不抛错
     assert substitute_sql_macros("select '$[not-a-valid'") == "select '$[not-a-valid'"
+
+
+def test_job_var_reads_variables(monkeypatch, tmp_path):
+    p = tmp_path / "ctx.json"
+    p.write_text(
+        json.dumps(
+            {
+                "ds_type": "doris",
+                "host": "fe",
+                "variables": {"LARK_WEBHOOK_URL": "https://hooks.example/x"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(ENV_CONTEXT_FILE, str(p))
+    j = GidoJob()
+    assert j.var("LARK_WEBHOOK_URL") == "https://hooks.example/x"
+    assert j.var("missing", default="fallback") == "fallback"
+    with pytest.raises(KeyError, match="未找到全局变量"):
+        j.var("missing")
+    with pytest.raises(ValueError, match="不能为空"):
+        j.var("  ")
+
+
+def test_job_var_requires_context(monkeypatch):
+    monkeypatch.delenv(ENV_CONTEXT_FILE, raising=False)
+    j = GidoJob()
+    with pytest.raises(RuntimeError, match="未注入数据源"):
+        j.var("any")
+
+
+def test_run_python_node_substitutes_source_vars(monkeypatch, tmp_path):
+    """PYTHON 源码中的 ${key} 在落盘执行前展开（与 SQL 一致）。"""
+    from app.services import python_job_runner as pjr
+    import app.services.workspace_variables as wv
+
+    written: dict = {}
+    real_ntf = tempfile.NamedTemporaryFile
+
+    def tracking_ntf(*args, **kwargs):
+        kwargs.setdefault("delete", False)
+        tmp = real_ntf(*args, **kwargs)
+        orig_write = tmp.write
+
+        def write(data):
+            written["script"] = data if isinstance(data, str) else data.decode("utf-8")
+            return orig_write(data)
+
+        tmp.write = write  # type: ignore[method-assign]
+        return tmp
+
+    monkeypatch.setattr(pjr.tempfile, "NamedTemporaryFile", tracking_ntf)
+
+    def fake_sub(db, workspace_id, script, scope, bizdate=None, extra_vars=None):
+        return (script or "").replace("${my_webhook}", "https://hooks.example/ok")
+
+    monkeypatch.setattr(wv, "substitute_script_variables", fake_sub)
+    monkeypatch.setattr(pjr, "_write_context_file", lambda ctx: str(tmp_path / "ctx.json"))
+    (tmp_path / "ctx.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        pjr,
+        "_macro_context",
+        lambda db, node, bizdate=None: {
+            "timezone": "Asia/Shanghai",
+            "bizdate": "2026-08-01",
+            "yesterday": "2026-07-31",
+            "variables": {"my_webhook": "https://hooks.example/ok"},
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.workspace_datasource_policy.resolve_datasource_id",
+        lambda *a, **k: None,
+    )
+
+    def fake_run(cmd, **kwargs):
+        return SimpleNamespace(returncode=0, stdout="ran\n", stderr="")
+
+    monkeypatch.setattr(pjr.subprocess, "run", fake_run)
+
+    node = SimpleNamespace(
+        workspace_id=1,
+        datasource_id=None,
+        timeout_seconds=30,
+        script_content='webhook = "${my_webhook}"\nprint(webhook)\n',
+        params={},
+    )
+    logs = pjr.run_python_node(node, db=MagicMock(), bizdate="2026-08-01")
+    assert "https://hooks.example/ok" in written["script"]
+    assert "${my_webhook}" not in written["script"]
+    assert any("ran" in (x or "") for x in logs)
+
+
+def test_execute_macros_still_work_after_source_sub(monkeypatch, tmp_path):
+    """源码已无 ${} 时，execute 内 $[...] 仍展开。"""
+    p = tmp_path / "ctx.json"
+    p.write_text(
+        json.dumps(
+            {
+                "ds_type": "mysql",
+                "host": "h",
+                "port": 3306,
+                "username": "u",
+                "password": "p",
+                "database": "db",
+                "bizdate": "2026-07-17",
+                "timezone": "Asia/Shanghai",
+                "variables": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(ENV_CONTEXT_FILE, str(p))
+
+    mock_cur = MagicMock()
+    mock_cur.description = (("d",),)
+    mock_cur.fetchall.return_value = [{"d": "2026-07-14"}]
+    mock_cur.rowcount = 1
+    mock_cur.__enter__ = MagicMock(return_value=mock_cur)
+    mock_cur.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cur
+    fake_pymysql = MagicMock()
+    fake_pymysql.connect.return_value = mock_conn
+    fake_cursors = MagicMock()
+    fake_cursors.DictCursor = object
+    monkeypatch.setitem(sys.modules, "pymysql", fake_pymysql)
+    monkeypatch.setitem(sys.modules, "pymysql.cursors", fake_cursors)
+
+    j = GidoJob()
+    j.execute("SELECT '$[yyyy-MM-dd-3]' AS d")
+    sql_arg = mock_cur.execute.call_args[0][0]
+    assert "2026-07-14" in sql_arg
+    assert "$[" not in sql_arg

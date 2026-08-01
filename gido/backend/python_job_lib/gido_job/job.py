@@ -22,6 +22,27 @@ class GidoJob:
         text = sep.join(str(a) for a in args)
         print(text, flush=True)
 
+    def var(self, key: str, default: Optional[str] = None) -> str:
+        """读取空间全局变量 / 节点 params（与脚本 ``${key}`` 同源）。
+
+        - 优先用 SDK 读取含引号、多行等复杂值，避免源码 ``${key}`` 朴素替换踩坑
+        - ``key`` 缺失且未给 ``default`` 时抛 ``KeyError``，提示去空间设置配置
+        """
+        name = (key or "").strip()
+        if not name:
+            raise ValueError("job.var(key) 的 key 不能为空")
+        ctx = self._ensure_context()
+        variables = ctx.get("variables") if isinstance(ctx.get("variables"), dict) else {}
+        if name in variables:
+            raw = variables[name]
+            return "" if raw is None else str(raw)
+        if default is not None:
+            return str(default)
+        raise KeyError(
+            f"未找到全局变量「{name}」：请在「空间设置 → 全局变量」配置，"
+            f"或在节点 params 中提供；也可写 job.var({name!r}, default='...')"
+        )
+
     def execute(
         self,
         sql: str,

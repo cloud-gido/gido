@@ -151,8 +151,24 @@ def run_python_node(
 
     ctx_path = _write_context_file(ctx)
 
+    # 与 SQL 节点一致：跑前展开 ${key} / $[...]（库中仍存原文）
+    from app.services.workspace_variables import substitute_script_variables
+
+    try:
+        script = substitute_script_variables(
+            db,
+            int(node.workspace_id),
+            node.script_content or "",
+            "batch",
+            bizdate=biz or ctx.get("bizdate"),
+            extra_vars=ctx.get("variables") if isinstance(ctx.get("variables"), dict) else None,
+        )
+    except Exception as e:
+        logger.warning("PYTHON 脚本变量替换失败，使用原文: %s", e)
+        script = node.script_content or ""
+
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
-        f.write(node.script_content or "")
+        f.write(script)
         script_path = f.name
 
     env = os.environ.copy()

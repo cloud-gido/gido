@@ -370,7 +370,7 @@ export default function WorkspaceSettingsPage() {
                   type="info"
                   showIcon
                   style={{ marginBottom: 16 }}
-                  message="在 Batch / Stream / Serve 的 SQL 中用 ${var_key} 引用；支持 ${bizdate}、$[yyyy-MM-dd-1] 时间宏。密钥类请勾选「敏感」。"
+                  message="在 Batch SQL / PYTHON / SHELL，以及 Stream / Serve 脚本中用 ${var_key} 引用；支持 ${bizdate}、$[yyyy-MM-dd-1] 时间宏。PYTHON 也可用 job.var('var_key')。密钥类请勾选「敏感」。"
                 />
                 <Button type="primary" icon={<PlusOutlined />} style={{ marginBottom: 12 }} onClick={() => openVarModal()}>
                   新建变量
@@ -415,7 +415,7 @@ export default function WorkspaceSettingsPage() {
                   destroyOnClose
                 >
                   <Form form={varForm} layout="vertical">
-                    <Form.Item name="var_key" label="变量名" rules={[{ required: true }]} extra="SQL 中写 ${var_key}">
+                    <Form.Item name="var_key" label="变量名" rules={[{ required: true }]} extra="脚本中写 ${var_key}；PYTHON 亦可用 job.var('var_key')">
                       <Input disabled={!!editingVar} placeholder="kafka.bootstrap" />
                     </Form.Item>
                     <Form.Item name="var_value" label="值" extra={editingVar?.is_secret ? '留空表示不修改密钥' : undefined}>

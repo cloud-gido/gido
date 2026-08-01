@@ -553,7 +553,7 @@ def run_node(
         elif node.node_type == "PYTHON":
             log_lines = _run_python(node, db, bizdate=bizdate)
         elif node.node_type == "SHELL":
-            log_lines = _run_shell(node)
+            log_lines = _run_shell(node, db, bizdate=bizdate)
         elif node.node_type == "SYNC":
             from app.services.integration_node import run_sync_for_node_blocking
             log_lines, status, _meta = run_sync_for_node_blocking(
@@ -734,11 +734,36 @@ def internal_run_node(
     return {"instance_id": instance.id, "status": status, "log": instance.log_content}
 
 
-def _run_shell(node: TaskNode) -> list:
-    import subprocess, tempfile, os
+def _run_shell(node: TaskNode, db: Session = None, bizdate: str = None) -> list:
+    """执行 SHELL 节点；与 SQL/PYTHON 一致，跑前展开空间全局变量 ${key} / 时间宏。"""
+    import subprocess
+    import tempfile
+    import os
+
+    from app.services.workspace_variables import substitute_script_variables
+
+    script = node.script_content or ""
+    extra = None
+    params = getattr(node, "params", None) or {}
+    if isinstance(params, dict) and params:
+        extra = {str(k): "" if v is None else str(v) for k, v in params.items() if k is not None}
+
+    if db is not None and getattr(node, "workspace_id", None) is not None:
+        try:
+            script = substitute_script_variables(
+                db,
+                int(node.workspace_id),
+                script,
+                "batch",
+                bizdate=bizdate,
+                extra_vars=extra,
+            )
+        except Exception:
+            pass
+
     logs = []
     with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as f:
-        f.write(node.script_content or "")
+        f.write(script)
         tmp_path = f.name
     try:
         result = subprocess.run(["bash", tmp_path], capture_output=True, text=True, timeout=300)

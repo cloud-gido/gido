@@ -78,7 +78,7 @@ def _executor_loop():
                         elif node.node_type == "PYTHON":
                             logs = _run_python(node, db, bizdate=bizdate)
                         elif node.node_type == "SHELL":
-                            logs = _run_shell(node)
+                            logs = _run_shell(node, db, bizdate=bizdate)
                         elif node.node_type == "SYNC":
                             from app.services.integration_node import run_sync_for_node_blocking
                             logs, st, _ = run_sync_for_node_blocking(
