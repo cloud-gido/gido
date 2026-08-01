@@ -454,7 +454,7 @@ def migrate_dw_task_nodes_edit_lock(engine: Engine) -> None:
 
 
 def migrate_dw_task_nodes_sort_order(engine: Engine) -> None:
-    """TaskNode：同目录内展示顺序（手动拖拽；编辑脚本不自动改变）。"""
+    """TaskNode：同目录内展示顺序。列默认 0 = 自然字典序；用户拖拽后写入 >0。"""
     insp = inspect(engine)
     if not insp.has_table("dw_task_nodes"):
         return
@@ -465,20 +465,20 @@ def migrate_dw_task_nodes_sort_order(engine: Engine) -> None:
                 conn.execute(text("ALTER TABLE dw_task_nodes ADD COLUMN sort_order INT NOT NULL DEFAULT 0"))
             else:
                 conn.execute(text("ALTER TABLE dw_task_nodes ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"))
-        # 按创建时间回填，保证升级后顺序稳定
+
+
+def migrate_sort_order_name_default(engine: Engine) -> None:
+    """一次性：清除历史按创建时间回填的 sort_order，恢复默认字典序。"""
+    insp = inspect(engine)
+    with engine.begin() as conn:
         if engine.dialect.name == "postgresql":
             conn.execute(
                 text(
                     """
-                    UPDATE dw_task_nodes AS t SET sort_order = r.rn * 10
-                    FROM (
-                      SELECT id, ROW_NUMBER() OVER (
-                        PARTITION BY workspace_id, folder_id
-                        ORDER BY created_at NULLS LAST, id
-                      ) AS rn
-                      FROM dw_task_nodes
-                    ) AS r
-                    WHERE t.id = r.id AND (t.sort_order IS NULL OR t.sort_order = 0)
+                    CREATE TABLE IF NOT EXISTS dw_schema_flags (
+                        flag VARCHAR(64) PRIMARY KEY,
+                        applied_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    )
                     """
                 )
             )
@@ -486,24 +486,49 @@ def migrate_dw_task_nodes_sort_order(engine: Engine) -> None:
             conn.execute(
                 text(
                     """
-                    UPDATE dw_task_nodes t
-                    JOIN (
-                      SELECT id, ROW_NUMBER() OVER (
-                        PARTITION BY workspace_id, folder_id
-                        ORDER BY created_at, id
-                      ) AS rn
-                      FROM dw_task_nodes
-                    ) r ON t.id = r.id
-                    SET t.sort_order = r.rn * 10
-                    WHERE t.sort_order IS NULL OR t.sort_order = 0
+                    CREATE TABLE IF NOT EXISTS dw_schema_flags (
+                        flag VARCHAR(64) PRIMARY KEY,
+                        applied_at DATETIME NOT NULL
+                    )
                     """
                 )
             )
         else:
             conn.execute(
                 text(
-                    "UPDATE dw_task_nodes SET sort_order = id * 10 WHERE sort_order IS NULL OR sort_order = 0"
+                    """
+                    CREATE TABLE IF NOT EXISTS dw_schema_flags (
+                        flag VARCHAR(64) PRIMARY KEY,
+                        applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
                 )
+            )
+
+        flag = "sort_order_name_default_v1"
+        row = conn.execute(
+            text("SELECT 1 AS x FROM dw_schema_flags WHERE flag = :f LIMIT 1"),
+            {"f": flag},
+        ).fetchone()
+        if row:
+            return
+
+        if insp.has_table("dw_task_nodes"):
+            conn.execute(text("UPDATE dw_task_nodes SET sort_order = 0"))
+        if insp.has_table("dw_streaming_jobs"):
+            cols = {c["name"] for c in insp.get_columns("dw_streaming_jobs")}
+            if "sort_order" in cols:
+                conn.execute(text("UPDATE dw_streaming_jobs SET sort_order = 0"))
+
+        if engine.dialect.name == "mysql":
+            conn.execute(
+                text("INSERT INTO dw_schema_flags (flag, applied_at) VALUES (:f, UTC_TIMESTAMP())"),
+                {"f": flag},
+            )
+        else:
+            conn.execute(
+                text("INSERT INTO dw_schema_flags (flag, applied_at) VALUES (:f, CURRENT_TIMESTAMP)"),
+                {"f": flag},
             )
 
 

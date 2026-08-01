@@ -45,6 +45,7 @@ import { exportRowsToCsv } from '../utils/csvExport'
 import { pruneWidths, resolveResultColumnOrder } from '../utils/resultTableMeta'
 import NodeConfigModal from '../components/NodeConfigModal'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
+import { sortLeavesByOrderThenName } from '../utils/treeSort'
 import {
   clearScriptLocalDraft,
   restoreScriptLocalDraft,
@@ -116,9 +117,7 @@ function saveStudioResultMetaNode(nodeId: number, meta: StudioResultColMeta) {
 }
 
 function sortNodesList(list: any[]): any[] {
-  return [...list].sort(
-    (a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.id - b.id,
-  )
+  return sortLeavesByOrderThenName(list)
 }
 
 function sameFolder(a: number | null | undefined, b: number | null | undefined): boolean {
@@ -149,7 +148,6 @@ export default function StudioPage() {
     }
   })
   const [treeExpandedKeys, setTreeExpandedKeys] = useState<Key[]>(['root'])
-  const treeExpandedInitRef = useRef(false)
 
   // 编辑器内容（按 nodeId 存储，相对服务端尚未确认的修改）
   const [dirtyMap, setDirtyMap] = useState<Record<number, string>>({})
@@ -203,12 +201,6 @@ export default function StudioPage() {
   }
 
   useEffect(() => { load() }, [wsId])
-
-  useEffect(() => {
-    if (!folders.length || treeExpandedInitRef.current) return
-    treeExpandedInitRef.current = true
-    setTreeExpandedKeys(['root', ...folders.map((f: any) => `folder-${f.id}`)])
-  }, [folders])
 
   const setSidebarCollapsedPersist = (collapsed: boolean) => {
     setSidebarCollapsed(collapsed)
@@ -266,7 +258,6 @@ export default function StudioPage() {
       setLogPanelOpen(false)
       setRunningId(null)
       studioRestoreDoneRef.current = false
-      treeExpandedInitRef.current = false
     }
     prevWsIdRef.current = wsId
   }, [wsId])
@@ -1044,9 +1035,46 @@ export default function StudioPage() {
   }
 
   const onTreeDrop = async (info: any) => {
+    if (!wsId) return
     const dragKey = info.dragNode.key
+
+    // 整目录挪动
+    if (typeof dragKey === 'string' && dragKey.startsWith('folder-')) {
+      const folderId = parseInt(dragKey.replace('folder-', ''), 10)
+      if (!Number.isFinite(folderId)) return
+      const dropKey = info.node.key
+      let targetParentId: number | null = null
+      if (typeof dropKey === 'string' && dropKey.startsWith('folder-')) {
+        const dropFolderId = parseInt(dropKey.replace('folder-', ''), 10)
+        if (info.dropToGap) {
+          const dropFolder = folders.find((f: any) => f.id === dropFolderId)
+          targetParentId = dropFolder?.parent_id ?? null
+        } else {
+          targetParentId = dropFolderId
+        }
+      } else if (dropKey === 'root') {
+        targetParentId = null
+      } else if (typeof dropKey === 'number') {
+        const tgt = nodes.find((n: any) => n.id === dropKey)
+        targetParentId = tgt?.folder_id ?? null
+      } else {
+        return
+      }
+      const cur = folders.find((f: any) => f.id === folderId)
+      if (!cur) return
+      if ((cur.parent_id ?? null) === targetParentId) return
+      try {
+        await studioApi.moveFolderParent(folderId, targetParentId)
+        message.success('目录已移动')
+        await load()
+      } catch (e: any) {
+        message.error(e?.response?.data?.detail || '目录移动失败')
+      }
+      return
+    }
+
     const nodeId = typeof dragKey === 'number' ? dragKey : null
-    if (nodeId == null || !wsId) return
+    if (nodeId == null) return
 
     const dragged = nodes.find(n => n.id === nodeId)
     if (!dragged) return
@@ -1153,9 +1181,10 @@ export default function StudioPage() {
         isLeaf: false,
         _folderId: f.id,
         _parentId: f.parent_id,
+        _name: f.name,
       }
     })
-    // 节点挂在对应文件夹下（按 sort_order 排序）
+    // 节点挂在对应文件夹下（sort_order=0 时按名称字典序）
     const rootNodes: any[] = []
     sortNodesList(nodes).forEach(n => {
       const nodeItem = {
@@ -1197,22 +1226,51 @@ export default function StudioPage() {
         rootNodes.push(nodeItem)
       }
     })
-    // 构建文件夹层级结构
+    // 构建文件夹层级结构（目录按名称；叶子按 sort_order+名称）
     const rootFolders: any[] = []
     Object.values(folderMap).forEach((f: any) => {
       f.children = (f.children || []).filter((c: any) => c.isLeaf !== false || c._folderId != null)
       const leafChildren = f.children.filter((c: any) => c.isLeaf)
       const subFolders = f.children.filter((c: any) => !c.isLeaf)
       leafChildren.sort(
-        (a: any, b: any) => (a.data?.sort_order ?? 0) - (b.data?.sort_order ?? 0) || a.data.id - b.data.id,
+        (a: any, b: any) => {
+          const so = (a.data?.sort_order ?? 0) - (b.data?.sort_order ?? 0)
+          if (so !== 0) return so
+          const nc = String(a.data?.name || '').localeCompare(String(b.data?.name || ''), 'zh-CN', {
+            numeric: true,
+            sensitivity: 'base',
+          })
+          if (nc !== 0) return nc
+          return (a.data?.id ?? 0) - (b.data?.id ?? 0)
+        },
+      )
+      subFolders.sort(
+        (a: any, b: any) => {
+          const nc = String(a._name || '').localeCompare(String(b._name || ''), 'zh-CN', {
+            numeric: true,
+            sensitivity: 'base',
+          })
+          if (nc !== 0) return nc
+          return (a._folderId ?? 0) - (b._folderId ?? 0)
+        },
       )
       f.children = [...subFolders, ...leafChildren]
       if (f._parentId && folderMap[f._parentId]) {
-        folderMap[f._parentId].children.unshift(f)
+        folderMap[f._parentId].children.push(f)
       } else {
         rootFolders.push(f)
       }
     })
+    rootFolders.sort(
+      (a: any, b: any) => {
+        const nc = String(a._name || '').localeCompare(String(b._name || ''), 'zh-CN', {
+          numeric: true,
+          sensitivity: 'base',
+        })
+        if (nc !== 0) return nc
+        return (a._folderId ?? 0) - (b._folderId ?? 0)
+      },
+    )
     return [
       {
         key: 'root',
@@ -1324,6 +1382,14 @@ export default function StudioPage() {
             treeData={buildTree()}
             blockNode
             draggable
+            allowDrop={({ dropNode, dragNode }) => {
+              const dragKey = String(dragNode.key)
+              const dropKey = String(dropNode.key)
+              if (dragKey === 'root') return false
+              // 禁止拖进自身
+              if (dragKey.startsWith('folder-') && dropKey === dragKey) return false
+              return true
+            }}
             onDrop={onTreeDrop}
             expandedKeys={treeExpandedKeys}
             onExpand={keys => setTreeExpandedKeys(keys)}

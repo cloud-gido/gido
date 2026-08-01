@@ -12,6 +12,7 @@ import {
   MoreOutlined,
 } from '@ant-design/icons'
 import { useMemo, useState } from 'react'
+import { sortLeavesByOrderThenName } from '../utils/treeSort'
 
 export type FolderRow = { id: number; name: string; parent_id: number | null }
 export type LeafRow = {
@@ -44,14 +45,14 @@ type Props = {
     orderedLeafIds: number[]
     folderChanged: boolean
   }) => Promise<void>
+  /** 整目录挪动到新父目录（null=根）；不传则禁止拖目录 */
+  onMoveFolder?: (args: { folderId: number; targetParentId: number | null }) => Promise<void>
   folderMenuExtra?: (folder: FolderRow) => { key: string; label: React.ReactNode; onClick?: () => void }[]
   readOnly?: boolean
 }
 
 function sortLeaves(list: LeafRow[]) {
-  return [...list].sort(
-    (a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.id - b.id,
-  )
+  return sortLeavesByOrderThenName(list)
 }
 
 export default function WorkspaceFolderTree({
@@ -70,6 +71,7 @@ export default function WorkspaceFolderTree({
   onDeleteLeaf,
   onCopyLeaf,
   onMoveAndReorder,
+  onMoveFolder,
   folderMenuExtra,
   readOnly = false,
 }: Props) {
@@ -149,6 +151,7 @@ export default function WorkspaceFolderTree({
         isLeaf: false,
         _folderId: f.id,
         _parentId: f.parent_id,
+        _name: f.name,
       }
     })
 
@@ -206,15 +209,44 @@ export default function WorkspaceFolderTree({
       const leafChildren = f.children.filter((c: any) => c.isLeaf)
       const subFolders = f.children.filter((c: any) => !c.isLeaf)
       leafChildren.sort(
-        (a: any, b: any) => (a.data?.sort_order ?? 0) - (b.data?.sort_order ?? 0) || a.data.id - b.data.id,
+        (a: any, b: any) => {
+          const so = (a.data?.sort_order ?? 0) - (b.data?.sort_order ?? 0)
+          if (so !== 0) return so
+          const na = String(a.data?.name || '')
+          const nb = String(b.data?.name || '')
+          const nc = na.localeCompare(nb, 'zh-CN', { numeric: true, sensitivity: 'base' })
+          if (nc !== 0) return nc
+          return (a.data?.id ?? 0) - (b.data?.id ?? 0)
+        },
+      )
+      subFolders.sort(
+        (a: any, b: any) => {
+          const nc = String(a._name || '').localeCompare(String(b._name || ''), 'zh-CN', {
+            numeric: true,
+            sensitivity: 'base',
+          })
+          if (nc !== 0) return nc
+          return (a._folderId ?? 0) - (b._folderId ?? 0)
+        },
       )
       f.children = [...subFolders, ...leafChildren]
       if (f._parentId && folderMap[f._parentId]) {
-        folderMap[f._parentId].children.unshift(f)
+        folderMap[f._parentId].children.push(f)
       } else {
         rootFolders.push(f)
       }
     })
+
+    rootFolders.sort(
+      (a: any, b: any) => {
+        const nc = String(a._name || '').localeCompare(String(b._name || ''), 'zh-CN', {
+          numeric: true,
+          sensitivity: 'base',
+        })
+        if (nc !== 0) return nc
+        return (a._folderId ?? 0) - (b._folderId ?? 0)
+      },
+    )
 
     return [
       {
@@ -235,10 +267,44 @@ export default function WorkspaceFolderTree({
 
   const onDrop: TreeProps['onDrop'] = async (info) => {
     const dragKey = String(info.dragNode.key)
-    if (dragKey.startsWith('folder-') || dragKey === 'root') {
-      message.info('暂不支持拖拽目录，请拖拽作业')
+
+    if (dragKey.startsWith('folder-')) {
+      if (!onMoveFolder) {
+        message.info('暂不支持拖拽目录')
+        return
+      }
+      const folderId = Number(dragKey.replace('folder-', ''))
+      if (!Number.isFinite(folderId)) return
+      const dropKey = String(info.node.key)
+      let targetParentId: number | null = null
+      if (dropKey.startsWith('folder-')) {
+        const dropFolderId = Number(dropKey.replace('folder-', ''))
+        if (info.dropToGap) {
+          const dropFolder = folders.find(f => f.id === dropFolderId)
+          targetParentId = dropFolder?.parent_id ?? null
+        } else {
+          targetParentId = dropFolderId
+        }
+      } else if (dropKey === 'root') {
+        targetParentId = null
+      } else {
+        const dropLeaf = leaves.find(l => l.id === Number(dropKey))
+        targetParentId = dropLeaf?.folder_id ?? null
+      }
+      const cur = folders.find(f => f.id === folderId)
+      if (!cur) return
+      if ((cur.parent_id ?? null) === targetParentId) return
+      try {
+        await onMoveFolder({ folderId, targetParentId })
+        message.success('目录已移动')
+      } catch (e: any) {
+        message.error(e?.response?.data?.detail || '目录移动失败')
+      }
       return
     }
+
+    if (dragKey === 'root') return
+
     const leafId = Number(dragKey)
     if (!Number.isFinite(leafId)) return
 
@@ -281,7 +347,13 @@ export default function WorkspaceFolderTree({
       draggable={!readOnly}
       allowDrop={({ dropNode, dragNode }) => {
         const dragKey = String(dragNode.key)
-        if (dragKey.startsWith('folder-') || dragKey === 'root') return false
+        const dropKey = String(dropNode.key)
+        if (dragKey === 'root') return false
+        if (dragKey.startsWith('folder-')) {
+          if (!onMoveFolder) return false
+          if (dropKey === dragKey) return false
+          return true
+        }
         return true
       }}
       treeData={treeData}

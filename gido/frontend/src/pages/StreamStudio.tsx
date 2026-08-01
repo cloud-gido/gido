@@ -123,7 +123,7 @@ export default function StreamStudioPage() {
   const displayTz = currentWorkspace?.timezone || 'Asia/Shanghai'
   const [jobs, setJobs] = useState<any[]>([])
   const [folders, setFolders] = useState<any[]>([])
-  const [treeExpandedKeys, setTreeExpandedKeys] = useState<Key[]>([])
+  const [treeExpandedKeys, setTreeExpandedKeys] = useState<Key[]>(['root'])
   const [folderModalOpen, setFolderModalOpen] = useState(false)
   const [folderParentId, setFolderParentId] = useState<number | null>(null)
   const [folderName, setFolderName] = useState('')
@@ -253,9 +253,7 @@ export default function StreamStudioPage() {
       ])
       setJobs(list)
       setFolders(folderList || [])
-      setTreeExpandedKeys(prev => (
-        prev.length ? prev : ['root', ...(folderList || []).map((f: any) => `folder-${f.id}`)]
-      ))
+      setTreeExpandedKeys(prev => (prev.length ? prev : ['root']))
       setPendingKeys(
         new Set((pendingRes?.items || []).map((i: any) => approvalPendingKey(i.resource_type, i.resource_id, i.action))),
       )
@@ -888,6 +886,10 @@ export default function StreamStudioPage() {
                   folder_id: targetFolderId,
                   job_ids: orderedLeafIds,
                 })
+                await load(false)
+              }}
+              onMoveFolder={async ({ folderId, targetParentId }) => {
+                await streamingApi.moveFolderParent(folderId, targetParentId)
                 await load(false)
               }}
             />

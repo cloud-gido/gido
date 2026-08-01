@@ -107,7 +107,7 @@ class TaskNode(Base):
     datasource_id = Column(Integer, ForeignKey("dw_datasources.id"), nullable=True)
     params = Column(JSON)                          # 变量参数，如 {bizdate, env}
     folder_id = Column(Integer, ForeignKey("dw_node_folders.id"), nullable=True)
-    sort_order = Column(Integer, default=0)  # 同目录内手动排序，编辑脚本不改变
+    sort_order = Column(Integer, default=0)  # 0=字典序；>0=用户拖拽手工序（同目录内）
     timeout_seconds = Column(Integer, default=3600)
     retry_times = Column(Integer, default=0)
     is_published = Column(Boolean, default=False)  # 是否已提交到工作流

@@ -111,6 +111,7 @@ def list_folders(workspace_id: int, db: Session = Depends(get_db), current_user:
     folders = (
         db.query(NodeFolder)
         .filter(NodeFolder.workspace_id == workspace_id, NodeFolder.scope == "batch")
+        .order_by(NodeFolder.name.asc(), NodeFolder.id.asc())
         .all()
     )
     return [{"id": f.id, "name": f.name, "parent_id": f.parent_id, "scope": getattr(f, "scope", None) or "batch"} for f in folders]
@@ -153,12 +154,39 @@ def rename_folder(folder_id: int, name: str, db: Session = Depends(get_db), curr
     return {"id": folder.id, "name": folder.name, "parent_id": folder.parent_id}
 
 
+class FolderParentPatch(BaseModel):
+    parent_id: Optional[int] = None
+
+
+@router.patch("/folders/{folder_id}/parent")
+def move_folder_parent(
+    folder_id: int,
+    body: FolderParentPatch,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """整目录挪动：修改 parent_id（含子树）。不影响工作流调度（仅组织用）。"""
+    from app.services.node_folders import folder_scope, reparent_folder
+
+    folder = db.query(NodeFolder).filter(NodeFolder.id == folder_id).first()
+    if not folder or folder_scope(folder) != "batch":
+        raise HTTPException(status_code=404, detail="文件夹不存在")
+    assert_workspace_data_capability(db, current_user, folder.workspace_id, "developer", PC.GIDO_BATCH_STUDIO_WRITE)
+    reparent_folder(db, folder, body.parent_id, expected_scope="batch")
+    db.commit()
+    db.refresh(folder)
+    return {"id": folder.id, "name": folder.name, "parent_id": folder.parent_id, "scope": "batch"}
+
+
 @router.delete("/folders/{folder_id}")
 def delete_folder(folder_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     folder = db.query(NodeFolder).filter(NodeFolder.id == folder_id).first()
     if not folder:
         raise HTTPException(status_code=404, detail="文件夹不存在")
     assert_workspace_data_capability(db, current_user, folder.workspace_id, "developer", PC.GIDO_BATCH_STUDIO_WRITE)
+    kids = db.query(NodeFolder).filter(NodeFolder.parent_id == folder_id).count()
+    if kids:
+        raise HTTPException(status_code=400, detail="请先删除或移走子目录")
     # 将文件夹内节点移到根目录
     db.query(TaskNode).filter(TaskNode.folder_id == folder_id).update({"folder_id": None})
     db.delete(folder)
@@ -207,13 +235,10 @@ class NodeCreate(BaseModel):
 
 
 def _next_sort_order(db: Session, workspace_id: int, folder_id: Optional[int]) -> int:
-    q = db.query(func.max(TaskNode.sort_order)).filter(TaskNode.workspace_id == workspace_id)
-    if folder_id is None:
-        q = q.filter(TaskNode.folder_id.is_(None))
-    else:
-        q = q.filter(TaskNode.folder_id == folder_id)
-    mx = q.scalar()
-    return (int(mx) if mx is not None else 0) + 10
+    """新建/移入时的 sort_order：未手动排过则 0（展示字典序），否则追加末尾。"""
+    from app.services.tree_sort import sort_order_for_new_peer
+
+    return sort_order_for_new_peer(db, TaskNode, workspace_id, folder_id)
 
 
 @router.get("/nodes")
@@ -222,7 +247,7 @@ def list_nodes(workspace_id: int, folder_id: Optional[int] = None, db: Session =
     q = db.query(TaskNode).filter(TaskNode.workspace_id == workspace_id)
     if folder_id is not None:
         q = q.filter(TaskNode.folder_id == folder_id)
-    nodes = q.order_by(TaskNode.sort_order.asc(), TaskNode.id.asc()).all()
+    nodes = q.order_by(TaskNode.sort_order.asc(), TaskNode.name.asc(), TaskNode.id.asc()).all()
     return [_serialize_task_node(db, n) for n in nodes]
 
 

@@ -2580,13 +2580,10 @@ def _require_stream_folder(db: Session, workspace_id: int, folder_id: Optional[i
 
 
 def _next_stream_job_sort_order(db: Session, workspace_id: int, folder_id: Optional[int]) -> int:
-    q = db.query(func.max(StreamingJob.sort_order)).filter(StreamingJob.workspace_id == workspace_id)
-    if folder_id is None:
-        q = q.filter(StreamingJob.folder_id.is_(None))
-    else:
-        q = q.filter(StreamingJob.folder_id == folder_id)
-    mx = q.scalar()
-    return (int(mx) if mx is not None else 0) + 10
+    """新建/移入时的 sort_order：未手动排过则 0（展示字典序），否则追加末尾。"""
+    from app.services.tree_sort import sort_order_for_new_peer
+
+    return sort_order_for_new_peer(db, StreamingJob, workspace_id, folder_id)
 
 
 class StreamFolderCreate(BaseModel):
@@ -2615,6 +2612,7 @@ def list_stream_folders(workspace_id: int, db: Session = Depends(get_db), curren
     folders = (
         db.query(NodeFolder)
         .filter(NodeFolder.workspace_id == workspace_id, NodeFolder.scope == "stream")
+        .order_by(NodeFolder.name.asc(), NodeFolder.id.asc())
         .all()
     )
     return [{"id": f.id, "name": f.name, "parent_id": f.parent_id, "scope": "stream"} for f in folders]
@@ -2658,6 +2656,30 @@ def rename_stream_folder(
     return {"id": folder.id, "name": folder.name, "parent_id": folder.parent_id, "scope": "stream"}
 
 
+class StreamFolderParentPatch(BaseModel):
+    parent_id: Optional[int] = None
+
+
+@router.patch("/folders/{folder_id}/parent")
+def move_stream_folder_parent(
+    folder_id: int,
+    body: StreamFolderParentPatch,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """整目录挪动：修改 parent_id（含子树）。"""
+    from app.services.node_folders import folder_scope, reparent_folder
+
+    folder = db.query(NodeFolder).filter(NodeFolder.id == folder_id).first()
+    if not folder or folder_scope(folder) != "stream":
+        raise HTTPException(status_code=404, detail="文件夹不存在")
+    assert_workspace_data_capability(db, current_user, folder.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
+    reparent_folder(db, folder, body.parent_id, expected_scope="stream")
+    db.commit()
+    db.refresh(folder)
+    return {"id": folder.id, "name": folder.name, "parent_id": folder.parent_id, "scope": "stream"}
+
+
 @router.delete("/folders/{folder_id}")
 def delete_stream_folder(
     folder_id: int,
@@ -2670,7 +2692,7 @@ def delete_stream_folder(
     assert_workspace_data_capability(db, current_user, folder.workspace_id, "developer", PC.GIDO_STREAM_WRITE)
     kids = db.query(NodeFolder).filter(NodeFolder.parent_id == folder_id).count()
     if kids:
-        raise HTTPException(status_code=400, detail="请先删除子文件夹")
+        raise HTTPException(status_code=400, detail="请先删除或移走子目录")
     db.query(StreamingJob).filter(StreamingJob.folder_id == folder_id).update({"folder_id": None})
     db.delete(folder)
     db.commit()
@@ -2730,7 +2752,7 @@ def list_jobs(workspace_id: int, db: Session = Depends(get_db), current_user: Us
     jobs = (
         db.query(StreamingJob)
         .filter(StreamingJob.workspace_id == workspace_id)
-        .order_by(StreamingJob.sort_order.asc(), StreamingJob.id.asc())
+        .order_by(StreamingJob.sort_order.asc(), StreamingJob.name.asc(), StreamingJob.id.asc())
         .all()
     )
     # 列表只读库（对齐批处理数据开发）：集群/JM 状态由「作业运维」jobs-status-sync 负责
@@ -5312,7 +5334,7 @@ def sync_workspace_jobs_status(
     jobs = (
         db.query(StreamingJob)
         .filter(StreamingJob.workspace_id == workspace_id)
-        .order_by(StreamingJob.sort_order.asc(), StreamingJob.id.asc())
+        .order_by(StreamingJob.sort_order.asc(), StreamingJob.name.asc(), StreamingJob.id.asc())
         .all()
     )
     need = [j for j in jobs if _job_needs_live_status_sync(j)]

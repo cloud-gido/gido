@@ -96,7 +96,6 @@ export default function ProbePage() {
     }
   })
   const [treeExpandedKeys, setTreeExpandedKeys] = useState<Key[]>(['root'])
-  const treeExpandedInitRef = useRef(false)
   const editorRef = useRef<any>(null)
   const findApiRef = useRef<MonacoFindBarApi | null>(null)
   const [sqlDirty, setSqlDirty] = useState(false)
@@ -115,14 +114,7 @@ export default function ProbePage() {
       setProbeState(init)
       saveProbeState(wsId, init)
     }
-    treeExpandedInitRef.current = false
   }, [wsId])
-
-  useEffect(() => {
-    if (!probeState.folders.length || treeExpandedInitRef.current) return
-    treeExpandedInitRef.current = true
-    setTreeExpandedKeys(['root', ...probeState.folders.map(f => `folder-${f.id}`)])
-  }, [probeState.folders])
 
   const setSidebarCollapsedPersist = (collapsed: boolean) => {
     setSidebarCollapsed(collapsed)
