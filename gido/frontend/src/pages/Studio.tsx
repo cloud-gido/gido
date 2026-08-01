@@ -6,12 +6,12 @@
  */
 import { useState, useEffect, useRef, useCallback, useMemo, type Key, type PointerEvent } from 'react'
 import {
-  Tree, Button, Input, Select, Tag, message, Spin, Tooltip,
+  Button, Input, Select, Tag, message, Spin, Tooltip,
   Modal, Form, Dropdown, Tabs, Space, Badge, Table
 } from 'antd'
 import {
   PlayCircleOutlined, SaveOutlined, CloudUploadOutlined, PlusOutlined,
-  DeleteOutlined, FileOutlined, FolderOutlined, FolderAddOutlined, MoreOutlined,
+  DeleteOutlined, FileOutlined, FolderAddOutlined,
   LoadingOutlined, CheckCircleOutlined, CloseCircleOutlined,
   ReloadOutlined, SettingOutlined, FormatPainterOutlined, UnlockOutlined,
   LockOutlined, DownloadOutlined, MenuFoldOutlined, MenuUnfoldOutlined, AimOutlined,
@@ -46,6 +46,7 @@ import { pruneWidths, resolveResultColumnOrder } from '../utils/resultTableMeta'
 import NodeConfigModal from '../components/NodeConfigModal'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
 import { sortLeavesByOrderThenName } from '../utils/treeSort'
+import WorkspaceFolderTree, { locateLeafInFolderTree } from '../components/WorkspaceFolderTree'
 import {
   clearScriptLocalDraft,
   restoreScriptLocalDraft,
@@ -118,10 +119,6 @@ function saveStudioResultMetaNode(nodeId: number, meta: StudioResultColMeta) {
 
 function sortNodesList(list: any[]): any[] {
   return sortLeavesByOrderThenName(list)
-}
-
-function sameFolder(a: number | null | undefined, b: number | null | undefined): boolean {
-  return (a ?? null) === (b ?? null)
 }
 
 export default function StudioPage() {
@@ -219,18 +216,14 @@ export default function StudioPage() {
       return
     }
     setSidebarCollapsedPersist(false)
-    const folderById = new Map<number, any>(folders.map((f: any) => [f.id, f]))
-    const keys: Key[] = ['root']
-    let fid: number | null | undefined = node.folder_id
-    while (fid != null && folderById.has(fid)) {
-      keys.push(`folder-${fid}`)
-      fid = folderById.get(fid)?.parent_id
-    }
-    setTreeExpandedKeys(prev => Array.from(new Set([...prev, ...keys])))
-    window.setTimeout(() => {
-      const el = document.querySelector('.studio-node-tree .ant-tree-node-selected') as HTMLElement | null
-      el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
-    }, 80)
+    locateLeafInFolderTree({
+      leafId: node.id,
+      leaves: nodes,
+      folders,
+      expandedKeys: treeExpandedKeys,
+      setExpandedKeys: setTreeExpandedKeys,
+      treeSelector: '.studio-node-tree',
+    })
   }
 
   const openNode = useCallback((node: any) => {
@@ -849,14 +842,6 @@ export default function StudioPage() {
     message.success('删除成功')
   }
 
-  // 重命名目录
-  const [renamingFolderId, setRenamingFolderId] = useState<number | null>(null)
-  const [renamingFolderName, setRenamingFolderName] = useState('')
-
-  // 重命名节点
-  const [renamingNodeId, setRenamingNodeId] = useState<number | null>(null)
-  const [renamingNodeName, setRenamingNodeName] = useState('')
-
   // SQL 格式化
   const handleFormat = async () => {
     if (!activeNode || activeNode.node_type !== 'SQL') return
@@ -897,38 +882,6 @@ export default function StudioPage() {
     await studioApi.deleteFolder(folderId)
     await load()
     message.success('删除成功')
-  }
-
-  // 重命名文件夹
-  const handleRenameFolder = async (folderId: number) => {
-    if (!renamingFolderName.trim()) return
-    await studioApi.renameFolder(folderId, renamingFolderName.trim())
-    setRenamingFolderId(null)
-    setRenamingFolderName('')
-    await load()
-  }
-
-  // 重命名节点
-  const handleRenameNode = async (nodeId: number) => {
-    if (!renamingNodeName.trim()) return
-    const node = nodes.find(n => n.id === nodeId)
-    if (!node) return
-    if (node.is_locked) {
-      message.warning('脚本已锁定，请先解锁后再重命名')
-      setRenamingNodeId(null)
-      return
-    }
-    try {
-      await studioApi.updateNode(nodeId, { ...node, name: renamingNodeName.trim(), workspace_id: wsId })
-    } catch (e: any) {
-      message.error(e?.response?.data?.detail || '重命名失败')
-      setRenamingNodeId(null)
-      return
-    }
-    setNodes(prev => prev.map(n => n.id === nodeId ? { ...n, name: renamingNodeName.trim() } : n))
-    setOpenTabs(prev => prev.map(t => t.id === nodeId ? { ...t, name: renamingNodeName.trim() } : t))
-    setRenamingNodeId(null)
-    setRenamingNodeName('')
   }
 
   // 新建节点
@@ -1034,256 +987,6 @@ export default function StudioPage() {
     })
   }
 
-  const onTreeDrop = async (info: any) => {
-    if (!wsId) return
-    const dragKey = info.dragNode.key
-
-    // 整目录挪动
-    if (typeof dragKey === 'string' && dragKey.startsWith('folder-')) {
-      const folderId = parseInt(dragKey.replace('folder-', ''), 10)
-      if (!Number.isFinite(folderId)) return
-      const dropKey = info.node.key
-      let targetParentId: number | null = null
-      if (typeof dropKey === 'string' && dropKey.startsWith('folder-')) {
-        const dropFolderId = parseInt(dropKey.replace('folder-', ''), 10)
-        if (info.dropToGap) {
-          const dropFolder = folders.find((f: any) => f.id === dropFolderId)
-          targetParentId = dropFolder?.parent_id ?? null
-        } else {
-          targetParentId = dropFolderId
-        }
-      } else if (dropKey === 'root') {
-        targetParentId = null
-      } else if (typeof dropKey === 'number') {
-        const tgt = nodes.find((n: any) => n.id === dropKey)
-        targetParentId = tgt?.folder_id ?? null
-      } else {
-        return
-      }
-      const cur = folders.find((f: any) => f.id === folderId)
-      if (!cur) return
-      if ((cur.parent_id ?? null) === targetParentId) return
-      try {
-        await studioApi.moveFolderParent(folderId, targetParentId)
-        message.success('目录已移动')
-        await load()
-      } catch (e: any) {
-        message.error(e?.response?.data?.detail || '目录移动失败')
-      }
-      return
-    }
-
-    const nodeId = typeof dragKey === 'number' ? dragKey : null
-    if (nodeId == null) return
-
-    const dragged = nodes.find(n => n.id === nodeId)
-    if (!dragged) return
-
-    const dropKey = info.node.key
-    let targetFolderId: number | null = null
-    let relativeToNodeId: number | null = null
-    let position: 'before' | 'after' = 'after'
-
-    if (typeof dropKey === 'string' && dropKey.startsWith('folder-')) {
-      targetFolderId = parseInt(dropKey.replace('folder-', ''), 10)
-    } else if (dropKey === 'root') {
-      targetFolderId = null
-    } else if (typeof dropKey === 'number') {
-      const tgt = nodes.find(n => n.id === dropKey)
-      if (!tgt) return
-      targetFolderId = tgt.folder_id ?? null
-      relativeToNodeId = dropKey
-      if (info.dropToGap) {
-        const dropPos = info.node.pos.split('-')
-        const dropPosition = info.dropPosition - Number(dropPos[dropPos.length - 1])
-        position = dropPosition <= 0 ? 'before' : 'after'
-      } else {
-        position = 'after'
-      }
-    } else {
-      return
-    }
-
-    const folderPeers = sortNodesList(
-      nodes.filter(n => sameFolder(n.folder_id, targetFolderId) && n.id !== nodeId),
-    )
-    let orderedIds = folderPeers.map(n => n.id)
-    if (relativeToNodeId != null) {
-      const idx = orderedIds.indexOf(relativeToNodeId)
-      const insertAt = idx < 0 ? orderedIds.length : (position === 'before' ? idx : idx + 1)
-      orderedIds.splice(insertAt, 0, nodeId)
-    } else {
-      orderedIds.push(nodeId)
-    }
-
-    const folderChanged = !sameFolder(dragged.folder_id, targetFolderId)
-    if (
-      !folderChanged
-      && relativeToNodeId == null
-      && sameFolder(dragged.folder_id, targetFolderId)
-    ) {
-      return
-    }
-    if (
-      !folderChanged
-      && relativeToNodeId != null
-      && orderedIds.join(',') === sortNodesList(nodes.filter(n => sameFolder(n.folder_id, targetFolderId))).map(n => n.id).join(',')
-    ) {
-      return
-    }
-
-    try {
-      if (folderChanged) {
-        await studioApi.moveNodeFolder(nodeId, targetFolderId)
-      }
-      await studioApi.reorderNodes(wsId, targetFolderId, orderedIds)
-      message.success(folderChanged ? '已移动并更新顺序' : '已更新顺序')
-      await load()
-    } catch (e: any) {
-      message.error(e?.response?.data?.detail || '移动失败')
-    }
-  }
-
-  // 构建目录树
-  const buildTree = () => {
-    const folderMap: Record<number, any> = {}
-    folders.forEach(f => {
-      folderMap[f.id] = {
-        key: `folder-${f.id}`,
-        title: renamingFolderId === f.id ? (
-          <Input
-            size="small"
-            autoFocus
-            defaultValue={f.name}
-            style={{ width: 120 }}
-            onChange={e => setRenamingFolderName(e.target.value)}
-            onPressEnter={() => handleRenameFolder(f.id)}
-            onBlur={() => handleRenameFolder(f.id)}
-            onClick={e => e.stopPropagation()}
-          />
-        ) : (
-          <div
-            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}
-            onDoubleClick={() => { setRenamingFolderId(f.id); setRenamingFolderName(f.name) }}
-          >
-            <span><FolderOutlined style={{ marginRight: 6, color: '#faad14' }} />{f.name}</span>
-            <Dropdown menu={{ items: [
-              { key: 'add-node', label: '新建节点', onClick: () => { setCreateFolderId(f.id); setCreateModal(true) } },
-              { key: 'add-folder', label: '新建子目录', onClick: () => { setFolderParentId(f.id); setFolderModal(true) } },
-              { key: 'rename', label: '重命名', onClick: () => { setRenamingFolderId(f.id); setRenamingFolderName(f.name) } },
-              { key: 'delete', label: <span style={{ color: 'red' }}>删除目录</span>, onClick: () => handleDeleteFolder(f.id) },
-            ]}} trigger={['click']}>
-              <MoreOutlined style={{ padding: '0 4px', color: '#999' }} onClick={e => e.stopPropagation()} />
-            </Dropdown>
-          </div>
-        ),
-        children: [],
-        isLeaf: false,
-        _folderId: f.id,
-        _parentId: f.parent_id,
-        _name: f.name,
-      }
-    })
-    // 节点挂在对应文件夹下（sort_order=0 时按名称字典序）
-    const rootNodes: any[] = []
-    sortNodesList(nodes).forEach(n => {
-      const nodeItem = {
-        key: n.id,
-        title: renamingNodeId === n.id ? (
-          <Input
-            size="small"
-            autoFocus
-            defaultValue={n.name}
-            style={{ width: 130 }}
-            onChange={e => setRenamingNodeName(e.target.value)}
-            onPressEnter={() => handleRenameNode(n.id)}
-            onBlur={() => handleRenameNode(n.id)}
-            onClick={e => e.stopPropagation()}
-          />
-        ) : (
-          <div
-            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}
-            onDoubleClick={() => { setRenamingNodeId(n.id); setRenamingNodeName(n.name) }}
-          >
-            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              <FileOutlined style={{ marginRight: 6, color: '#1677ff' }} />{n.name}
-            </span>
-            <Dropdown menu={{ items: [
-              { key: 'open', label: '打开', onClick: () => openNode(n) },
-              { key: 'rename', label: '重命名', onClick: () => { setRenamingNodeId(n.id); setRenamingNodeName(n.name) } },
-              { key: 'delete', label: <span style={{ color: 'red' }}>删除</span>, onClick: () => handleDelete(n.id) },
-            ]}} trigger={['click']}>
-              <MoreOutlined style={{ padding: '0 4px', color: '#999' }} onClick={e => e.stopPropagation()} />
-            </Dropdown>
-          </div>
-        ),
-        isLeaf: true,
-        data: n,
-      }
-      if (n.folder_id && folderMap[n.folder_id]) {
-        folderMap[n.folder_id].children.push(nodeItem)
-      } else {
-        rootNodes.push(nodeItem)
-      }
-    })
-    // 构建文件夹层级结构（目录按名称；叶子按 sort_order+名称）
-    const rootFolders: any[] = []
-    Object.values(folderMap).forEach((f: any) => {
-      f.children = (f.children || []).filter((c: any) => c.isLeaf !== false || c._folderId != null)
-      const leafChildren = f.children.filter((c: any) => c.isLeaf)
-      const subFolders = f.children.filter((c: any) => !c.isLeaf)
-      leafChildren.sort(
-        (a: any, b: any) => {
-          const so = (a.data?.sort_order ?? 0) - (b.data?.sort_order ?? 0)
-          if (so !== 0) return so
-          const nc = String(a.data?.name || '').localeCompare(String(b.data?.name || ''), 'zh-CN', {
-            numeric: true,
-            sensitivity: 'base',
-          })
-          if (nc !== 0) return nc
-          return (a.data?.id ?? 0) - (b.data?.id ?? 0)
-        },
-      )
-      subFolders.sort(
-        (a: any, b: any) => {
-          const nc = String(a._name || '').localeCompare(String(b._name || ''), 'zh-CN', {
-            numeric: true,
-            sensitivity: 'base',
-          })
-          if (nc !== 0) return nc
-          return (a._folderId ?? 0) - (b._folderId ?? 0)
-        },
-      )
-      f.children = [...subFolders, ...leafChildren]
-      if (f._parentId && folderMap[f._parentId]) {
-        folderMap[f._parentId].children.push(f)
-      } else {
-        rootFolders.push(f)
-      }
-    })
-    rootFolders.sort(
-      (a: any, b: any) => {
-        const nc = String(a._name || '').localeCompare(String(b._name || ''), 'zh-CN', {
-          numeric: true,
-          sensitivity: 'base',
-        })
-        if (nc !== 0) return nc
-        return (a._folderId ?? 0) - (b._folderId ?? 0)
-      },
-    )
-    return [
-      {
-        key: 'root',
-        title: (
-          <span style={{ fontWeight: 600 }}>
-            <FolderOutlined style={{ marginRight: 6 }} />节点列表
-          </span>
-        ),
-        children: [...rootFolders, ...rootNodes],
-      }
-    ]
-  }
-
   const isRunning = activeTabId !== null && runningId === activeTabId
 
   const renderScriptPane = () => {
@@ -1378,26 +1081,58 @@ export default function StudioPage() {
           </Space>
         </div>
         <div style={{ flex: 1, overflow: 'auto', padding: '4px 0' }} className="studio-node-tree">
-          <Tree
-            treeData={buildTree()}
-            blockNode
-            draggable
-            allowDrop={({ dropNode, dragNode }) => {
-              const dragKey = String(dragNode.key)
-              const dropKey = String(dropNode.key)
-              if (dragKey === 'root') return false
-              // 禁止拖进自身
-              if (dragKey.startsWith('folder-') && dropKey === dragKey) return false
-              return true
-            }}
-            onDrop={onTreeDrop}
+          <WorkspaceFolderTree
+            rootTitle="节点列表"
+            treeClassName="studio-node-tree"
+            showRootCreateButton={false}
+            folders={folders}
+            leaves={nodes}
             expandedKeys={treeExpandedKeys}
-            onExpand={keys => setTreeExpandedKeys(keys)}
-            selectedKeys={activeTabId ? [activeTabId] : []}
-            onSelect={(keys, { node }: any) => {
-              if (node.data) openNode(node.data)
+            onExpandedKeysChange={setTreeExpandedKeys}
+            selectedLeafId={activeTabId}
+            onSelectLeaf={openNode}
+            onCreateFolder={parentId => {
+              setFolderParentId(parentId)
+              setFolderModal(true)
             }}
-            style={{ background: 'transparent' }}
+            onRenameFolder={async (id, name) => {
+              await studioApi.renameFolder(id, name)
+              await load()
+            }}
+            onDeleteFolder={async id => {
+              await handleDeleteFolder(id)
+            }}
+            onRenameLeaf={async (id, name) => {
+              const node = nodes.find(n => n.id === id)
+              if (!node) return
+              if (node.is_locked) {
+                message.warning('脚本已锁定，请先解锁后再重命名')
+                return
+              }
+              await studioApi.updateNode(id, { ...node, name, workspace_id: wsId })
+              setNodes(prev => prev.map(n => (n.id === id ? { ...n, name } : n)))
+              setOpenTabs(prev => prev.map(t => (t.id === id ? { ...t, name } : t)))
+            }}
+            onDeleteLeaf={leaf => { void handleDelete(leaf.id) }}
+            onMoveAndReorder={async ({ leafId, targetFolderId, orderedLeafIds, folderChanged }) => {
+              if (!wsId) return
+              if (folderChanged) await studioApi.moveNodeFolder(leafId, targetFolderId)
+              await studioApi.reorderNodes(wsId, targetFolderId, orderedLeafIds)
+              message.success(folderChanged ? '已移动并更新顺序' : '已更新顺序')
+              await load()
+            }}
+            onMoveFolder={async ({ folderId, targetParentId }) => {
+              await studioApi.moveFolderParent(folderId, targetParentId)
+              await load()
+            }}
+            onReorderFolders={async ({ parentId, orderedFolderIds }) => {
+              if (!wsId) return
+              await studioApi.reorderFolders(wsId, parentId, orderedFolderIds)
+              await load()
+            }}
+            folderMenuExtra={f => [
+              { key: 'add-node', label: '新建节点', onClick: () => { setCreateFolderId(f.id); setCreateModal(true) } },
+            ]}
           />
         </div>
       </div>

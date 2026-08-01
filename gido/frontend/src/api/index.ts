@@ -114,6 +114,8 @@ export const studioApi = {
   renameFolder: (id: number, name: string) => request.put(`/studio/folders/${id}`, null, { params: { name } }),
   moveFolderParent: (id: number, parent_id: number | null) =>
     request.patch(`/studio/folders/${id}/parent`, { parent_id }),
+  reorderFolders: (workspace_id: number, parent_id: number | null, folder_ids: number[]) =>
+    request.put('/studio/folders/reorder', { workspace_id, parent_id, folder_ids }),
   deleteFolder: (id: number) => request.delete(`/studio/folders/${id}`),
 }
 
@@ -467,6 +469,8 @@ export const streamingApi = {
   renameFolder: (id: number, name: string) => request.put(`/streaming/folders/${id}`, { name }),
   moveFolderParent: (id: number, parent_id: number | null) =>
     request.patch(`/streaming/folders/${id}/parent`, { parent_id }),
+  reorderFolders: (workspace_id: number, parent_id: number | null, folder_ids: number[]) =>
+    request.put('/streaming/folders/reorder', { workspace_id, parent_id, folder_ids }),
   deleteFolder: (id: number) => request.delete(`/streaming/folders/${id}`),
   moveJobFolder: (id: number, folder_id: number | null) =>
     request.patch(`/streaming/jobs/${id}/folder`, { folder_id }),

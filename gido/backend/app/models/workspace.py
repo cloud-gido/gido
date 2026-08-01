@@ -130,6 +130,8 @@ class NodeFolder(Base):
     parent_id = Column(Integer, ForeignKey("dw_node_folders.id"), nullable=True)
     # batch | stream；存量行迁移默认 batch
     scope = Column(String(16), nullable=False, default="batch")
+    # 0=同级字典序；>0=用户拖拽手工序（同 parent_id 内）
+    sort_order = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

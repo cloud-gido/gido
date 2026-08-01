@@ -1221,6 +1221,21 @@ def migrate_dw_node_folders_scope(engine: Engine) -> None:
             conn.execute(text("UPDATE dw_node_folders SET scope = 'batch' WHERE scope IS NULL"))
 
 
+def migrate_dw_node_folders_sort_order(engine: Engine) -> None:
+    """目录同级 sort_order：0=字典序，>0=用户拖拽序。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_node_folders"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_node_folders")}
+    if "sort_order" in cols:
+        return
+    with engine.begin() as conn:
+        if engine.dialect.name == "mysql":
+            conn.execute(text("ALTER TABLE dw_node_folders ADD COLUMN sort_order INT NOT NULL DEFAULT 0"))
+        else:
+            conn.execute(text("ALTER TABLE dw_node_folders ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"))
+
+
 def migrate_dw_streaming_jobs_folder_sort_and_jar_refs(engine: Engine) -> None:
     """实时作业：同目录 sort_order + JAR 制品库外键列。"""
     insp = inspect(engine)

@@ -12,8 +12,10 @@ from fastapi import HTTPException
 from app.services.node_folders import assert_valid_reparent, reparent_folder
 
 
-def _folder(id: int, workspace_id: int = 1, parent_id=None, scope="batch"):
-    return SimpleNamespace(id=id, workspace_id=workspace_id, parent_id=parent_id, scope=scope)
+def _folder(id: int, workspace_id: int = 1, parent_id=None, scope="batch", sort_order=0):
+    return SimpleNamespace(
+        id=id, workspace_id=workspace_id, parent_id=parent_id, scope=scope, sort_order=sort_order
+    )
 
 
 def _db_returning(sequence):
@@ -29,7 +31,15 @@ def _db_returning(sequence):
             fq.first = lambda: items.pop(0) if items else None
             return fq
 
+        def filter(*_a, **_k):
+            fq = MagicMock()
+            fq.first = lambda: items.pop(0) if items else None
+            fq.all = lambda: []
+            return fq
+
         q.filter_by = filter_by
+        q.filter = filter
+        q.all = lambda: []
         return q
 
     db.query.side_effect = query
@@ -38,9 +48,14 @@ def _db_returning(sequence):
 
 def test_reparent_to_root_ok():
     db = MagicMock()
+    q = MagicMock()
+    q.filter.return_value = q
+    q.all.return_value = []
+    db.query.return_value = q
     folder = _folder(2, parent_id=1)
     out = reparent_folder(db, folder, None, expected_scope="batch")
     assert out.parent_id is None
+    assert out.sort_order == 0
     db.add.assert_called()
 
 

@@ -111,10 +111,19 @@ def list_folders(workspace_id: int, db: Session = Depends(get_db), current_user:
     folders = (
         db.query(NodeFolder)
         .filter(NodeFolder.workspace_id == workspace_id, NodeFolder.scope == "batch")
-        .order_by(NodeFolder.name.asc(), NodeFolder.id.asc())
+        .order_by(NodeFolder.sort_order.asc(), NodeFolder.name.asc(), NodeFolder.id.asc())
         .all()
     )
-    return [{"id": f.id, "name": f.name, "parent_id": f.parent_id, "scope": getattr(f, "scope", None) or "batch"} for f in folders]
+    return [
+        {
+            "id": f.id,
+            "name": f.name,
+            "parent_id": f.parent_id,
+            "scope": getattr(f, "scope", None) or "batch",
+            "sort_order": getattr(f, "sort_order", 0) or 0,
+        }
+        for f in folders
+    ]
 
 
 @router.post("/folders")
@@ -131,16 +140,66 @@ def create_folder(folder_in: FolderCreate, db: Session = Depends(get_db), curren
             raise HTTPException(status_code=400, detail="父文件夹与工作空间不一致")
         if (getattr(parent, "scope", None) or "batch") != "batch":
             raise HTTPException(status_code=400, detail="父文件夹不属于数据开发目录树")
+    from app.services.tree_sort import sort_order_for_new_folder_peer
+
     folder = NodeFolder(
         workspace_id=folder_in.workspace_id,
         name=folder_in.name,
         parent_id=folder_in.parent_id,
         scope="batch",
+        sort_order=sort_order_for_new_folder_peer(
+            db,
+            workspace_id=folder_in.workspace_id,
+            parent_id=folder_in.parent_id,
+            scope="batch",
+            folder_model=NodeFolder,
+        ),
     )
     db.add(folder)
     db.commit()
     db.refresh(folder)
     return folder
+
+
+class FolderReorderIn(BaseModel):
+    workspace_id: int
+    parent_id: Optional[int] = None
+    folder_ids: List[int]
+
+
+# 静态路径须在 /folders/{folder_id} 之前注册，否则 "reorder" 会被当成 folder_id
+@router.put("/folders/reorder")
+def reorder_folders(
+    body: FolderReorderIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """同级目录内拖拽排序（与脚本 reorder 语义一致）。"""
+    from app.services.node_folders import folder_scope
+
+    assert_workspace_data_capability(db, current_user, body.workspace_id, "developer", PC.GIDO_BATCH_STUDIO_WRITE)
+    if not body.folder_ids:
+        return {"ok": True}
+    folders = (
+        db.query(NodeFolder)
+        .filter(NodeFolder.workspace_id == body.workspace_id, NodeFolder.id.in_(body.folder_ids))
+        .all()
+    )
+    if len(folders) != len(set(body.folder_ids)):
+        raise HTTPException(status_code=400, detail="存在无效目录 ID")
+    parent_id = body.parent_id
+    by_id = {f.id: f for f in folders}
+    for fid in body.folder_ids:
+        f = by_id[fid]
+        if folder_scope(f) != "batch":
+            raise HTTPException(status_code=400, detail="目录不属于数据开发目录树")
+        fp = f.parent_id if f.parent_id is not None else None
+        if fp != parent_id:
+            raise HTTPException(status_code=400, detail="目录不在同一父级下，无法排序")
+    for i, fid in enumerate(body.folder_ids):
+        by_id[fid].sort_order = (i + 1) * 10
+    db.commit()
+    return {"ok": True}
 
 
 @router.put("/folders/{folder_id}")
@@ -175,7 +234,13 @@ def move_folder_parent(
     reparent_folder(db, folder, body.parent_id, expected_scope="batch")
     db.commit()
     db.refresh(folder)
-    return {"id": folder.id, "name": folder.name, "parent_id": folder.parent_id, "scope": "batch"}
+    return {
+        "id": folder.id,
+        "name": folder.name,
+        "parent_id": folder.parent_id,
+        "scope": "batch",
+        "sort_order": getattr(folder, "sort_order", 0) or 0,
+    }
 
 
 @router.delete("/folders/{folder_id}")

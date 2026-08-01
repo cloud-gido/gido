@@ -892,6 +892,11 @@ export default function StreamStudioPage() {
                 await streamingApi.moveFolderParent(folderId, targetParentId)
                 await load(false)
               }}
+              onReorderFolders={async ({ parentId, orderedFolderIds }) => {
+                if (!wsId) return
+                await streamingApi.reorderFolders(wsId, parentId, orderedFolderIds)
+                await load(false)
+              }}
             />
           </div>
         </div>

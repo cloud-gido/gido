@@ -1,6 +1,6 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
-"""目录树叶子排序：默认字典序；用户拖拽后以 sort_order 为准。"""
+"""目录树排序：默认字典序；用户拖拽后以 sort_order 为准。"""
 from __future__ import annotations
 
 from typing import Any, List, Optional, Type
@@ -49,6 +49,42 @@ def sort_order_for_new_peer(
     - 目录已手动排过序 → 追加到末尾 max+10
     """
     orders = _peer_sort_orders(db, model, workspace_id, folder_id)
+    if not any(o > 0 for o in orders):
+        return 0
+    return max(orders) + 10
+
+
+def _folder_sibling_orders(
+    db: Session,
+    *,
+    workspace_id: int,
+    parent_id: Optional[int],
+    scope: str,
+    folder_model: Type[Any],
+) -> List[int]:
+    q = db.query(folder_model).filter(
+        folder_model.workspace_id == int(workspace_id),
+        folder_model.scope == scope,
+    )
+    if parent_id is None:
+        q = q.filter(folder_model.parent_id.is_(None))
+    else:
+        q = q.filter(folder_model.parent_id == int(parent_id))
+    return [int(getattr(r, "sort_order", 0) or 0) for r in q.all()]
+
+
+def sort_order_for_new_folder_peer(
+    db: Session,
+    *,
+    workspace_id: int,
+    parent_id: Optional[int],
+    scope: str,
+    folder_model: Type[Any],
+) -> int:
+    """同级目录新建/移入时的 sort_order（语义同叶子）。"""
+    orders = _folder_sibling_orders(
+        db, workspace_id=workspace_id, parent_id=parent_id, scope=scope, folder_model=folder_model
+    )
     if not any(o > 0 for o in orders):
         return 0
     return max(orders) + 10

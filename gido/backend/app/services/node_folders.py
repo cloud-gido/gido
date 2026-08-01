@@ -67,13 +67,28 @@ def reparent_folder(
     *,
     expected_scope: str,
 ) -> Any:
-    """更新 parent_id 并 flush（调用方 commit）。"""
-    if folder.parent_id == new_parent_id or (
+    """更新 parent_id，并按目标同级规则分配 sort_order（调用方 commit）。"""
+    from app.services.tree_sort import sort_order_for_new_folder_peer
+
+    same_parent = folder.parent_id == new_parent_id or (
         folder.parent_id is None and new_parent_id is None
-    ):
+    )
+    if same_parent:
         return folder
     assert_valid_reparent(db, folder, new_parent_id, expected_scope=expected_scope)
     folder.parent_id = new_parent_id
+    model = type(folder)
+    if hasattr(model, "workspace_id") and hasattr(model, "parent_id") and hasattr(model, "scope"):
+        folder.sort_order = sort_order_for_new_folder_peer(
+            db,
+            workspace_id=int(folder.workspace_id),
+            parent_id=new_parent_id,
+            scope=folder_scope(folder),
+            folder_model=model,
+        )
+    else:
+        # 单测用 SimpleNamespace 等非 ORM 对象
+        folder.sort_order = 0
     db.add(folder)
     db.flush()
     return folder

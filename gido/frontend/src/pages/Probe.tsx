@@ -6,11 +6,11 @@
  */
 import { useState, useEffect, useCallback, useMemo, useRef, type Key } from 'react'
 import {
-  Button, Select, InputNumber, Alert, Space, message, Tree, Input, Modal, Form, Dropdown, Tooltip, Tabs, Tag,
+  Button, Select, InputNumber, Alert, Space, message, Input, Modal, Form, Tooltip, Tabs, Tag,
 } from 'antd'
 import {
-  PlayCircleOutlined, DownloadOutlined, PlusOutlined, FolderAddOutlined, FolderOutlined, FileOutlined,
-  MoreOutlined, FormatPainterOutlined, MenuFoldOutlined, MenuUnfoldOutlined, AimOutlined,
+  PlayCircleOutlined, DownloadOutlined, PlusOutlined, FolderAddOutlined,
+  FormatPainterOutlined, MenuFoldOutlined, MenuUnfoldOutlined, AimOutlined,
 } from '@ant-design/icons'
 import Editor from '@monaco-editor/react'
 import { format as sqlFormat } from 'sql-formatter'
@@ -46,8 +46,27 @@ import {
   defaultProbeState,
   newProbeId,
 } from '../utils/probeLocalStore'
+import WorkspaceFolderTree, { locateLeafInFolderTree, type FolderRow, type LeafRow } from '../components/WorkspaceFolderTree'
 import AutosaveStatusHint from '../components/AutosaveStatusHint'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
+
+function sameParent(a: string | null | undefined, b: string | null | undefined) {
+  return (a ?? null) === (b ?? null)
+}
+
+function sortOrderForNewFolder(folders: ProbeFolder[], parentId: string | null): number {
+  const peers = folders.filter(f => sameParent(f.parentId, parentId))
+  const orders = peers.map(f => f.sort_order ?? 0)
+  if (!orders.some(o => o > 0)) return 0
+  return Math.max(...orders) + 10
+}
+
+function sortOrderForNewScript(scripts: ProbeScript[], folderId: string | null): number {
+  const peers = scripts.filter(s => sameParent(s.folderId, folderId))
+  const orders = peers.map(s => s.sort_order ?? 0)
+  if (!orders.some(o => o > 0)) return 0
+  return Math.max(...orders) + 10
+}
 
 export default function ProbePage() {
   const { currentWorkspace } = useAppStore()
@@ -84,10 +103,6 @@ export default function ProbePage() {
   const [folderModal, setFolderModal] = useState(false)
   const [folderForm] = Form.useForm()
   const [folderParentId, setFolderParentId] = useState<string | null>(null)
-  const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null)
-  const [renamingFolderName, setRenamingFolderName] = useState('')
-  const [renamingScriptId, setRenamingScriptId] = useState<string | null>(null)
-  const [renamingScriptName, setRenamingScriptName] = useState('')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try {
       return localStorage.getItem('gido.probe.sidebarCollapsed') === '1'
@@ -125,27 +140,6 @@ export default function ProbePage() {
     }
   }
 
-  const locateActiveInTree = () => {
-    const script = probeState.scripts.find(s => s.id === probeState.activeScriptId)
-    if (!script) {
-      message.info('请先打开一个查询')
-      return
-    }
-    setSidebarCollapsedPersist(false)
-    const folderById = new Map(probeState.folders.map(f => [f.id, f]))
-    const keys: Key[] = ['root']
-    let fid: string | null | undefined = script.folderId
-    while (fid != null && folderById.has(fid)) {
-      keys.push(`folder-${fid}`)
-      fid = folderById.get(fid)?.parentId
-    }
-    setTreeExpandedKeys(prev => Array.from(new Set([...prev, ...keys])))
-    window.setTimeout(() => {
-      const el = document.querySelector('.probe-script-tree .ant-tree-node-selected') as HTMLElement | null
-      el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
-    }, 80)
-  }
-
   useEffect(() => {
     const pending = sessionStorage.getItem('gido_copilot_sql')
     if (!pending || !wsId) return
@@ -172,6 +166,43 @@ export default function ProbePage() {
     () => probeState.scripts.find(s => s.id === probeState.activeScriptId) ?? null,
     [probeState.scripts, probeState.activeScriptId],
   )
+
+  const treeFolders = useMemo<FolderRow<string>[]>(
+    () => probeState.folders.map(f => ({
+      id: f.id,
+      name: f.name,
+      parent_id: f.parentId,
+      sort_order: f.sort_order ?? 0,
+    })),
+    [probeState.folders],
+  )
+
+  const treeLeaves = useMemo<LeafRow<string>[]>(
+    () => probeState.scripts.map(s => ({
+      id: s.id,
+      name: s.name,
+      folder_id: s.folderId,
+      sort_order: s.sort_order ?? 0,
+    })),
+    [probeState.scripts],
+  )
+
+  const locateActiveInTree = () => {
+    const script = probeState.scripts.find(s => s.id === probeState.activeScriptId)
+    if (!script) {
+      message.info('请先打开一个查询')
+      return
+    }
+    setSidebarCollapsedPersist(false)
+    locateLeafInFolderTree({
+      leafId: script.id,
+      leaves: treeLeaves,
+      folders: treeFolders,
+      expandedKeys: treeExpandedKeys,
+      setExpandedKeys: setTreeExpandedKeys,
+      treeSelector: '.probe-script-tree',
+    })
+  }
 
   const activeStmt = useMemo(() => {
     if (!result?.statements?.length) return null
@@ -389,7 +420,15 @@ export default function ProbePage() {
     const id = newProbeId('f')
     setProbeState(prev => ({
       ...prev,
-      folders: [...prev.folders, { id, name: v.name, parentId: folderParentId }],
+      folders: [
+        ...prev.folders,
+        {
+          id,
+          name: v.name,
+          parentId: folderParentId,
+          sort_order: sortOrderForNewFolder(prev.folders, folderParentId),
+        },
+      ],
     }))
     setFolderModal(false)
     setFolderParentId(null)
@@ -409,6 +448,7 @@ export default function ProbePage() {
           folderId,
           sql: 'SELECT 1',
           limit: 500,
+          sort_order: sortOrderForNewScript(prev.scripts, folderId),
           // 新建查询不写入 datasource_id，运行期继承空间默认
         },
       ],
@@ -433,7 +473,7 @@ export default function ProbePage() {
     message.success('已删除')
   }
 
-  const deleteFolder = (folderId: string) => {
+  const deleteFolder = async (folderId: string) => {
     const hasChildFolders = probeState.folders.some(f => f.parentId === folderId)
     const hasScripts = probeState.scripts.some(s => s.folderId === folderId)
     if (hasChildFolders || hasScripts) {
@@ -447,119 +487,66 @@ export default function ProbePage() {
     message.success('已删除目录')
   }
 
-  const handleRenameFolder = (folderId: string) => {
-    const name = renamingFolderName.trim()
-    if (!name) return
+  const moveProbeFolder = async (folderId: string, targetParentId: string | null) => {
+    if (targetParentId) {
+      let walk: string | null = targetParentId
+      const byId = new Map(probeState.folders.map(f => [f.id, f]))
+      while (walk) {
+        if (walk === folderId) {
+          message.error('不能将目录移动到其子目录下')
+          throw new Error('cycle')
+        }
+        walk = byId.get(walk)?.parentId ?? null
+      }
+    }
     setProbeState(prev => ({
       ...prev,
-      folders: prev.folders.map(f => (f.id === folderId ? { ...f, name } : f)),
+      folders: prev.folders.map(f =>
+        f.id === folderId
+          ? {
+              ...f,
+              parentId: targetParentId,
+              sort_order: sortOrderForNewFolder(
+                prev.folders.filter(x => x.id !== folderId),
+                targetParentId,
+              ),
+            }
+          : f,
+      ),
     }))
-    setRenamingFolderId(null)
   }
 
-  const handleRenameScript = (scriptId: string) => {
-    const name = renamingScriptName.trim()
-    if (!name) return
+  const reorderProbeFolders = async (parentId: string | null, orderedFolderIds: string[]) => {
     setProbeState(prev => ({
       ...prev,
-      scripts: prev.scripts.map(s => (s.id === scriptId ? { ...s, name } : s)),
+      folders: prev.folders.map(f => {
+        const idx = orderedFolderIds.indexOf(f.id)
+        if (idx < 0) return f
+        return { ...f, sort_order: (idx + 1) * 10 }
+      }),
     }))
-    setRenamingScriptId(null)
   }
 
-  const buildTreeData = () => {
-    const folderMap: Record<string, any> = {}
-    probeState.folders.forEach(f => {
-      folderMap[f.id] = {
-        key: `folder-${f.id}`,
-        title: renamingFolderId === f.id ? (
-          <Input
-            size="small"
-            autoFocus
-            defaultValue={f.name}
-            style={{ width: 120 }}
-            onChange={e => setRenamingFolderName(e.target.value)}
-            onPressEnter={() => handleRenameFolder(f.id)}
-            onBlur={() => handleRenameFolder(f.id)}
-            onClick={e => e.stopPropagation()}
-          />
-        ) : (
-          <div
-            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}
-            onDoubleClick={() => { setRenamingFolderId(f.id); setRenamingFolderName(f.name) }}
-          >
-            <span><FolderOutlined style={{ marginRight: 6, color: '#faad14' }} />{f.name}</span>
-            <Dropdown menu={{ items: [
-              { key: 'add-s', label: '新建查询', onClick: () => addScript(f.id) },
-              { key: 'add-f', label: '新建子目录', onClick: () => addFolder(f.id) },
-              { key: 'rn', label: '重命名', onClick: () => { setRenamingFolderId(f.id); setRenamingFolderName(f.name) } },
-              { key: 'del', label: <span style={{ color: 'red' }}>删除目录</span>, onClick: () => deleteFolder(f.id) },
-            ] }} trigger={['click']}>
-              <MoreOutlined style={{ padding: '0 4px', color: '#999' }} onClick={e => e.stopPropagation()} />
-            </Dropdown>
-          </div>
-        ),
-        children: [] as any[],
-        isLeaf: false,
-        _folderId: f.id,
-        _parentId: f.parentId,
-      }
-    })
-    const rootScripts: any[] = []
-    probeState.scripts.forEach(s => {
-      const nodeItem = {
-        key: `script-${s.id}`,
-        title: renamingScriptId === s.id ? (
-          <Input
-            size="small"
-            autoFocus
-            defaultValue={s.name}
-            style={{ width: 130 }}
-            onChange={e => setRenamingScriptName(e.target.value)}
-            onPressEnter={() => handleRenameScript(s.id)}
-            onBlur={() => handleRenameScript(s.id)}
-            onClick={e => e.stopPropagation()}
-          />
-        ) : (
-          <div
-            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}
-            onDoubleClick={() => { setRenamingScriptId(s.id); setRenamingScriptName(s.name) }}
-          >
-            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              <FileOutlined style={{ marginRight: 6, color: '#1677ff' }} />{s.name}
-            </span>
-            <Dropdown menu={{ items: [
-              { key: 'rn', label: '重命名', onClick: () => { setRenamingScriptId(s.id); setRenamingScriptName(s.name) } },
-              { key: 'del', label: <span style={{ color: 'red' }}>删除</span>, onClick: () => deleteScript(s.id) },
-            ] }} trigger={['click']}>
-              <MoreOutlined style={{ padding: '0 4px', color: '#999' }} onClick={e => e.stopPropagation()} />
-            </Dropdown>
-          </div>
-        ),
-        isLeaf: true,
-        _scriptId: s.id,
-      }
-      if (s.folderId && folderMap[s.folderId]) {
-        folderMap[s.folderId].children.push(nodeItem)
-      } else {
-        rootScripts.push(nodeItem)
-      }
-    })
-    const rootFolders: any[] = []
-    Object.values(folderMap).forEach((f: any) => {
-      if (f._parentId && folderMap[f._parentId]) {
-        folderMap[f._parentId].children.unshift(f)
-      } else {
-        rootFolders.push(f)
-      }
-    })
-    return [
-      {
-        key: 'root',
-        title: <span style={{ fontWeight: 600 }}><FolderOutlined style={{ marginRight: 6 }} />探查查询</span>,
-        children: [...rootFolders, ...rootScripts],
-      },
-    ]
+  const moveAndReorderProbeScripts = async (opts: {
+    leafId: string
+    targetFolderId: string | null
+    orderedLeafIds: string[]
+    folderChanged: boolean
+  }) => {
+    const { leafId, targetFolderId, orderedLeafIds, folderChanged } = opts
+    setProbeState(prev => ({
+      ...prev,
+      scripts: prev.scripts.map(s => {
+        const idx = orderedLeafIds.indexOf(s.id)
+        if (idx < 0) return s
+        return {
+          ...s,
+          ...(s.id === leafId ? { folderId: targetFolderId } : {}),
+          sort_order: (idx + 1) * 10,
+        }
+      }),
+    }))
+    message.success(folderChanged ? '查询已移动' : '查询顺序已更新')
   }
 
   const rightPane = (
@@ -773,21 +760,45 @@ export default function ProbePage() {
               </Space>
             </div>
             <div style={{ flex: 1, overflow: 'auto', padding: '4px 0' }} className="probe-script-tree">
-              <Tree
-                treeData={buildTreeData()}
-                blockNode
+              <WorkspaceFolderTree
+                rootTitle="探查查询"
+                treeClassName="probe-script-tree"
+                showRootCreateButton={false}
+                folders={treeFolders}
+                leaves={treeLeaves}
                 expandedKeys={treeExpandedKeys}
-                onExpand={keys => setTreeExpandedKeys(keys)}
-                selectedKeys={activeScript ? [`script-${activeScript.id}`] : []}
-                onSelect={(keys, { node }: any) => {
-                  const sid = node?._scriptId as string | undefined
-                  if (sid) {
-                    setProbeState(prev => ({ ...prev, activeScriptId: sid }))
-                    setResult(null)
-                    setResultPanelOpen(false)
-                  }
+                onExpandedKeysChange={setTreeExpandedKeys}
+                selectedLeafId={activeScript?.id ?? null}
+                onSelectLeaf={leaf => {
+                  setProbeState(prev => ({ ...prev, activeScriptId: leaf.id }))
+                  setResult(null)
+                  setResultPanelOpen(false)
                 }}
-                style={{ background: 'transparent' }}
+                onCreateFolder={parentId => addFolder(parentId)}
+                onRenameFolder={async (id, name) => {
+                  setProbeState(prev => ({
+                    ...prev,
+                    folders: prev.folders.map(f => (f.id === id ? { ...f, name } : f)),
+                  }))
+                }}
+                onDeleteFolder={deleteFolder}
+                onRenameLeaf={async (id, name) => {
+                  setProbeState(prev => ({
+                    ...prev,
+                    scripts: prev.scripts.map(s => (s.id === id ? { ...s, name } : s)),
+                  }))
+                }}
+                onDeleteLeaf={leaf => deleteScript(leaf.id)}
+                onMoveAndReorder={moveAndReorderProbeScripts}
+                onMoveFolder={async ({ folderId, targetParentId }) => {
+                  await moveProbeFolder(folderId, targetParentId)
+                }}
+                onReorderFolders={async ({ parentId, orderedFolderIds }) => {
+                  await reorderProbeFolders(parentId, orderedFolderIds)
+                }}
+                folderMenuExtra={f => [
+                  { key: 'add-s', label: '新建查询', onClick: () => addScript(f.id) },
+                ]}
               />
             </div>
           </div>
