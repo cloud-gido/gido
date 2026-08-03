@@ -2,7 +2,8 @@
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * 目录树排序：默认名称字典序；sort_order>0 表示用户拖拽后的手工序。
+ * 目录树排序（对齐常见操作系统 / IDEA 资源管理器）：
+ * 同级固定「目录在前、脚本在后」，组内按名称字典序；不支持手工拖拽排序。
  */
 
 function cmpId(a: string | number | null | undefined, b: string | number | null | undefined): number {
@@ -21,27 +22,20 @@ export function cmpZhName(a: string, b: string): number {
   })
 }
 
-/** 叶子 / 目录：先 sort_order，同序再按名称，再 id */
-export function sortLeavesByOrderThenName<
-  T extends { id?: string | number; name?: string; sort_order?: number | null },
+/** 按名称字典序（zh-CN + numeric）；同名再按 id。忽略 sort_order。 */
+export function sortByName<
+  T extends { id?: string | number; name?: string },
 >(list: T[]): T[] {
   return [...list].sort((a, b) => {
-    const so = (a.sort_order ?? 0) - (b.sort_order ?? 0)
-    if (so !== 0) return so
     const nc = cmpZhName(a.name || '', b.name || '')
     if (nc !== 0) return nc
     return cmpId(a.id, b.id)
   })
 }
 
-/** @deprecated 使用 sortLeavesByOrderThenName；保留别名兼容 */
-export const sortFoldersByOrderThenName = sortLeavesByOrderThenName
-
-/** 目录：按名称字典序（无 sort_order 时） */
-export function sortFoldersByName<T extends { id?: string | number; name?: string }>(list: T[]): T[] {
-  return [...list].sort((a, b) => {
-    const nc = cmpZhName(a.name || '', b.name || '')
-    if (nc !== 0) return nc
-    return cmpId(a.id, b.id)
-  })
-}
+/** @deprecated 使用 sortByName；保留别名兼容旧调用 */
+export const sortLeavesByOrderThenName = sortByName
+/** @deprecated 使用 sortByName */
+export const sortFoldersByOrderThenName = sortByName
+/** @deprecated 使用 sortByName */
+export const sortFoldersByName = sortByName

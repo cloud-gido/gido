@@ -516,24 +516,13 @@ export default function ProbePage() {
     }))
   }
 
-  const reorderProbeFolders = async (parentId: string | null, orderedFolderIds: string[]) => {
-    setProbeState(prev => ({
-      ...prev,
-      folders: prev.folders.map(f => {
-        const idx = orderedFolderIds.indexOf(f.id)
-        if (idx < 0) return f
-        return { ...f, sort_order: (idx + 1) * 10 }
-      }),
-    }))
-  }
-
   const moveAndReorderProbeScripts = async (opts: {
     leafId: string
     targetFolderId: string | null
     orderedLeafIds: string[]
     folderChanged: boolean
   }) => {
-    const { leafId, targetFolderId, orderedLeafIds, folderChanged } = opts
+    const { leafId, targetFolderId, orderedLeafIds } = opts
     setProbeState(prev => ({
       ...prev,
       scripts: prev.scripts.map(s => {
@@ -546,7 +535,7 @@ export default function ProbePage() {
         }
       }),
     }))
-    message.success(folderChanged ? '查询已移动' : '查询顺序已更新')
+    message.success('查询已移动')
   }
 
   const rightPane = (
@@ -798,9 +787,6 @@ export default function ProbePage() {
                 onMoveAndReorder={moveAndReorderProbeScripts}
                 onMoveFolder={async ({ folderId, targetParentId }) => {
                   await moveProbeFolder(folderId, targetParentId)
-                }}
-                onReorderFolders={async ({ parentId, orderedFolderIds }) => {
-                  await reorderProbeFolders(parentId, orderedFolderIds)
                 }}
                 folderMenuExtra={f => [
                   { key: 'add-s', label: '新建查询', onClick: () => addScript(f.id) },

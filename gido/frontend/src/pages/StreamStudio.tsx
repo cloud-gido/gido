@@ -904,15 +904,11 @@ export default function StreamStudioPage() {
                   folder_id: targetFolderId,
                   job_ids: orderedLeafIds,
                 })
+                message.success('已移动')
                 await load(false)
               }}
               onMoveFolder={async ({ folderId, targetParentId }) => {
                 await streamingApi.moveFolderParent(folderId, targetParentId)
-                await load(false)
-              }}
-              onReorderFolders={async ({ parentId, orderedFolderIds }) => {
-                if (!wsId) return
-                await streamingApi.reorderFolders(wsId, parentId, orderedFolderIds)
                 await load(false)
               }}
               folderMenuExtra={f => [

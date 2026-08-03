@@ -1,5 +1,5 @@
 ---
-description: Studio / Probe / Stream 侧栏目录树必须复用共享组件并同步修改
+description: Studio / Probe / Stream 侧栏目录树必须复用；同级字典序且仅支持迁入/移出
 globs:
   - gido/frontend/src/components/WorkspaceFolderTree.tsx
   - gido/frontend/src/utils/treeDropOrder.ts
@@ -14,6 +14,6 @@ alwaysApply: false
 
 就是这三端的功能要复用，改了啥都要同步。
 
-数据开发 Studio、数据探查 Probe、实时 Stream Studio 的左侧目录/节点树：只使用 `WorkspaceFolderTree` + `treeDropOrder` / `treeSort`。页面只接线 API，禁止分叉实现拖拽、重命名或树 UI。
+同级：目录在前、脚本在后、字典序；拖拽只迁入/换父级，不支持手工调序。只使用 `WorkspaceFolderTree` + `treeDropOrder` / `treeSort`。
 
 详见 skill：`.cursor/skills/gido-workspace-folder-tree/SKILL.md`

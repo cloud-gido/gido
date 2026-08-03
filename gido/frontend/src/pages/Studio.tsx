@@ -1124,16 +1124,11 @@ export default function StudioPage() {
               if (!wsId) return
               if (folderChanged) await studioApi.moveNodeFolder(leafId, targetFolderId)
               await studioApi.reorderNodes(wsId, targetFolderId, orderedLeafIds)
-              message.success(folderChanged ? '已移动并更新顺序' : '已更新顺序')
+              message.success('已移动')
               await load()
             }}
             onMoveFolder={async ({ folderId, targetParentId }) => {
               await studioApi.moveFolderParent(folderId, targetParentId)
-              await load()
-            }}
-            onReorderFolders={async ({ parentId, orderedFolderIds }) => {
-              if (!wsId) return
-              await studioApi.reorderFolders(wsId, parentId, orderedFolderIds)
               await load()
             }}
             folderMenuExtra={f => [

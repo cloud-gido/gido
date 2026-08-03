@@ -6,14 +6,12 @@ import React, { useMemo, useRef, useState } from 'react'
 import { Button, Dropdown, Input, Tree, message } from 'antd'
 import type { DataNode, TreeProps } from 'antd/es/tree'
 import { FileOutlined, FolderOutlined, MoreOutlined } from '@ant-design/icons'
-import { sortLeavesByOrderThenName, sortFoldersByOrderThenName } from '../utils/treeSort'
+import { sortByName } from '../utils/treeSort'
 import {
   ancestorFolderKeys,
-  folderReorderNeedsReparent,
-  insertAmongPeers,
   pickVisualDropKey,
-  positionByPointerHalf,
-  resolveFolderDropIntent,
+  resolveFolderMoveIntent,
+  resolveLeafMoveTarget,
 } from '../utils/treeDropOrder'
 
 /** Studio / Stream 用 number；Probe 本地目录用 string */
@@ -74,20 +72,10 @@ function treeKeyFromPoint(clientX: number, clientY: number, excludeKey?: string 
   return null
 }
 
-function rectForTreeKey(key: string): { top: number; height: number } | null {
-  if (typeof document === 'undefined') return null
-  const keyed = document.querySelector(`[data-tree-key="${CSS.escape(key)}"]`) as HTMLElement | null
-  const nodeEl = (keyed?.closest?.('.ant-tree-treenode') as HTMLElement | null) || keyed
-  if (!nodeEl) return null
-  const r = nodeEl.getBoundingClientRect()
-  return { top: r.top, height: r.height }
-}
-
 type DragPointer = {
   hoverKey: string
   clientX: number
   clientY: number
-  altKey: boolean
 }
 
 type Props<T extends TreeId = TreeId> = {
@@ -104,16 +92,15 @@ type Props<T extends TreeId = TreeId> = {
   onRenameLeaf: (leafId: T, name: string) => Promise<void>
   onDeleteLeaf: (leaf: LeafRow<T>) => void
   onCopyLeaf?: (leaf: LeafRow<T>) => void
+  /** 叶子换目录；orderedLeafIds 为迁入后按名称排好的同级 id（便于后端 sync，UI 本身不按手工序） */
   onMoveAndReorder: (opts: {
     leafId: T
     targetFolderId: T | null
     orderedLeafIds: T[]
     folderChanged: boolean
   }) => Promise<void>
-  /** 目录拖到其他父级 */
+  /** 目录换父级（迁入 / 移出）；同级不排序 */
   onMoveFolder?: (opts: { folderId: T; targetParentId: T | null }) => Promise<void>
-  /** 同级目录拖拽排序 */
-  onReorderFolders?: (opts: { parentId: T | null; orderedFolderIds: T[] }) => Promise<void>
   folderMenuExtra?: (folder: FolderRow<T>) => { key: string; label: React.ReactNode; onClick?: () => void }[]
   readOnly?: boolean
   /** 根节点是否展示「新建目录」（侧栏已有按钮时可关） */
@@ -137,7 +124,6 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
   onCopyLeaf,
   onMoveAndReorder,
   onMoveFolder,
-  onReorderFolders,
   folderMenuExtra,
   readOnly,
   showRootCreateButton = true,
@@ -165,18 +151,16 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
   }
 
   const rememberDragPointer = (info: { event: any; node: { key?: React.Key } }) => {
-    const ev = info.event as { clientX?: number; clientY?: number; altKey?: boolean } | undefined
+    const ev = info.event as { clientX?: number; clientY?: number } | undefined
     if (ev?.clientX == null || ev?.clientY == null) return
     dragPointerRef.current = {
       hoverKey: String(info.node.key),
       clientX: ev.clientX,
       clientY: ev.clientY,
-      altKey: Boolean(ev.altKey),
     }
   }
 
-  const sortLeaves = (list: LeafRow<T>[]) => sortLeavesByOrderThenName(list)
-  const sortFolders = (list: FolderRow<T>[]) => sortFoldersByOrderThenName(list)
+  const sortNamed = <R extends { id?: TreeId; name?: string }>(list: R[]) => sortByName(list)
 
   const commitRenameFolder = async (id: T) => {
     if (!sameId(renamingFolderIdRef.current, id)) return
@@ -278,12 +262,11 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
         _folderId: f.id,
         _parentId: f.parent_id,
         _name: f.name,
-        _sortOrder: f.sort_order ?? 0,
       }
     })
 
     const rootLeaves: any[] = []
-    sortLeaves(leaves).forEach(n => {
+    sortNamed(leaves).forEach(n => {
       const leafItem = {
         key: String(n.id),
         title: sameId(renamingLeafId, n.id) ? (
@@ -335,11 +318,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
 
     const rootFolders: any[] = []
     Object.values(folderMap).forEach((f: any) => {
-      const leafChildren = f.children.filter((c: any) => c.isLeaf)
-      const subFolders = f.children.filter((c: any) => !c.isLeaf)
-      leafChildren.sort((a: any, b: any) => {
-        const so = (a.data?.sort_order ?? 0) - (b.data?.sort_order ?? 0)
-        if (so !== 0) return so
+      const leafSorted = [...f.children.filter((c: any) => c.isLeaf)].sort((a: any, b: any) => {
         const nc = String(a.data?.name || '').localeCompare(String(b.data?.name || ''), 'zh-CN', {
           numeric: true,
           sensitivity: 'base',
@@ -347,9 +326,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
         if (nc !== 0) return nc
         return compareIdTie(a.data?.id ?? 0, b.data?.id ?? 0)
       })
-      subFolders.sort((a: any, b: any) => {
-        const so = (a._sortOrder ?? 0) - (b._sortOrder ?? 0)
-        if (so !== 0) return so
+      const subFolders = [...f.children.filter((c: any) => !c.isLeaf)].sort((a: any, b: any) => {
         const nc = String(a._name || '').localeCompare(String(b._name || ''), 'zh-CN', {
           numeric: true,
           sensitivity: 'base',
@@ -357,7 +334,8 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
         if (nc !== 0) return nc
         return compareIdTie(a._folderId ?? 0, b._folderId ?? 0)
       })
-      f.children = [...subFolders, ...leafChildren]
+      // 操作系统惯例：目录在前，脚本在后
+      f.children = [...subFolders, ...leafSorted]
       const pid = f._parentId != null ? String(f._parentId) : ''
       if (pid && folderMap[pid]) {
         folderMap[pid].children.push(f)
@@ -367,8 +345,6 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
     })
 
     rootFolders.sort((a: any, b: any) => {
-      const so = (a._sortOrder ?? 0) - (b._sortOrder ?? 0)
-      if (so !== 0) return so
       const nc = String(a._name || '').localeCompare(String(b._name || ''), 'zh-CN', {
         numeric: true,
         sensitivity: 'base',
@@ -401,113 +377,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
     const dragKey = String(info.dragNode.key)
     const pointer = dragPointerRef.current
     dragPointerRef.current = null
-
-    if (dragKey.startsWith('folder-')) {
-      if (!onMoveFolder && !onReorderFolders) {
-        message.info('暂不支持拖拽目录')
-        return
-      }
-      const rawFolder = parseFolderKey(dragKey)
-      if (rawFolder == null) return
-      const folderId = folderKeyToId(rawFolder, folders)
-      if (folderId == null) return
-      const cur = folders.find(f => sameId(f.id, folderId))
-      if (!cur) return
-
-      const ev = info.event as unknown as { clientX?: number; clientY?: number; altKey?: boolean }
-      const clientX = pointer?.clientX ?? ev?.clientX
-      const clientY = pointer?.clientY ?? ev?.clientY
-      const altKey = Boolean(pointer?.altKey || ev?.altKey)
-      const pointKey = clientX != null && clientY != null
-        ? treeKeyFromPoint(clientX, clientY, dragKey)
-        : null
-      // rc-tree 会改写 info.node；同级重排必须用真实悬停行
-      const dropKey = pickVisualDropKey({
-        hoverKey: pointer?.hoverKey,
-        pointKey,
-        antdDropKey: String(info.node.key),
-        dragKey,
-      })
-      const dropLeafFolderId = dropKey.startsWith('folder-') || dropKey === 'root'
-        ? undefined
-        : (leaves.find(l => sameId(l.id, leafKeyToId(dropKey, leaves)))?.folder_id ?? null)
-      const dropNodeRect = rectForTreeKey(dropKey)
-
-      const intent = resolveFolderDropIntent({
-        draggedId: folderId,
-        draggedParentId: (cur.parent_id ?? null) as T | null,
-        dropKey,
-        dropToGap: Boolean(info.dropToGap),
-        dropPosition: info.dropPosition,
-        nodePos: String(info.node.pos || ''),
-        folders,
-        dropLeafFolderId,
-        nestModifier: altKey,
-        clientY,
-        dropNodeRect,
-      })
-      if (!intent) return
-
-      try {
-        if (intent.kind === 'reparent') {
-          if (!onMoveFolder) {
-            message.info('暂不支持移动目录到其他父级')
-            return
-          }
-          if (sameId(cur.parent_id, intent.targetParentId)) {
-            message.info('顺序未变化：请拖到目标行的上半（提到前面）或下半（放到后面）；按住 Alt 拖到目录可迁入')
-            return
-          }
-          await onMoveFolder({ folderId, targetParentId: intent.targetParentId })
-          message.success('目录已移动')
-          return
-        }
-
-        const targetParentId = intent.parentId
-        const needsReparent = folderReorderNeedsReparent((cur.parent_id ?? null) as T | null, intent)
-        if (needsReparent) {
-          if (!onMoveFolder) {
-            message.info('暂不支持移动目录到其他父级')
-            return
-          }
-          await onMoveFolder({ folderId, targetParentId })
-        }
-        if (!onReorderFolders) {
-          if (needsReparent) message.success('目录已移动')
-          else message.info('暂不支持目录排序')
-          return
-        }
-        const peersExcl = sortFolders(
-          folders.filter(f => sameId(f.parent_id, targetParentId) && !sameId(f.id, folderId)),
-        ).map(f => f.id)
-        const orderedIds = insertAmongPeers({
-          peerIdsExcludingDragged: peersExcl,
-          draggedId: folderId,
-          relativeId: intent.relativeId,
-          position: intent.position,
-          insertIndex: intent.insertIndex,
-        })
-        const prevAtTarget = sortFolders(
-          folders.filter(f => sameId(f.parent_id, targetParentId)),
-        ).map(f => f.id)
-        const orderUnchanged = !needsReparent
-          && orderedIds.map(String).join(',') === prevAtTarget.map(String).join(',')
-        if (orderUnchanged) {
-          message.info('顺序未变化：请拖到目标行的上半（提到前面）或下半（放到后面）；按住 Alt 拖到目录可迁入')
-          return
-        }
-        await onReorderFolders({ parentId: targetParentId, orderedFolderIds: orderedIds })
-        message.success(needsReparent ? '目录已移出并更新顺序' : '目录顺序已更新')
-      } catch (e: any) {
-        message.error(e?.response?.data?.detail || '目录移动失败')
-      }
-      return
-    }
-
-    if (dragKey === 'root') return
-
-    const leafId = leafKeyToId(dragKey, leaves)
-    if (leafId == null) return
+    const sameLevelHint = '同级按「目录在前、脚本在后」字典序排列，不支持手动调序；请拖到目标目录上迁入，或拖到根/其它层级以移动'
 
     const ev = info.event as unknown as { clientX?: number; clientY?: number }
     const clientX = pointer?.clientX ?? ev?.clientX
@@ -521,50 +391,87 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
       antdDropKey: String(info.node.key),
       dragKey,
     })
-    let targetFolderId: T | null = null
-    let ordered: T[]
+    // 悬停在真实目录行上时，优先按「迁入」处理（避免 rc-tree 缝隙改写）
+    const dropToGap = dropKey.startsWith('folder-') && dropKey === pointer?.hoverKey
+      ? false
+      : Boolean(info.dropToGap)
 
-    if (dropKey.startsWith('folder-')) {
-      const dropRaw = parseFolderKey(dropKey)
-      targetFolderId = dropRaw != null ? folderKeyToId(dropRaw, folders) : null
-      const inFolder = sortLeaves(
-        leaves.filter(l => sameId(l.folder_id, targetFolderId) && !sameId(l.id, leafId)),
-      )
-      // 拖到目录上：迁入该目录末尾（与资源管理器「放进文件夹」一致）
-      ordered = [...inFolder.map(l => l.id), leafId]
-    } else if (dropKey === 'root') {
-      targetFolderId = null
-      const inFolder = sortLeaves(
-        leaves.filter(l => sameId(l.folder_id, null) && !sameId(l.id, leafId)),
-      )
-      ordered = [...inFolder.map(l => l.id), leafId]
-    } else {
-      const dropLeafId = leafKeyToId(dropKey, leaves)
-      const dropLeaf = leaves.find(l => sameId(l.id, dropLeafId))
-      targetFolderId = (dropLeaf?.folder_id ?? null) as T | null
-      const inFolder = sortLeaves(
-        leaves.filter(l => sameId(l.folder_id, targetFolderId) && !sameId(l.id, leafId)),
-      )
-      const dropNodeRect = rectForTreeKey(dropKey)
-      const fromPointer = positionByPointerHalf(clientY, dropNodeRect)
-      let position: 'before' | 'after' = fromPointer ?? 'before'
-      if (!fromPointer && Boolean(info.dropToGap)) {
-        const parts = String(info.node.pos || '').split('-')
-        const nodeIndex = Number(parts[parts.length - 1] || 0)
-        if (info.dropPosition - nodeIndex !== -1) position = 'after'
+    if (dragKey.startsWith('folder-')) {
+      if (!onMoveFolder) {
+        message.info('暂不支持拖拽目录')
+        return
       }
-      // 同级脚本：与目录相同，上半前 / 下半后
-      ordered = insertAmongPeers({
-        peerIdsExcludingDragged: inFolder.map(l => l.id),
-        draggedId: leafId,
-        relativeId: dropLeafId,
-        position,
+      const rawFolder = parseFolderKey(dragKey)
+      if (rawFolder == null) return
+      const folderId = folderKeyToId(rawFolder, folders)
+      if (folderId == null) return
+      const cur = folders.find(f => sameId(f.id, folderId))
+      if (!cur) return
+
+      const dropLeafFolderId = dropKey.startsWith('folder-') || dropKey === 'root'
+        ? undefined
+        : (leaves.find(l => sameId(l.id, leafKeyToId(dropKey, leaves)))?.folder_id ?? null)
+
+      const intent = resolveFolderMoveIntent({
+        draggedId: folderId,
+        draggedParentId: (cur.parent_id ?? null) as T | null,
+        dropKey,
+        dropToGap,
+        folders,
+        dropLeafFolderId,
       })
+      if (!intent) {
+        message.info(sameLevelHint)
+        return
+      }
+      try {
+        if (sameId(cur.parent_id, intent.targetParentId)) {
+          message.info(sameLevelHint)
+          return
+        }
+        await onMoveFolder({ folderId, targetParentId: intent.targetParentId })
+        message.success('目录已移动')
+      } catch (e: any) {
+        message.error(e?.response?.data?.detail || '目录移动失败')
+      }
+      return
     }
+
+    if (dragKey === 'root') return
+
+    const leafId = leafKeyToId(dragKey, leaves)
+    if (leafId == null) return
     const leaf = leaves.find(l => sameId(l.id, leafId))
-    const folderChanged = !sameId(leaf?.folder_id, targetFolderId)
+    if (!leaf) return
+
+    const dropLeafFolderId = dropKey.startsWith('folder-') || dropKey === 'root'
+      ? undefined
+      : (leaves.find(l => sameId(l.id, leafKeyToId(dropKey, leaves)))?.folder_id ?? null)
+
+    const target = resolveLeafMoveTarget({
+      draggedFolderId: (leaf.folder_id ?? null) as T | null,
+      dropKey,
+      dropToGap,
+      folders,
+      dropLeafFolderId,
+    })
+    if (target === undefined) {
+      message.info(sameLevelHint)
+      return
+    }
+    const targetFolderId = target
+    const folderChanged = !sameId(leaf.folder_id, targetFolderId)
+    if (!folderChanged) {
+      message.info(sameLevelHint)
+      return
+    }
+    const orderedLeafIds = sortNamed([
+      ...leaves.filter(l => sameId(l.folder_id, targetFolderId) && !sameId(l.id, leafId)),
+      { ...leaf, folder_id: targetFolderId, name: leaf.name, id: leaf.id },
+    ]).map(l => l.id as T)
+
     try {
-      await onMoveAndReorder({ leafId, targetFolderId, orderedLeafIds: ordered, folderChanged })
+      await onMoveAndReorder({ leafId, targetFolderId, orderedLeafIds, folderChanged: true })
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '移动失败')
     }
@@ -580,7 +487,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
         const dropKey = String(dropNode.key)
         if (dragKey === 'root') return false
         if (dragKey.startsWith('folder-')) {
-          if (!onMoveFolder && !onReorderFolders) return false
+          if (!onMoveFolder) return false
           if (dropKey === dragKey) return false
           return true
         }

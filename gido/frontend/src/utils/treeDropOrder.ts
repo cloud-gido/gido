@@ -2,138 +2,20 @@
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * 目录树拖拽（对齐常见桌面文件管理器，而非自创启发式）：
+ * 目录树拖拽（对齐操作系统文件管理器 / IDEA）：
  *
- * - 同级目录之间：按指针落在目标行上半/下半 → 插到前/后（Windows 资源管理器「未排序」列表同款）
- * - 拖到非同级目录上，或按住 Alt/Option 拖到目录上 → 迁入该目录（IDEA Move into）
- * - 拖到根 / 父级旁 → 提到该层
+ * - 同级不排序：展示固定为目录在前、脚本在后，组内字典序
+ * - 拖到目录上 → 迁入该目录
+ * - 拖到根 / 拖到某层缝隙 → 移到该层（换父级）
+ * - 同级缝隙拖放 → 无操作（不支持手工排序）
  *
- * 注意：rc-tree 在行上半会把 dropTarget 改写成「前一扁平节点」；展开父目录下的
- * 首个子项因此常变成 drop 到父目录。同级重排必须用真实悬停行（onDragOver.node /
- * elementFromPoint），不能直接信 info.node.key。
+ * 注意：rc-tree 会改写 dropTarget；须用真实悬停行（onDragOver / elementFromPoint）。
  */
-
-export type DropPosition = 'before' | 'after'
-
-export type FolderDropIntent<T extends string | number> =
-  | { kind: 'reorder'; parentId: T | null; relativeId: T | null; position: DropPosition; insertIndex?: number }
-  | { kind: 'reparent'; targetParentId: T | null }
 
 function sameId(a: string | number | null | undefined, b: string | number | null | undefined): boolean {
   if (a == null && b == null) return true
   if (a == null || b == null) return false
   return String(a) === String(b)
-}
-
-/** Ant Design：dropPosition - node.pos 末段（仅作指针不可用时的回退） */
-export function antdGapRelative(dropPosition: number, nodePos?: string): number {
-  const dropPosParts = String(nodePos || '').split('-')
-  const nodeIndex = Number(dropPosParts[dropPosParts.length - 1] || 0)
-  return dropPosition - nodeIndex
-}
-
-/**
- * 指针在目标行上半 → before，下半 → after（资源管理器列表重排标准做法）。
- * 无法取几何信息时返回 null，由调用方回退 antd relative。
- */
-export function positionByPointerHalf(
-  clientY: number | null | undefined,
-  dropNodeRect: { top: number; height: number } | null | undefined,
-): DropPosition | null {
-  if (clientY == null || !dropNodeRect) return null
-  if (!(dropNodeRect.height > 0)) return null
-  return clientY < dropNodeRect.top + dropNodeRect.height / 2 ? 'before' : 'after'
-}
-
-export function resolveFolderDropIntent<T extends string | number>(opts: {
-  draggedId: T
-  draggedParentId: T | null
-  dropKey: string
-  dropToGap: boolean
-  dropPosition: number
-  nodePos?: string
-  folders: { id: T; parent_id: T | null }[]
-  dropLeafFolderId?: T | null
-  /** 按住 Alt/Option：同级也迁入目标目录 */
-  nestModifier?: boolean
-  /** 指针 Y；与 dropNodeRect 一起用于同级前后 */
-  clientY?: number | null
-  dropNodeRect?: { top: number; height: number } | null
-}): FolderDropIntent<T> | null {
-  const {
-    draggedId,
-    draggedParentId,
-    dropKey,
-    dropToGap,
-    dropPosition,
-    nodePos,
-    folders,
-    dropLeafFolderId,
-    nestModifier = false,
-    clientY,
-    dropNodeRect,
-  } = opts
-
-  const relative = antdGapRelative(dropPosition, nodePos)
-  const fromPointer = positionByPointerHalf(clientY, dropNodeRect)
-  // 无指针时：Ant relative===-1 / 0 倾向 before；relative>0 为 after
-  const fallbackGap: DropPosition = relative === -1 || relative === 0 ? 'before' : 'after'
-  const siblingPos: DropPosition = fromPointer ?? fallbackGap
-
-  if (dropKey === 'root') {
-    return {
-      kind: 'reorder',
-      parentId: null,
-      relativeId: null,
-      position: 'after',
-      insertIndex: Math.max(0, dropPosition),
-    }
-  }
-
-  if (!dropKey.startsWith('folder-')) {
-    const parentId = (dropLeafFolderId ?? null) as T | null
-    if (!sameId(draggedParentId, parentId)) {
-      return { kind: 'reparent', targetParentId: parentId }
-    }
-    return {
-      kind: 'reorder',
-      parentId,
-      relativeId: null,
-      position: siblingPos,
-      insertIndex: Math.max(0, dropPosition),
-    }
-  }
-
-  const raw = dropKey.slice('folder-'.length)
-  const dropFolder = folders.find(f => String(f.id) === raw)
-  if (!dropFolder) return null
-  const dropFolderId = dropFolder.id
-  if (sameId(dropFolderId, draggedId)) return null
-
-  const dropParentId = (dropFolder.parent_id ?? null) as T | null
-  const sameLevel = sameId(draggedParentId, dropParentId)
-
-  // 同级：默认重排（上半前 / 下半后）；Alt = 迁入
-  if (sameLevel && !nestModifier) {
-    return {
-      kind: 'reorder',
-      parentId: dropParentId,
-      relativeId: dropFolderId,
-      position: siblingPos,
-    }
-  }
-
-  if (dropToGap) {
-    return {
-      kind: 'reorder',
-      parentId: dropParentId,
-      relativeId: dropFolderId,
-      position: siblingPos,
-    }
-  }
-
-  // 非同级，或 Alt+同级 → 迁入
-  return { kind: 'reparent', targetParentId: dropFolderId }
 }
 
 /** 优先真实悬停行，其次落点元素，最后才用 antd 可能改写过的 dropKey */
@@ -150,6 +32,154 @@ export function pickVisualDropKey(opts: {
   return opts.antdDropKey
 }
 
+/**
+ * 目录拖放：只产生「换父级 / 迁入」，不产生同级排序。
+ * 返回 null 表示同级无效拖放（应提示按名称自动排序）。
+ */
+export function resolveFolderMoveIntent<T extends string | number>(opts: {
+  draggedId: T
+  draggedParentId: T | null
+  dropKey: string
+  /** true = 缝隙；false = 落在节点上 */
+  dropToGap: boolean
+  folders: { id: T; parent_id: T | null }[]
+  dropLeafFolderId?: T | null
+}): { targetParentId: T | null } | null {
+  const { draggedId, draggedParentId, dropKey, dropToGap, folders, dropLeafFolderId } = opts
+
+  if (dropKey === 'root') {
+    if (draggedParentId == null) return null
+    return { targetParentId: null }
+  }
+
+  if (!dropKey.startsWith('folder-')) {
+    const parentId = (dropLeafFolderId ?? null) as T | null
+    if (sameId(draggedParentId, parentId)) return null
+    return { targetParentId: parentId }
+  }
+
+  const raw = dropKey.slice('folder-'.length)
+  const dropFolder = folders.find(f => String(f.id) === raw)
+  if (!dropFolder) return null
+  if (sameId(dropFolder.id, draggedId)) return null
+
+  if (!dropToGap) {
+    // 拖到目录上 → 迁入
+    if (sameId(draggedParentId, dropFolder.id)) return null
+    return { targetParentId: dropFolder.id }
+  }
+
+  // 缝隙：移到与目标目录同级（换父级）；已同级则不排序
+  const newParent = (dropFolder.parent_id ?? null) as T | null
+  if (sameId(draggedParentId, newParent)) return null
+  return { targetParentId: newParent }
+}
+
+/**
+ * 叶子拖放目标父目录；同级无效时返回 null。
+ */
+export function resolveLeafMoveTarget<T extends string | number>(opts: {
+  draggedFolderId: T | null
+  dropKey: string
+  dropToGap: boolean
+  folders: { id: T; parent_id: T | null }[]
+  dropLeafFolderId?: T | null
+}): T | null | undefined {
+  // undefined = 无效同级；null = 根；T = 某目录
+  const { draggedFolderId, dropKey, dropToGap, folders, dropLeafFolderId } = opts
+
+  if (dropKey === 'root') {
+    if (draggedFolderId == null) return undefined
+    return null
+  }
+
+  if (dropKey.startsWith('folder-')) {
+    const raw = dropKey.slice('folder-'.length)
+    const dropFolder = folders.find(f => String(f.id) === raw)
+    if (!dropFolder) return undefined
+    if (!dropToGap) {
+      if (sameId(draggedFolderId, dropFolder.id)) return undefined
+      return dropFolder.id
+    }
+    const newParent = (dropFolder.parent_id ?? null) as T | null
+    if (sameId(draggedFolderId, newParent)) return undefined
+    return newParent
+  }
+
+  const parentId = (dropLeafFolderId ?? null) as T | null
+  if (sameId(draggedFolderId, parentId)) return undefined
+  return parentId
+}
+
+export function ancestorFolderKeys<T extends string | number>(opts: {
+  leafFolderId: T | null | undefined
+  folders: { id: T; parent_id: T | null }[]
+}): string[] {
+  const keys: string[] = ['root']
+  let fid: T | null | undefined = opts.leafFolderId ?? null
+  const byId = new Map(opts.folders.map(f => [String(f.id), f]))
+  while (fid != null) {
+    keys.push(`folder-${fid}`)
+    const f = byId.get(String(fid))
+    fid = f?.parent_id ?? null
+  }
+  return keys
+}
+
+// —— 以下保留轻量兼容导出，避免外部旧引用瞬间炸掉 ——
+
+/** @deprecated 同级不再排序 */
+export type DropPosition = 'before' | 'after'
+
+/** @deprecated 使用 resolveFolderMoveIntent */
+export type FolderDropIntent<T extends string | number> =
+  | { kind: 'reorder'; parentId: T | null; relativeId: T | null; position: DropPosition; insertIndex?: number }
+  | { kind: 'reparent'; targetParentId: T | null }
+
+/** @deprecated */
+export function antdGapRelative(dropPosition: number, nodePos?: string): number {
+  const dropPosParts = String(nodePos || '').split('-')
+  const nodeIndex = Number(dropPosParts[dropPosParts.length - 1] || 0)
+  return dropPosition - nodeIndex
+}
+
+/** @deprecated */
+export function positionByPointerHalf(
+  clientY: number | null | undefined,
+  dropNodeRect: { top: number; height: number } | null | undefined,
+): DropPosition | null {
+  if (clientY == null || !dropNodeRect) return null
+  if (!(dropNodeRect.height > 0)) return null
+  return clientY < dropNodeRect.top + dropNodeRect.height / 2 ? 'before' : 'after'
+}
+
+/** @deprecated 使用 resolveFolderMoveIntent */
+export function resolveFolderDropIntent<T extends string | number>(opts: {
+  draggedId: T
+  draggedParentId: T | null
+  dropKey: string
+  dropToGap: boolean
+  dropPosition: number
+  nodePos?: string
+  folders: { id: T; parent_id: T | null }[]
+  dropLeafFolderId?: T | null
+  nestModifier?: boolean
+  clientY?: number | null
+  dropNodeRect?: { top: number; height: number } | null
+}): FolderDropIntent<T> | null {
+  const moved = resolveFolderMoveIntent({
+    draggedId: opts.draggedId,
+    draggedParentId: opts.draggedParentId,
+    dropKey: opts.dropKey,
+    dropToGap: opts.nestModifier ? false : opts.dropToGap,
+    folders: opts.folders,
+    dropLeafFolderId: opts.dropLeafFolderId,
+  })
+  if (!moved) return null
+  return { kind: 'reparent', targetParentId: moved.targetParentId }
+}
+
+/** @deprecated */
 export function folderReorderNeedsReparent<T extends string | number>(
   draggedParentId: T | null,
   intent: Extract<FolderDropIntent<T>, { kind: 'reorder' }>,
@@ -157,6 +187,7 @@ export function folderReorderNeedsReparent<T extends string | number>(
   return !sameId(draggedParentId, intent.parentId)
 }
 
+/** @deprecated */
 export function insertAmongPeers<T extends string | number>(opts: {
   peerIdsExcludingDragged: T[]
   draggedId: T
@@ -178,6 +209,7 @@ export function insertAmongPeers<T extends string | number>(opts: {
   return ordered
 }
 
+/** @deprecated */
 export function orderLeavesAfterDrop<T extends string | number>(opts: {
   peerIdsExcludingDragged: T[]
   draggedId: T
@@ -192,8 +224,7 @@ export function orderLeavesAfterDrop<T extends string | number>(opts: {
     const ordered = [...peerIdsExcludingDragged]
     if (idx >= 0) {
       const hint = opts.dropPositionHint
-      const insertAt =
-        hint != null && hint > idx ? idx + 1 : idx
+      const insertAt = hint != null && hint > idx ? idx + 1 : idx
       ordered.splice(insertAt, 0, draggedId)
     } else {
       ordered.push(draggedId)
@@ -201,19 +232,4 @@ export function orderLeavesAfterDrop<T extends string | number>(opts: {
     return ordered
   }
   return dropToGap ? [...peerIdsExcludingDragged, draggedId] : [draggedId, ...peerIdsExcludingDragged]
-}
-
-export function ancestorFolderKeys<T extends string | number>(opts: {
-  leafFolderId: T | null | undefined
-  folders: { id: T; parent_id: T | null }[]
-}): string[] {
-  const keys: string[] = ['root']
-  let fid: T | null | undefined = opts.leafFolderId ?? null
-  const byId = new Map(opts.folders.map(f => [String(f.id), f]))
-  while (fid != null) {
-    keys.push(`folder-${fid}`)
-    const f = byId.get(String(fid))
-    fid = f?.parent_id ?? null
-  }
-  return keys
 }
