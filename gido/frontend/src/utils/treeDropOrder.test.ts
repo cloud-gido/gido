@@ -148,6 +148,25 @@ describe('treeDropOrder (Explorer / IDEA)', () => {
     }
   })
 
+  it('insertAmongPeers 叶子同级上半/下半', () => {
+    expect(
+      insertAmongPeers({
+        peerIdsExcludingDragged: [10],
+        draggedId: 20,
+        relativeId: 10,
+        position: 'before',
+      }),
+    ).toEqual([20, 10])
+    expect(
+      insertAmongPeers({
+        peerIdsExcludingDragged: [10],
+        draggedId: 20,
+        relativeId: 10,
+        position: 'after',
+      }),
+    ).toEqual([10, 20])
+  })
+
   it('insertAmongPeers / leaves / ancestors', () => {
     expect(
       insertAmongPeers({

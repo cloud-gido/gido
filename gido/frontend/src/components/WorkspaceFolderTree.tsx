@@ -11,8 +11,8 @@ import {
   ancestorFolderKeys,
   folderReorderNeedsReparent,
   insertAmongPeers,
-  orderLeavesAfterDrop,
   pickVisualDropKey,
+  positionByPointerHalf,
   resolveFolderDropIntent,
 } from '../utils/treeDropOrder'
 
@@ -509,39 +509,58 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
     const leafId = leafKeyToId(dragKey, leaves)
     if (leafId == null) return
 
+    const ev = info.event as unknown as { clientX?: number; clientY?: number }
+    const clientX = pointer?.clientX ?? ev?.clientX
+    const clientY = pointer?.clientY ?? ev?.clientY
+    const pointKey = clientX != null && clientY != null
+      ? treeKeyFromPoint(clientX, clientY, dragKey)
+      : null
     const dropKey = pickVisualDropKey({
       hoverKey: pointer?.hoverKey,
-      pointKey: pointer
-        ? treeKeyFromPoint(pointer.clientX, pointer.clientY, dragKey)
-        : null,
+      pointKey,
       antdDropKey: String(info.node.key),
       dragKey,
     })
     let targetFolderId: T | null = null
+    let ordered: T[]
 
     if (dropKey.startsWith('folder-')) {
       const dropRaw = parseFolderKey(dropKey)
       targetFolderId = dropRaw != null ? folderKeyToId(dropRaw, folders) : null
+      const inFolder = sortLeaves(
+        leaves.filter(l => sameId(l.folder_id, targetFolderId) && !sameId(l.id, leafId)),
+      )
+      // 拖到目录上：迁入该目录末尾（与资源管理器「放进文件夹」一致）
+      ordered = [...inFolder.map(l => l.id), leafId]
     } else if (dropKey === 'root') {
       targetFolderId = null
+      const inFolder = sortLeaves(
+        leaves.filter(l => sameId(l.folder_id, null) && !sameId(l.id, leafId)),
+      )
+      ordered = [...inFolder.map(l => l.id), leafId]
     } else {
-      const dropLeaf = leaves.find(l => sameId(l.id, leafKeyToId(dropKey, leaves)))
+      const dropLeafId = leafKeyToId(dropKey, leaves)
+      const dropLeaf = leaves.find(l => sameId(l.id, dropLeafId))
       targetFolderId = (dropLeaf?.folder_id ?? null) as T | null
+      const inFolder = sortLeaves(
+        leaves.filter(l => sameId(l.folder_id, targetFolderId) && !sameId(l.id, leafId)),
+      )
+      const dropNodeRect = rectForTreeKey(dropKey)
+      const fromPointer = positionByPointerHalf(clientY, dropNodeRect)
+      let position: 'before' | 'after' = fromPointer ?? 'before'
+      if (!fromPointer && Boolean(info.dropToGap)) {
+        const parts = String(info.node.pos || '').split('-')
+        const nodeIndex = Number(parts[parts.length - 1] || 0)
+        if (info.dropPosition - nodeIndex !== -1) position = 'after'
+      }
+      // 同级脚本：与目录相同，上半前 / 下半后
+      ordered = insertAmongPeers({
+        peerIdsExcludingDragged: inFolder.map(l => l.id),
+        draggedId: leafId,
+        relativeId: dropLeafId,
+        position,
+      })
     }
-
-    const inFolder = sortLeaves(
-      leaves.filter(l => sameId(l.folder_id, targetFolderId) && !sameId(l.id, leafId)),
-    )
-    const dropLeafId = dropKey.startsWith('folder-') || dropKey === 'root'
-      ? null
-      : leafKeyToId(dropKey, leaves)
-    const ordered = orderLeavesAfterDrop({
-      peerIdsExcludingDragged: inFolder.map(l => l.id),
-      draggedId: leafId,
-      dropRelativeLeafId: dropLeafId,
-      dropToGap: Boolean(info.dropToGap),
-      dropPositionHint: info.dropPosition,
-    })
     const leaf = leaves.find(l => sameId(l.id, leafId))
     const folderChanged = !sameId(leaf?.folder_id, targetFolderId)
     try {

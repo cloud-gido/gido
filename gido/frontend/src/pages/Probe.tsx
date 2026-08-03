@@ -475,16 +475,16 @@ export default function ProbePage() {
 
   const deleteFolder = async (folderId: string) => {
     const hasChildFolders = probeState.folders.some(f => f.parentId === folderId)
-    const hasScripts = probeState.scripts.some(s => s.folderId === folderId)
-    if (hasChildFolders || hasScripts) {
-      message.warning('请先清空子目录与目录内查询后再删除')
+    if (hasChildFolders) {
+      message.warning('请先删除或移出子目录后再删除（与数据开发/实时一致：仅空目录可删，叶子会移到根级）')
       return
     }
     setProbeState(prev => ({
       ...prev,
       folders: prev.folders.filter(f => f.id !== folderId),
+      scripts: prev.scripts.map(s => (s.folderId === folderId ? { ...s, folderId: null } : s)),
     }))
-    message.success('已删除目录')
+    message.success('已删除目录（目录内查询已移到根级）')
   }
 
   const moveProbeFolder = async (folderId: string, targetParentId: string | null) => {
@@ -788,7 +788,13 @@ export default function ProbePage() {
                     scripts: prev.scripts.map(s => (s.id === id ? { ...s, name } : s)),
                   }))
                 }}
-                onDeleteLeaf={leaf => deleteScript(leaf.id)}
+                onDeleteLeaf={leaf => {
+                  Modal.confirm({
+                    title: '删除探查查询？',
+                    content: leaf.name,
+                    onOk: () => deleteScript(leaf.id),
+                  })
+                }}
                 onMoveAndReorder={moveAndReorderProbeScripts}
                 onMoveFolder={async ({ folderId, targetParentId }) => {
                   await moveProbeFolder(folderId, targetParentId)

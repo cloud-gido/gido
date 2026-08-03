@@ -132,6 +132,8 @@ export default function StreamStudioPage() {
   const [scriptDraft, setScriptDraft] = useState('')
   const [scriptDirty, setScriptDirty] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
+  /** 从目录菜单「新建作业」时带入；顶栏新建则为 null（根级） */
+  const [createFolderId, setCreateFolderId] = useState<number | null>(null)
   const [createForm] = Form.useForm()
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameForm] = Form.useForm()
@@ -439,6 +441,12 @@ export default function StreamStudioPage() {
     }
   }, [selected?.id, selected?.job_type, selected?.flink_jar_submit_mode, selected?.streaming_properties])
 
+  const openCreateJob = (folderId: number | null = null) => {
+    createForm.resetFields()
+    setCreateFolderId(folderId)
+    setCreateOpen(true)
+  }
+
   const handleCreate = async () => {
     const v = await createForm.validateFields()
     const created: any = await streamingApi.createJob({
@@ -447,10 +455,11 @@ export default function StreamStudioPage() {
       job_type: v.job_type,
       script_content: v.job_type === 'SQL' ? (v.script_content || '-- Flink SQL\nCREATE TABLE ...') : null,
       parallelism: v.parallelism ?? 1,
-      folder_id: null,
+      folder_id: createFolderId,
     })
     message.success('已创建任务')
     setCreateOpen(false)
+    setCreateFolderId(null)
     createForm.resetFields()
     await load(false)
     setSelected(created)
@@ -820,7 +829,7 @@ export default function StreamStudioPage() {
             <Button icon={<MenuUnfoldOutlined />} onClick={() => setSidebarCollapsedPersist(false)} />
           </Tooltip>
         )}
-        <Button type="primary" icon={<PlusOutlined />} disabled={!canWrite} onClick={() => { createForm.resetFields(); setCreateOpen(true) }}>
+        <Button type="primary" icon={<PlusOutlined />} disabled={!canWrite} onClick={() => openCreateJob(null)}>
           新建实时作业
         </Button>
         <Button icon={<ReloadOutlined />} onClick={() => load(true)} loading={loading}>刷新</Button>
@@ -869,6 +878,15 @@ export default function StreamStudioPage() {
                 await load(false)
               }}
               onRenameLeaf={async (id, name) => {
+                const job = jobs.find(j => j.id === id)
+                if (job?.is_locked) {
+                  message.warning('作业已锁定，请先解锁后再重命名')
+                  return
+                }
+                if ((job?.status || '').toLowerCase() === 'running') {
+                  message.warning('运行中的作业不可重命名')
+                  return
+                }
                 if (!STREAM_JOB_NAME_PATTERN.test(name)) {
                   message.error(STREAM_JOB_NAME_RULE)
                   return
@@ -897,6 +915,13 @@ export default function StreamStudioPage() {
                 await streamingApi.reorderFolders(wsId, parentId, orderedFolderIds)
                 await load(false)
               }}
+              folderMenuExtra={f => [
+                {
+                  key: 'add-job',
+                  label: '新建作业',
+                  onClick: () => openCreateJob(f.id),
+                },
+              ]}
             />
           </div>
         </div>
@@ -1331,7 +1356,13 @@ export default function StreamStudioPage() {
         />
       </Modal>
 
-      <Modal title="新建实时作业" open={createOpen} onOk={handleCreate} onCancel={() => setCreateOpen(false)} destroyOnClose>
+      <Modal
+        title="新建实时作业"
+        open={createOpen}
+        onOk={handleCreate}
+        onCancel={() => { setCreateOpen(false); setCreateFolderId(null) }}
+        destroyOnClose
+      >
         <Form form={createForm} layout="vertical" initialValues={{ job_type: 'SQL', parallelism: 1 }}>
           <Form.Item
             name="name"
@@ -1344,6 +1375,11 @@ export default function StreamStudioPage() {
             <Input placeholder="例如 s3-copy-users" />
           </Form.Item>
           <Paragraph type="secondary" style={{ marginTop: -12, fontSize: 12 }}>{STREAM_JOB_NAME_RULE}</Paragraph>
+          {createFolderId != null && (
+            <Paragraph type="secondary" style={{ marginTop: -8, fontSize: 12 }}>
+              将创建到目录：{folders.find(f => f.id === createFolderId)?.name || createFolderId}
+            </Paragraph>
+          )}
           <Form.Item name="job_type" label="类型" rules={[{ required: true }]}>
             <Select options={JOB_TYPES} />
           </Form.Item>

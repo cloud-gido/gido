@@ -1113,7 +1113,13 @@ export default function StudioPage() {
               setNodes(prev => prev.map(n => (n.id === id ? { ...n, name } : n)))
               setOpenTabs(prev => prev.map(t => (t.id === id ? { ...t, name } : t)))
             }}
-            onDeleteLeaf={leaf => { void handleDelete(leaf.id) }}
+            onDeleteLeaf={leaf => {
+              Modal.confirm({
+                title: '删除脚本？',
+                content: leaf.name,
+                onOk: () => handleDelete(leaf.id),
+              })
+            }}
             onMoveAndReorder={async ({ leafId, targetFolderId, orderedLeafIds, folderChanged }) => {
               if (!wsId) return
               if (folderChanged) await studioApi.moveNodeFolder(leafId, targetFolderId)
