@@ -119,6 +119,48 @@ export function folderReorderNeedsReparent<T extends string | number>(
   return !sameId(draggedParentId, intent.parentId)
 }
 
+/**
+ * 同级目录重排（含「把 b 拖到 a 上面」）。
+ *
+ * Ant Tree 把 a|b 之间的缝标成「a 后面」；从下方往上拖时这正是最常松手的位置，
+ * 若按字面 after 会得到原序并静默跳过（Network 无请求）。对「落在正上方兄弟的下缝」按换到其前处理。
+ */
+export function reorderPeerIdsByDrop<T extends string | number>(opts: {
+  peerIdsInDisplayOrder: T[]
+  draggedId: T
+  dropId: T
+  /** info.dropPosition - 末段 node.pos */
+  relativeDrop: number
+  dropToGap: boolean
+}): T[] {
+  const list = [...opts.peerIdsInDisplayOrder]
+  const oldIndex = list.findIndex(id => String(id) === String(opts.draggedId))
+  const dropIndex = list.findIndex(id => String(id) === String(opts.dropId))
+  if (oldIndex < 0 || dropIndex < 0 || oldIndex === dropIndex) return list
+
+  let placeBefore = opts.relativeDrop <= 0
+  if (!opts.dropToGap) {
+    // 拖到目录节点上：默认到目标前（b 拖到 a 上 → b|a）
+    placeBefore = opts.relativeDrop <= 0
+  } else {
+    placeBefore = opts.relativeDrop <= 0
+    // a|b 之间的缝 = a 的 after；上拖 b 松手在此 → 视为要到 a 前
+    if (!placeBefore && dropIndex === oldIndex - 1) placeBefore = true
+    // 对称：下拖时落在正下方兄弟的上缝 → 视为要到其之后
+    if (placeBefore && dropIndex === oldIndex + 1) placeBefore = false
+  }
+
+  const [item] = list.splice(oldIndex, 1)
+  let insertAt = list.findIndex(id => String(id) === String(opts.dropId))
+  if (insertAt < 0) {
+    list.push(item)
+    return list
+  }
+  if (!placeBefore) insertAt += 1
+  list.splice(insertAt, 0, item)
+  return list
+}
+
 /** 同级插入：把 draggedId 插到 relativeId 前/后；无 relative 则按 insertIndex 或追加 */
 export function insertAmongPeers<T extends string | number>(opts: {
   peerIdsExcludingDragged: T[]

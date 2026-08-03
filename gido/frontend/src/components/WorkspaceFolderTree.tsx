@@ -7,7 +7,7 @@ import { Button, Dropdown, Input, Tree, message } from 'antd'
 import type { DataNode, TreeProps } from 'antd/es/tree'
 import { FileOutlined, FolderOutlined, MoreOutlined } from '@ant-design/icons'
 import { sortLeavesByOrderThenName, sortFoldersByOrderThenName } from '../utils/treeSort'
-import { ancestorFolderKeys, folderReorderNeedsReparent, insertAmongPeers, orderLeavesAfterDrop, resolveFolderDropIntent } from '../utils/treeDropOrder'
+import { ancestorFolderKeys, folderReorderNeedsReparent, insertAmongPeers, orderLeavesAfterDrop, reorderPeerIdsByDrop, resolveFolderDropIntent } from '../utils/treeDropOrder'
 
 /** Studio / Stream 用 number；Probe 本地目录用 string */
 export type TreeId = string | number
@@ -392,22 +392,38 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
           else message.info('暂不支持目录排序')
           return
         }
-        const peers = sortFolders(
-          folders.filter(f => sameId(f.parent_id, targetParentId) && !sameId(f.id, folderId)),
-        )
-        const orderedIds = insertAmongPeers({
-          peerIdsExcludingDragged: peers.map(f => f.id),
-          draggedId: folderId,
-          relativeId: intent.relativeId,
-          position: intent.position,
-          insertIndex: intent.insertIndex,
-        })
-        const prevAtTarget = sortFolders(
+
+        const peerIds = sortFolders(
           folders.filter(f => sameId(f.parent_id, targetParentId)),
         ).map(f => f.id)
+
+        let orderedIds: T[]
+        if (intent.relativeId != null && !needsReparent) {
+          const dropPosParts = String(info.node.pos || '').split('-')
+          const nodeIndex = Number(dropPosParts[dropPosParts.length - 1] || 0)
+          orderedIds = reorderPeerIdsByDrop({
+            peerIdsInDisplayOrder: peerIds,
+            draggedId: folderId,
+            dropId: intent.relativeId,
+            relativeDrop: info.dropPosition - nodeIndex,
+            dropToGap: Boolean(info.dropToGap),
+          })
+        } else {
+          const peersExcl = peerIds.filter(id => !sameId(id, folderId))
+          orderedIds = insertAmongPeers({
+            peerIdsExcludingDragged: peersExcl,
+            draggedId: folderId,
+            relativeId: intent.relativeId,
+            position: intent.position,
+            insertIndex: intent.insertIndex,
+          })
+        }
+
+        const prevAtTarget = peerIds
         const orderUnchanged = !needsReparent
           && orderedIds.map(String).join(',') === prevAtTarget.map(String).join(',')
         if (orderUnchanged) {
+          message.info('顺序未变化：请拖到目标目录上，或拖到其上方空隙')
           return
         }
         await onReorderFolders({ parentId: targetParentId, orderedFolderIds: orderedIds })

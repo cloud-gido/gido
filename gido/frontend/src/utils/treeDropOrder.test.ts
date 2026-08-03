@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import { describe, expect, it } from 'vitest'
-import { ancestorFolderKeys, folderReorderNeedsReparent, insertAmongPeers, orderLeavesAfterDrop, resolveFolderDropIntent } from './treeDropOrder'
+import { ancestorFolderKeys, folderReorderNeedsReparent, insertAmongPeers, orderLeavesAfterDrop, reorderPeerIdsByDrop, resolveFolderDropIntent } from './treeDropOrder'
 
 describe('treeDropOrder', () => {
   it('目录同级：插到 relative 之前/之后', () => {
@@ -158,6 +158,42 @@ describe('treeDropOrder', () => {
         }),
       ).toEqual([2, 1, 3])
     }
+  })
+
+  it('把 b 拖到 a|b 中间缝（antd 标成 a 后）→ 仍得到 b|a', () => {
+    expect(
+      reorderPeerIdsByDrop({
+        peerIdsInDisplayOrder: [1, 2] as number[],
+        draggedId: 2,
+        dropId: 1,
+        relativeDrop: 1,
+        dropToGap: true,
+      }),
+    ).toEqual([2, 1])
+  })
+
+  it('把 b 拖到 a 上（非缝）→ b|a', () => {
+    expect(
+      reorderPeerIdsByDrop({
+        peerIdsInDisplayOrder: [1, 2] as number[],
+        draggedId: 2,
+        dropId: 1,
+        relativeDrop: 0,
+        dropToGap: false,
+      }),
+    ).toEqual([2, 1])
+  })
+
+  it('三层上拖到更上方缝：a 与 b 之间放 c → a|c|b', () => {
+    expect(
+      reorderPeerIdsByDrop({
+        peerIdsInDisplayOrder: [1, 2, 3] as number[],
+        draggedId: 3,
+        dropId: 1,
+        relativeDrop: 1,
+        dropToGap: true,
+      }),
+    ).toEqual([1, 3, 2])
   })
 
   it('叶子落到目录内：非 gap 置顶，gap 追加', () => {
