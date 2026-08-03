@@ -266,7 +266,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
     })
 
     const rootLeaves: any[] = []
-    sortNamed(leaves).forEach(n => {
+    leaves.forEach(n => {
       const leafItem = {
         key: String(n.id),
         title: sameId(renamingLeafId, n.id) ? (
@@ -307,6 +307,8 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
         ),
         isLeaf: true,
         data: n,
+        _name: n.name,
+        _id: n.id,
       }
       const fk = n.folder_id != null ? String(n.folder_id) : ''
       if (fk && folderMap[fk]) {
@@ -316,26 +318,9 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
       }
     })
 
+    // 先挂满父子关系，再统一排序（避免「先排父、后插子」导致内层仍是插入序）
     const rootFolders: any[] = []
     Object.values(folderMap).forEach((f: any) => {
-      const leafSorted = [...f.children.filter((c: any) => c.isLeaf)].sort((a: any, b: any) => {
-        const nc = String(a.data?.name || '').localeCompare(String(b.data?.name || ''), 'zh-CN', {
-          numeric: true,
-          sensitivity: 'base',
-        })
-        if (nc !== 0) return nc
-        return compareIdTie(a.data?.id ?? 0, b.data?.id ?? 0)
-      })
-      const subFolders = [...f.children.filter((c: any) => !c.isLeaf)].sort((a: any, b: any) => {
-        const nc = String(a._name || '').localeCompare(String(b._name || ''), 'zh-CN', {
-          numeric: true,
-          sensitivity: 'base',
-        })
-        if (nc !== 0) return nc
-        return compareIdTie(a._folderId ?? 0, b._folderId ?? 0)
-      })
-      // 操作系统惯例：目录在前，脚本在后
-      f.children = [...subFolders, ...leafSorted]
       const pid = f._parentId != null ? String(f._parentId) : ''
       if (pid && folderMap[pid]) {
         folderMap[pid].children.push(f)
@@ -344,14 +329,33 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
       }
     })
 
-    rootFolders.sort((a: any, b: any) => {
-      const nc = String(a._name || '').localeCompare(String(b._name || ''), 'zh-CN', {
-        numeric: true,
-        sensitivity: 'base',
+    const sortTreeChildren = (nodes: any[]) => {
+      const foldersPart = nodes.filter(c => !c.isLeaf)
+      const leavesPart = nodes.filter(c => c.isLeaf)
+      foldersPart.sort((a, b) => {
+        const nc = String(a._name || '').localeCompare(String(b._name || ''), 'zh-CN', {
+          numeric: true,
+          sensitivity: 'base',
+        })
+        if (nc !== 0) return nc
+        return compareIdTie(a._folderId ?? 0, b._folderId ?? 0)
       })
-      if (nc !== 0) return nc
-      return compareIdTie(a._folderId ?? 0, b._folderId ?? 0)
+      leavesPart.sort((a, b) => {
+        const nc = String(a._name || a.data?.name || '').localeCompare(String(b._name || b.data?.name || ''), 'zh-CN', {
+          numeric: true,
+          sensitivity: 'base',
+        })
+        if (nc !== 0) return nc
+        return compareIdTie(a._id ?? a.data?.id ?? 0, b._id ?? b.data?.id ?? 0)
+      })
+      return [...foldersPart, ...leavesPart]
+    }
+
+    Object.values(folderMap).forEach((f: any) => {
+      f.children = sortTreeChildren(f.children || [])
     })
+    const sortedRootFolders = sortTreeChildren(rootFolders)
+    const sortedRootLeaves = sortTreeChildren(rootLeaves)
 
     return [
       {
@@ -364,7 +368,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
             )}
           </span>
         ),
-        children: [...rootFolders, ...rootLeaves],
+        children: [...sortedRootFolders, ...sortedRootLeaves],
       },
     ] as DataNode[]
   }, [
