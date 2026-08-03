@@ -7,7 +7,7 @@ import { Button, Dropdown, Input, Tree, message } from 'antd'
 import type { DataNode, TreeProps } from 'antd/es/tree'
 import { FileOutlined, FolderOutlined, MoreOutlined } from '@ant-design/icons'
 import { sortLeavesByOrderThenName, sortFoldersByOrderThenName } from '../utils/treeSort'
-import { ancestorFolderKeys, folderReorderNeedsReparent, insertAmongPeers, orderLeavesAfterDrop, reorderPeerIdsByDrop, resolveFolderDropIntent } from '../utils/treeDropOrder'
+import { ancestorFolderKeys, folderReorderNeedsReparent, insertAmongPeers, orderLeavesAfterDrop, resolveFolderDropIntent } from '../utils/treeDropOrder'
 
 /** Studio / Stream 用 number；Probe 本地目录用 string */
 export type TreeId = string | number
@@ -348,9 +348,6 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
       const dropLeafFolderId = dropKey.startsWith('folder-') || dropKey === 'root'
         ? undefined
         : (leaves.find(l => sameId(l.id, leafKeyToId(dropKey, leaves)))?.folder_id ?? null)
-      const dropFolderRaw = dropKey.startsWith('folder-') ? parseFolderKey(dropKey) : null
-      const dropFolderExpanded = dropFolderRaw != null
-        && expandedKeys.map(String).includes(`folder-${dropFolderRaw}`)
 
       const intent = resolveFolderDropIntent({
         draggedId: folderId,
@@ -361,7 +358,6 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
         nodePos: String(info.node.pos || ''),
         folders,
         dropLeafFolderId,
-        dropFolderExpanded,
       })
       if (!intent) return
 
@@ -377,7 +373,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
           return
         }
 
-        // reorder：目标父级可能与当前不同（子目录拖到根/父目录旁 → 先提出再排序）
+        // 缝隙排序：目标父级可能与当前不同（提出）→ 先 reparent 再写同级顺序
         const targetParentId = intent.parentId
         const needsReparent = folderReorderNeedsReparent((cur.parent_id ?? null) as T | null, intent)
         if (needsReparent) {
@@ -392,38 +388,23 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
           else message.info('暂不支持目录排序')
           return
         }
-
-        const peerIds = sortFolders(
+        const peersExcl = sortFolders(
+          folders.filter(f => sameId(f.parent_id, targetParentId) && !sameId(f.id, folderId)),
+        ).map(f => f.id)
+        const orderedIds = insertAmongPeers({
+          peerIdsExcludingDragged: peersExcl,
+          draggedId: folderId,
+          relativeId: intent.relativeId,
+          position: intent.position,
+          insertIndex: intent.insertIndex,
+        })
+        const prevAtTarget = sortFolders(
           folders.filter(f => sameId(f.parent_id, targetParentId)),
         ).map(f => f.id)
-
-        let orderedIds: T[]
-        if (intent.relativeId != null && !needsReparent) {
-          const dropPosParts = String(info.node.pos || '').split('-')
-          const nodeIndex = Number(dropPosParts[dropPosParts.length - 1] || 0)
-          orderedIds = reorderPeerIdsByDrop({
-            peerIdsInDisplayOrder: peerIds,
-            draggedId: folderId,
-            dropId: intent.relativeId,
-            relativeDrop: info.dropPosition - nodeIndex,
-            dropToGap: Boolean(info.dropToGap),
-          })
-        } else {
-          const peersExcl = peerIds.filter(id => !sameId(id, folderId))
-          orderedIds = insertAmongPeers({
-            peerIdsExcludingDragged: peersExcl,
-            draggedId: folderId,
-            relativeId: intent.relativeId,
-            position: intent.position,
-            insertIndex: intent.insertIndex,
-          })
-        }
-
-        const prevAtTarget = peerIds
         const orderUnchanged = !needsReparent
           && orderedIds.map(String).join(',') === prevAtTarget.map(String).join(',')
         if (orderUnchanged) {
-          message.info('顺序未变化：请拖到目标目录上，或拖到其上方空隙')
+          message.info('顺序未变化：请拖到目标上方的空隙线（拖到目录上会迁入其子目录）')
           return
         }
         await onReorderFolders({ parentId: targetParentId, orderedFolderIds: orderedIds })
