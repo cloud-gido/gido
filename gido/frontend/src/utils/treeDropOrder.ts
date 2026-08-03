@@ -2,11 +2,11 @@
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * 目录树拖拽落点（对齐 Ant Design Tree 官方示例 + IDEA Project 视图，无额外启发式）。
+ * 目录树拖拽（对齐常见桌面文件管理器，而非自创启发式）：
  *
- * - 缝隙 dropToGap：与目标同级；relative===-1 插到目标前，否则目标后（可顺带换父级=提出）
- * - 落到目录上 !dropToGap：迁入该目录（嵌套）
- * - 落到根：提到根层后再按位置排序
+ * - 同级目录之间：按指针落在目标行上半/下半 → 插到前/后（Windows 资源管理器「未排序」列表同款）
+ * - 拖到非同级目录上，或按住 Alt/Option 拖到目录上 → 迁入该目录（IDEA Move into）
+ * - 拖到根 / 父级旁 → 提到该层
  */
 
 export type DropPosition = 'before' | 'after'
@@ -21,11 +21,24 @@ function sameId(a: string | number | null | undefined, b: string | number | null
   return String(a) === String(b)
 }
 
-/** Ant Design Tree：dropPosition - node.pos 末段；官方示例用 === -1 表示落在目标上方 */
+/** Ant Design：dropPosition - node.pos 末段（仅作指针不可用时的回退） */
 export function antdGapRelative(dropPosition: number, nodePos?: string): number {
   const dropPosParts = String(nodePos || '').split('-')
   const nodeIndex = Number(dropPosParts[dropPosParts.length - 1] || 0)
   return dropPosition - nodeIndex
+}
+
+/**
+ * 指针在目标行上半 → before，下半 → after（资源管理器列表重排标准做法）。
+ * 无法取几何信息时返回 null，由调用方回退 antd relative。
+ */
+export function positionByPointerHalf(
+  clientY: number | null | undefined,
+  dropNodeRect: { top: number; height: number } | null | undefined,
+): DropPosition | null {
+  if (clientY == null || !dropNodeRect) return null
+  if (!(dropNodeRect.height > 0)) return null
+  return clientY < dropNodeRect.top + dropNodeRect.height / 2 ? 'before' : 'after'
 }
 
 export function resolveFolderDropIntent<T extends string | number>(opts: {
@@ -36,8 +49,12 @@ export function resolveFolderDropIntent<T extends string | number>(opts: {
   dropPosition: number
   nodePos?: string
   folders: { id: T; parent_id: T | null }[]
-  /** 落到叶子上时，该叶子所属目录 */
   dropLeafFolderId?: T | null
+  /** 按住 Alt/Option：同级也迁入目标目录 */
+  nestModifier?: boolean
+  /** 指针 Y；与 dropNodeRect 一起用于同级前后 */
+  clientY?: number | null
+  dropNodeRect?: { top: number; height: number } | null
 }): FolderDropIntent<T> | null {
   const {
     draggedId,
@@ -48,10 +65,15 @@ export function resolveFolderDropIntent<T extends string | number>(opts: {
     nodePos,
     folders,
     dropLeafFolderId,
+    nestModifier = false,
+    clientY,
+    dropNodeRect,
   } = opts
 
   const relative = antdGapRelative(dropPosition, nodePos)
-  const gapPosition: DropPosition = relative === -1 ? 'before' : 'after'
+  const fromPointer = positionByPointerHalf(clientY, dropNodeRect)
+  const fallbackGap: DropPosition = relative === -1 ? 'before' : 'after'
+  const siblingPos: DropPosition = fromPointer ?? fallbackGap
 
   if (dropKey === 'root') {
     return {
@@ -68,16 +90,13 @@ export function resolveFolderDropIntent<T extends string | number>(opts: {
     if (!sameId(draggedParentId, parentId)) {
       return { kind: 'reparent', targetParentId: parentId }
     }
-    if (dropToGap) {
-      return {
-        kind: 'reorder',
-        parentId,
-        relativeId: null,
-        position: gapPosition,
-        insertIndex: Math.max(0, dropPosition),
-      }
+    return {
+      kind: 'reorder',
+      parentId,
+      relativeId: null,
+      position: siblingPos,
+      insertIndex: Math.max(0, dropPosition),
     }
-    return { kind: 'reparent', targetParentId: parentId }
   }
 
   const raw = dropKey.slice('folder-'.length)
@@ -87,22 +106,31 @@ export function resolveFolderDropIntent<T extends string | number>(opts: {
   if (sameId(dropFolderId, draggedId)) return null
 
   const dropParentId = (dropFolder.parent_id ?? null) as T | null
+  const sameLevel = sameId(draggedParentId, dropParentId)
 
-  if (dropToGap) {
-    // 官方 / IDEA：缝隙 = 与该节点同级前后（子目录拖到父旁缝即可提出）
+  // 同级：默认重排（上半前 / 下半后）；Alt = 迁入
+  if (sameLevel && !nestModifier) {
     return {
       kind: 'reorder',
       parentId: dropParentId,
       relativeId: dropFolderId,
-      position: gapPosition,
+      position: siblingPos,
     }
   }
 
-  // IDEA：拖到目录上 = 迁入该目录
+  if (dropToGap) {
+    return {
+      kind: 'reorder',
+      parentId: dropParentId,
+      relativeId: dropFolderId,
+      position: siblingPos,
+    }
+  }
+
+  // 非同级，或 Alt+同级 → 迁入
   return { kind: 'reparent', targetParentId: dropFolderId }
 }
 
-/** 若「排序」目标父级与当前父级不同，须先 reparent（提出/迁入）再写同级顺序 */
 export function folderReorderNeedsReparent<T extends string | number>(
   draggedParentId: T | null,
   intent: Extract<FolderDropIntent<T>, { kind: 'reorder' }>,
@@ -110,7 +138,6 @@ export function folderReorderNeedsReparent<T extends string | number>(
   return !sameId(draggedParentId, intent.parentId)
 }
 
-/** 同级插入：把 draggedId 插到 relativeId 前/后；无 relative 则按 insertIndex 或追加 */
 export function insertAmongPeers<T extends string | number>(opts: {
   peerIdsExcludingDragged: T[]
   draggedId: T
@@ -132,10 +159,6 @@ export function insertAmongPeers<T extends string | number>(opts: {
   return ordered
 }
 
-/**
- * 叶子拖到目录/根/另一叶子后的有序 ID。
- * dropToGap=false 且落到目录/根：插到目标目录内首位；否则追加。
- */
 export function orderLeavesAfterDrop<T extends string | number>(opts: {
   peerIdsExcludingDragged: T[]
   draggedId: T
@@ -161,7 +184,6 @@ export function orderLeavesAfterDrop<T extends string | number>(opts: {
   return dropToGap ? [...peerIdsExcludingDragged, draggedId] : [draggedId, ...peerIdsExcludingDragged]
 }
 
-/** 展开叶节点祖先目录 key（含 root） */
 export function ancestorFolderKeys<T extends string | number>(opts: {
   leafFolderId: T | null | undefined
   folders: { id: T; parent_id: T | null }[]

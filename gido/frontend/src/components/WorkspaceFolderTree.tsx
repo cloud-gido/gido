@@ -161,6 +161,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
           />
         ) : (
           <div
+            data-tree-key={`folder-${fid}`}
             style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}
             onDoubleClick={readOnly ? undefined : () => { setRenamingFolderId(f.id); setRenamingFolderName(f.name) }}
           >
@@ -232,6 +233,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
           />
         ) : (
           <div
+            data-tree-key={String(n.id)}
             style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}
             onDoubleClick={readOnly ? undefined : () => { setRenamingLeafId(n.id); setRenamingLeafName(n.name) }}
           >
@@ -349,6 +351,20 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
         ? undefined
         : (leaves.find(l => sameId(l.id, leafKeyToId(dropKey, leaves)))?.folder_id ?? null)
 
+      const ev = info.event as unknown as { clientY?: number; altKey?: boolean; target?: EventTarget | null }
+      // 优先按 dropKey 取行几何（event.target 在空隙/指示线上时可能不是目标行）
+      const keyed = typeof document !== 'undefined'
+        ? (document.querySelector(`[data-tree-key="${CSS.escape(dropKey)}"]`) as HTMLElement | null)
+        : null
+      const dropNodeEl = (keyed?.closest?.('.ant-tree-treenode') as HTMLElement | null)
+        || ((ev?.target as Element | null | undefined)?.closest?.('.ant-tree-treenode') as HTMLElement | null)
+      const dropNodeRect = dropNodeEl
+        ? (() => {
+            const r = dropNodeEl.getBoundingClientRect()
+            return { top: r.top, height: r.height }
+          })()
+        : null
+
       const intent = resolveFolderDropIntent({
         draggedId: folderId,
         draggedParentId: (cur.parent_id ?? null) as T | null,
@@ -358,6 +374,9 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
         nodePos: String(info.node.pos || ''),
         folders,
         dropLeafFolderId,
+        nestModifier: Boolean(ev?.altKey),
+        clientY: ev?.clientY,
+        dropNodeRect,
       })
       if (!intent) return
 
@@ -373,7 +392,6 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
           return
         }
 
-        // 缝隙排序：目标父级可能与当前不同（提出）→ 先 reparent 再写同级顺序
         const targetParentId = intent.parentId
         const needsReparent = folderReorderNeedsReparent((cur.parent_id ?? null) as T | null, intent)
         if (needsReparent) {
@@ -404,7 +422,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
         const orderUnchanged = !needsReparent
           && orderedIds.map(String).join(',') === prevAtTarget.map(String).join(',')
         if (orderUnchanged) {
-          message.info('顺序未变化：请拖到目标上方的空隙线（拖到目录上会迁入其子目录）')
+          message.info('顺序未变化：请拖到目标行的上半（提到前面）或下半（放到后面）；按住 Alt 拖到目录可迁入')
           return
         }
         await onReorderFolders({ parentId: targetParentId, orderedFolderIds: orderedIds })

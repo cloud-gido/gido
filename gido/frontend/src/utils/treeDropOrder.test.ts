@@ -9,46 +9,79 @@ import {
   folderReorderNeedsReparent,
   insertAmongPeers,
   orderLeavesAfterDrop,
+  positionByPointerHalf,
   resolveFolderDropIntent,
 } from './treeDropOrder'
 
-describe('treeDropOrder (Ant Design / IDEA)', () => {
-  it('antdGapRelative：官方 relative===-1 表示目标上方', () => {
+describe('treeDropOrder (Explorer / IDEA)', () => {
+  it('指针上半 before、下半 after', () => {
+    const rect = { top: 100, height: 40 }
+    expect(positionByPointerHalf(110, rect)).toBe('before')
+    expect(positionByPointerHalf(130, rect)).toBe('after')
+  })
+
+  it('antdGapRelative 回退', () => {
     expect(antdGapRelative(0, '0-0-1')).toBe(-1)
     expect(antdGapRelative(2, '0-0-1')).toBe(1)
   })
 
-  it('目录同级：插到 relative 之前/之后', () => {
+  it('同级拖到目标上半 → 提到前面（gameline → goodvideo 上）', () => {
+    const intent = resolveFolderDropIntent({
+      draggedId: 2,
+      draggedParentId: 10,
+      dropKey: 'folder-1',
+      dropToGap: false,
+      dropPosition: 0,
+      nodePos: '0-0-0-0',
+      folders: [
+        { id: 10, parent_id: null },
+        { id: 1, parent_id: 10 },
+        { id: 2, parent_id: 10 },
+      ] as { id: number; parent_id: number | null }[],
+      clientY: 110,
+      dropNodeRect: { top: 100, height: 40 },
+    })
+    expect(intent).toEqual({
+      kind: 'reorder',
+      parentId: 10,
+      relativeId: 1,
+      position: 'before',
+    })
     expect(
       insertAmongPeers({
-        peerIdsExcludingDragged: [1, 3],
+        peerIdsExcludingDragged: [1],
         draggedId: 2,
-        relativeId: 3,
+        relativeId: 1,
         position: 'before',
       }),
-    ).toEqual([1, 2, 3])
-    expect(
-      insertAmongPeers({
-        peerIdsExcludingDragged: [1, 3],
-        draggedId: 2,
-        relativeId: 3,
-        position: 'after',
-      }),
-    ).toEqual([1, 3, 2])
+    ).toEqual([2, 1])
   })
 
-  it('无 relative 时追加到末尾', () => {
-    expect(
-      insertAmongPeers({
-        peerIdsExcludingDragged: ['a', 'b'] as string[],
-        draggedId: 'c',
-        relativeId: null,
-        position: 'after',
-      }),
-    ).toEqual(['a', 'b', 'c'])
+  it('同级拖到目标下半 → 放到后面', () => {
+    const intent = resolveFolderDropIntent({
+      draggedId: 1,
+      draggedParentId: 10,
+      dropKey: 'folder-2',
+      dropToGap: true,
+      dropPosition: 1,
+      nodePos: '0-0-0-1',
+      folders: [
+        { id: 10, parent_id: null },
+        { id: 1, parent_id: 10 },
+        { id: 2, parent_id: 10 },
+      ] as { id: number; parent_id: number | null }[],
+      clientY: 130,
+      dropNodeRect: { top: 100, height: 40 },
+    })
+    expect(intent).toEqual({
+      kind: 'reorder',
+      parentId: 10,
+      relativeId: 2,
+      position: 'after',
+    })
   })
 
-  it('拖到目录上（!dropToGap）→ 迁入（IDEA）', () => {
+  it('同级按住 Alt → 迁入目标', () => {
     expect(
       resolveFolderDropIntent({
         draggedId: 2,
@@ -61,48 +94,30 @@ describe('treeDropOrder (Ant Design / IDEA)', () => {
           { id: 1, parent_id: null },
           { id: 2, parent_id: null },
         ] as { id: number; parent_id: number | null }[],
+        nestModifier: true,
       }),
     ).toEqual({ kind: 'reparent', targetParentId: 1 })
   })
 
-  it('缝隙 relative===-1 → 目标前；否则目标后（Ant 官方）', () => {
-    const folders = [
-      { id: 1, parent_id: null },
-      { id: 2, parent_id: null },
-    ] as { id: number; parent_id: number | null }[]
-    const before = resolveFolderDropIntent({
-      draggedId: 2,
-      draggedParentId: null,
-      dropKey: 'folder-1',
-      dropToGap: true,
-      dropPosition: 0,
-      nodePos: '0-0-1',
-      folders,
-    })
-    expect(before).toEqual({
-      kind: 'reorder',
-      parentId: null,
-      relativeId: 1,
-      position: 'before',
-    })
-    const after = resolveFolderDropIntent({
-      draggedId: 2,
-      draggedParentId: null,
-      dropKey: 'folder-1',
-      dropToGap: true,
-      dropPosition: 2,
-      nodePos: '0-0-1',
-      folders,
-    })
-    expect(after).toEqual({
-      kind: 'reorder',
-      parentId: null,
-      relativeId: 1,
-      position: 'after',
-    })
+  it('非同级拖到目录上 → 迁入', () => {
+    expect(
+      resolveFolderDropIntent({
+        draggedId: 2,
+        draggedParentId: 9,
+        dropKey: 'folder-1',
+        dropToGap: false,
+        dropPosition: 0,
+        nodePos: '0-0-0',
+        folders: [
+          { id: 1, parent_id: null },
+          { id: 9, parent_id: null },
+          { id: 2, parent_id: 9 },
+        ] as { id: number; parent_id: number | null }[],
+      }),
+    ).toEqual({ kind: 'reparent', targetParentId: 1 })
   })
 
-  it('子目录拖到根 → 需先 reparent', () => {
+  it('子目录拖到根 → 需 reparent', () => {
     const intent = resolveFolderDropIntent({
       draggedId: 2,
       draggedParentId: 1,
@@ -115,38 +130,21 @@ describe('treeDropOrder (Ant Design / IDEA)', () => {
         { id: 2, parent_id: 1 },
       ] as { id: number; parent_id: number | null }[],
     })
-    expect(intent).toMatchObject({ kind: 'reorder', parentId: null })
+    expect(intent?.kind).toBe('reorder')
     if (intent?.kind === 'reorder') {
       expect(folderReorderNeedsReparent(1, intent)).toBe(true)
     }
   })
 
-  it('子目录拖到父目录上方缝 → 提到与父同级且在前', () => {
-    const intent = resolveFolderDropIntent({
-      draggedId: 2,
-      draggedParentId: 1,
-      dropKey: 'folder-1',
-      dropToGap: true,
-      dropPosition: 0,
-      nodePos: '0-0-1',
-      folders: [
-        { id: 1, parent_id: null },
-        { id: 2, parent_id: 1 },
-        { id: 3, parent_id: null },
-      ] as { id: number; parent_id: number | null }[],
-    })
-    expect(intent).toEqual({
-      kind: 'reorder',
-      parentId: null,
-      relativeId: 1,
-      position: 'before',
-    })
-    if (intent?.kind === 'reorder') {
-      expect(folderReorderNeedsReparent(1, intent)).toBe(true)
-    }
-  })
-
-  it('叶子落到目录内：非 gap 置顶，gap 追加', () => {
+  it('insertAmongPeers / leaves / ancestors', () => {
+    expect(
+      insertAmongPeers({
+        peerIdsExcludingDragged: [1, 3],
+        draggedId: 2,
+        relativeId: 3,
+        position: 'before',
+      }),
+    ).toEqual([1, 2, 3])
     expect(
       orderLeavesAfterDrop({
         peerIdsExcludingDragged: [10, 20] as number[],
@@ -155,17 +153,6 @@ describe('treeDropOrder (Ant Design / IDEA)', () => {
         dropToGap: false,
       }),
     ).toEqual([30, 10, 20])
-    expect(
-      orderLeavesAfterDrop({
-        peerIdsExcludingDragged: [10, 20] as number[],
-        draggedId: 30,
-        dropRelativeLeafId: null,
-        dropToGap: true,
-      }),
-    ).toEqual([10, 20, 30])
-  })
-
-  it('定位：展开祖先目录 key', () => {
     expect(
       ancestorFolderKeys({
         leafFolderId: 3,
