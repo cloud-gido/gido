@@ -144,10 +144,25 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
   treeClassName = 'workspace-folder-tree',
 }: Props<T>) {
   const [renamingFolderId, setRenamingFolderId] = useState<T | null>(null)
-  const [renamingFolderName, setRenamingFolderName] = useState('')
   const [renamingLeafId, setRenamingLeafId] = useState<T | null>(null)
-  const [renamingLeafName, setRenamingLeafName] = useState('')
   const dragPointerRef = useRef<DragPointer | null>(null)
+  // treeData 在 useMemo 里缓存了 onBlur/onPressEnter；必须用 ref 读最新输入，否则提交的是进入重命名时的旧名
+  const renamingFolderNameRef = useRef('')
+  const renamingLeafNameRef = useRef('')
+  const renamingFolderIdRef = useRef<T | null>(null)
+  const renamingLeafIdRef = useRef<T | null>(null)
+
+  const beginRenameFolder = (id: T, name: string) => {
+    renamingFolderIdRef.current = id
+    renamingFolderNameRef.current = name
+    setRenamingFolderId(id)
+  }
+
+  const beginRenameLeaf = (id: T, name: string) => {
+    renamingLeafIdRef.current = id
+    renamingLeafNameRef.current = name
+    setRenamingLeafId(id)
+  }
 
   const rememberDragPointer = (info: { event: any; node: { key?: React.Key } }) => {
     const ev = info.event as { clientX?: number; clientY?: number; altKey?: boolean } | undefined
@@ -164,7 +179,9 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
   const sortFolders = (list: FolderRow<T>[]) => sortFoldersByOrderThenName(list)
 
   const commitRenameFolder = async (id: T) => {
-    const name = renamingFolderName.trim()
+    if (!sameId(renamingFolderIdRef.current, id)) return
+    const name = renamingFolderNameRef.current.trim()
+    renamingFolderIdRef.current = null
     setRenamingFolderId(null)
     if (!name) return
     const cur = folders.find(f => sameId(f.id, id))
@@ -177,7 +194,9 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
   }
 
   const commitRenameLeaf = async (id: T) => {
-    const name = renamingLeafName.trim()
+    if (!sameId(renamingLeafIdRef.current, id)) return
+    const name = renamingLeafNameRef.current.trim()
+    renamingLeafIdRef.current = null
     setRenamingLeafId(null)
     if (!name) return
     const cur = leaves.find(l => sameId(l.id, id))
@@ -201,7 +220,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
             autoFocus
             defaultValue={f.name}
             style={{ width: 120 }}
-            onChange={e => setRenamingFolderName(e.target.value)}
+            onChange={e => { renamingFolderNameRef.current = e.target.value }}
             onPressEnter={() => void commitRenameFolder(f.id)}
             onBlur={() => void commitRenameFolder(f.id)}
             onClick={e => e.stopPropagation()}
@@ -210,7 +229,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
           <div
             data-tree-key={`folder-${fid}`}
             style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}
-            onDoubleClick={readOnly ? undefined : () => { setRenamingFolderId(f.id); setRenamingFolderName(f.name) }}
+            onDoubleClick={readOnly ? undefined : () => beginRenameFolder(f.id, f.name)}
           >
             <span><FolderOutlined style={{ marginRight: 6, color: '#faad14' }} />{f.name}</span>
             {!readOnly && <Dropdown
@@ -240,7 +259,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
                       },
                     },
                   ] : []),
-                  { key: 'rename', label: '重命名', onClick: () => { setRenamingFolderId(f.id); setRenamingFolderName(f.name) } },
+                  { key: 'rename', label: '重命名', onClick: () => beginRenameFolder(f.id, f.name) },
                   {
                     key: 'delete',
                     label: <span style={{ color: 'red' }}>删除目录</span>,
@@ -273,7 +292,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
             autoFocus
             defaultValue={n.name}
             style={{ width: 130 }}
-            onChange={e => setRenamingLeafName(e.target.value)}
+            onChange={e => { renamingLeafNameRef.current = e.target.value }}
             onPressEnter={() => void commitRenameLeaf(n.id)}
             onBlur={() => void commitRenameLeaf(n.id)}
             onClick={e => e.stopPropagation()}
@@ -282,7 +301,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
           <div
             data-tree-key={String(n.id)}
             style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}
-            onDoubleClick={readOnly ? undefined : () => { setRenamingLeafId(n.id); setRenamingLeafName(n.name) }}
+            onDoubleClick={readOnly ? undefined : () => beginRenameLeaf(n.id, n.name)}
           >
             <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               <FileOutlined style={{ marginRight: 6, color: n.job_type === 'JAR' ? '#fa8c16' : '#1677ff' }} />
@@ -292,7 +311,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
               menu={{
                 items: [
                   { key: 'open', label: '打开', onClick: () => onSelectLeaf(n) },
-                  { key: 'rename', label: '重命名', onClick: () => { setRenamingLeafId(n.id); setRenamingLeafName(n.name) } },
+                  { key: 'rename', label: '重命名', onClick: () => beginRenameLeaf(n.id, n.name) },
                   ...(onCopyLeaf ? [{ key: 'copy', label: '复制', onClick: () => onCopyLeaf(n) }] : []),
                   { key: 'delete', label: <span style={{ color: 'red' }}>删除</span>, onClick: () => onDeleteLeaf(n) },
                 ],
