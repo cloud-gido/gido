@@ -7,6 +7,10 @@
  * - 同级目录之间：按指针落在目标行上半/下半 → 插到前/后（Windows 资源管理器「未排序」列表同款）
  * - 拖到非同级目录上，或按住 Alt/Option 拖到目录上 → 迁入该目录（IDEA Move into）
  * - 拖到根 / 父级旁 → 提到该层
+ *
+ * 注意：rc-tree 在行上半会把 dropTarget 改写成「前一扁平节点」；展开父目录下的
+ * 首个子项因此常变成 drop 到父目录。同级重排必须用真实悬停行（onDragOver.node /
+ * elementFromPoint），不能直接信 info.node.key。
  */
 
 export type DropPosition = 'before' | 'after'
@@ -72,7 +76,8 @@ export function resolveFolderDropIntent<T extends string | number>(opts: {
 
   const relative = antdGapRelative(dropPosition, nodePos)
   const fromPointer = positionByPointerHalf(clientY, dropNodeRect)
-  const fallbackGap: DropPosition = relative === -1 ? 'before' : 'after'
+  // 无指针时：Ant relative===-1 / 0 倾向 before；relative>0 为 after
+  const fallbackGap: DropPosition = relative === -1 || relative === 0 ? 'before' : 'after'
   const siblingPos: DropPosition = fromPointer ?? fallbackGap
 
   if (dropKey === 'root') {
@@ -129,6 +134,20 @@ export function resolveFolderDropIntent<T extends string | number>(opts: {
 
   // 非同级，或 Alt+同级 → 迁入
   return { kind: 'reparent', targetParentId: dropFolderId }
+}
+
+/** 优先真实悬停行，其次落点元素，最后才用 antd 可能改写过的 dropKey */
+export function pickVisualDropKey(opts: {
+  hoverKey?: string | null
+  pointKey?: string | null
+  antdDropKey: string
+  dragKey?: string | null
+}): string {
+  for (const k of [opts.hoverKey, opts.pointKey, opts.antdDropKey]) {
+    if (!k || k === opts.dragKey) continue
+    return k
+  }
+  return opts.antdDropKey
 }
 
 export function folderReorderNeedsReparent<T extends string | number>(

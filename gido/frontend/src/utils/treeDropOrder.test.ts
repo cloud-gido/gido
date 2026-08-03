@@ -9,6 +9,7 @@ import {
   folderReorderNeedsReparent,
   insertAmongPeers,
   orderLeavesAfterDrop,
+  pickVisualDropKey,
   positionByPointerHalf,
   resolveFolderDropIntent,
 } from './treeDropOrder'
@@ -20,12 +21,23 @@ describe('treeDropOrder (Explorer / IDEA)', () => {
     expect(positionByPointerHalf(130, rect)).toBe('after')
   })
 
+  it('pickVisualDropKey 优先悬停行而非 antd 改写后的 dropKey', () => {
+    expect(
+      pickVisualDropKey({
+        hoverKey: 'folder-1',
+        pointKey: 'folder-1',
+        antdDropKey: 'folder-10',
+        dragKey: 'folder-2',
+      }),
+    ).toBe('folder-1')
+  })
+
   it('antdGapRelative 回退', () => {
     expect(antdGapRelative(0, '0-0-1')).toBe(-1)
     expect(antdGapRelative(2, '0-0-1')).toBe(1)
   })
 
-  it('同级拖到目标上半 → 提到前面（gameline → goodvideo 上）', () => {
+  it('同级拖到目标上半 → 提到前面（含首个子目录）', () => {
     const intent = resolveFolderDropIntent({
       draggedId: 2,
       draggedParentId: 10,

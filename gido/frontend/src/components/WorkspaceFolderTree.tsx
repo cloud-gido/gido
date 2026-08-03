@@ -2,12 +2,19 @@
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-import React, { useMemo, useState } from 'react'
+import React, { useMemo, useRef, useState } from 'react'
 import { Button, Dropdown, Input, Tree, message } from 'antd'
 import type { DataNode, TreeProps } from 'antd/es/tree'
 import { FileOutlined, FolderOutlined, MoreOutlined } from '@ant-design/icons'
 import { sortLeavesByOrderThenName, sortFoldersByOrderThenName } from '../utils/treeSort'
-import { ancestorFolderKeys, folderReorderNeedsReparent, insertAmongPeers, orderLeavesAfterDrop, resolveFolderDropIntent } from '../utils/treeDropOrder'
+import {
+  ancestorFolderKeys,
+  folderReorderNeedsReparent,
+  insertAmongPeers,
+  orderLeavesAfterDrop,
+  pickVisualDropKey,
+  resolveFolderDropIntent,
+} from '../utils/treeDropOrder'
 
 /** Studio / Stream 用 number；Probe 本地目录用 string */
 export type TreeId = string | number
@@ -53,6 +60,34 @@ function compareIdTie(a: TreeId, b: TreeId): number {
   const nb = Number(b)
   if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb
   return String(a).localeCompare(String(b), 'zh-CN', { numeric: true, sensitivity: 'base' })
+}
+
+function treeKeyFromPoint(clientX: number, clientY: number, excludeKey?: string | null): string | null {
+  if (typeof document === 'undefined') return null
+  const els = document.elementsFromPoint(clientX, clientY)
+  for (const el of els) {
+    const keyed = (el as Element).closest?.('[data-tree-key]') as HTMLElement | null
+    const key = keyed?.getAttribute?.('data-tree-key')
+    if (!key || key === excludeKey) continue
+    return key
+  }
+  return null
+}
+
+function rectForTreeKey(key: string): { top: number; height: number } | null {
+  if (typeof document === 'undefined') return null
+  const keyed = document.querySelector(`[data-tree-key="${CSS.escape(key)}"]`) as HTMLElement | null
+  const nodeEl = (keyed?.closest?.('.ant-tree-treenode') as HTMLElement | null) || keyed
+  if (!nodeEl) return null
+  const r = nodeEl.getBoundingClientRect()
+  return { top: r.top, height: r.height }
+}
+
+type DragPointer = {
+  hoverKey: string
+  clientX: number
+  clientY: number
+  altKey: boolean
 }
 
 type Props<T extends TreeId = TreeId> = {
@@ -112,6 +147,18 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
   const [renamingFolderName, setRenamingFolderName] = useState('')
   const [renamingLeafId, setRenamingLeafId] = useState<T | null>(null)
   const [renamingLeafName, setRenamingLeafName] = useState('')
+  const dragPointerRef = useRef<DragPointer | null>(null)
+
+  const rememberDragPointer = (info: { event: any; node: { key?: React.Key } }) => {
+    const ev = info.event as { clientX?: number; clientY?: number; altKey?: boolean } | undefined
+    if (ev?.clientX == null || ev?.clientY == null) return
+    dragPointerRef.current = {
+      hoverKey: String(info.node.key),
+      clientX: ev.clientX,
+      clientY: ev.clientY,
+      altKey: Boolean(ev.altKey),
+    }
+  }
 
   const sortLeaves = (list: LeafRow<T>[]) => sortLeavesByOrderThenName(list)
   const sortFolders = (list: FolderRow<T>[]) => sortFoldersByOrderThenName(list)
@@ -333,6 +380,8 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
 
   const onDrop: TreeProps['onDrop'] = async (info) => {
     const dragKey = String(info.dragNode.key)
+    const pointer = dragPointerRef.current
+    dragPointerRef.current = null
 
     if (dragKey.startsWith('folder-')) {
       if (!onMoveFolder && !onReorderFolders) {
@@ -346,24 +395,24 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
       const cur = folders.find(f => sameId(f.id, folderId))
       if (!cur) return
 
-      const dropKey = String(info.node.key)
+      const ev = info.event as unknown as { clientX?: number; clientY?: number; altKey?: boolean }
+      const clientX = pointer?.clientX ?? ev?.clientX
+      const clientY = pointer?.clientY ?? ev?.clientY
+      const altKey = Boolean(pointer?.altKey || ev?.altKey)
+      const pointKey = clientX != null && clientY != null
+        ? treeKeyFromPoint(clientX, clientY, dragKey)
+        : null
+      // rc-tree 会改写 info.node；同级重排必须用真实悬停行
+      const dropKey = pickVisualDropKey({
+        hoverKey: pointer?.hoverKey,
+        pointKey,
+        antdDropKey: String(info.node.key),
+        dragKey,
+      })
       const dropLeafFolderId = dropKey.startsWith('folder-') || dropKey === 'root'
         ? undefined
         : (leaves.find(l => sameId(l.id, leafKeyToId(dropKey, leaves)))?.folder_id ?? null)
-
-      const ev = info.event as unknown as { clientY?: number; altKey?: boolean; target?: EventTarget | null }
-      // 优先按 dropKey 取行几何（event.target 在空隙/指示线上时可能不是目标行）
-      const keyed = typeof document !== 'undefined'
-        ? (document.querySelector(`[data-tree-key="${CSS.escape(dropKey)}"]`) as HTMLElement | null)
-        : null
-      const dropNodeEl = (keyed?.closest?.('.ant-tree-treenode') as HTMLElement | null)
-        || ((ev?.target as Element | null | undefined)?.closest?.('.ant-tree-treenode') as HTMLElement | null)
-      const dropNodeRect = dropNodeEl
-        ? (() => {
-            const r = dropNodeEl.getBoundingClientRect()
-            return { top: r.top, height: r.height }
-          })()
-        : null
+      const dropNodeRect = rectForTreeKey(dropKey)
 
       const intent = resolveFolderDropIntent({
         draggedId: folderId,
@@ -374,8 +423,8 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
         nodePos: String(info.node.pos || ''),
         folders,
         dropLeafFolderId,
-        nestModifier: Boolean(ev?.altKey),
-        clientY: ev?.clientY,
+        nestModifier: altKey,
+        clientY,
         dropNodeRect,
       })
       if (!intent) return
@@ -386,7 +435,10 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
             message.info('暂不支持移动目录到其他父级')
             return
           }
-          if (sameId(cur.parent_id, intent.targetParentId)) return
+          if (sameId(cur.parent_id, intent.targetParentId)) {
+            message.info('顺序未变化：请拖到目标行的上半（提到前面）或下半（放到后面）；按住 Alt 拖到目录可迁入')
+            return
+          }
           await onMoveFolder({ folderId, targetParentId: intent.targetParentId })
           message.success('目录已移动')
           return
@@ -438,7 +490,14 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
     const leafId = leafKeyToId(dragKey, leaves)
     if (leafId == null) return
 
-    const dropKey = String(info.node.key)
+    const dropKey = pickVisualDropKey({
+      hoverKey: pointer?.hoverKey,
+      pointKey: pointer
+        ? treeKeyFromPoint(pointer.clientX, pointer.clientY, dragKey)
+        : null,
+      antdDropKey: String(info.node.key),
+      dragKey,
+    })
     let targetFolderId: T | null = null
 
     if (dropKey.startsWith('folder-')) {
@@ -499,6 +558,8 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
         const leaf = leaves.find(l => String(l.id) === k)
         if (leaf) onSelectLeaf(leaf)
       }}
+      onDragEnter={rememberDragPointer}
+      onDragOver={rememberDragPointer}
       onDrop={onDrop}
       style={{ padding: '4px 0' }}
     />
