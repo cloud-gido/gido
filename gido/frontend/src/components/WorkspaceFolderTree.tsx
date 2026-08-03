@@ -6,7 +6,7 @@ import React, { useMemo, useRef, useState } from 'react'
 import { Button, Dropdown, Input, Tree, message } from 'antd'
 import type { DataNode, TreeProps } from 'antd/es/tree'
 import { FileOutlined, FolderOutlined, MoreOutlined } from '@ant-design/icons'
-import { sortByName } from '../utils/treeSort'
+import { buildSortedWorkspaceTree, sortByName } from '../utils/treeSort'
 import {
   ancestorFolderKeys,
   pickVisualDropKey,
@@ -51,13 +51,6 @@ function folderKeyToId<T extends TreeId>(raw: string, folders: FolderRow<T>[]): 
 function leafKeyToId<T extends TreeId>(key: string, leaves: LeafRow<T>[]): T | null {
   const hit = leaves.find(l => String(l.id) === key)
   return hit ? hit.id : null
-}
-
-function compareIdTie(a: TreeId, b: TreeId): number {
-  const na = Number(a)
-  const nb = Number(b)
-  if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb
-  return String(a).localeCompare(String(b), 'zh-CN', { numeric: true, sensitivity: 'base' })
 }
 
 function treeKeyFromPoint(clientX: number, clientY: number, excludeKey?: string | null): string | null {
@@ -265,9 +258,9 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
       }
     })
 
-    const rootLeaves: any[] = []
+    const leafMap: Record<string, any> = {}
     leaves.forEach(n => {
-      const leafItem = {
+      leafMap[String(n.id)] = {
         key: String(n.id),
         title: sameId(renamingLeafId, n.id) ? (
           <Input
@@ -307,55 +300,19 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
         ),
         isLeaf: true,
         data: n,
-        _name: n.name,
-        _id: n.id,
-      }
-      const fk = n.folder_id != null ? String(n.folder_id) : ''
-      if (fk && folderMap[fk]) {
-        folderMap[fk].children.push(leafItem)
-      } else {
-        rootLeaves.push(leafItem)
       }
     })
 
-    // 先挂满父子关系，再统一排序（避免「先排父、后插子」导致内层仍是插入序）
-    const rootFolders: any[] = []
-    Object.values(folderMap).forEach((f: any) => {
-      const pid = f._parentId != null ? String(f._parentId) : ''
-      if (pid && folderMap[pid]) {
-        folderMap[pid].children.push(f)
-      } else {
-        rootFolders.push(f)
-      }
-    })
-
-    const sortTreeChildren = (nodes: any[]) => {
-      const foldersPart = nodes.filter(c => !c.isLeaf)
-      const leavesPart = nodes.filter(c => c.isLeaf)
-      foldersPart.sort((a, b) => {
-        const nc = String(a._name || '').localeCompare(String(b._name || ''), 'zh-CN', {
-          numeric: true,
-          sensitivity: 'base',
-        })
-        if (nc !== 0) return nc
-        return compareIdTie(a._folderId ?? 0, b._folderId ?? 0)
-      })
-      leavesPart.sort((a, b) => {
-        const nc = String(a._name || a.data?.name || '').localeCompare(String(b._name || b.data?.name || ''), 'zh-CN', {
-          numeric: true,
-          sensitivity: 'base',
-        })
-        if (nc !== 0) return nc
-        return compareIdTie(a._id ?? a.data?.id ?? 0, b._id ?? b.data?.id ?? 0)
-      })
-      return [...foldersPart, ...leavesPart]
-    }
-
-    Object.values(folderMap).forEach((f: any) => {
-      f.children = sortTreeChildren(f.children || [])
-    })
-    const sortedRootFolders = sortTreeChildren(rootFolders)
-    const sortedRootLeaves = sortTreeChildren(rootLeaves)
+    // 结构与每一层排序由共享纯函数保证（Studio / Probe / Stream 同一路径）
+    const hierarchy = buildSortedWorkspaceTree({ folders, leaves })
+    const toDataNodes = (nodes: ReturnType<typeof buildSortedWorkspaceTree<T>>): any[] =>
+      nodes.map(n => {
+        if (n.kind === 'folder') {
+          const fo = folderMap[String(n.id)]
+          return { ...fo, children: toDataNodes(n.children) }
+        }
+        return leafMap[String(n.id)]
+      }).filter(Boolean)
 
     return [
       {
@@ -368,7 +325,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
             )}
           </span>
         ),
-        children: [...sortedRootFolders, ...sortedRootLeaves],
+        children: toDataNodes(hierarchy),
       },
     ] as DataNode[]
   }, [

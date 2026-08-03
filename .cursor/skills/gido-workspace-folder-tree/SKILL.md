@@ -38,7 +38,7 @@ description: >-
 |------|------|
 | 树 UI、拖拽迁入/移出、行内重命名、展开定位 | `gido/frontend/src/components/WorkspaceFolderTree.tsx` |
 | 拖放迁移动机 | `gido/frontend/src/utils/treeDropOrder.ts` |
-| 名称字典序 | `gido/frontend/src/utils/treeSort.ts` |
+| 名称字典序 + 递归建树 | `gido/frontend/src/utils/treeSort.ts`（`buildSortedWorkspaceTree`） |
 
 ## 页面层允许的差异
 
