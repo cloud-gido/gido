@@ -1,0 +1,15 @@
+---
+description: GIDO Batch SQL 发布须用统一脚本头与安全注释（--），避免 Dolphin Doris 块注释翻车
+globs: "**/*.{sql,SQL}"
+alwaysApply: false
+---
+
+# GIDO SQL 发布模板
+
+写或改 Batch Studio / 将发布到 Dolphin 的 SQL 时，遵循项目 skill：
+
+`.cursor/skills/gido-sql-publish-template/SKILL.md`
+
+要点：头注释写全（脚本名、作者、创建/更新时间、目标表、来源、口径）；叙述只用 `--`；禁止业务说明用含 `/` 的 `/* */`；改完须重新发布生产。
+
+产品：Studio 新建 SQL 节点会预填模板（`sqlPublishTemplate.ts`）。

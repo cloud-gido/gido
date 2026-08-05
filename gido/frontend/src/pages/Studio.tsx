@@ -35,6 +35,7 @@ import {
 import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from '../components/MonacoFindBar'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
 import { normalizeQueryColumns } from '../utils/queryColumns'
+import { buildDefaultSqlPublishScript } from '../utils/sqlPublishTemplate'
 import {
   datasourceTagText,
   resolveDatasourceForRun,
@@ -890,7 +891,11 @@ export default function StudioPage() {
     values.workspace_id = wsId
     values.folder_id = createFolderId
     values.script_content = values.node_type === 'SQL'
-      ? '-- 在此编写 SQL\nSELECT 1'
+      ? buildDefaultSqlPublishScript({
+          scriptName: values.name,
+          author: user?.username || user?.full_name || '',
+          jobName: values.name,
+        })
       : values.node_type === 'PYTHON'
         ? [
             'from gido_job import job',

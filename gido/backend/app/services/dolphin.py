@@ -120,6 +120,17 @@ def _format_ds_failure(resp: dict) -> str:
     return "; ".join(bits) if bits else json.dumps(resp, ensure_ascii=False)[:1600]
 
 
+def _ds_msg_means_absent(resp: dict) -> bool:
+    """DS 返回「资源不存在」时视为删除目标已达成。"""
+    if not isinstance(resp, dict):
+        return False
+    blob = " ".join(
+        str(resp.get(k) or "") for k in ("msg", "enMsg", "message", "data")
+    ).lower()
+    keys = ("not exist", "not found", "does not exist", "不存在", "找不到")
+    return any(k in blob for k in keys)
+
+
 def _raise_for_ds_http(r: requests.Response) -> None:
     """把 DS 认证类 HTTP 错误翻译成 GIDO 语义，避免前端暴露裸 requests 异常。"""
     if r.status_code in (401, 403):
@@ -1059,7 +1070,7 @@ class DSClient:
         return count
 
     def delete_process_definition(self, project_code: int, process_code: int) -> None:
-        """删除 DS 流程定义（先下线流程与关联调度，再 DELETE）。"""
+        """删除 DS 流程定义（先下线流程与关联调度并删调度，再 DELETE 流程）。"""
         pcode = int(project_code)
         code = int(process_code)
         try:
@@ -1070,25 +1081,30 @@ class DSClient:
         except Exception:
             logger.debug("DS 流程下线（删除前）可忽略", exc_info=True)
         try:
+            self.offline_schedules(pcode, code)
+        except Exception:
+            logger.debug("DS 调度下线（删除前）可忽略", exc_info=True)
+        try:
             resp = self._get(
                 f"/projects/{pcode}/schedules",
                 params={"processDefinitionCode": code, "pageSize": 50, "pageNo": 1},
             )
             for item in resp.get("data", {}).get("totalList", []) or []:
                 sid = unwrap_ds_numeric(item.get("id"), keys=("id", "code"))
-                try:
-                    self._post(f"/projects/{pcode}/schedules/{sid}/offline")
-                except Exception:
-                    pass
+                if sid is None:
+                    continue
                 try:
                     r = requests.delete(
                         f"{self.base}/projects/{pcode}/schedules/{sid}",
                         headers=self.headers,
                         timeout=15,
                     )
+                    if r.status_code == 404:
+                        continue
                     _raise_for_ds_http(r)
                     body = r.json()
-                    if body.get("code") != 0:
+                    # 0=成功；部分版本「不存在」也视为已清理
+                    if body.get("code") not in (0, None) and not _ds_msg_means_absent(body):
                         logger.warning("DS 删除调度 sid=%s: %s", sid, _format_ds_failure(body))
                 except Exception as e:
                     logger.warning("DS 删除调度 sid=%s 失败: %s", sid, e)
@@ -1099,9 +1115,12 @@ class DSClient:
             headers=self.headers,
             timeout=30,
         )
+        if r.status_code == 404:
+            logger.info("DS 流程定义已不存在 project=%s processCode=%s", pcode, code)
+            return
         _raise_for_ds_http(r)
         body = _response_json_raw(r)
-        if body.get("code") != 0:
+        if body.get("code") != 0 and not _ds_msg_means_absent(body):
             raise RuntimeError(f"DS 删除流程定义失败: {_format_ds_failure(body)}")
         logger.info("DS 流程定义已删除 project=%s processCode=%s", pcode, code)
 
@@ -1131,6 +1150,64 @@ def _build_ds_global_params(params: dict) -> str:
     return json.dumps(result, ensure_ascii=False) if result else "[]"
 
 
+def _strip_sql_comments_for_ds(sql: str) -> str:
+    """发布到 Dolphin 前去掉注释，规避 DS Doris 驱动去注释损坏（apache/dolphinscheduler#17023）。
+
+    典型症状：日志里 after replace sql 变成 `***/` / `- */` / `数 */`，Doris 报 mismatched input '*'。
+    块注释内含 `/`（如「用户 / 站点」「* 1.0 / COUNT」旁的说明）时尤其易触发。
+    """
+    raw = sql or ""
+    out: List[str] = []
+    i = 0
+    n = len(raw)
+    in_sq = False
+    in_dq = False
+    while i < n:
+        ch = raw[i]
+        nxt = raw[i + 1] if i + 1 < n else ""
+        if in_sq:
+            out.append(ch)
+            if ch == "'" and nxt == "'":
+                out.append(nxt)
+                i += 2
+                continue
+            if ch == "'":
+                in_sq = False
+            i += 1
+            continue
+        if in_dq:
+            out.append(ch)
+            if ch == '"':
+                in_dq = False
+            i += 1
+            continue
+        if ch == "'" :
+            in_sq = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '"':
+            in_dq = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "-" and nxt == "-":
+            i += 2
+            while i < n and raw[i] != "\n":
+                i += 1
+            continue
+        if ch == "/" and nxt == "*":
+            i += 2
+            while i + 1 < n and not (raw[i] == "*" and raw[i + 1] == "/"):
+                i += 1
+            i = i + 2 if i + 1 < n else n
+            out.append(" ")
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _rewrite_sql_builtins(sql: str) -> str:
     """将 GIDO 内置变量映射为 DS 时间宏（相对 scheduleTime，带横线日期）。
 
@@ -1138,6 +1215,7 @@ def _rewrite_sql_builtins(sql: str) -> str:
     ${yesterday} -> $[yyyy-MM-dd-1]   （业务日前一天；勿再用 system.biz.date）
     """
     import re
+    sql = _strip_sql_comments_for_ds(sql)
     sql = re.sub(r'\$\{bizdate\}', '$[yyyy-MM-dd]', sql)
     sql = re.sub(r'\$\{yesterday\}', '$[yyyy-MM-dd-1]', sql)
     return sql

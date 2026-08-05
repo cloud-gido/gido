@@ -3,7 +3,9 @@
 # @author felixzhu
 # @date 2026-06-05
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel
 from typing import Optional, List, Any, Dict, Tuple
 from datetime import datetime
@@ -11,7 +13,17 @@ import logging
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.core import perm_codes as PC
-from app.models.workspace import BackfillRequest, JobVersion, Workflow, WorkflowInstance, NodeInstance, TaskNode, User
+from app.models.workspace import (
+    AlertEvent,
+    BackfillRequest,
+    JobVersion,
+    PublishApproval,
+    Workflow,
+    WorkflowInstance,
+    NodeInstance,
+    TaskNode,
+    User,
+)
 from app.services.ds_runtime import get_dolphin_runtime, refresh_ds_client
 from app.services.rbac import assert_workspace_data_capability, require_workflow, workspace_data_full_control
 from app.services.publish_approval import assert_can_publish_production
@@ -118,6 +130,48 @@ def _active_job_version(db: Session, wf: Workflow) -> Optional[JobVersion]:
         .order_by(JobVersion.version_no.desc(), JobVersion.id.desc())
         .first()
     )
+
+
+def _purge_workflow_local_records(db: Session, wf: Workflow) -> None:
+    """删除工作流前清理本地依赖行，避免外键约束导致 500。
+
+    顺序：告警 → 节点实例 → 流程实例 → 补数 → 版本 → 审批单。
+    TaskNode 脚本本身不随工作流删除（可被其他 DAG 复用）。
+    """
+    wf_id = int(wf.id)
+    inst_ids = [
+        row[0]
+        for row in db.query(WorkflowInstance.id).filter(WorkflowInstance.workflow_id == wf_id).all()
+    ]
+    node_inst_ids: List[int] = []
+    if inst_ids:
+        node_inst_ids = [
+            row[0]
+            for row in db.query(NodeInstance.id).filter(NodeInstance.workflow_instance_id.in_(inst_ids)).all()
+        ]
+
+    alert_filters = [AlertEvent.workflow_id == wf_id]
+    if inst_ids:
+        alert_filters.append(AlertEvent.workflow_instance_id.in_(inst_ids))
+    if node_inst_ids:
+        alert_filters.append(AlertEvent.node_instance_id.in_(node_inst_ids))
+    db.query(AlertEvent).filter(or_(*alert_filters)).delete(synchronize_session=False)
+
+    if node_inst_ids:
+        db.query(NodeInstance).filter(NodeInstance.id.in_(node_inst_ids)).delete(synchronize_session=False)
+    if inst_ids:
+        db.query(WorkflowInstance).filter(WorkflowInstance.id.in_(inst_ids)).delete(synchronize_session=False)
+
+    db.query(BackfillRequest).filter(BackfillRequest.workflow_id == wf_id).delete(synchronize_session=False)
+
+    wf.active_version_id = None
+    db.flush()
+    db.query(JobVersion).filter(JobVersion.workflow_id == wf_id).delete(synchronize_session=False)
+
+    db.query(PublishApproval).filter(
+        PublishApproval.resource_type == "workflow",
+        PublishApproval.resource_id == wf_id,
+    ).delete(synchronize_session=False)
 
 
 @router.get("", response_model=List[WorkflowOut])
@@ -302,17 +356,19 @@ def update_workflow(wf_id: int, wf_in: WorkflowCreate, db: Session = Depends(get
 @router.delete("/{wf_id}")
 def delete_workflow(wf_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     wf = require_workflow(db, current_user, wf_id, "developer", PC.GIDO_BATCH_WORKFLOW_WRITE)
-    if getattr(wf, "scheduler_definition_id", None) and getattr(wf, "status", None) not in ("offline", "draft"):
-        raise HTTPException(status_code=400, detail="已上线工作流不能直接删除，请先执行「任务下线」以保留历史实例")
+    status = getattr(wf, "status", None) or "draft"
+    if getattr(wf, "scheduler_definition_id", None) and status not in ("offline", "draft", "paused"):
+        raise HTTPException(status_code=400, detail="已上线工作流不能直接删除，请先执行「任务下线」")
     ds_process_code = getattr(wf, "scheduler_definition_id", None)
     ds_project_code = getattr(wf, "scheduler_project_id", None)
     dolphin_deleted = False
     dolphin_note: Optional[str] = None
-    if get_dolphin_runtime(db, wf.workspace_id).enabled and ds_process_code and ds_project_code:
+    # 有生产定义就尽量同步删掉 DS 流程与调度（与「下线」不同：删除会清调度任务本身）
+    if ds_process_code and ds_project_code:
         from app.services.dolphin import ds_client
 
-        refresh_ds_client(db, wf.workspace_id)
         try:
+            refresh_ds_client(db, wf.workspace_id)
             ds_client.delete_process_definition(int(ds_project_code), int(ds_process_code))
             dolphin_deleted = True
         except Exception as e:
@@ -323,13 +379,26 @@ def delete_workflow(wf_id: int, db: Session = Depends(get_db), current_user: Use
                 e,
             )
             dolphin_note = str(e)[:500]
-    db.delete(wf)
-    db.commit()
+    try:
+        _purge_workflow_local_records(db, wf)
+        db.delete(wf)
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        logger.exception("删除工作流本地记录失败 wf_id=%s", wf_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"删除失败：仍有关联数据未清理（{str(e.orig) if getattr(e, 'orig', None) else e}）",
+        ) from e
+    except Exception as e:
+        db.rollback()
+        logger.exception("删除工作流失败 wf_id=%s", wf_id)
+        raise HTTPException(status_code=500, detail=f"删除失败: {e}") from e
     msg = "删除成功"
     if ds_process_code and dolphin_deleted:
-        msg = "已删除工作流，并已从调度引擎移除对应流程定义"
+        msg = "已删除工作流，并已从调度引擎移除对应流程定义与周期调度"
     elif ds_process_code and dolphin_note:
-        msg = f"工作流已删除；调度引擎流程未删除（{dolphin_note}），请在管理员诊断入口手动清理"
+        msg = f"工作流已删除；调度引擎流程未删除（{dolphin_note}），请在 Dolphin 中手动清理"
     return {"message": msg, "dolphin_deleted": dolphin_deleted, "dolphin_note": dolphin_note}
 
 
