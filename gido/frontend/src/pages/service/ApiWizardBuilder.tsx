@@ -25,10 +25,17 @@ export type WizardFilter = {
   default_value?: string
 }
 
+export type WizardOrderBy = {
+  column: string
+  direction: 'ASC' | 'DESC'
+}
+
 export type WizardConfig = {
   table: string
   fields: string[]
   filters: WizardFilter[]
+  /** 固定排序；空则引擎按返回字段前两列 ASC 保底（SELECT * 时须手动配） */
+  order_by?: WizardOrderBy[]
 }
 
 export type WizardParam = {
@@ -82,7 +89,34 @@ function buildLocalSql(cfg: WizardConfig): string {
     const op = (f.op || '=').toUpperCase()
     where.push(`(${f.column} ${op} :${f.param} OR :${f.param} IS NULL)`)
   }
-  return `SELECT ${selectCols} FROM ${table} WHERE ${where.join(' AND ')}`
+  let sql = `SELECT ${selectCols} FROM ${table} WHERE ${where.join(' AND ')}`
+  const orderParts = resolveOrderByClauses(cfg)
+  if (orderParts.length) {
+    sql += ` ORDER BY ${orderParts.join(', ')}`
+  }
+  return sql
+}
+
+function resolveOrderByClauses(cfg: WizardConfig): string[] {
+  const explicit = (cfg.order_by || []).filter(o => o.column)
+  const items = explicit.length
+    ? explicit
+    : (cfg.fields || []).filter(f => f && f !== '*').slice(0, 2).map(column => ({
+        column,
+        direction: 'ASC' as const,
+      }))
+  const seen = new Set<string>()
+  const parts: string[] = []
+  for (const o of items) {
+    const col = (o.column || '').trim()
+    if (!col) continue
+    const key = col.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    const dir = (o.direction || 'ASC').toUpperCase() === 'DESC' ? 'DESC' : 'ASC'
+    parts.push(`${col} ${dir}`)
+  }
+  return parts
 }
 
 function filtersToParams(filters: WizardFilter[], columns: ColumnMeta[]): WizardParam[] {
@@ -121,6 +155,7 @@ export default function ApiWizardBuilder({ datasourceId, value, onChange, onUpgr
     table: value?.table || '',
     fields: Array.isArray(value?.fields) ? value!.fields : [],
     filters: Array.isArray(value?.filters) ? value!.filters : [],
+    order_by: Array.isArray(value?.order_by) ? value!.order_by : [],
   }), [value])
 
   const loadTables = useCallback(async (dsId: number) => {
@@ -180,6 +215,7 @@ export default function ApiWizardBuilder({ datasourceId, value, onChange, onUpgr
   // 服务端预览（仅更新右侧 SQL，不回写表单，避免循环）
   const fieldsKey = cfg.fields.join(',')
   const filtersKey = JSON.stringify(cfg.filters.map(f => [f.column, f.op, f.param, !!f.required]))
+  const orderByKey = JSON.stringify((cfg.order_by || []).map(o => [o.column, o.direction]))
   useEffect(() => {
     if (!cfg.table) {
       setSqlPreview('-- 请先选择表')
@@ -191,6 +227,7 @@ export default function ApiWizardBuilder({ datasourceId, value, onChange, onUpgr
       table: cfg.table,
       fields: cfg.fields.slice(),
       filters: cfg.filters.map(f => ({ ...f })),
+      order_by: (cfg.order_by || []).map(o => ({ ...o })),
     }
     const params = filtersToParams(snapshot.filters, columns)
     const timer = window.setTimeout(async () => {
@@ -204,6 +241,12 @@ export default function ApiWizardBuilder({ datasourceId, value, onChange, onUpgr
               op: f.op || '=',
               param: f.param,
             })),
+            order_by: (snapshot.order_by || [])
+              .filter(o => o.column)
+              .map(o => ({
+                column: o.column,
+                direction: (o.direction || 'ASC').toUpperCase() === 'DESC' ? 'DESC' : 'ASC',
+              })),
           },
           params,
         })
@@ -220,10 +263,10 @@ export default function ApiWizardBuilder({ datasourceId, value, onChange, onUpgr
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [cfg.table, fieldsKey, filtersKey, columns])
+  }, [cfg.table, fieldsKey, filtersKey, orderByKey, columns])
 
   const setTable = (table: string) => {
-    pushChange({ table, fields: [], filters: [] })
+    pushChange({ table, fields: [], filters: [], order_by: [] })
   }
 
   const toggleField = (name: string, checked: boolean) => {
@@ -265,6 +308,36 @@ export default function ApiWizardBuilder({ datasourceId, value, onChange, onUpgr
 
   const removeFilter = (index: number) => {
     pushChange({ ...cfg, filters: cfg.filters.filter((_, i) => i !== index) })
+  }
+
+  const updateOrderBy = (index: number, patch: Partial<WizardOrderBy>) => {
+    const order_by = (cfg.order_by || []).map((o, i) => (i === index ? { ...o, ...patch } : o))
+    pushChange({ ...cfg, order_by })
+  }
+
+  const addOrderBy = () => {
+    const pk = columns.find(c => c.key === 'PRI')?.name
+    const col = pk || columns[0]?.name || cfg.fields[0] || ''
+    pushChange({
+      ...cfg,
+      order_by: [...(cfg.order_by || []), { column: col, direction: 'ASC' }],
+    })
+  }
+
+  const removeOrderBy = (index: number) => {
+    pushChange({ ...cfg, order_by: (cfg.order_by || []).filter((_, i) => i !== index) })
+  }
+
+  const fillOrderByFromPk = () => {
+    const pks = columns.filter(c => c.key === 'PRI').map(c => c.name)
+    if (!pks.length) {
+      message.info('当前表未识别到主键，请手动添加排序列')
+      return
+    }
+    pushChange({
+      ...cfg,
+      order_by: pks.map(column => ({ column, direction: 'ASC' as const })),
+    })
   }
 
   if (!datasourceId) {
@@ -415,6 +488,64 @@ export default function ApiWizardBuilder({ datasourceId, value, onChange, onUpgr
                 ]}
               />
             </div>
+
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                <Text type="secondary">排序（固定列表顺序，建议含主键）</Text>
+                <Space size={4}>
+                  <Button size="small" type="link" disabled={!cfg.table || !columns.length} onClick={fillOrderByFromPk}>
+                    用主键
+                  </Button>
+                  <Button size="small" type="dashed" disabled={!cfg.table} onClick={addOrderBy}>+ 排序</Button>
+                </Space>
+              </div>
+              <Table
+                size="small"
+                pagination={false}
+                rowKey={(_, i) => String(i)}
+                dataSource={cfg.order_by || []}
+                locale={{ emptyText: '未配置时：若选了返回字段，默认按前两列 ASC；SELECT * 请手动加排序' }}
+                columns={[
+                  {
+                    title: '列',
+                    width: 160,
+                    render: (_: any, row: WizardOrderBy, index: number) => (
+                      <Select
+                        size="small"
+                        style={{ width: '100%' }}
+                        showSearch
+                        options={columns.map(c => ({ value: c.name, label: c.name }))}
+                        value={row.column || undefined}
+                        onChange={column => updateOrderBy(index, { column })}
+                      />
+                    ),
+                  },
+                  {
+                    title: '方向',
+                    width: 100,
+                    render: (_: any, row: WizardOrderBy, index: number) => (
+                      <Select
+                        size="small"
+                        style={{ width: '100%' }}
+                        options={[
+                          { value: 'ASC', label: '升序' },
+                          { value: 'DESC', label: '降序' },
+                        ]}
+                        value={row.direction || 'ASC'}
+                        onChange={direction => updateOrderBy(index, { direction })}
+                      />
+                    ),
+                  },
+                  {
+                    title: '',
+                    width: 48,
+                    render: (_: any, __: WizardOrderBy, index: number) => (
+                      <Button type="link" danger size="small" onClick={() => removeOrderBy(index)}>删</Button>
+                    ),
+                  },
+                ]}
+              />
+            </div>
           </Space>
         </Col>
 
@@ -452,7 +583,7 @@ export default function ApiWizardBuilder({ datasourceId, value, onChange, onUpgr
             {sqlPreview || '--'}
           </pre>
           <Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
-            保存后以向导配置为准，发布时由引擎重新编译 SQL。复杂查询可升级为 SQL 模式（单向，不可逆向）。
+            保存后以向导配置为准，发布时由引擎重新编译 SQL（含 ORDER BY）。复杂查询可升级为 SQL 模式（单向，不可逆向）。
           </Paragraph>
         </Col>
       </Row>

@@ -100,7 +100,11 @@ def check_rate_limit(bucket_key: str, limit: int, window_sec: int = 60) -> None:
 
 
 def wizard_to_sql(wizard: dict, params: List[DataApiParam]) -> str:
-    """向导配置 → SELECT 模板（参数占位 :name）。"""
+    """向导配置 → SELECT 模板（参数占位 :name）。
+
+    支持 ``order_by: [{column, direction}]``。未配置时：若返回字段为具体列，
+    默认按前两列 ASC，避免开放分页结果顺序不稳定（与 SQL 模式 ORDER BY 对齐）。
+    """
     if not wizard:
         raise HTTPException(status_code=400, detail="向导配置为空")
     table = (wizard.get("table") or "").strip()
@@ -109,14 +113,21 @@ def wizard_to_sql(wizard: dict, params: List[DataApiParam]) -> str:
     fields = wizard.get("fields") or ["*"]
     if fields == ["*"] or fields == "*":
         select_cols = "*"
+        concrete_fields: List[str] = []
     else:
         safe = []
         for f in fields:
             col = str(f).strip()
             if not re.match(r"^[a-zA-Z0-9_.`]+$", col):
                 raise HTTPException(status_code=400, detail=f"无效字段名: {col}")
-            safe.append(col)
-        select_cols = ", ".join(safe)
+            if col != "*":
+                safe.append(col)
+        if not safe:
+            select_cols = "*"
+            concrete_fields = []
+        else:
+            select_cols = ", ".join(safe)
+            concrete_fields = safe
     where_parts = ["1=1"]
     filters = wizard.get("filters") or []
     for flt in filters:
@@ -134,7 +145,42 @@ def wizard_to_sql(wizard: dict, params: List[DataApiParam]) -> str:
         if p.name not in [f.get("param") for f in filters]:
             continue
     sql = f"SELECT {select_cols} FROM {table} WHERE {' AND '.join(where_parts)}"
+    order_parts = _wizard_order_by_clauses(wizard.get("order_by"), concrete_fields)
+    if order_parts:
+        sql = f"{sql} ORDER BY {', '.join(order_parts)}"
     return sql
+
+
+def _wizard_order_by_clauses(order_by: Any, concrete_fields: List[str]) -> List[str]:
+    """解析向导排序；空配置时用返回字段前两列 ASC 保底。"""
+    items: List[Any]
+    if isinstance(order_by, list) and order_by:
+        items = order_by
+    elif concrete_fields:
+        items = [{"column": c, "direction": "ASC"} for c in concrete_fields[:2]]
+    else:
+        return []
+    parts: List[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if isinstance(item, str):
+            col = item.strip()
+            direction = "ASC"
+        elif isinstance(item, dict):
+            col = str(item.get("column") or "").strip()
+            direction = str(item.get("direction") or "ASC").strip().upper()
+        else:
+            continue
+        if not col or not re.match(r"^[a-zA-Z0-9_.`]+$", col):
+            raise HTTPException(status_code=400, detail=f"无效排序列: {col or '?'}")
+        if direction not in ("ASC", "DESC"):
+            raise HTTPException(status_code=400, detail=f"无效排序方向: {direction}")
+        key = col.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        parts.append(f"{col} {direction}")
+    return parts
 
 
 def _coerce_param_value(p: DataApiParam, raw: Any) -> Any:
@@ -244,13 +290,28 @@ def apply_pagination(
     page_size: int,
     enabled: bool,
 ) -> Tuple[str, int, int]:
+    """分页：默认在语句末尾追加 LIMIT/OFFSET，保留业务 SQL 的 ORDER BY。
+
+    旧实现把 SQL 包进 ``SELECT * FROM (...) LIMIT`` 子查询。Doris/MySQL 优化器
+    常会丢掉内层无 LIMIT 的 ORDER BY，导致下游「条件不变、顺序每次不同」。
+    与 Studio 只读 ``apply_readonly_row_limit`` 对齐：能追加则不包一层。
+
+    若模板自身已含 LIMIT，才回退到子查询包装（无法在外层安全叠加 OFFSET）。
+    """
     page_no = max(1, page_no)
     page_size = max(1, min(page_size, 10000))
     if not enabled:
         return sql, page_no, page_size
     offset = (page_no - 1) * page_size
-    wrapped = f"SELECT * FROM ({sql.rstrip(';')}) AS _dw_api_sub LIMIT {page_size} OFFSET {offset}"
-    return wrapped, page_no, page_size
+    core = (sql or "").strip().rstrip(";").strip()
+    from app.services.sql_readonly import _strip_sql_comments
+
+    cleaned = _strip_sql_comments(core)
+    if re.search(r"\bLIMIT\s+\d", cleaned, re.IGNORECASE):
+        wrapped = f"SELECT * FROM ({core}) AS _dw_api_sub LIMIT {page_size} OFFSET {offset}"
+        return wrapped, page_no, page_size
+    appended = f"{core} LIMIT {page_size} OFFSET {offset}"
+    return appended, page_no, page_size
 
 
 def _mask_value(val: Any, mask_type: Optional[str]) -> Any:

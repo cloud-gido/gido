@@ -42,6 +42,17 @@ function parseWizardConfig(raw: any): WizardConfig | null {
     table: o.table || '',
     fields,
     filters: Array.isArray(o.filters) ? o.filters : [],
+    order_by: Array.isArray(o.order_by)
+      ? o.order_by
+          .map((item: any) => {
+            if (typeof item === 'string') return { column: item, direction: 'ASC' as const }
+            const column = String(item?.column || '').trim()
+            if (!column) return null
+            const direction = String(item?.direction || 'ASC').toUpperCase() === 'DESC' ? 'DESC' as const : 'ASC' as const
+            return { column, direction }
+          })
+          .filter(Boolean) as WizardConfig['order_by']
+      : [],
   }
 }
 
@@ -83,7 +94,7 @@ export default function ServiceApisPage() {
   const [apiForm] = Form.useForm()
   const modeWatch = Form.useWatch('mode', apiForm)
   const datasourceWatch = Form.useWatch('datasource_id', apiForm)
-  const [wizardConfig, setWizardConfig] = useState<WizardConfig>({ table: '', fields: [], filters: [] })
+  const [wizardConfig, setWizardConfig] = useState<WizardConfig>({ table: '', fields: [], filters: [], order_by: [] })
   const [testDrawer, setTestDrawer] = useState(false)
   const [testTarget, setTestTarget] = useState<any>(null)
   const [testParams, setTestParams] = useState('{}')
@@ -99,7 +110,7 @@ export default function ServiceApisPage() {
   const openCreateApi = () => {
     setEditingApi(null)
     apiForm.resetFields()
-    setWizardConfig({ table: '', fields: [], filters: [] })
+    setWizardConfig({ table: '', fields: [], filters: [], order_by: [] })
     apiForm.setFieldsValue({
       mode: 'wizard',
       http_method: 'GET',
@@ -117,7 +128,7 @@ export default function ServiceApisPage() {
 
   const openEditApi = (row: any) => {
     setEditingApi(row)
-    const wizard = parseWizardConfig(row.wizard_config) || { table: '', fields: [], filters: [] }
+    const wizard = parseWizardConfig(row.wizard_config) || { table: '', fields: [], filters: [], order_by: [] }
     setWizardConfig(wizard)
     apiForm.setFieldsValue({
       ...row,
@@ -184,6 +195,12 @@ export default function ServiceApisPage() {
             op: f.op || '=',
             param: f.param,
           })),
+          order_by: (wizardConfig.order_by || [])
+            .filter(o => o.column)
+            .map(o => ({
+              column: o.column,
+              direction: (o.direction || 'ASC').toUpperCase() === 'DESC' ? 'DESC' : 'ASC',
+            })),
         }
       } else {
         payload.wizard_config = null
@@ -408,7 +425,7 @@ export default function ServiceApisPage() {
                 placeholder="选择数据源"
                 onChange={() => {
                   if (apiForm.getFieldValue('mode') === 'wizard') {
-                    setWizardConfig({ table: '', fields: [], filters: [] })
+                    setWizardConfig({ table: '', fields: [], filters: [], order_by: [] })
                     apiForm.setFieldsValue({ params: [] })
                   }
                 }}

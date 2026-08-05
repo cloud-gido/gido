@@ -96,6 +96,58 @@ def test_wrap_count_sql():
     )
 
 
+def test_apply_pagination_appends_limit_preserving_order_by():
+    from app.services.data_api_engine import apply_pagination
+
+    sql = (
+        "SELECT player_id, last_bet_at FROM bigdata_ads.ads_gameline_user_bet_stat "
+        "WHERE total_bet_count > 0 "
+        "ORDER BY last_bet_at DESC, operator_id, player_id"
+    )
+    out, page, size = apply_pagination(sql, page_no=2, page_size=20, enabled=True)
+    assert page == 2 and size == 20
+    assert "ORDER BY last_bet_at DESC, operator_id, player_id" in out
+    assert out.endswith("LIMIT 20 OFFSET 20")
+    assert "AS _dw_api_sub" not in out
+
+
+def test_apply_pagination_wraps_only_when_template_has_limit():
+    from app.services.data_api_engine import apply_pagination
+
+    sql = "SELECT id FROM t ORDER BY id LIMIT 100"
+    out, _, _ = apply_pagination(sql, page_no=1, page_size=10, enabled=True)
+    assert "AS _dw_api_sub" in out
+    assert out.endswith("LIMIT 10 OFFSET 0")
+
+
+def test_wizard_to_sql_adds_explicit_and_default_order_by():
+    from app.services.data_api_engine import wizard_to_sql
+
+    explicit = wizard_to_sql(
+        {
+            "table": "bigdata_ads.ads_t",
+            "fields": ["player_id", "last_bet_at"],
+            "filters": [],
+            "order_by": [{"column": "last_bet_at", "direction": "DESC"}, {"column": "player_id", "direction": "ASC"}],
+        },
+        [],
+    )
+    assert explicit.endswith("ORDER BY last_bet_at DESC, player_id ASC")
+
+    defaulted = wizard_to_sql(
+        {
+            "table": "bigdata_ads.ads_t",
+            "fields": ["operator_id", "player_id", "net_profit"],
+            "filters": [],
+        },
+        [],
+    )
+    assert "ORDER BY operator_id ASC, player_id ASC" in defaulted
+
+    star = wizard_to_sql({"table": "t", "fields": ["*"], "filters": []}, [])
+    assert "ORDER BY" not in star
+
+
 def test_total_count_is_full_match_not_page_len():
     # 全量 12 条、本页 5 条 → TotalCount=12；页数由调用方 ceil(12/5)=3
     data = build_list_page_data(
