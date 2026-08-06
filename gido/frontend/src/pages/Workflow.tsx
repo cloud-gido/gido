@@ -49,10 +49,13 @@ export default function WorkflowPage() {
   const canPublishDirect = isWorkspaceAdmin(user, currentWorkspace)
   const displayTz = currentWorkspace?.timezone || 'Asia/Shanghai'
   const [workflows, setWorkflows] = useState<any[]>([])
+  const [listTotal, setListTotal] = useState(0)
+  const [creators, setCreators] = useState<{ id: number; username: string }[]>([])
   const [nodes, setNodes] = useState<any[]>([])
   const [modalOpen, setModalOpen] = useState(false)
   const [editingWf, setEditingWf] = useState<any>(null)
   const [dagConfig, setDagConfig] = useState<any>({ nodes: [], edges: [] })
+  const [detailLoading, setDetailLoading] = useState(false)
   const dagEditorRef = useRef<DAGEditorRef>(null)
   const [instanceDrawer, setInstanceDrawer] = useState(false)
   const [batchModal, setBatchModal] = useState(false)
@@ -63,63 +66,91 @@ export default function WorkflowPage() {
   const [form] = Form.useForm()
   const [batchForm] = Form.useForm()
   const [scheduleType, setScheduleType] = useState<string>('manual')
-  const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set())
   const [approvalModal, setApprovalModal] = useState<any>(null)
   const [approvalNote, setApprovalNote] = useState('')
   const [nodeConfigId, setNodeConfigId] = useState<number | null>(null)
   const [nodeConfigOpen, setNodeConfigOpen] = useState(false)
+  const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
-  const [creatorFilter, setCreatorFilter] = useState<string | undefined>()
+  const [creatorFilter, setCreatorFilter] = useState<number | undefined>()
   /** 默认只看已上线；选「全部生命周期」可看草稿/暂停/下线 */
   const [statusFilter, setStatusFilter] = useState<string>('published')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
+  const [listLoading, setListLoading] = useState(false)
+  const [nodesLoading, setNodesLoading] = useState(false)
+  const nodesLoadedForWs = useRef<number | null>(null)
 
-  const load = async () => {
+  const load = async (
+    opts?: Partial<{ page: number; pageSize: number; keyword: string; createdBy?: number; status: string }>,
+  ) => {
     if (!wsId) return
-    const [wfs, ns, pendingRes]: any = await Promise.all([
-      workflowApi.list(wsId),
-      studioApi.listNodes(wsId),
-      approvalApi.list(wsId, { status: 'pending', page_size: 200 }),
-    ])
-    setWorkflows(wfs as any[])
-    setNodes(ns as any[])
-    setPendingKeys(
-      new Set((pendingRes?.items || []).map((i: any) => `${i.resource_type}:${i.resource_id}:${i.action}`)),
-    )
+    const nextPage = opts?.page ?? page
+    const nextSize = opts?.pageSize ?? pageSize
+    const nextKeyword = opts?.keyword ?? keyword
+    const nextCreator = opts && 'createdBy' in opts ? opts.createdBy : creatorFilter
+    const nextStatus = opts?.status ?? statusFilter
+    setListLoading(true)
+    try {
+      const res: any = await workflowApi.list(wsId, {
+        page: nextPage,
+        page_size: nextSize,
+        keyword: nextKeyword || undefined,
+        created_by: nextCreator,
+        status: nextStatus,
+      })
+      setWorkflows(Array.isArray(res?.items) ? res.items : [])
+      setListTotal(Number(res?.total) || 0)
+      setCreators(Array.isArray(res?.creators) ? res.creators : [])
+    } finally {
+      setListLoading(false)
+    }
   }
 
-  useEffect(() => { load() }, [wsId])
+  const ensureNodes = async (force = false) => {
+    if (!wsId) return
+    if (!force && nodesLoadedForWs.current === wsId) return
+    setNodesLoading(true)
+    try {
+      const ns: any = await studioApi.listNodes(wsId)
+      setNodes(ns as any[])
+      nodesLoadedForWs.current = wsId
+    } finally {
+      setNodesLoading(false)
+    }
+  }
 
   useEffect(() => {
+    nodesLoadedForWs.current = null
+    setNodes([])
     setPage(1)
-  }, [wsId, keyword, creatorFilter, statusFilter])
+    setKeywordInput('')
+    setKeyword('')
+    setCreatorFilter(undefined)
+    setStatusFilter('published')
+  }, [wsId])
 
-  const creatorOptions = useMemo(() => {
-    const names = new Set<string>()
-    for (const wf of workflows) {
-      const name = String(wf.created_by_username || '').trim()
-      if (name) names.add(name)
-    }
-    return Array.from(names).sort((a, b) => a.localeCompare(b, 'zh-CN')).map(name => ({
-      label: name,
-      value: name,
-    }))
-  }, [workflows])
+  useEffect(() => {
+    if (!wsId) return
+    void load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅筛选/分页变化时重载
+  }, [wsId, page, pageSize, keyword, creatorFilter, statusFilter])
 
-  const filteredWorkflows = useMemo(() => {
-    const q = keyword.trim().toLowerCase()
-    return workflows.filter((wf) => {
-      const status = effectiveWorkflowStatus(wf)
-      if (statusFilter !== 'all' && status !== statusFilter) return false
-      if (creatorFilter && String(wf.created_by_username || '') !== creatorFilter) return false
-      if (!q) return true
-      const hay = `${wf.name || ''} ${wf.description || ''}`.toLowerCase()
-      return hay.includes(q)
-    })
-  }, [workflows, keyword, creatorFilter, statusFilter])
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      setKeyword(keywordInput.trim())
+      setPage(1)
+    }, 300)
+    return () => window.clearTimeout(t)
+  }, [keywordInput])
+
+  const creatorOptions = useMemo(
+    () => creators.map(c => ({ label: c.username, value: c.id })),
+    [creators],
+  )
 
   const resetFilters = () => {
+    setKeywordInput('')
     setKeyword('')
     setCreatorFilter(undefined)
     setStatusFilter('published')
@@ -131,15 +162,41 @@ export default function WorkflowPage() {
     setDagConfig({ nodes: [], edges: [] })
     form.resetFields()
     setScheduleType('manual')
+    setDetailLoading(false)
     setModalOpen(true)
+    void ensureNodes()
   }
 
-  const openEdit = (wf: any) => {
+  const openEdit = async (wf: any) => {
     setEditingWf(wf)
-    setDagConfig(wf.dag_config || { nodes: [], edges: [] })
-    form.setFieldsValue(wf)
+    setDagConfig({ nodes: [], edges: [] })
+    form.setFieldsValue({
+      name: wf.name,
+      description: wf.description,
+      schedule_type: wf.schedule_type || 'manual',
+      cron_expression: wf.cron_expression,
+    })
     setScheduleType(wf.schedule_type || 'manual')
+    setDetailLoading(true)
     setModalOpen(true)
+    void ensureNodes()
+    try {
+      const detail: any = await workflowApi.get(wf.id)
+      setEditingWf(detail)
+      setDagConfig(detail?.dag_config || { nodes: [], edges: [] })
+      form.setFieldsValue({
+        name: detail.name,
+        description: detail.description,
+        schedule_type: detail.schedule_type || 'manual',
+        cron_expression: detail.cron_expression,
+      })
+      setScheduleType(detail.schedule_type || 'manual')
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '加载工作流详情失败')
+      setModalOpen(false)
+    } finally {
+      setDetailLoading(false)
+    }
   }
 
   const handleSave = async () => {
@@ -153,7 +210,7 @@ export default function WorkflowPage() {
       // 编辑器只产出 nodes/edges；调度映射绑定生产版本，不写进草稿 DAG。
       const prevDag = editingWf?.dag_config || {}
       values.dag_config = { ...prevDag, ...fromEditor }
-      if (editingWf) {
+      if (editingWf?.id) {
         await workflowApi.update(editingWf.id, values)
         message.success('更新成功')
       } else {
@@ -265,7 +322,7 @@ export default function WorkflowPage() {
     }
   }
 
-  const isWorkflowPendingApproval = (wf: any) => pendingKeys.has(`workflow:${wf.id}:publish_to_ds`)
+  const isWorkflowPendingApproval = (wf: any) => Boolean(wf?.pending_publish)
 
   const handleDelete = async (row: any) => {
     try {
@@ -320,7 +377,7 @@ export default function WorkflowPage() {
     { key: 'version', title: '生产版本', dataIndex: 'active_version_no', width: 90, render: (v: number) => v ? <Tag color="blue">v{v}</Tag> : <Tag>草稿</Tag> },
     { key: 'created_by', title: '创建人', dataIndex: 'created_by_username', width: 88, render: (v: string) => v || '—' },
     { key: 'updated_by', title: '最近保存人', dataIndex: 'updated_by_username', width: 120, render: (v: string) => v || '—' },
-    { key: 'node_count', title: '节点数', width: 72, align: 'center' as const, render: (_: any, row: any) => row.dag_config?.nodes?.length || 0 },
+    { key: 'node_count', title: '节点数', dataIndex: 'node_count', width: 72, align: 'center' as const, render: (v: number) => v ?? 0 },
     {
       key: 'schedule',
       title: '调度',
@@ -512,8 +569,8 @@ export default function WorkflowPage() {
           allowClear
           prefix={<SearchOutlined />}
           placeholder="搜索工作流名称 / 描述"
-          value={keyword}
-          onChange={e => setKeyword(e.target.value)}
+          value={keywordInput}
+          onChange={e => setKeywordInput(e.target.value)}
           style={{ width: 260 }}
         />
         <Select
@@ -522,36 +579,37 @@ export default function WorkflowPage() {
           optionFilterProp="label"
           placeholder="创建人"
           value={creatorFilter}
-          onChange={setCreatorFilter}
+          onChange={v => { setCreatorFilter(v); setPage(1) }}
           options={creatorOptions}
           style={{ width: 160 }}
         />
         <Select
           value={statusFilter}
-          onChange={v => setStatusFilter(v || 'all')}
+          onChange={v => { setStatusFilter(v || 'all'); setPage(1) }}
           options={LIFECYCLE_FILTER_OPTIONS}
           style={{ width: 160 }}
         />
-        <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
+        <Button icon={<ReloadOutlined />} onClick={() => load()}>刷新</Button>
         <Button type="link" onClick={resetFilters}>重置筛选</Button>
         <span style={{ color: '#64748b', fontSize: 13 }}>
-          当前 {filteredWorkflows.length} / 共 {workflows.length} 条
+          共 {listTotal} 条
           {statusFilter === 'published' ? '（默认仅已上线）' : ''}
         </span>
       </div>
 
       <Table
         className="dw-resizable-table"
-        dataSource={filteredWorkflows}
+        dataSource={workflows}
         columns={columns}
         rowKey="id"
+        loading={listLoading}
         tableLayout="fixed"
         scroll={{ x: 'max-content' }}
         size="middle"
         pagination={{
           current: page,
           pageSize,
-          total: filteredWorkflows.length,
+          total: listTotal,
           showSizeChanger: true,
           showQuickJumper: true,
           pageSizeOptions: ['10', '20', '50', '100'],
@@ -572,6 +630,7 @@ export default function WorkflowPage() {
         width={1080}
         styles={{ body: { maxHeight: 'calc(100vh - 160px)', overflowY: 'auto' } }}
         okText="保存"
+        okButtonProps={{ disabled: detailLoading || nodesLoading }}
       >
         <Tabs items={[
           {
@@ -628,7 +687,11 @@ export default function WorkflowPage() {
                   type="info"
                   showIcon
                   style={{ marginBottom: 12 }}
-                  message="添加节点后拖拽排版，从端口可连多个上下游；双击节点可在弹窗中改配置（与数据开发同步）。DEPENDENT 可等待其他工作流成功。"
+                  message={
+                    detailLoading || nodesLoading
+                      ? '正在加载工作流详情与可编排节点…'
+                      : '添加节点后拖拽排版，从端口可连多个上下游；双击节点可在弹窗中改配置（与数据开发同步）。DEPENDENT 可等待其他工作流成功。'
+                  }
                 />
                 <DAGEditor
                   ref={dagEditorRef}

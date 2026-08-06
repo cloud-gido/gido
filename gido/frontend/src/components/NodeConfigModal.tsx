@@ -195,13 +195,13 @@ export default function NodeConfigModal({
           studioApi.getNode(nodeId),
           datasourceApi.list(workspaceId),
           integrationApi.listTasks(workspaceId).catch(() => []),
-          workflowApi.list(workspaceId).catch(() => []),
+          workflowApi.listAll(workspaceId).catch(() => ({ items: [] })),
         ])
         if (cancelled) return
         setNode(n)
         setDatasources(ds || [])
         setIntegrationTasks(Array.isArray(tasks) ? tasks : (tasks?.items || []))
-        setWorkflows(Array.isArray(wfs) ? wfs : [])
+        setWorkflows(Array.isArray(wfs?.items) ? wfs.items : (Array.isArray(wfs) ? wfs : []))
         const vals = normalizeFormValues(n)
         const draftKey = scriptDraftStorageKey(`studio.${workspaceId}`, nodeId)
         const restored = !n.is_locked

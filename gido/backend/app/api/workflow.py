@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # @author felixzhu
 # @date 2026-06-05
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import or_
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_, func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-from pydantic import BaseModel
-from typing import Optional, List, Any, Dict, Tuple
+from pydantic import BaseModel, Field
+from typing import Optional, List, Any, Dict, Tuple, Set
 from datetime import datetime
 import logging
 from app.core.database import get_db
@@ -71,6 +71,46 @@ class WorkflowOut(BaseModel):
         from_attributes = True
 
 
+class WorkflowListItem(BaseModel):
+    """列表摘要行：不含 dag_config，仅返回表格所需字段。"""
+    id: int
+    workspace_id: int
+    name: str
+    description: Optional[str] = None
+    schedule_type: str
+    cron_expression: Optional[str] = None
+    is_active: bool = True
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    created_by: Optional[int] = None
+    created_by_username: Optional[str] = None
+    updated_by: Optional[int] = None
+    updated_by_username: Optional[str] = None
+    status: Optional[str] = None
+    active_version_id: Optional[int] = None
+    active_version_no: Optional[int] = None
+    scheduler_engine: Optional[str] = None
+    scheduler_definition_id: Optional[str] = None
+    scheduler_project_id: Optional[str] = None
+    dolphin_workflow_url: Optional[str] = None
+    needs_ds_republish: Optional[bool] = None
+    node_count: int = 0
+    pending_publish: bool = False
+
+
+class WorkflowCreatorOption(BaseModel):
+    id: int
+    username: str
+
+
+class WorkflowListResponse(BaseModel):
+    items: List[WorkflowListItem]
+    total: int
+    page: int
+    page_size: int
+    creators: List[WorkflowCreatorOption] = Field(default_factory=list)
+
+
 def _wf_user_brief(db: Session, user_id: Optional[int]) -> Tuple[Optional[int], Optional[str]]:
     if not user_id:
         return None, None
@@ -78,45 +118,22 @@ def _wf_user_brief(db: Session, user_id: Optional[int]) -> Tuple[Optional[int], 
     return user_id, (u.username if u else None)
 
 
-def workflow_to_out(wf: Workflow, db: Session) -> WorkflowOut:
-    from app.services.dolphin import dolphin_workflow_console_url
-    dag = wf.dag_config or {}
-    url = None
-    project_id = getattr(wf, "scheduler_project_id", None)
-    definition_id = getattr(wf, "scheduler_definition_id", None)
-    if get_dolphin_runtime(db, wf.workspace_id).enabled and project_id and definition_id:
-        url = dolphin_workflow_console_url(
-            int(project_id), f"dw_{wf.id}_{wf.name}", db=db, workspace_id=wf.workspace_id
-        )
-    meta = dag.get("ds_meta") or {}
-    needs = bool(meta.get("needs_republish"))
-    active_version = _active_job_version(db, wf)
-    cb, cbn = _wf_user_brief(db, wf.created_by)
-    ub, ubn = _wf_user_brief(db, getattr(wf, "updated_by", None))
-    return WorkflowOut(
-        id=wf.id,
-        workspace_id=wf.workspace_id,
-        name=wf.name,
-        description=wf.description,
-        dag_config=wf.dag_config,
-        schedule_type=wf.schedule_type,
-        cron_expression=wf.cron_expression,
-        is_active=wf.is_active,
-        created_at=wf.created_at,
-        updated_at=getattr(wf, "updated_at", None),
-        created_by=cb,
-        created_by_username=cbn,
-        updated_by=ub,
-        updated_by_username=ubn,
-        status=getattr(wf, "status", None),
-        active_version_id=getattr(wf, "active_version_id", None),
-        active_version_no=getattr(active_version, "version_no", None),
-        scheduler_engine=getattr(wf, "scheduler_engine", None) or "dolphin",
-        scheduler_definition_id=str(definition_id) if definition_id is not None else None,
-        scheduler_project_id=str(project_id) if project_id is not None else None,
-        dolphin_workflow_url=url,
-        needs_ds_republish=needs if definition_id is not None else None,
-    )
+def _dolphin_console_url_from_runtime(runtime, project_id: Any, process_search_name: str) -> Optional[str]:
+    """用已解析的 runtime 拼控制台链接，避免列表场景反复查库。"""
+    if not getattr(runtime, "enabled", False) or not project_id:
+        return None
+    from urllib.parse import quote
+
+    ui = (getattr(runtime, "ui_url", None) or "").strip()
+    api_root = (getattr(runtime, "url", None) or "").strip()
+    if not ui:
+        ui = api_root.rstrip("/") + "/ui" if api_root else ""
+    if not ui:
+        return None
+    base = f"{ui.rstrip('/')}/#/projects/{int(project_id)}/workflow-definition/list"
+    if process_search_name:
+        return f"{base}?searchVal={quote(process_search_name)}"
+    return base
 
 
 def _active_job_version(db: Session, wf: Workflow) -> Optional[JobVersion]:
@@ -130,6 +147,196 @@ def _active_job_version(db: Session, wf: Workflow) -> Optional[JobVersion]:
         .order_by(JobVersion.version_no.desc(), JobVersion.id.desc())
         .first()
     )
+
+
+def _prefetch_usernames(db: Session, user_ids: List[Optional[int]]) -> Dict[int, str]:
+    ids = sorted({int(uid) for uid in user_ids if uid})
+    if not ids:
+        return {}
+    return {int(u.id): u.username for u in db.query(User).filter(User.id.in_(ids)).all()}
+
+
+def _prefetch_active_versions(db: Session, workflows: List[Workflow]) -> Dict[int, JobVersion]:
+    """workflow_id -> 当前生产版本；优先 active_version_id，否则取 status=active 最新一条。"""
+    by_wf: Dict[int, JobVersion] = {}
+    version_ids = [
+        int(wf.active_version_id)
+        for wf in workflows
+        if getattr(wf, "active_version_id", None)
+    ]
+    if version_ids:
+        for v in db.query(JobVersion).filter(JobVersion.id.in_(version_ids)).all():
+            by_wf[int(v.workflow_id)] = v
+
+    missing = [int(wf.id) for wf in workflows if int(wf.id) not in by_wf]
+    if missing:
+        rows = (
+            db.query(JobVersion)
+            .filter(JobVersion.workflow_id.in_(missing), JobVersion.status == "active")
+            .order_by(JobVersion.workflow_id.asc(), JobVersion.version_no.desc(), JobVersion.id.desc())
+            .all()
+        )
+        for v in rows:
+            wid = int(v.workflow_id)
+            if wid not in by_wf:
+                by_wf[wid] = v
+    return by_wf
+
+
+def _workflow_to_out_cached(
+    wf: Workflow,
+    *,
+    runtime,
+    usernames: Dict[int, str],
+    versions_by_wf: Dict[int, JobVersion],
+) -> WorkflowOut:
+    dag = wf.dag_config or {}
+    project_id = getattr(wf, "scheduler_project_id", None)
+    definition_id = getattr(wf, "scheduler_definition_id", None)
+    url = None
+    if definition_id and project_id:
+        url = _dolphin_console_url_from_runtime(runtime, project_id, f"dw_{wf.id}_{wf.name}")
+    meta = dag.get("ds_meta") or {}
+    needs = bool(meta.get("needs_republish"))
+    active_version = versions_by_wf.get(int(wf.id))
+    cb = wf.created_by
+    ub = getattr(wf, "updated_by", None)
+    return WorkflowOut(
+        id=wf.id,
+        workspace_id=wf.workspace_id,
+        name=wf.name,
+        description=wf.description,
+        dag_config=wf.dag_config,
+        schedule_type=wf.schedule_type,
+        cron_expression=wf.cron_expression,
+        is_active=wf.is_active,
+        created_at=wf.created_at,
+        updated_at=getattr(wf, "updated_at", None),
+        created_by=cb,
+        created_by_username=usernames.get(int(cb)) if cb else None,
+        updated_by=ub,
+        updated_by_username=usernames.get(int(ub)) if ub else None,
+        status=getattr(wf, "status", None),
+        active_version_id=getattr(wf, "active_version_id", None),
+        active_version_no=getattr(active_version, "version_no", None),
+        scheduler_engine=getattr(wf, "scheduler_engine", None) or "dolphin",
+        scheduler_definition_id=str(definition_id) if definition_id is not None else None,
+        scheduler_project_id=str(project_id) if project_id is not None else None,
+        dolphin_workflow_url=url,
+        needs_ds_republish=needs if definition_id is not None else None,
+    )
+
+
+def workflow_to_out(wf: Workflow, db: Session) -> WorkflowOut:
+    runtime = get_dolphin_runtime(db, wf.workspace_id)
+    usernames = _prefetch_usernames(db, [wf.created_by, getattr(wf, "updated_by", None)])
+    versions = _prefetch_active_versions(db, [wf])
+    return _workflow_to_out_cached(wf, runtime=runtime, usernames=usernames, versions_by_wf=versions)
+
+
+def workflows_to_out_list(workflows: List[Workflow], db: Session, workspace_id: int) -> List[WorkflowOut]:
+    """列表接口批量组装，避免每个工作流反复查 User / JobVersion / DS runtime。"""
+    if not workflows:
+        return []
+    runtime = get_dolphin_runtime(db, workspace_id)
+    user_ids: List[Optional[int]] = []
+    for wf in workflows:
+        user_ids.append(wf.created_by)
+        user_ids.append(getattr(wf, "updated_by", None))
+    usernames = _prefetch_usernames(db, user_ids)
+    versions = _prefetch_active_versions(db, workflows)
+    return [
+        _workflow_to_out_cached(wf, runtime=runtime, usernames=usernames, versions_by_wf=versions)
+        for wf in workflows
+    ]
+
+
+def _dag_node_count(dag: Any) -> int:
+    if not isinstance(dag, dict):
+        return 0
+    nodes = dag.get("nodes")
+    return len(nodes) if isinstance(nodes, list) else 0
+
+
+def _prefetch_pending_publish(db: Session, workflow_ids: List[int]) -> Set[int]:
+    ids = sorted({int(i) for i in workflow_ids if i})
+    if not ids:
+        return set()
+    rows = (
+        db.query(PublishApproval.resource_id)
+        .filter(
+            PublishApproval.resource_type == "workflow",
+            PublishApproval.status == "pending",
+            PublishApproval.resource_id.in_(ids),
+        )
+        .all()
+    )
+    return {int(r[0]) for r in rows if r[0] is not None}
+
+
+def _workspace_workflow_creators(db: Session, workspace_id: int) -> List[WorkflowCreatorOption]:
+    rows = (
+        db.query(User.id, User.username)
+        .join(Workflow, Workflow.created_by == User.id)
+        .filter(Workflow.workspace_id == workspace_id)
+        .distinct()
+        .order_by(User.username.asc())
+        .all()
+    )
+    return [WorkflowCreatorOption(id=int(r[0]), username=r[1]) for r in rows if r[0] and r[1]]
+
+
+def workflows_to_list_items(
+    workflows: List[Workflow],
+    db: Session,
+    workspace_id: int,
+) -> List[WorkflowListItem]:
+    """摘要行：批量组装后剥离 dag_config，并附带 node_count / pending_publish。"""
+    if not workflows:
+        return []
+    outs = workflows_to_out_list(workflows, db, workspace_id)
+    pending = _prefetch_pending_publish(db, [int(wf.id) for wf in workflows])
+    items: List[WorkflowListItem] = []
+    for wf, out in zip(workflows, outs):
+        payload = out.model_dump()
+        payload.pop("dag_config", None)
+        items.append(
+            WorkflowListItem(
+                **payload,
+                node_count=_dag_node_count(wf.dag_config),
+                pending_publish=int(wf.id) in pending,
+            )
+        )
+    return items
+
+
+def _apply_workflow_list_filters(
+    q,
+    *,
+    workspace_id: int,
+    keyword: Optional[str],
+    created_by: Optional[int],
+    created_by_username: Optional[str],
+    status: str,
+    db: Session,
+):
+    q = q.filter(Workflow.workspace_id == workspace_id)
+    status_key = (status or "published").strip().lower()
+    if status_key and status_key != "all":
+        q = q.filter(func.lower(func.coalesce(Workflow.status, "draft")) == status_key)
+    kw = (keyword or "").strip()
+    if kw:
+        like = f"%{kw}%"
+        q = q.filter(or_(Workflow.name.ilike(like), Workflow.description.ilike(like)))
+    if created_by is not None:
+        q = q.filter(Workflow.created_by == created_by)
+    elif (created_by_username or "").strip():
+        uname = created_by_username.strip()
+        uid = db.query(User.id).filter(User.username == uname).scalar()
+        if uid is None:
+            return q.filter(Workflow.id == -1)  # no match
+        q = q.filter(Workflow.created_by == int(uid))
+    return q
 
 
 def _purge_workflow_local_records(db: Session, wf: Workflow) -> None:
@@ -174,11 +381,44 @@ def _purge_workflow_local_records(db: Session, wf: Workflow) -> None:
     ).delete(synchronize_session=False)
 
 
-@router.get("", response_model=List[WorkflowOut])
-def list_workflows(workspace_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+@router.get("", response_model=WorkflowListResponse)
+def list_workflows(
+    workspace_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=500),
+    keyword: Optional[str] = None,
+    created_by: Optional[int] = None,
+    created_by_username: Optional[str] = None,
+    status: str = Query("published", description="draft|published|paused|offline|all；默认已上线"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """工作流摘要分页列表（无 dag_config）；详情请 GET /workflows/{id}。"""
     assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_BATCH_WORKFLOW_READ)
-    rows = db.query(Workflow).filter(Workflow.workspace_id == workspace_id).all()
-    return [workflow_to_out(w, db) for w in rows]
+    q = db.query(Workflow)
+    q = _apply_workflow_list_filters(
+        q,
+        workspace_id=workspace_id,
+        keyword=keyword,
+        created_by=created_by,
+        created_by_username=created_by_username,
+        status=status,
+        db=db,
+    )
+    total = q.count()
+    rows = (
+        q.order_by(Workflow.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return WorkflowListResponse(
+        items=workflows_to_list_items(rows, db, workspace_id),
+        total=total,
+        page=page,
+        page_size=page_size,
+        creators=_workspace_workflow_creators(db, workspace_id),
+    )
 
 
 @router.post("", response_model=WorkflowOut)

@@ -187,12 +187,12 @@ export default function StudioPage() {
       datasourceApi.list(wsId),
       studioApi.listFolders(wsId),
       approvalApi.list(wsId, { status: 'pending', page_size: 200 }),
-      workflowApi.list(wsId).catch(() => []),
+      workflowApi.listAll(wsId).catch(() => ({ items: [] })),
     ])
     setNodes(sortNodesList(n as unknown as any[]))
     setDatasources(d as unknown as any[])
     setFolders(f as unknown as any[])
-    setWorkflows(Array.isArray(wfs) ? wfs : [])
+    setWorkflows(Array.isArray(wfs?.items) ? wfs.items : (Array.isArray(wfs) ? wfs : []))
     setPendingKeys(
       new Set((pendingRes?.items || []).map((i: any) => `${i.resource_type}:${i.resource_id}:${i.action}`)),
     )

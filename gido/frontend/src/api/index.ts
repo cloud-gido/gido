@@ -121,7 +121,34 @@ export const studioApi = {
 
 // 工作流
 export const workflowApi = {
-  list: (workspaceId: number) => request.get('/workflows', { params: { workspace_id: workspaceId } }),
+  list: (
+    workspaceId: number,
+    params?: {
+      page?: number
+      page_size?: number
+      keyword?: string
+      created_by?: number
+      created_by_username?: string
+      /** draft|published|paused|offline|all；默认后端 published */
+      status?: string
+    },
+  ) =>
+    request.get('/workflows', {
+      params: {
+        workspace_id: workspaceId,
+        page: params?.page ?? 1,
+        page_size: params?.page_size ?? 20,
+        keyword: params?.keyword || undefined,
+        created_by: params?.created_by,
+        created_by_username: params?.created_by_username || undefined,
+        status: params?.status ?? 'published',
+      },
+    }),
+  /** 依赖选择等场景：拉全量摘要（无 DAG） */
+  listAll: (workspaceId: number, pageSize = 500) =>
+    request.get('/workflows', {
+      params: { workspace_id: workspaceId, page: 1, page_size: pageSize, status: 'all' },
+    }),
   create: (data: any) => request.post('/workflows', data),
   get: (id: number) => request.get(`/workflows/${id}`),
   update: (id: number, data: any) => request.put(`/workflows/${id}`, data),
