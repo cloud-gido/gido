@@ -4,7 +4,7 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   Table, Button, Modal, Form, Input, Select, Tag, Space, message,
   Drawer, DatePicker, Tooltip, Popconfirm, Tabs, Alert
@@ -12,7 +12,7 @@ import {
 import {
   PlusOutlined, PlayCircleOutlined, DeleteOutlined, EyeOutlined,
   ReloadOutlined, HistoryOutlined, CalendarOutlined, EditOutlined,
-  CloudUploadOutlined, LinkOutlined,
+  CloudUploadOutlined, LinkOutlined, SearchOutlined,
 } from '@ant-design/icons'
 import { workflowApi, studioApi, approvalApi } from '../api'
 import { useAppStore } from '../store'
@@ -32,6 +32,15 @@ const WORKFLOW_STATUS: Record<string, { label: string; color: string; desc: stri
   published: { label: '已上线', color: 'green', desc: '已发布到生产调度，可周期触发' },
   paused: { label: '已暂停', color: 'orange', desc: '生产定义保留，周期调度已暂停' },
   offline: { label: '已下线', color: 'red', desc: '生产调度已下线，历史实例保留' },
+}
+
+const LIFECYCLE_FILTER_OPTIONS = [
+  { label: '全部生命周期', value: 'all' },
+  ...Object.entries(WORKFLOW_STATUS).map(([value, meta]) => ({ label: meta.label, value })),
+]
+
+function effectiveWorkflowStatus(row: any): string {
+  return row?.status || (row?.scheduler_definition_id ? 'published' : 'draft')
 }
 
 export default function WorkflowPage() {
@@ -59,6 +68,12 @@ export default function WorkflowPage() {
   const [approvalNote, setApprovalNote] = useState('')
   const [nodeConfigId, setNodeConfigId] = useState<number | null>(null)
   const [nodeConfigOpen, setNodeConfigOpen] = useState(false)
+  const [keyword, setKeyword] = useState('')
+  const [creatorFilter, setCreatorFilter] = useState<string | undefined>()
+  /** 默认只看已上线；选「全部生命周期」可看草稿/暂停/下线 */
+  const [statusFilter, setStatusFilter] = useState<string>('published')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
 
   const load = async () => {
     if (!wsId) return
@@ -75,6 +90,41 @@ export default function WorkflowPage() {
   }
 
   useEffect(() => { load() }, [wsId])
+
+  useEffect(() => {
+    setPage(1)
+  }, [wsId, keyword, creatorFilter, statusFilter])
+
+  const creatorOptions = useMemo(() => {
+    const names = new Set<string>()
+    for (const wf of workflows) {
+      const name = String(wf.created_by_username || '').trim()
+      if (name) names.add(name)
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b, 'zh-CN')).map(name => ({
+      label: name,
+      value: name,
+    }))
+  }, [workflows])
+
+  const filteredWorkflows = useMemo(() => {
+    const q = keyword.trim().toLowerCase()
+    return workflows.filter((wf) => {
+      const status = effectiveWorkflowStatus(wf)
+      if (statusFilter !== 'all' && status !== statusFilter) return false
+      if (creatorFilter && String(wf.created_by_username || '') !== creatorFilter) return false
+      if (!q) return true
+      const hay = `${wf.name || ''} ${wf.description || ''}`.toLowerCase()
+      return hay.includes(q)
+    })
+  }, [workflows, keyword, creatorFilter, statusFilter])
+
+  const resetFilters = () => {
+    setKeyword('')
+    setCreatorFilter(undefined)
+    setStatusFilter('published')
+    setPage(1)
+  }
 
   const openCreate = () => {
     setEditingWf(null)
@@ -287,7 +337,7 @@ export default function WorkflowPage() {
       dataIndex: 'status',
       width: 110,
       render: (v: string, row: any) => {
-        const status = v || (row.scheduler_definition_id ? 'published' : 'draft')
+        const status = effectiveWorkflowStatus({ ...row, status: v })
         const meta = WORKFLOW_STATUS[status] || WORKFLOW_STATUS.draft
         return (
           <Tooltip title={meta.desc}>
@@ -457,14 +507,60 @@ export default function WorkflowPage() {
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建工作流</Button>
       </div>
 
+      <div style={{ marginBottom: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <Input
+          allowClear
+          prefix={<SearchOutlined />}
+          placeholder="搜索工作流名称 / 描述"
+          value={keyword}
+          onChange={e => setKeyword(e.target.value)}
+          style={{ width: 260 }}
+        />
+        <Select
+          allowClear
+          showSearch
+          optionFilterProp="label"
+          placeholder="创建人"
+          value={creatorFilter}
+          onChange={setCreatorFilter}
+          options={creatorOptions}
+          style={{ width: 160 }}
+        />
+        <Select
+          value={statusFilter}
+          onChange={v => setStatusFilter(v || 'all')}
+          options={LIFECYCLE_FILTER_OPTIONS}
+          style={{ width: 160 }}
+        />
+        <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
+        <Button type="link" onClick={resetFilters}>重置筛选</Button>
+        <span style={{ color: '#64748b', fontSize: 13 }}>
+          当前 {filteredWorkflows.length} / 共 {workflows.length} 条
+          {statusFilter === 'published' ? '（默认仅已上线）' : ''}
+        </span>
+      </div>
+
       <Table
         className="dw-resizable-table"
-        dataSource={workflows}
+        dataSource={filteredWorkflows}
         columns={columns}
         rowKey="id"
         tableLayout="fixed"
         scroll={{ x: 'max-content' }}
         size="middle"
+        pagination={{
+          current: page,
+          pageSize,
+          total: filteredWorkflows.length,
+          showSizeChanger: true,
+          showQuickJumper: true,
+          pageSizeOptions: ['10', '20', '50', '100'],
+          showTotal: (total, range) => `第 ${range[0]}-${range[1]} 条，共 ${total} 条`,
+          onChange: (nextPage, nextSize) => {
+            setPage(nextPage)
+            setPageSize(nextSize || 20)
+          },
+        }}
       />
 
       {/* 新建/编辑工作流 */}
