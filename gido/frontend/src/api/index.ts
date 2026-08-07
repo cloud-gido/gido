@@ -601,8 +601,18 @@ export const dataServiceApi = {
   deleteApi: (id: number) => request.delete(`/data-service/apis/${id}`),
   publishApi: (id: number) => request.post(`/data-service/apis/${id}/publish`),
   offlineApi: (id: number) => request.post(`/data-service/apis/${id}/offline`),
+  discardPendingApi: (id: number) => request.post(`/data-service/apis/${id}/discard-pending`),
   testApi: (id: number, data: any) => request.post(`/data-service/apis/${id}/test`, data),
   openapi: (id: number) => request.get(`/data-service/apis/${id}/openapi`),
+  exportApiBundle: (id: number) => request.get(`/data-service/apis/${id}/bundle`),
+  exportApisBundle: (data: { workspace_id: number; api_ids?: number[]; api_codes?: string[] }) =>
+    request.post('/data-service/apis/export-bundle', data),
+  importApisBundle: (data: {
+    workspace_id: number
+    bundle: any
+    on_conflict?: 'skip' | 'overwrite' | 'fail'
+    datasource_map?: Record<string, string>
+  }) => request.post('/data-service/apis/import-bundle', data),
   listApps: (workspaceId: number) => request.get('/data-service/apps', { params: { workspace_id: workspaceId } }),
   createApp: (data: any) => request.post('/data-service/apps', data),
   deleteApp: (id: number) => request.delete(`/data-service/apps/${id}`),

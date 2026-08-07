@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # @author felixzhu
 # @date 2026-06-05
-"""数据服务：API 管理、应用授权、测试、监控、OpenAPI 导出。"""
+"""数据服务：API 管理、应用授权、测试、监控、OpenAPI / 配置包导出导入。"""
 from __future__ import annotations
 
 import logging
@@ -38,6 +38,7 @@ from app.services.integration_runtime import list_columns, list_tables
 from app.services.rbac import assert_workspace_data_capability, require_datasource_row
 from app.services.publish_approval import assert_can_publish_production
 from app.services.data_service_publish import execute_data_api_offline, execute_data_api_publish
+from app.services.data_api_bundle import export_api_bundle, import_api_bundle
 
 router = APIRouter(prefix="/data-service", tags=["数据服务"])
 logger = logging.getLogger(__name__)
@@ -139,6 +140,24 @@ class GrantIn(BaseModel):
     qps_limit: Optional[int] = Field(default=None, ge=0, le=100000)
 
 
+class ApiBundleExportIn(BaseModel):
+    """批量导出：按 id 和/或 api_code；二者至少其一。"""
+
+    workspace_id: int
+    api_ids: Optional[List[int]] = None
+    api_codes: Optional[List[str]] = None
+
+
+class ApiBundleImportIn(BaseModel):
+    workspace_id: int
+    bundle: Dict[str, Any]
+    on_conflict: str = Field(default="overwrite", description="skip | overwrite | fail")
+    datasource_map: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="源数据源名 → 目标数据源名，例如 {\"test_doris\": \"prod_doris\"}",
+    )
+
+
 def _require_api(db: Session, api_id: int, user: User) -> DataApi:
     api = db.query(DataApi).options(joinedload(DataApi.params)).filter(DataApi.id == api_id).first()
     if not api:
@@ -187,6 +206,12 @@ def _api_out(api: DataApi, ds_name: Optional[str] = None) -> dict:
             for p in sorted(api.params or [], key=lambda x: x.sort_order)
         ],
         "open_path": f"/open/v1/ws/{api.workspace_id}/{api.api_code}",
+        "has_pending_publish": bool(isinstance(api.pending_definition, dict) and api.pending_definition),
+        "pending_staged_at": (
+            (api.pending_definition or {}).get("staged_at")
+            if isinstance(api.pending_definition, dict)
+            else None
+        ),
     }
 
 
@@ -360,6 +385,24 @@ def offline_api(api_id: int, db: Session = Depends(get_db), current_user: User =
     assert_workspace_data_capability(db, current_user, api.workspace_id, "developer", PC.GIDO_SERVICE_RUN)
     assert_can_publish_production(db, current_user, api.workspace_id)
     return execute_data_api_offline(db, api)
+
+
+@router.post("/apis/{api_id}/discard-pending")
+def discard_pending_api(
+    api_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """丢弃已上线 API 旁的待发布配置，线上定义不变。"""
+    api = _require_api(db, api_id, current_user)
+    assert_workspace_data_capability(db, current_user, api.workspace_id, "developer", PC.GIDO_SERVICE_WRITE)
+    if not api.pending_definition:
+        raise HTTPException(status_code=400, detail="没有待发布配置")
+    api.pending_definition = None
+    api.updated_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "message": "已丢弃待发布配置"}
+
 
 
 @router.post("/apis/{api_id}/test")
@@ -539,6 +582,55 @@ def export_openapi(api_id: int, db: Session = Depends(get_db), current_user: Use
         "info": {"title": api.name, "description": api.description or "", "version": str(api.version or 1)},
         "paths": {path: {method: operation}},
     }
+
+
+# ---------- 配置包导出 / 导入（跨环境迁移） ----------
+
+@router.get("/apis/{api_id}/bundle")
+def export_single_api_bundle(
+    api_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """下载单条 API 可移植配置（不含密钥与运行态）。"""
+    api = _require_api(db, api_id, current_user)
+    return export_api_bundle(db, workspace_id=api.workspace_id, api_ids=[api.id])
+
+
+@router.post("/apis/export-bundle")
+def export_apis_bundle(
+    body: ApiBundleExportIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """批量导出 API 配置包。勾选若干接口后下载 JSON，可带到另一环境导入。"""
+    assert_workspace_data_capability(db, current_user, body.workspace_id, "viewer", PC.GIDO_SERVICE_READ)
+    if not body.api_ids and not body.api_codes:
+        raise HTTPException(status_code=400, detail="请指定 api_ids 或 api_codes")
+    return export_api_bundle(
+        db,
+        workspace_id=body.workspace_id,
+        api_ids=body.api_ids,
+        api_codes=body.api_codes,
+    )
+
+
+@router.post("/apis/import-bundle")
+def import_apis_bundle(
+    body: ApiBundleImportIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """导入配置包：按 api_code upsert，一律落为草稿，需再次发布才上线。"""
+    assert_workspace_data_capability(db, current_user, body.workspace_id, "developer", PC.GIDO_SERVICE_WRITE)
+    return import_api_bundle(
+        db,
+        workspace_id=body.workspace_id,
+        bundle=body.bundle,
+        user_id=current_user.id,
+        on_conflict=body.on_conflict,
+        datasource_map=body.datasource_map,
+    )
 
 
 # ---------- 消费者应用 ----------

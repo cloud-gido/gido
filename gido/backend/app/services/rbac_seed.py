@@ -2091,6 +2091,7 @@ def migrate_dw_data_service(engine: Engine) -> None:
                 timeout_seconds INTEGER DEFAULT 30,
                 cache_ttl_seconds INTEGER DEFAULT 0,
                 max_rows INTEGER DEFAULT 10000,
+                pending_definition JSON,
                 owner_id INTEGER,
                 published_at TIMESTAMP,
                 published_by INTEGER,
@@ -2171,6 +2172,11 @@ def migrate_dw_data_service(engine: Engine) -> None:
         for name, ddl in tables.items():
             if not insp.has_table(name):
                 conn.execute(text(ddl))
+        # 存量库补列：线上不中断的待发布定义
+        if insp.has_table("dw_data_apis"):
+            cols = {c["name"] for c in insp.get_columns("dw_data_apis")}
+            if "pending_definition" not in cols:
+                conn.execute(text("ALTER TABLE dw_data_apis ADD COLUMN pending_definition JSON"))
 
 
 def migrate_dw_workspace_variables(engine: Engine) -> None:

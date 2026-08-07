@@ -177,8 +177,12 @@ def submit_publish_approval(
 
     name, resource = _resolve_resource(db, workspace_id, resource_type, resource_id)
     if resource_type == "data_service_api":
-        if action == "publish_api" and getattr(resource, "status", None) == "online":
-            raise HTTPException(status_code=400, detail="API 已上线，无需重复发布")
+        if action == "publish_api":
+            has_pending = bool(getattr(resource, "pending_definition", None))
+            if getattr(resource, "status", None) == "online" and not has_pending:
+                raise HTTPException(status_code=400, detail="API 已上线且无待发布变更，无需重复发布")
+            if getattr(resource, "status", None) not in ("draft", "offline", "online"):
+                raise HTTPException(status_code=400, detail="当前状态不可发布")
         if action == "offline_api" and getattr(resource, "status", None) != "online":
             raise HTTPException(status_code=400, detail="仅已上线 API 可提交下线审批")
 

@@ -4,14 +4,14 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type Key } from 'react'
 import {
   Alert, Button, Divider, Drawer, Form, Input, InputNumber, Modal, Popconfirm,
-  Select, Space, Switch, Table, Tag, Typography, message,
+  Select, Space, Switch, Table, Tag, Typography, Upload, message,
 } from 'antd'
 import {
-  CloudUploadOutlined, CodeOutlined, CopyOutlined, PlayCircleOutlined,
-  PlusOutlined, StopOutlined,
+  CloudDownloadOutlined, CloudUploadOutlined, CodeOutlined, CopyOutlined,
+  PlayCircleOutlined, PlusOutlined, StopOutlined, UploadOutlined,
 } from '@ant-design/icons'
 import { dataServiceApi, approvalApi } from '../../api'
 import { useAppStore } from '../../store'
@@ -102,9 +102,96 @@ export default function ServiceApisPage() {
   const [testError, setTestError] = useState<string | null>(null)
   const [docDrawer, setDocDrawer] = useState(false)
   const [docOpenApi, setDocOpenApi] = useState<any>(null)
+  const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
+  const [importOpen, setImportOpen] = useState(false)
+  const [importBundle, setImportBundle] = useState<any>(null)
+  const [importing, setImporting] = useState(false)
 
   const copyText = (t: string) => {
     navigator.clipboard.writeText(t).then(() => message.success('已复制'))
+  }
+
+  const downloadJson = (data: any, filename: string) => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const handleExportSelected = async () => {
+    if (!wsId) return
+    const ids = selectedRowKeys.map(Number).filter(Boolean)
+    if (!ids.length) {
+      message.warning('请先勾选要导出的 API')
+      return
+    }
+    try {
+      const bundle: any = await dataServiceApi.exportApisBundle({ workspace_id: wsId, api_ids: ids })
+      downloadJson(bundle, `gido-serve-apis-${wsId}-${ids.length}.json`)
+      message.success(`已导出 ${bundle?.apis?.length || ids.length} 条 API 配置`)
+    } catch (e: any) {
+      message.error(formatApiError(e, '导出失败'))
+    }
+  }
+
+  const handleExportOne = async (row: any) => {
+    try {
+      const bundle: any = await dataServiceApi.exportApiBundle(row.id)
+      downloadJson(bundle, `gido-serve-api-${row.api_code || row.id}.json`)
+      message.success('已下载配置')
+    } catch (e: any) {
+      message.error(formatApiError(e, '导出失败'))
+    }
+  }
+
+  const openImport = () => {
+    setImportBundle(null)
+    setImportOpen(true)
+  }
+
+  const onImportFile = (file: File) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result || ''))
+        if (!parsed?.apis || !Array.isArray(parsed.apis)) {
+          message.error('配置包须包含 apis 数组')
+          return
+        }
+        setImportBundle(parsed)
+        message.success(`已读取 ${parsed.apis.length} 条 API`)
+      } catch {
+        message.error('JSON 解析失败')
+      }
+    }
+    reader.readAsText(file)
+    return false
+  }
+
+  const submitImport = async () => {
+    if (!wsId || !importBundle) {
+      message.warning('请先选择配置文件')
+      return
+    }
+    try {
+      setImporting(true)
+      const res: any = await dataServiceApi.importApisBundle({
+        workspace_id: wsId,
+        bundle: importBundle,
+        on_conflict: 'overwrite',
+      })
+      message.success(res?.message || '导入完成')
+      setImportOpen(false)
+      setSelectedRowKeys([])
+      await refreshAll()
+    } catch (e: any) {
+      message.error(formatApiError(e, '导入失败'))
+    } finally {
+      setImporting(false)
+    }
   }
 
   const openCreateApi = () => {
@@ -309,8 +396,13 @@ export default function ServiceApisPage() {
       render: (m: string) => <Tag color={m === 'wizard' ? 'blue' : 'default'}>{m === 'wizard' ? '可视化' : m === 'sql' ? 'SQL' : m}</Tag>,
     },
     {
-      title: '状态', dataIndex: 'status', width: 88,
-      render: (s: string) => <Tag color={STATUS_COLOR[s] || 'default'}>{s === 'online' ? '已上线' : s === 'offline' ? '已下线' : '草稿'}</Tag>,
+      title: '状态', dataIndex: 'status', width: 140,
+      render: (s: string, row: any) => (
+        <Space size={4} wrap>
+          <Tag color={STATUS_COLOR[s] || 'default'}>{s === 'online' ? '已上线' : s === 'offline' ? '已下线' : '草稿'}</Tag>
+          {row.has_pending_publish && <Tag color="orange">待发布变更</Tag>}
+        </Space>
+      ),
     },
     { title: '版本', dataIndex: 'version', width: 60 },
     { title: '数据源', dataIndex: 'datasource_name', width: 100, ellipsis: true, render: (v: string) => v || '—' },
@@ -324,13 +416,13 @@ export default function ServiceApisPage() {
       ),
     },
     {
-      title: '操作', width: 280, render: (_: any, row: any) => (
+      title: '操作', width: 360, render: (_: any, row: any) => (
         <Space wrap size={4}>
           {canWrite && <Button size="small" onClick={() => openEditApi(row)}>编辑</Button>}
           {canRun && (
             <>
               <Button size="small" icon={<PlayCircleOutlined />} onClick={() => openTest(row)}>测试</Button>
-              {row.status !== 'online' && (
+              {(row.status !== 'online' || row.has_pending_publish) && (
                 <Button
                   size="small"
                   type="primary"
@@ -338,8 +430,25 @@ export default function ServiceApisPage() {
                   disabled={isApiPending(row, 'publish_api')}
                   onClick={() => handlePublish(row)}
                 >
-                  {isApiPending(row, 'publish_api') ? '审批中' : canPublishDirect ? '发布' : '提交审批'}
+                  {isApiPending(row, 'publish_api')
+                    ? '审批中'
+                    : canPublishDirect
+                      ? (row.has_pending_publish ? '发布变更' : '发布')
+                      : '提交审批'}
                 </Button>
+              )}
+              {row.has_pending_publish && canWrite && (
+                <Popconfirm title="丢弃待发布配置？线上定义保持不变" onConfirm={async () => {
+                  try {
+                    await dataServiceApi.discardPendingApi(row.id)
+                    message.success('已丢弃待发布配置')
+                    refreshAll()
+                  } catch (e: any) {
+                    message.error(formatApiError(e, '操作失败'))
+                  }
+                }}>
+                  <Button size="small">丢弃待发</Button>
+                </Popconfirm>
               )}
               {row.status === 'online' && (
                 <Button
@@ -353,6 +462,7 @@ export default function ServiceApisPage() {
               )}
             </>
           )}
+          <Button size="small" icon={<CloudDownloadOutlined />} onClick={() => handleExportOne(row)}>下载配置</Button>
           <Button size="small" icon={<CodeOutlined />} onClick={async () => {
             setDocOpenApi(await dataServiceApi.openapi(row.id))
             setDocDrawer(true)
@@ -384,12 +494,42 @@ export default function ServiceApisPage() {
           <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>API 开发</h2>
           <Text type="secondary">可视化选表生成 API，或手写 SQL 模板；发布后可通过开放网关对外调用</Text>
         </div>
-        {canWrite && (
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreateApi}>新建 API</Button>
-        )}
+        <Space>
+          <Button
+            icon={<CloudDownloadOutlined />}
+            disabled={!selectedRowKeys.length}
+            onClick={handleExportSelected}
+          >
+            导出选中{selectedRowKeys.length ? ` (${selectedRowKeys.length})` : ''}
+          </Button>
+          {canWrite && (
+            <Button icon={<UploadOutlined />} onClick={openImport}>导入配置</Button>
+          )}
+          {canWrite && (
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreateApi}>新建 API</Button>
+          )}
+        </Space>
       </div>
 
-      <Table dataSource={apis} columns={apiColumns} rowKey="id" loading={loading} scroll={{ x: 1100 }} size="middle" />
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message="跨环境迁移：测试导出 → 生产导入。已上线接口导入后不停服，挂「待发布变更」，发布时才切换；新建/草稿则直接落草稿。"
+      />
+
+      <Table
+        dataSource={apis}
+        columns={apiColumns}
+        rowKey="id"
+        loading={loading}
+        scroll={{ x: 1180 }}
+        size="middle"
+        rowSelection={{
+          selectedRowKeys,
+          onChange: setSelectedRowKeys,
+        }}
+      />
 
       <Modal
         title={editingApi ? `编辑 API - ${editingApi.name}` : '新建 API'}
@@ -545,6 +685,34 @@ export default function ServiceApisPage() {
         onCancel={() => { setApprovalTarget(null); setApprovalNote('') }}
         onSubmit={submitPublishApproval}
       />
+
+      <Modal
+        title="导入 API 配置包"
+        open={importOpen}
+        onOk={submitImport}
+        onCancel={() => setImportOpen(false)}
+        okText="一键导入"
+        confirmLoading={importing}
+        okButtonProps={{ disabled: !importBundle }}
+        width={520}
+        destroyOnClose
+      >
+        <Paragraph type="secondary" style={{ marginTop: 0 }}>
+          选择测试环境导出的 JSON 即可。系统自动按 API Code 对齐；数据源优先同名，否则按类型自动匹配（如测试/生产各一个 Doris）。
+          新建为草稿；已上线则挂待发布、不停服。
+        </Paragraph>
+        <Upload beforeUpload={onImportFile as any} maxCount={1} accept=".json,application/json">
+          <Button type="primary" icon={<UploadOutlined />}>选择配置文件</Button>
+        </Upload>
+        {importBundle && (
+          <Alert
+            style={{ marginTop: 12 }}
+            type="success"
+            showIcon
+            message={`已加载 ${importBundle.apis?.length || 0} 条 API，点「一键导入」即可`}
+          />
+        )}
+      </Modal>
     </div>
   )
 }

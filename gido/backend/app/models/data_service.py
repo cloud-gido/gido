@@ -34,6 +34,8 @@ class DataApi(Base):
     timeout_seconds = Column(Integer, default=30)
     cache_ttl_seconds = Column(Integer, default=0)  # 0=不缓存
     max_rows = Column(Integer, default=10000)
+    # 已上线时导入/编辑的待发布定义；网关仍读当前行字段，发布时原子切换
+    pending_definition = Column(JSON, nullable=True)
     owner_id = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
     published_at = Column(DateTime, nullable=True)
     published_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
