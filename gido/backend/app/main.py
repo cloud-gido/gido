@@ -75,6 +75,7 @@ async def lifespan(app: FastAPI):
         migrate_schema,
         migrate_platform_integration,
         migrate_platform_integration_flink,
+        migrate_platform_integration_aps_schedule,
         migrate_platform_integration_copilot,
         migrate_default_workspace_to_infras,
         migrate_workspace_owner_members,
@@ -155,6 +156,7 @@ async def lifespan(app: FastAPI):
     migrate_workspace_owner_members(engine)
     migrate_platform_integration(engine)
     migrate_platform_integration_flink(engine)
+    migrate_platform_integration_aps_schedule(engine)
     migrate_platform_integration_copilot(engine)
     migrate_dw_workspace_variables(engine)
     migrate_dw_users_avatar(engine)

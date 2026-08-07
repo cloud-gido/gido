@@ -36,10 +36,20 @@ def _run_workflow_job_unlocked(workflow_id: int):
     from app.models.workspace import Workflow, WorkflowInstance, TaskNode, NodeInstance
     from app.api.studio import _run_sql, _run_python, _run_shell
     from app.services.lineage import auto_parse_lineage
+    from app.services.aps_workflow_schedule import is_workflow_aps_eligible
     db = SessionLocal()
     try:
         wf = db.query(Workflow).filter(Workflow.id == workflow_id).first()
         if not wf or not wf.is_active:
+            return
+        ok, reason = is_workflow_aps_eligible(db, wf)
+        if not ok:
+            logger.info(
+                "跳过 APS 工作流定时 wf_id=%s name=%s：%s（应由 Dolphin 或已手动关闭）",
+                workflow_id,
+                getattr(wf, "name", None),
+                reason,
+            )
             return
         instance = WorkflowInstance(
             workflow_id=workflow_id, status="running",
@@ -245,30 +255,48 @@ def reload_schedules():
     """重新加载工作流调度任务（节点不独立调度，由工作流统一管理）"""
     from app.core.database import SessionLocal
     from app.models.workspace import Workflow
-    from app.services.ds_runtime import get_dolphin_runtime
+    from app.services.aps_workflow_schedule import (
+        is_workflow_aps_eligible,
+        resolve_aps_workflow_master_switch,
+    )
     db = SessionLocal()
     try:
         for job in scheduler.get_jobs():
             if job.id.startswith("wf_"):
                 job.remove()
 
-        if get_dolphin_runtime(db).enabled:
-            logger.info("DolphinScheduler 已启用：定时调度由 DS 负责，已跳过 APScheduler 工作流注册（避免重复跑）")
+        master_ok, master_reason = resolve_aps_workflow_master_switch(db)
+        if not master_ok:
+            logger.info("已跳过 APScheduler 工作流注册：%s", master_reason)
         else:
             workflows = db.query(Workflow).filter(
                 Workflow.schedule_type == "cron",
                 Workflow.cron_expression != None,
                 Workflow.is_active == True
             ).all()
+            registered = 0
+            skipped = 0
             for wf in workflows:
+                ok, reason = is_workflow_aps_eligible(db, wf)
+                if not ok:
+                    skipped += 1
+                    logger.info("跳过 APS 注册 %s：%s", wf.name, reason)
+                    continue
                 try:
                     scheduler.add_job(
                         _run_workflow_job, CronTrigger.from_crontab(wf.cron_expression),
                         id=f"wf_{wf.id}", args=[wf.id], replace_existing=True
                     )
-                    logger.info(f"已注册工作流调度: {wf.name} [{wf.cron_expression}]")
+                    registered += 1
+                    logger.info("已注册工作流调度: %s [%s]", wf.name, wf.cron_expression)
                 except Exception as e:
-                    logger.warning(f"工作流 {wf.name} 调度注册失败: {e}")
+                    logger.warning("工作流 %s 调度注册失败: %s", wf.name, e)
+            logger.info(
+                "APS 工作流注册完成：registered=%s skipped=%s（%s）",
+                registered,
+                skipped,
+                master_reason,
+            )
     finally:
         db.close()
     reload_integration_schedules()

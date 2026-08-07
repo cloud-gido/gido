@@ -44,6 +44,8 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
   const [dolphinForm] = Form.useForm()
   const [dolphinLoading, setDolphinLoading] = useState(false)
   const [dolphinMeta, setDolphinMeta] = useState<any>(null)
+  const [apsMeta, setApsMeta] = useState<any>(null)
+  const [apsLoading, setApsLoading] = useState(false)
   const [flinkForm] = Form.useForm()
   const [flinkLoading, setFlinkLoading] = useState(false)
   const [flinkMeta, setFlinkMeta] = useState<any>(null)
@@ -164,6 +166,45 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
     return () => { cancelled = true }
   }, [wsManageId, canAccessControl, canManageWorkspaceMembersUi])
 
+  const loadApsSchedule = async () => {
+    if (!canIntegrationRead) return
+    setApsLoading(true)
+    try {
+      const d: any = await adminApi.getApsWorkflowSchedule()
+      setApsMeta(d)
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '加载 APS 调度状态失败')
+    } finally {
+      setApsLoading(false)
+    }
+  }
+
+  const disableApsSchedule = async () => {
+    setApsLoading(true)
+    try {
+      const r: any = await adminApi.disableApsWorkflowSchedule()
+      setApsMeta(r)
+      message.success(r?.message || '已关闭 APS 工作流定时')
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '关闭失败')
+    } finally {
+      setApsLoading(false)
+    }
+  }
+
+  const setApsScheduleMode = async (enabled: boolean | null) => {
+    setApsLoading(true)
+    try {
+      const r: any = await adminApi.putApsWorkflowSchedule({ enabled })
+      setApsMeta(r)
+      message.success(r?.message || '已更新')
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '更新失败')
+    } finally {
+      setApsLoading(false)
+    }
+  }
+
   const loadDolphin = async () => {
     if (!canIntegrationRead) return
     setDolphinLoading(true)
@@ -185,7 +226,10 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
   }
 
   useEffect(() => {
-    if (canIntegrationRead) loadDolphin()
+    if (canIntegrationRead) {
+      loadDolphin()
+      loadApsSchedule()
+    }
   }, [canIntegrationRead])
 
   const loadFlink = async () => {
@@ -721,6 +765,52 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
           </Popconfirm>
         )}
         <Button onClick={loadDolphin} loading={dolphinLoading}>刷新</Button>
+      </Space>
+
+      <Alert
+        type="warning"
+        showIcon
+        style={{ marginTop: 28, marginBottom: 12 }}
+        message="本地 APS 工作流定时（防与 Dolphin 双跑）"
+        description={
+          '生产已用 Dolphin 时，backend 内置 APScheduler 不应再触发同一工作流（否则会出现 08:30 Dolphin + 16:30 APS 两条告警）。'
+          + ' 自动策略会跳过「空间已启用 Dolphin / 已发布 definition」的工作流；也可一键强制关闭。'
+        }
+      />
+      <Descriptions size="small" bordered column={1} style={{ marginBottom: 12 }}>
+        <Descriptions.Item label="当前策略">
+          {apsMeta?.mode === 'force_off' ? '强制关闭' : apsMeta?.mode === 'force_on' ? '强制开启（仍跳过 DS 托管）' : '自动'}
+          {apsMeta?.master_reason ? ` · ${apsMeta.master_reason}` : ''}
+        </Descriptions.Item>
+        <Descriptions.Item label="APS 工作流任务数">
+          {apsMeta?.aps_workflow_job_count ?? '—'}
+          {apsMeta?.aps_workflow_job_count > 0 ? (
+            <Text type="danger">（存在 wf_* 定时，生产建议清零）</Text>
+          ) : (
+            <Text type="secondary">（正常应为 0）</Text>
+          )}
+        </Descriptions.Item>
+        <Descriptions.Item label="全局 DS">
+          {apsMeta?.global_ds_enabled ? '已启用' : '未启用'}
+        </Descriptions.Item>
+      </Descriptions>
+      <Space wrap>
+        {canIntegrationWrite && (
+          <Popconfirm
+            title="强制关闭 APS 工作流定时？Dolphin 调度不受影响"
+            onConfirm={disableApsSchedule}
+          >
+            <Button danger type="primary" loading={apsLoading}>
+              一键关闭 APS 工作流定时
+            </Button>
+          </Popconfirm>
+        )}
+        {canIntegrationWrite && (
+          <Button loading={apsLoading} onClick={() => setApsScheduleMode(null)}>
+            恢复自动
+          </Button>
+        )}
+        <Button onClick={loadApsSchedule} loading={apsLoading}>刷新 APS 状态</Button>
       </Space>
     </div>
   )

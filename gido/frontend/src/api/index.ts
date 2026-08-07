@@ -320,6 +320,10 @@ export const adminApi = {
   putDolphinIntegration: (data: Record<string, unknown>) => request.put('/admin/integration/dolphin', data),
   testDolphinIntegration: () => request.post('/admin/integration/dolphin/test'),
   resetDolphinIntegration: () => request.post('/admin/integration/dolphin/reset-overrides'),
+  getApsWorkflowSchedule: () => request.get('/admin/integration/aps-workflow-schedule'),
+  putApsWorkflowSchedule: (data: { enabled: boolean | null }) =>
+    request.put('/admin/integration/aps-workflow-schedule', data),
+  disableApsWorkflowSchedule: () => request.post('/admin/integration/aps-workflow-schedule/disable'),
   getFlinkIntegration: () => request.get('/admin/integration/flink'),
   putFlinkIntegration: (data: Record<string, unknown>) => request.put('/admin/integration/flink', data),
   testFlinkIntegration: () => request.post('/admin/integration/flink/test'),

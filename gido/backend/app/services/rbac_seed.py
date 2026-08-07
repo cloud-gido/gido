@@ -339,6 +339,18 @@ def migrate_platform_integration_flink(engine: Engine) -> None:
                     conn.execute(text(f"ALTER TABLE dw_platform_integration ADD COLUMN {name} VARCHAR(512)"))
 
 
+def migrate_platform_integration_aps_schedule(engine: Engine) -> None:
+    """平台级开关：是否允许本地 APScheduler 注册工作流定时（防与 Dolphin 双跑）。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_platform_integration"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_platform_integration")}
+    if "aps_workflow_schedule_enabled" in cols:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE dw_platform_integration ADD COLUMN aps_workflow_schedule_enabled BOOLEAN"))
+
+
 def migrate_platform_integration_copilot(engine: Engine) -> None:
     """为平台/工作空间集成表补齐 Copilot LLM 可插拔字段（幂等）。"""
     insp = inspect(engine)

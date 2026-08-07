@@ -128,6 +128,13 @@ def put_dolphin_integration(
     db.commit()
     db.refresh(row)
     refresh_ds_client(db)
+    # Dolphin 启停后立刻重载 APS，避免残留 wf_* 双调度
+    try:
+        from app.services import scheduler as svc_scheduler
+
+        svc_scheduler.reload_schedules()
+    except Exception:
+        pass
     return _dolphin_integration_out(db)
 
 
@@ -215,7 +222,66 @@ def reset_dolphin_overrides(db: Session = Depends(get_db), _: User = Depends(get
     db.add(row)
     db.commit()
     refresh_ds_client(db)
+    try:
+        from app.services import scheduler as svc_scheduler
+
+        svc_scheduler.reload_schedules()
+    except Exception:
+        pass
     return _dolphin_integration_out(db)
+
+
+class ApsWorkflowScheduleUpdate(BaseModel):
+    """enabled=null 恢复自动；false 强制关闭；true 允许未托管工作流用 APS。"""
+
+    enabled: Optional[bool] = None
+
+
+@router.get("/aps-workflow-schedule", dependencies=[Depends(require_platform_manager)])
+def get_aps_workflow_schedule(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> Dict[str, Any]:
+    from app.services.aps_workflow_schedule import aps_workflow_status
+
+    return aps_workflow_status(db)
+
+
+@router.put("/aps-workflow-schedule", dependencies=[Depends(require_platform_manager)])
+def put_aps_workflow_schedule(
+    body: ApsWorkflowScheduleUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    from app.services.aps_workflow_schedule import aps_workflow_status, set_aps_workflow_override
+    from app.services import scheduler as svc_scheduler
+
+    set_aps_workflow_override(db, body.enabled)
+    svc_scheduler.reload_schedules()
+    out = aps_workflow_status(db)
+    out["message"] = (
+        "已强制关闭 APS 工作流定时并清除 wf_* 任务"
+        if body.enabled is False
+        else (
+            "已允许 APS 兜底（仍跳过已发布到 Dolphin 的工作流）"
+            if body.enabled is True
+            else "已恢复自动策略并重载调度"
+        )
+    )
+    return out
+
+
+@router.post("/aps-workflow-schedule/disable", dependencies=[Depends(require_platform_manager)])
+def disable_aps_workflow_schedule(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """一键关闭：写入平台开关 false + 立刻清除所有 APS 工作流定时。"""
+    from app.services.aps_workflow_schedule import aps_workflow_status, set_aps_workflow_override
+    from app.services import scheduler as svc_scheduler
+
+    set_aps_workflow_override(db, False)
+    svc_scheduler.reload_schedules()
+    out = aps_workflow_status(db)
+    out["message"] = "已关闭 APS 工作流定时；Dolphin 调度不受影响"
+    return out
 
 
 # ---------- Flink ----------

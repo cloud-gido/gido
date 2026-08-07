@@ -485,6 +485,8 @@ class PlatformIntegration(Base):
     ds_ui_url = Column(String(512), nullable=True)
     ds_token = Column(Text, nullable=True)
     ds_project_name = Column(String(128), nullable=True)
+    # NULL=自动（跳过 DS 托管工作流）；False=强制关闭 APS 工作流定时；True=允许未托管工作流用 APS
+    aps_workflow_schedule_enabled = Column(Boolean, nullable=True)
     # Flink：NULL 表示该项沿用环境变量 FLINK_*（可插拔对接集群）
     flink_url = Column(String(512), nullable=True)
     flink_sql_gateway_url = Column(String(512), nullable=True)

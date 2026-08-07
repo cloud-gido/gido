@@ -56,6 +56,8 @@ class Settings(BaseSettings):
 
     # DolphinScheduler 集成（须单独部署 DS；下列仅为「连到哪里」，不保证该地址已有服务）
     DS_ENABLED: bool = False
+    # 本地 APScheduler 工作流定时：true/false；未设置=auto（跳过已托管给 Dolphin 的工作流）
+    APS_WORKFLOW_SCHEDULE_ENABLED: Optional[str] = None
     DS_URL: str = "http://localhost:12345/dolphinscheduler"
     # Dolphin Web UI 根路径（留空则使用 DS_URL + "/ui"，用于工作流页跳转）
     DS_UI_URL: Optional[str] = None

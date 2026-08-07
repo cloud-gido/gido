@@ -49,6 +49,7 @@ from app.services.rbac_seed import (
     migrate_workspace_owner_members,
     migrate_platform_integration,
     migrate_platform_integration_flink,
+    migrate_platform_integration_aps_schedule,
     migrate_platform_integration_copilot,
     migrate_dw_workspace_variables,
     migrate_dw_users_avatar,
@@ -92,6 +93,7 @@ migrate_default_workspace_to_infras(engine)
 migrate_workspace_owner_members(engine)
 migrate_platform_integration(engine)
 migrate_platform_integration_flink(engine)
+migrate_platform_integration_aps_schedule(engine)
 migrate_platform_integration_copilot(engine)
 migrate_dw_workspace_variables(engine)
 migrate_dw_users_avatar(engine)
