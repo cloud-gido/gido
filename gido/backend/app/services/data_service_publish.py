@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.models.data_service import DataApi
 from app.services.data_api_bundle import apply_pending_definition
 from app.services.data_api_engine import wizard_to_sql
+from app.services.data_api_schema import columns_from_wizard_config, persist_response_fields_if_needed
 
 
 def _resolve_ds(db: Session, api: DataApi):
@@ -30,6 +31,8 @@ def execute_data_api_publish(db: Session, api: DataApi, user) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="SQL 为空，无法发布")
     if api.mode == "wizard":
         api.sql_template = wizard_to_sql(api.wizard_config or {}, list(api.params or []))
+        # 仅写元数据契约；不改变开放网关返回 JSON
+        persist_response_fields_if_needed(db, api, columns_from_wizard_config(api.wizard_config))
     api.status = "online"
     api.version = (api.version or 0) + 1
     api.published_at = datetime.utcnow()

@@ -107,6 +107,12 @@ def _invoke_api(
     http_exc: Optional[HTTPException] = None
     try:
         result = execute_data_api(db, api, ds, raw_params, page_no=page, page_size=page_size)
+        # 内部列名：写入元数据契约后剔除，保证对外 JSON 与历史一致
+        cols = result.pop("__gido_columns__", None) or []
+        if cols:
+            from app.services.data_api_schema import persist_response_fields_if_needed
+
+            persist_response_fields_if_needed(db, api, cols)
         row_count = len(result.get("list") or [])
     except HTTPException as e:
         status = e.status_code

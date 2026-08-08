@@ -206,6 +206,8 @@ def _api_out(api: DataApi, ds_name: Optional[str] = None) -> dict:
             for p in sorted(api.params or [], key=lambda x: x.sort_order)
         ],
         "open_path": f"/open/v1/ws/{api.workspace_id}/{api.api_code}",
+        "public_open_path": f"/api/open/v1/ws/{api.workspace_id}/{api.api_code}",
+        "response_field_names": _response_field_names(api.response_fields),
         "has_pending_publish": bool(isinstance(api.pending_definition, dict) and api.pending_definition),
         "pending_staged_at": (
             (api.pending_definition or {}).get("staged_at")
@@ -213,6 +215,12 @@ def _api_out(api: DataApi, ds_name: Optional[str] = None) -> dict:
             else None
         ),
     }
+
+
+def _response_field_names(schema) -> list:
+    from app.services.data_api_schema import response_field_names
+
+    return response_field_names(schema)
 
 
 def _normalize_param(p: Any) -> ApiParamIn:
@@ -427,6 +435,11 @@ def test_api(
             page_size=body.resolved_page_size(),
             skip_cache=True,
         )
+        cols = result.pop("__gido_columns__", None) or []
+        if cols:
+            from app.services.data_api_schema import persist_response_fields_if_needed
+
+            persist_response_fields_if_needed(db, api, cols)
         latency = (time.time() - t0) * 1000
         db.add(
             DataApiInvocationLog(
@@ -513,6 +526,8 @@ def export_openapi(api_id: int, db: Session = Depends(get_db), current_user: Use
         if p.required:
             params_schema["required"].append(p.name)
 
+    from app.services.data_api_schema import build_list_item_openapi_schema
+
     success_schema = {
         "type": "object",
         "properties": {
@@ -523,7 +538,10 @@ def export_openapi(api_id: int, db: Session = Depends(get_db), current_user: Use
             "data": {
                 "type": "object",
                 "properties": {
-                    "list": {"type": "array", "items": {"type": "object"}},
+                    "list": {
+                        "type": "array",
+                        "items": build_list_item_openapi_schema(api.response_fields),
+                    },
                     "TotalCount": {"type": "integer", "description": "匹配总条数"},
                     "PageNumber": {"type": "integer", "description": "当前页码"},
                     "PageSize": {"type": "integer", "description": "每页条数"},
@@ -581,6 +599,43 @@ def export_openapi(api_id: int, db: Session = Depends(get_db), current_user: Use
         "openapi": "3.0.3",
         "info": {"title": api.name, "description": api.description or "", "version": str(api.version or 1)},
         "paths": {path: {method: operation}},
+    }
+
+
+@router.get("/apis/{api_id}/contract")
+def get_api_contract(
+    api_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """运维/自动化用契约：入参 + 返回字段名。不改变开放网关运行时响应。"""
+    api = _require_api(db, api_id, current_user)
+    names = _response_field_names(api.response_fields)
+    return {
+        "id": api.id,
+        "workspace_id": api.workspace_id,
+        "api_code": api.api_code,
+        "name": api.name,
+        "status": api.status,
+        "version": api.version,
+        "http_method": api.http_method,
+        "mode": api.mode,
+        "open_path": f"/open/v1/ws/{api.workspace_id}/{api.api_code}",
+        "public_open_path": f"/api/open/v1/ws/{api.workspace_id}/{api.api_code}",
+        "params": [
+            {
+                "name": p.name,
+                "param_in": p.param_in,
+                "data_type": p.data_type,
+                "required": bool(p.required),
+                "default_value": p.default_value,
+                "description": p.description,
+            }
+            for p in sorted(api.params or [], key=lambda x: x.sort_order or 0)
+        ],
+        "response_field_names": names,
+        "response_fields": api.response_fields or [],
+        "has_response_contract": bool(names),
     }
 
 

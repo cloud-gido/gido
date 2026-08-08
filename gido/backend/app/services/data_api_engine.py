@@ -508,5 +508,8 @@ def execute_data_api(
         cache_hit=False,
     )
     if cache_key:
-        _cache_set(cache_key, result, api.cache_ttl_seconds)
+        # 缓存仅存对外 data 形态，不含内部列名标记
+        _cache_set(cache_key, dict(result), api.cache_ttl_seconds)
+    # 内部标记：调用方在返回开放信封前必须 pop，避免泄漏到对外 JSON
+    result["__gido_columns__"] = list(cols)
     return result
