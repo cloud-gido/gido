@@ -7,13 +7,13 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import type { Key } from 'react'
 import {
-  Button, Space, Tag, message, Modal, Form, Input, InputNumber, Select, Card, Drawer,
+  Button, Space, Tag, message, Modal, Form, Input, InputNumber, Select, Drawer,
   Divider, Typography, Alert, Tooltip,
 } from 'antd'
 import {
   PlusOutlined, CloudUploadOutlined, SaveOutlined, ReloadOutlined,
   UnlockOutlined, HistoryOutlined, SearchOutlined, EditOutlined,
-  MenuFoldOutlined, MenuUnfoldOutlined, AimOutlined, ExpandAltOutlined,
+  MenuFoldOutlined, AimOutlined, ExpandAltOutlined,
 } from '@ant-design/icons'
 import Editor from '@monaco-editor/react'
 import { streamingApi, approvalApi } from '../api'
@@ -22,7 +22,14 @@ import { can, isWorkspaceAdmin, P } from '../perm'
 import PublishApprovalModal from '../components/PublishApprovalModal'
 import { approvalPendingKey } from '../approvalLabels'
 import EditorAppearanceToolbar from '../components/EditorAppearanceToolbar'
-import ResizableSidebar from '../components/ResizableSidebar'
+import ResizableVerticalSplit from '../components/ResizableVerticalSplit'
+import StudioWorkbenchShell, {
+  StudioWorkbenchEmpty,
+  StudioWorkbenchExpandSidebarButton,
+  StudioWorkbenchStage,
+  StudioWorkbenchToolbar,
+  StudioWorkbenchTopStrip,
+} from '../components/StudioWorkbenchShell'
 import WorkspaceFolderTree, { locateLeafInFolderTree } from '../components/WorkspaceFolderTree'
 import QueryResultPanel from '../components/QueryResultPanel'
 import EditorResultDock, { EditorResultRowBadge } from '../components/EditorResultDock'
@@ -167,6 +174,7 @@ export default function StreamStudioPage() {
   const [previewLimit, setPreviewLimit] = useState(100)
   const [submitDrawerOpen, setSubmitDrawerOpen] = useState(false)
   const [resultPanelOpen, setResultPanelOpen] = useState(false)
+  const [depsDrawerOpen, setDepsDrawerOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try {
       return localStorage.getItem('gido.streamStudio.sidebarCollapsed') === '1'
@@ -174,50 +182,6 @@ export default function StreamStudioPage() {
       return false
     }
   })
-  const [resultPanelHeight, setResultPanelHeight] = useState(() => {
-    try {
-      const v = Number(localStorage.getItem('gido.streamStudio.resultPanelHeight'))
-      if (Number.isFinite(v) && v >= 180 && v <= 720) return v
-    } catch {
-      /* ignore */
-    }
-    return 300
-  })
-  const resultPanelHeightRef = useRef(resultPanelHeight)
-  resultPanelHeightRef.current = resultPanelHeight
-  const resultResizeRef = useRef<{ startY: number; startHeight: number } | null>(null)
-
-  const onResultResizeMove = useCallback((e: MouseEvent) => {
-    const d = resultResizeRef.current
-    if (!d) return
-    const next = Math.min(720, Math.max(180, d.startHeight - (e.clientY - d.startY)))
-    resultPanelHeightRef.current = next
-    setResultPanelHeight(next)
-  }, [])
-
-  const onResultResizeUp = useCallback(() => {
-    if (!resultResizeRef.current) return
-    resultResizeRef.current = null
-    try {
-      localStorage.setItem('gido.streamStudio.resultPanelHeight', String(resultPanelHeightRef.current))
-    } catch {
-      /* ignore */
-    }
-    document.body.style.cursor = ''
-    document.body.style.userSelect = ''
-    window.removeEventListener('mousemove', onResultResizeMove)
-    window.removeEventListener('mouseup', onResultResizeUp)
-  }, [onResultResizeMove])
-
-  const startResultResize = (e: React.MouseEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    resultResizeRef.current = { startY: e.clientY, startHeight: resultPanelHeightRef.current }
-    document.body.style.cursor = 'row-resize'
-    document.body.style.userSelect = 'none'
-    window.addEventListener('mousemove', onResultResizeMove)
-    window.addEventListener('mouseup', onResultResizeUp)
-  }
 
   const setSidebarCollapsedPersist = (collapsed: boolean) => {
     setSidebarCollapsed(collapsed)
@@ -812,48 +776,118 @@ export default function StreamStudioPage() {
     || selectedJarArtifact?.latest_version
     || null
 
-  return (
-    <div>
-      <Typography.Title level={4} style={{ marginBottom: 4 }}>作业开发</Typography.Title>
-      <Paragraph type="secondary" style={{ marginBottom: 12, maxWidth: 900 }}>
-        对标实时计算「数据开发」：编写 SQL / JAR、绑定
-        {' '}<Link to={R.stream.resources}>资源</Link>、保存版本与提交发布。
-        本页只读库加载目录树（与批处理数据开发一致），不轮询集群运行态。
-        启停、状态、诊断与 Flink UI 请到
-        {' '}<Link to={R.stream.monitor}>作业运维</Link>。
-      </Paragraph>
+  const sqlEditorPane = selected?.job_type === 'SQL' ? (
+    <div style={{ flex: 1, overflow: 'hidden', minHeight: 0, position: 'relative' }}>
+      <MonacoFindBar
+        getEditor={() => editorRef.current}
+        apiRef={findApiRef}
+        readOnly={!canWrite || Boolean(selected.is_locked)}
+        theme={editorAppearance.theme}
+      />
+      <Editor
+        height="100%"
+        language="sql"
+        theme={editorAppearance.theme}
+        value={scriptDraft}
+        onChange={!canWrite || selected.is_locked ? undefined : (v => {
+          setScriptDraft(v ?? '')
+          setScriptDirty(true)
+        })}
+        beforeMount={registerDwMonacoThemes}
+        onMount={(ed, monaco) => {
+          editorRef.current = ed
+          bindMonacoFindKeybindings(ed, monaco, () => findApiRef.current)
+        }}
+        options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: !canWrite || Boolean(selected.is_locked), minimap: { enabled: false } }}
+      />
+    </div>
+  ) : null
 
-      <Space style={{ marginBottom: 16 }}>
-        {sidebarCollapsed && (
-          <Tooltip title="显示作业列表">
-            <Button icon={<MenuUnfoldOutlined />} onClick={() => setSidebarCollapsedPersist(false)} />
-          </Tooltip>
-        )}
-        <Button type="primary" icon={<PlusOutlined />} disabled={!canWrite} onClick={() => openCreateJob(null)}>
-          新建实时作业
-        </Button>
-        <Button icon={<ReloadOutlined />} onClick={() => load(true)} loading={loading}>刷新</Button>
-        <Button icon={<AimOutlined />} onClick={locateSelectedJob} disabled={!selected} title="在左侧列表中定位当前作业">
-          定位
-        </Button>
-      </Space>
+  const previewDockExtra = selected ? (
+    <Space size={8} style={{ marginRight: 4 }}>
+      <InputNumber
+        min={1}
+        max={10000}
+        size="small"
+        value={previewLimit}
+        onChange={v => setPreviewLimit(Number(v) || 100)}
+        addonBefore="预览行数"
+        style={{ width: 148 }}
+      />
+      <Button
+        size="small"
+        icon={<SearchOutlined />}
+        loading={previewLoading}
+        disabled={!canPreviewSql || selected.is_locked}
+        onClick={handlePreviewSql}
+      >
+        预览查询
+      </Button>
+    </Space>
+  ) : null
 
-      <ResizableSidebar
-        storageKey="gido.streamStudio.sidebarWidth"
-        defaultWidth={360}
-        minWidth={260}
-        maxWidth={560}
-        collapsed={sidebarCollapsed}
-        style={{ minHeight: 560 }}
-        left={(
-        <div style={{ height: '100%', minHeight: 560, display: 'flex', flexDirection: 'column' }} className="stream-job-list">
-          <div style={{ padding: '8px 10px', borderBottom: '1px solid #f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontWeight: 600, fontSize: 13 }}>作业列表</span>
-            <Tooltip title="隐藏作业列表">
-              <Button type="text" size="small" icon={<MenuFoldOutlined />} onClick={() => setSidebarCollapsedPersist(true)} />
-            </Tooltip>
+  const previewResultDock = (
+    <EditorResultDock
+      activeKey="result"
+      onClose={() => setResultPanelOpen(false)}
+      extra={previewDockExtra}
+      tabs={[{
+        key: 'result',
+        label: (
+          <>
+            查询结果
+            {previewResult && <EditorResultRowBadge count={previewResult.total ?? 0} />}
+          </>
+        ),
+        children: (
+          <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            {previewResult ? (
+              <QueryResultPanel
+                dataSource={previewTable.dataSource}
+                columns={previewTable.tableColumns}
+                toolbar={(
+                  <div style={{ padding: '8px 12px', fontSize: 12, color: '#666' }}>
+                    共 <strong>{previewResult.total ?? 0}</strong> 行
+                    {previewResult.truncated ? `（已按上限 ${previewLimit} 截断）` : ''}
+                    ；预览在集群内短生命周期 Job 执行，不创建 FlinkDeployment
+                  </div>
+                )}
+              />
+            ) : (
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999', fontSize: 13, padding: 16, textAlign: 'center' }}>
+                点击「预览查询」在此展示 SELECT 结果（须 SET batch 模式；支持 CREATE TABLE 定义连接器后 SELECT）
+              </div>
+            )}
           </div>
-          <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '0 8px' }}>
+        ),
+      }]}
+    />
+  )
+
+  return (
+    <>
+      <StudioWorkbenchShell
+        storageKey="gido.streamStudio.sidebarWidth"
+        defaultWidth={280}
+        minWidth={200}
+        maxWidth={480}
+        collapsed={sidebarCollapsed}
+        sidebarTitle="作业列表"
+        sidebarClassName="stream-job-list"
+        sidebarActions={(
+          <>
+              <Tooltip title={canWrite ? '新建实时作业' : '无编辑权限'}>
+                <Button type="text" size="small" icon={<PlusOutlined />} disabled={!canWrite} onClick={() => openCreateJob(null)} />
+              </Tooltip>
+              <Tooltip title="刷新">
+                <Button type="text" size="small" icon={<ReloadOutlined />} loading={loading} onClick={() => load(true)} />
+              </Tooltip>
+              <Tooltip title="隐藏作业列表">
+                <Button type="text" size="small" icon={<MenuFoldOutlined />} onClick={() => setSidebarCollapsedPersist(true)} />
+              </Tooltip>
+          </>
+        )}
+        tree={(
             <WorkspaceFolderTree
               rootTitle="作业列表"
               treeClassName="stream-job-tree"
@@ -919,92 +953,127 @@ export default function StreamStudioPage() {
                 },
               ] : []}
             />
-          </div>
-        </div>
         )}
-        right={(
-        <div style={{ height: '100%', minHeight: 560, minWidth: 0 }}>
-          {!selected ? (
-            <Card>请从左侧选择作业，或新建 Flink SQL / JAR 任务。</Card>
-          ) : (
-            <Card
-              title={
-                <Space wrap>
-                  {!canWrite && (
-                    <Tooltip title="可查看与运行（若有权限），不能修改作业定义">
-                      <Tag style={{ margin: 0 }}>只读</Tag>
-                    </Tooltip>
-                  )}
-                  <span>{selected.name}</span>
-                  <Button
-                    type="link"
-                    size="small"
-                    icon={<EditOutlined />}
-                    disabled={!canWrite || selected.is_locked || (selected.status || '').toLowerCase() === 'running'}
-                    onClick={openRename}
-                    title={(selected.status || '').toLowerCase() === 'running' ? '运行中的作业不可重命名' : '重命名'}
-                  >
-                    重命名
-                  </Button>
-                  <Tag>{selected.job_type}</Tag>
-                  {selected.status && (
-                    <Tooltip title="库内记录，非实时。运行态请到作业运维查看与同步。">
-                      <Tag color={statusColor[selected.status] || 'default'}>{selected.status}</Tag>
-                    </Tooltip>
-                  )}
-                  {selected.owner_username && (
-                    <Tag>负责人 {selected.owner_username}</Tag>
-                  )}
-                  {selected.is_locked && <Tag color="orange">已锁定</Tag>}
-                </Space>
-              }
-              extra={
-                <Space>
-                  {selected.is_locked && (
-                    <Button icon={<UnlockOutlined />} onClick={handleUnlock}>解锁</Button>
-                  )}
-                  <Button
-                    icon={<SaveOutlined />}
-                    onClick={handleSave}
-                    disabled={!canWrite || selected.is_locked}
-                    type={selected.job_type === 'SQL' && scriptAutosave.versionDirty ? 'default' : 'text'}
-                    title={selected.job_type === 'SQL'
-                      ? '写入服务端并生成版本历史（后台自动落草稿，不记版本、无打扰提示）'
-                      : '保存作业配置'}
-                  >
-                    {selected.job_type === 'SQL'
-                      ? `保存版本${scriptAutosave.versionDirty ? ' *' : ''}`
-                      : '保存'}
-                  </Button>
-                  <AutosaveStatusHint
-                    visible={selected.job_type === 'SQL' && !selected.is_locked}
-                    status={scriptAutosave.status}
-                    hint={scriptAutosave.hint}
-                  />
-                  <Button
-                    type="primary"
-                    icon={<CloudUploadOutlined />}
-                    loading={submitting}
-                    onClick={openSubmitDrawer}
-                    disabled={!canWrite || selected.is_locked || isJobPendingApproval}
-                  >
-                    {isJobPendingApproval ? '审批中' : canPublishDirect ? '提交发布' : '提交审批'}
-                  </Button>
-                  <Tooltip title="启停与运行态在作业运维（对标实时计算运维管理）">
-                    <Button onClick={() => navigate(R.stream.monitor)}>作业运维</Button>
+      >
+          <StudioWorkbenchTopStrip padded>
+            <StudioWorkbenchExpandSidebarButton
+              collapsed={sidebarCollapsed}
+              onExpand={() => setSidebarCollapsedPersist(false)}
+              tooltip="显示作业列表"
+            />
+            {selected ? (
+              <>
+                <span style={{ fontWeight: 600, fontSize: 13 }}>{selected.name}</span>
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<EditOutlined />}
+                  style={{ padding: 0 }}
+                  disabled={!canWrite || selected.is_locked || (selected.status || '').toLowerCase() === 'running'}
+                  onClick={openRename}
+                  title={(selected.status || '').toLowerCase() === 'running' ? '运行中的作业不可重命名' : '重命名'}
+                >
+                  重命名
+                </Button>
+                <Tag style={{ margin: 0 }}>{selected.job_type}</Tag>
+                {selected.status && (
+                  <Tooltip title="库内记录，非实时。运行态请到作业运维查看与同步。">
+                    <Tag color={statusColor[selected.status] || 'default'} style={{ margin: 0 }}>{selected.status}</Tag>
                   </Tooltip>
-                  <Button icon={<HistoryOutlined />} onClick={openHistory}>版本历史</Button>
-                </Space>
-              }
-            >
+                )}
+              </>
+            ) : (
+              <span style={{ color: '#bbb', fontSize: 13 }}>从左侧选择作业，或新建 Flink SQL / JAR</span>
+            )}
+          </StudioWorkbenchTopStrip>
+
+          {!selected ? (
+            <StudioWorkbenchEmpty>
+                <div style={{ marginBottom: 8 }}>请从左侧选择作业，或点击「+」新建实时作业。</div>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  编写 SQL / JAR、绑定 <Link to={R.stream.resources}>资源</Link>、保存版本与提交发布；启停请到 <Link to={R.stream.monitor}>作业运维</Link>。
+                </Text>
+            </StudioWorkbenchEmpty>
+          ) : (
+            <>
+              <StudioWorkbenchToolbar wrap>
+                {!canWrite && (
+                  <Tooltip title="可查看与运行（若有权限），不能修改作业定义">
+                    <Tag style={{ margin: 0 }}>只读</Tag>
+                  </Tooltip>
+                )}
+                {selected.is_locked && (
+                  <Button icon={<UnlockOutlined />} size="small" onClick={handleUnlock}>解锁</Button>
+                )}
+                <Button
+                  icon={<SaveOutlined />}
+                  onClick={handleSave}
+                  size="small"
+                  disabled={!canWrite || selected.is_locked}
+                  type={selected.job_type === 'SQL' && scriptAutosave.versionDirty ? 'default' : 'text'}
+                  title={selected.job_type === 'SQL'
+                    ? '写入服务端并生成版本历史（后台自动落草稿，不记版本、无打扰提示）'
+                    : '保存作业配置'}
+                >
+                  {selected.job_type === 'SQL'
+                    ? `保存版本${scriptAutosave.versionDirty ? ' *' : ''}`
+                    : '保存'}
+                </Button>
+                <AutosaveStatusHint
+                  visible={selected.job_type === 'SQL' && !selected.is_locked}
+                  status={scriptAutosave.status}
+                  hint={scriptAutosave.hint}
+                />
+                {selected.job_type === 'SQL' && (
+                  <Button
+                    size="small"
+                    disabled={!canWrite || selected.is_locked}
+                    onClick={() => {
+                      setScriptDraft(cdcPaimonSqlTemplate(flinkRuntime?.paimon_warehouse_default || ''))
+                      setScriptDirty(true)
+                    }}
+                  >
+                    插入 CDC→Paimon 模板
+                  </Button>
+                )}
+                <Button size="small" onClick={() => setDepsDrawerOpen(true)}>依赖绑定</Button>
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={<CloudUploadOutlined />}
+                  loading={submitting}
+                  onClick={openSubmitDrawer}
+                  disabled={!canWrite || selected.is_locked || isJobPendingApproval}
+                >
+                  {isJobPendingApproval ? '审批中' : canPublishDirect ? '提交发布' : '提交审批'}
+                </Button>
+                <Tooltip title="启停与运行态在作业运维">
+                  <Button size="small" onClick={() => navigate(R.stream.monitor)}>作业运维</Button>
+                </Tooltip>
+                <Button size="small" icon={<AimOutlined />} onClick={locateSelectedJob} title="在左侧列表中定位当前作业">定位</Button>
+                <Button size="small" icon={<HistoryOutlined />} onClick={openHistory}>版本历史</Button>
+                <div style={{ flex: 1 }} />
+                {selected.job_type === 'SQL' && (
+                  <EditorAppearanceToolbar value={editorAppearance} onChange={setEditorAppearance} />
+                )}
+                {selected.owner_username && <Tag style={{ margin: 0 }}>负责人 {selected.owner_username}</Tag>}
+                {selected.is_locked && <Tag color="orange" style={{ margin: 0 }}>已锁定</Tag>}
+                {selected.flink_console_url ? (
+                  <Button type="link" size="small" style={{ padding: 0 }} onClick={() => openFlinkConsoleUrl(selected.flink_console_url, selected.id)}>
+                    Flink UI
+                  </Button>
+                ) : null}
+              </StudioWorkbenchToolbar>
+
               {selected.last_submit_error && (
                 <Alert
                   type="error"
                   showIcon
-                  style={{ marginBottom: 12 }}
+                  banner
+                  style={{ flexShrink: 0 }}
                   message="最近一次提交失败（完整内容在「作业运维 → 诊断」）"
                   description={
-                    <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, fontSize: 12, maxHeight: 120, overflow: 'auto' }}>
+                    <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, fontSize: 12, maxHeight: 80, overflow: 'auto' }}>
                       {String(selected.last_submit_error).slice(0, 800)}
                       {(selected.last_submit_error?.length ?? 0) > 800 ? '…' : ''}
                     </pre>
@@ -1015,10 +1084,12 @@ export default function StreamStudioPage() {
                 <Alert
                   type={selected.flink_operational.readiness === 'blocked' ? 'error' : selected.flink_operational.readiness === 'warning' ? 'warning' : 'info'}
                   showIcon
-                  style={{ marginBottom: 12 }}
+                  banner
+                  closable
+                  style={{ flexShrink: 0 }}
                   message={`运维就绪度（${selected.flink_operational.readiness}）`}
                   description={(
-                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12 }}>
                       {selected.flink_operational.hints.map((h: string, i: number) => (
                         <li key={i}>{h}</li>
                       ))}
@@ -1026,178 +1097,30 @@ export default function StreamStudioPage() {
                   )}
                 />
               ) : null}
-              <div style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                gap: 12,
-                flexWrap: 'wrap',
-                padding: '8px 12px',
-                marginBottom: 12,
-                border: '1px solid #f0f0f0',
-                borderRadius: 8,
-                background: '#fafafa',
-                fontSize: 12,
-              }}>
-                <Space wrap size={[8, 4]}>
-                  <Tag color="purple">Flink Operator</Tag>
-                  <span>最近提交：{selected.last_submitted_at ? `${formatInTimeZone(selected.last_submitted_at, displayTz)} · ${selected.last_submitted_by_username || '—'}` : '—'}</span>
-                  <span>就绪度：{selected.job_type === 'SQL' && selected.flink_operational?.readiness ? selected.flink_operational.readiness : '—'}</span>
-                  {selected.flink_job_id && <span>Job ID：<code>{selected.flink_job_id}</code></span>}
-                  {selected.flink_operator_deployment_name && <span>Operator CR：<code>{selected.flink_operator_deployment_name}</code></span>}
-                </Space>
-                {selected.flink_console_url ? (
-                  <Button
-                    type="link"
-                    size="small"
-                    style={{ padding: 0, height: 'auto' }}
-                    onClick={() => openFlinkConsoleUrl(selected.flink_console_url, selected.id)}
-                  >
-                    打开 Flink UI
-                  </Button>
-                ) : (
-                  <Text type="secondary">提交成功后生成 Flink UI 链接</Text>
-                )}
-              </div>
 
               {selected.job_type === 'SQL' ? (
-                <>
-                  <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
-                    <Button
-                      size="small"
-                      disabled={!canWrite || selected.is_locked}
-                      onClick={() => {
-                        setScriptDraft(cdcPaimonSqlTemplate(flinkRuntime?.paimon_warehouse_default || ''))
-                        setScriptDirty(true)
-                      }}
-                    >
-                      插入 CDC→Paimon 模板
-                    </Button>
-                    <EditorAppearanceToolbar value={editorAppearance} onChange={setEditorAppearance} />
-                  </div>
-                  <div style={{ flex: 1, minHeight: 360, display: 'flex', flexDirection: 'column' }}>
-                    <div style={{ height: resultPanelOpen ? 520 : 620, border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden', position: 'relative' }}>
-                      <MonacoFindBar
-                        getEditor={() => editorRef.current}
-                        apiRef={findApiRef}
-                        readOnly={!canWrite || Boolean(selected.is_locked)}
-                        theme={editorAppearance.theme}
-                      />
-                      <Editor
-                        height="100%"
-                        language="sql"
-                        theme={editorAppearance.theme}
-                        value={scriptDraft}
-                        onChange={!canWrite || selected.is_locked ? undefined : (v => {
-                          setScriptDraft(v ?? '')
-                          setScriptDirty(true)
-                        })}
-                        beforeMount={registerDwMonacoThemes}
-                        onMount={(ed, monaco) => {
-                          editorRef.current = ed
-                          bindMonacoFindKeybindings(ed, monaco, () => findApiRef.current)
-                        }}
-                        options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: !canWrite || Boolean(selected.is_locked), minimap: { enabled: false } }}
-                      />
-                    </div>
-                    {resultPanelOpen ? (
+                <StudioWorkbenchStage>
+                  {resultPanelOpen ? (
+                    <ResizableVerticalSplit
+                      storageKey="gido.streamStudio.editorResultSplitRatio"
+                      defaultTopRatio={0.62}
+                      minTopRatio={0.22}
+                      minBottomRatio={0.18}
+                      top={sqlEditorPane}
+                      bottom={previewResultDock}
+                    />
+                  ) : (
+                    <>
+                      {sqlEditorPane}
                       <div
                         style={{
-                          marginTop: 12,
-                          height: resultPanelHeight + 40,
-                          display: 'flex',
-                          flexDirection: 'column',
-                          minHeight: 0,
-                          border: '1px solid #f0f0f0',
-                          borderRadius: 8,
-                          overflow: 'hidden',
-                        }}
-                      >
-                        <div
-                          role="separator"
-                          aria-orientation="horizontal"
-                          title="拖拽调整查询结果高度"
-                          onMouseDown={startResultResize}
-                          style={{
-                            height: 8,
-                            flexShrink: 0,
-                            cursor: 'row-resize',
-                            margin: '0 0 -8px',
-                            zIndex: 2,
-                            background: 'linear-gradient(180deg, transparent 0, transparent 3px, #d9d9d9 3px, #d9d9d9 5px, transparent 5px)',
-                          }}
-                        />
-                        <div style={{ flex: 1, minHeight: 0 }}>
-                          <EditorResultDock
-                            activeKey="result"
-                            onClose={() => setResultPanelOpen(false)}
-                            extra={(
-                              <Space size={8} style={{ marginRight: 4 }}>
-                                <InputNumber
-                                  min={1}
-                                  max={10000}
-                                  size="small"
-                                  value={previewLimit}
-                                  onChange={v => setPreviewLimit(Number(v) || 100)}
-                                  addonBefore="预览行数"
-                                  style={{ width: 148 }}
-                                />
-                                <Button
-                                  size="small"
-                                  icon={<SearchOutlined />}
-                                  loading={previewLoading}
-                                  disabled={!canPreviewSql || selected.is_locked}
-                                  onClick={handlePreviewSql}
-                                >
-                                  预览查询
-                                </Button>
-                              </Space>
-                            )}
-                            tabs={[{
-                              key: 'result',
-                              label: (
-                                <>
-                                  查询结果
-                                  {previewResult && <EditorResultRowBadge count={previewResult.total ?? 0} />}
-                                </>
-                              ),
-                              children: (
-                                <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                                  {previewResult ? (
-                                    <QueryResultPanel
-                                      dataSource={previewTable.dataSource}
-                                      columns={previewTable.tableColumns}
-                                      toolbar={(
-                                        <div style={{ padding: '8px 12px', fontSize: 12, color: '#666' }}>
-                                          共 <strong>{previewResult.total ?? 0}</strong> 行
-                                          {previewResult.truncated ? `（已按上限 ${previewLimit} 截断）` : ''}
-                                          ；预览在集群内短生命周期 Job 执行，不创建 FlinkDeployment
-                                        </div>
-                                      )}
-                                    />
-                                  ) : (
-                                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999', fontSize: 13, padding: 16, textAlign: 'center' }}>
-                                      点击「预览查询」在此展示 SELECT 结果（须 SET batch 模式；支持 CREATE TABLE 定义连接器后 SELECT）
-                                    </div>
-                                  )}
-                                </div>
-                              ),
-                            }]}
-                          />
-                        </div>
-                      </div>
-                    ) : (
-                      <div
-                        style={{
-                          marginTop: 12,
-                          border: '1px solid #f0f0f0',
-                          borderRadius: 8,
-                          overflow: 'hidden',
+                          borderTop: '1px solid #f0f0f0',
                           background: '#fff',
                           display: 'flex',
                           alignItems: 'center',
                           minHeight: 40,
                           padding: '0 12px',
+                          flexShrink: 0,
                         }}
                       >
                         <Button type="link" size="small" style={{ padding: '0 14px', fontWeight: 600 }} onClick={() => setResultPanelOpen(true)}>
@@ -1205,136 +1128,122 @@ export default function StreamStudioPage() {
                           {previewResult ? <EditorResultRowBadge count={previewResult.total ?? 0} /> : null}
                         </Button>
                         <div style={{ flex: 1 }} />
-                        <Space size={8}>
-                          <InputNumber
-                            min={1}
-                            max={10000}
-                            size="small"
-                            value={previewLimit}
-                            onChange={v => setPreviewLimit(Number(v) || 100)}
-                            addonBefore="预览行数"
-                            style={{ width: 148 }}
-                          />
-                          <Button
-                            size="small"
-                            icon={<SearchOutlined />}
-                            loading={previewLoading}
-                            disabled={!canPreviewSql || selected.is_locked}
-                            onClick={handlePreviewSql}
-                          >
-                            预览查询
-                          </Button>
-                        </Space>
+                        {previewDockExtra}
                       </div>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <Space direction="vertical" style={{ width: '100%' }} size="middle">
-                  <Alert
-                    type="info"
-                    showIcon
-                    message="从「资源管理 · JAR 包」绑定版本"
-                    description="JAR 统一在资源管理上传与审计；作业开发仅绑定包及版本，运行参数在提交时配置。"
-                  />
-                  <Form layout="vertical" style={{ maxWidth: 680 }}>
-                    <Form.Item label="JAR 包">
-                      <Select
-                        allowClear
-                        showSearch
-                        optionFilterProp="label"
-                        value={selected.jar_artifact_id ?? undefined}
-                        disabled={!canWrite || selected.is_locked}
-                        placeholder="选择 JAR 包"
-                        options={jarArtifacts.map(a => ({ value: a.id, label: a.name }))}
-                        onChange={v => void bindJarArtifact(v).catch((e: any) => {
-                          message.error(e?.response?.data?.detail || '绑定失败')
-                        })}
-                      />
-                    </Form.Item>
-                    <Form.Item label="版本">
-                      <Select
-                        allowClear
-                        value={selected.jar_version_id ?? undefined}
-                        disabled={!canWrite || selected.is_locked || !selectedJarArtifact}
-                        placeholder="选择版本"
-                        options={(selectedJarArtifact?.versions || []).map((v: any) => ({
-                          value: v.id,
-                          label: `v${v.version}${v.status === 'active' ? '' : ` · ${v.status}`}`,
-                          disabled: v.status !== 'active',
-                        }))}
-                        onChange={v => void bindJarVersion(v).catch((e: any) => {
-                          message.error(e?.response?.data?.detail || '绑定版本失败')
-                        })}
-                      />
-                    </Form.Item>
-                  </Form>
-                  {selectedJarVersion ? (
-                    <Text type="secondary">
-                      上传人 {selectedJarVersion.uploaded_by_username || '—'} ·
-                      {' '}{selectedJarVersion.uploaded_at ? formatInTimeZone(selectedJarVersion.uploaded_at, displayTz) : '—'} ·
-                      {' '}SHA256 {selectedJarVersion.sha256 ? `${selectedJarVersion.sha256.slice(0, 16)}…` : '—'} ·
-                      {' '}{selectedJarVersion.size_bytes != null ? `${Math.round(selectedJarVersion.size_bytes / 1024)} KB` : '—'}
-                    </Text>
-                  ) : (
-                    <Text type="secondary">选择版本后显示上传审计信息。</Text>
+                    </>
                   )}
-                  <Link to={R.stream.resourcesJars}>前往资源管理 · JAR 包</Link>
-                  <Alert
-                    type="info"
-                    showIcon
-                    message="运行参数与资源配置在「提交发布」抽屉中设置"
-                  />
-                </Space>
+                </StudioWorkbenchStage>
+              ) : (
+                <div style={{ flex: 1, overflow: 'auto', padding: 16, minHeight: 0 }}>
+                  <Space direction="vertical" style={{ width: '100%', maxWidth: 680 }} size="middle">
+                    <Alert
+                      type="info"
+                      showIcon
+                      message="从「资源管理 · JAR 包」绑定版本"
+                      description="JAR 统一在资源管理上传与审计；作业开发仅绑定包及版本，运行参数在提交时配置。"
+                    />
+                    <Form layout="vertical">
+                      <Form.Item label="JAR 包">
+                        <Select
+                          allowClear
+                          showSearch
+                          optionFilterProp="label"
+                          value={selected.jar_artifact_id ?? undefined}
+                          disabled={!canWrite || selected.is_locked}
+                          placeholder="选择 JAR 包"
+                          options={jarArtifacts.map(a => ({ value: a.id, label: a.name }))}
+                          onChange={v => void bindJarArtifact(v).catch((e: any) => {
+                            message.error(e?.response?.data?.detail || '绑定失败')
+                          })}
+                        />
+                      </Form.Item>
+                      <Form.Item label="版本">
+                        <Select
+                          allowClear
+                          value={selected.jar_version_id ?? undefined}
+                          disabled={!canWrite || selected.is_locked || !selectedJarArtifact}
+                          placeholder="选择版本"
+                          options={(selectedJarArtifact?.versions || []).map((v: any) => ({
+                            value: v.id,
+                            label: `v${v.version}${v.status === 'active' ? '' : ` · ${v.status}`}`,
+                            disabled: v.status !== 'active',
+                          }))}
+                          onChange={v => void bindJarVersion(v).catch((e: any) => {
+                            message.error(e?.response?.data?.detail || '绑定版本失败')
+                          })}
+                        />
+                      </Form.Item>
+                    </Form>
+                    {selectedJarVersion ? (
+                      <Text type="secondary">
+                        上传人 {selectedJarVersion.uploaded_by_username || '—'} ·
+                        {' '}{selectedJarVersion.uploaded_at ? formatInTimeZone(selectedJarVersion.uploaded_at, displayTz) : '—'} ·
+                        {' '}SHA256 {selectedJarVersion.sha256 ? `${selectedJarVersion.sha256.slice(0, 16)}…` : '—'} ·
+                        {' '}{selectedJarVersion.size_bytes != null ? `${Math.round(selectedJarVersion.size_bytes / 1024)} KB` : '—'}
+                      </Text>
+                    ) : (
+                      <Text type="secondary">选择版本后显示上传审计信息。</Text>
+                    )}
+                    <Link to={R.stream.resourcesJars}>前往资源管理 · JAR 包</Link>
+                    <Alert type="info" showIcon message="运行参数与资源配置在「提交发布」抽屉中设置" />
+                  </Space>
+                </div>
               )}
-            </Card>
+            </>
           )}
+      </StudioWorkbenchShell>
 
-          {selected && (
-            <Card size="small" title="依赖绑定" style={{ marginTop: 12 }}>
-              <Form layout="vertical" style={{ maxWidth: 720 }}>
-                <Form.Item
-                  label="连接器版本"
-                  extra={<Link to={R.stream.resourcesConnectors}>资源管理 · 连接器</Link>}
-                >
-                  <Select
-                    mode="multiple"
-                    allowClear
-                    showSearch
-                    optionFilterProp="label"
-                    disabled={!canWrite || selected.is_locked}
-                    placeholder="选择连接器版本（部署注入 pipeline.jars）"
-                    value={selected.connector_version_ids || []}
-                    options={connectorVersionOptions}
-                    onChange={v => void bindConnectorVersions(v || []).catch((e: any) => {
-                      message.error(e?.response?.data?.detail || '绑定失败')
-                    })}
-                  />
-                </Form.Item>
-                <Form.Item
-                  label="依赖文件版本"
-                  extra={<Link to={R.stream.resourcesFiles}>资源管理 · 依赖文件</Link>}
-                >
-                  <Select
-                    mode="multiple"
-                    allowClear
-                    showSearch
-                    optionFilterProp="label"
-                    disabled={!canWrite || selected.is_locked}
-                    placeholder="选择依赖文件版本（本轮仅落库绑定）"
-                    value={selected.dependency_file_version_ids || []}
-                    options={fileVersionOptions}
-                    onChange={v => void bindFileVersions(v || []).catch((e: any) => {
-                      message.error(e?.response?.data?.detail || '绑定失败')
-                    })}
-                  />
-                </Form.Item>
-              </Form>
-            </Card>
-          )}
-        </div>
+      <Drawer
+        title="依赖绑定"
+        placement="right"
+        width={480}
+        open={depsDrawerOpen}
+        onClose={() => setDepsDrawerOpen(false)}
+        destroyOnClose={false}
+      >
+        {selected ? (
+          <Form layout="vertical">
+            <Form.Item
+              label="连接器版本"
+              extra={<Link to={R.stream.resourcesConnectors}>资源管理 · 连接器</Link>}
+            >
+              <Select
+                mode="multiple"
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                disabled={!canWrite || selected.is_locked}
+                placeholder="选择连接器版本（部署注入 pipeline.jars）"
+                value={selected.connector_version_ids || []}
+                options={connectorVersionOptions}
+                onChange={v => void bindConnectorVersions(v || []).catch((e: any) => {
+                  message.error(e?.response?.data?.detail || '绑定失败')
+                })}
+              />
+            </Form.Item>
+            <Form.Item
+              label="依赖文件版本"
+              extra={<Link to={R.stream.resourcesFiles}>资源管理 · 依赖文件</Link>}
+            >
+              <Select
+                mode="multiple"
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                disabled={!canWrite || selected.is_locked}
+                placeholder="选择依赖文件版本（本轮仅落库绑定）"
+                value={selected.dependency_file_version_ids || []}
+                options={fileVersionOptions}
+                onChange={v => void bindFileVersions(v || []).catch((e: any) => {
+                  message.error(e?.response?.data?.detail || '绑定失败')
+                })}
+              />
+            </Form.Item>
+          </Form>
+        ) : (
+          <Text type="secondary">请先选择作业。</Text>
         )}
-      />
+      </Drawer>
 
       <Modal
         title="运行参数"
@@ -1589,6 +1498,6 @@ export default function StreamStudioPage() {
         onCancel={() => { setApprovalOpen(false); setApprovalNote('') }}
         onSubmit={submitPublishApproval}
       />
-    </div>
+    </>
   )
 }

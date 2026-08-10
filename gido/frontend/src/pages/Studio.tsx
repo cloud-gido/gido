@@ -14,7 +14,7 @@ import {
   DeleteOutlined, FileOutlined, FolderAddOutlined,
   LoadingOutlined, CheckCircleOutlined, CloseCircleOutlined,
   ReloadOutlined, SettingOutlined, FormatPainterOutlined, UnlockOutlined,
-  LockOutlined, DownloadOutlined, MenuFoldOutlined, MenuUnfoldOutlined, AimOutlined,
+  LockOutlined, DownloadOutlined, MenuFoldOutlined, AimOutlined,
 } from '@ant-design/icons'
 import Editor from '@monaco-editor/react'
 import { format as sqlFormat } from 'sql-formatter'
@@ -23,8 +23,14 @@ import { BRAND } from '../branding'
 import { useAppStore } from '../store'
 import { can, isWorkspaceAdmin, P } from '../perm'
 import EditorAppearanceToolbar from '../components/EditorAppearanceToolbar'
-import ResizableSidebar from '../components/ResizableSidebar'
 import ResizableVerticalSplit from '../components/ResizableVerticalSplit'
+import StudioWorkbenchShell, {
+  StudioWorkbenchEmpty,
+  StudioWorkbenchExpandSidebarButton,
+  StudioWorkbenchStage,
+  StudioWorkbenchToolbar,
+  StudioWorkbenchTopStrip,
+} from '../components/StudioWorkbenchShell'
 import AutosaveStatusHint from '../components/AutosaveStatusHint'
 import {
   registerDwMonacoThemes,
@@ -1091,30 +1097,28 @@ export default function StudioPage() {
 
   return (
     <>
-    <ResizableSidebar
+    <StudioWorkbenchShell
       storageKey="gido.studio.sidebarWidth"
       defaultWidth={240}
       minWidth={180}
       maxWidth={560}
       collapsed={sidebarCollapsed}
-      style={{ height: 'calc(100vh - 112px)', margin: -24, overflow: 'hidden' }}
-      left={(
-      <div style={{ display: 'flex', flexDirection: 'column', background: '#fafafa', height: '100%', minHeight: 0 }}>
-        <div style={{ padding: '10px 12px', borderBottom: '1px solid #f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontWeight: 600, fontSize: 13 }}>{BRAND.offline}</span>
-          <Space size={0}>
-            <Tooltip title={canWrite ? '新建目录' : '无编辑权限'}>
-              <Button type="text" size="small" icon={<FolderAddOutlined />} disabled={!canWrite} onClick={() => { setFolderParentId(null); setFolderModal(true) }} />
-            </Tooltip>
-            <Tooltip title={canWrite ? '新建节点' : '无编辑权限'}>
-              <Button type="text" size="small" icon={<PlusOutlined />} disabled={!canWrite} onClick={() => { setCreateFolderId(null); setCreateModal(true) }} />
-            </Tooltip>
-            <Tooltip title="隐藏节点列表">
-              <Button type="text" size="small" icon={<MenuFoldOutlined />} onClick={() => setSidebarCollapsedPersist(true)} />
-            </Tooltip>
-          </Space>
-        </div>
-        <div style={{ flex: 1, overflow: 'auto', padding: '4px 0' }} className="studio-node-tree">
+      sidebarTitle={BRAND.offline}
+      sidebarActions={(
+        <>
+          <Tooltip title={canWrite ? '新建目录' : '无编辑权限'}>
+            <Button type="text" size="small" icon={<FolderAddOutlined />} disabled={!canWrite} onClick={() => { setFolderParentId(null); setFolderModal(true) }} />
+          </Tooltip>
+          <Tooltip title={canWrite ? '新建节点' : '无编辑权限'}>
+            <Button type="text" size="small" icon={<PlusOutlined />} disabled={!canWrite} onClick={() => { setCreateFolderId(null); setCreateModal(true) }} />
+          </Tooltip>
+          <Tooltip title="隐藏节点列表">
+            <Button type="text" size="small" icon={<MenuFoldOutlined />} onClick={() => setSidebarCollapsedPersist(true)} />
+          </Tooltip>
+        </>
+      )}
+      treeBodyClassName="studio-node-tree"
+      tree={(
           <WorkspaceFolderTree
             rootTitle="节点列表"
             treeClassName="studio-node-tree"
@@ -1174,25 +1178,14 @@ export default function StudioPage() {
               { key: 'add-node', label: '新建节点', onClick: () => { setCreateFolderId(f.id); setCreateModal(true) } },
             ] : []}
           />
-        </div>
-      </div>
       )}
-      right={(
-      <div style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-
-        {/* Tab 栏 */}
-        <div style={{ borderBottom: '1px solid #f0f0f0', background: '#fff', display: 'flex', alignItems: 'center', minHeight: 40, overflowX: 'auto' }}>
-          {sidebarCollapsed && (
-            <Tooltip title="显示节点列表">
-              <Button
-                type="text"
-                size="small"
-                icon={<MenuUnfoldOutlined />}
-                onClick={() => setSidebarCollapsedPersist(false)}
-                style={{ marginLeft: 4, flexShrink: 0 }}
-              />
-            </Tooltip>
-          )}
+    >
+      <StudioWorkbenchTopStrip>
+        <StudioWorkbenchExpandSidebarButton
+          collapsed={sidebarCollapsed}
+          onExpand={() => setSidebarCollapsedPersist(false)}
+          tooltip="显示节点列表"
+        />
           {openTabs.map(tab => {
             const dirty = dirtyMap[tab.id] !== undefined
             const isActive = tab.id === activeTabId
@@ -1232,12 +1225,11 @@ export default function StudioPage() {
           {openTabs.length === 0 && (
             <span style={{ padding: '0 16px', color: '#bbb', fontSize: 13 }}>双击左侧节点打开编辑</span>
           )}
-        </div>
+      </StudioWorkbenchTopStrip>
 
         {activeNode ? (
           <>
-            {/* 工具栏：只读用 Tag，不在每次点选脚本时弹 toast（静默 View-only） */}
-            <div style={{ padding: '6px 12px', borderBottom: '1px solid #f0f0f0', background: '#fff', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <StudioWorkbenchToolbar>
               {!canWrite && (
                 <Tooltip title="可查看与运行（若有权限），不能新建或修改脚本">
                   <Tag style={{ margin: 0 }}>只读</Tag>
@@ -1326,11 +1318,10 @@ export default function StudioPage() {
                   正在编辑 {activeNode.edit_lock_username}{holdsEditLock ? '（我）' : ''}
                 </Tag>
               )}
-            </div>
+            </StudioWorkbenchToolbar>
 
-            {/* 编辑器 + 日志面板（打开时中间横条可拖拽调整上下高度） */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-              {logPanelOpen ? (
+            <StudioWorkbenchStage>
+                            {logPanelOpen ? (
                 <ResizableVerticalSplit
                   storageKey="gido.studio.editorResultSplitRatio"
                   defaultTopRatio={0.58}
@@ -1439,20 +1430,18 @@ export default function StudioPage() {
                   {renderScriptPane()}
                 </div>
               )}
-            </div>
+            </StudioWorkbenchStage>
           </>
         ) : (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12, color: '#666', background: '#fafafa' }}>
+          <StudioWorkbenchEmpty>
             <FileOutlined style={{ fontSize: 48, color: '#bfbfbf' }} />
-            <p style={{ fontSize: 14 }}>
+            <p style={{ fontSize: 14, margin: 0 }}>
               {canWrite ? '从左侧双击节点打开脚本，或新建节点' : '从左侧双击节点打开脚本（当前为只读角色）'}
             </p>
             <Button icon={<PlusOutlined />} disabled={!canWrite} onClick={() => setCreateModal(true)}>新建节点</Button>
-          </div>
+          </StudioWorkbenchEmpty>
         )}
-      </div>
-      )}
-    />
+    </StudioWorkbenchShell>
 
       {/* 新建节点弹窗 */}
       <Modal title="新建节点" open={createModal} onOk={handleCreate} onCancel={() => { setCreateModal(false); setCreateFolderId(null) }} width={440}>

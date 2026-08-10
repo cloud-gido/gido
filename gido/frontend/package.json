@@ -30,10 +30,15 @@
     "zustand": "^4.5.0"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.3",
+    "@types/jsdom": "^30.0.0",
     "@types/react": "^18.2.55",
     "@types/react-dom": "^18.2.19",
     "@types/suncalc": "^1.9.2",
     "@vitejs/plugin-react": "^4.2.1",
+    "jsdom": "^30.0.1",
     "typescript": "^5.2.2",
     "vite": "^5.1.0",
     "vitest": "^2.1.9"

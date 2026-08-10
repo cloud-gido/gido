@@ -36,6 +36,7 @@ description: >-
 - 本地草稿：`gido/frontend/src/utils/scriptLocalDraft.ts`
 - API：`studioApi.saveDraft` / `streamingApi.saveDraft`（`create_history=false`）
 - 关 Tab / 切 Tab：flush 失败须保留 dirty 与编辑锁，并提示；禁止失败后强行 `releaseEditLock`
+- 工作台壳（布局，非草稿逻辑）：`gido/frontend/src/components/StudioWorkbenchShell.tsx` — Studio / Stream Studio / Probe 共用 bleed + 左树 + 顶栏/工具栏/舞台；改壳层样式须三处一起走该组件
 
 ## 必须同步触达的入口
 

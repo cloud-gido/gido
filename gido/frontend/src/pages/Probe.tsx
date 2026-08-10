@@ -10,15 +10,20 @@ import {
 } from 'antd'
 import {
   PlayCircleOutlined, DownloadOutlined, PlusOutlined, FolderAddOutlined,
-  FormatPainterOutlined, MenuFoldOutlined, MenuUnfoldOutlined, AimOutlined,
+  FormatPainterOutlined, MenuFoldOutlined, AimOutlined,
 } from '@ant-design/icons'
 import Editor from '@monaco-editor/react'
 import { format as sqlFormat } from 'sql-formatter'
 import { probeApi, datasourceApi } from '../api'
 import { useAppStore } from '../store'
 import EditorAppearanceToolbar from '../components/EditorAppearanceToolbar'
-import ResizableSidebar from '../components/ResizableSidebar'
 import ResizableVerticalSplit from '../components/ResizableVerticalSplit'
+import StudioWorkbenchShell, {
+  StudioWorkbenchExpandSidebarButton,
+  StudioWorkbenchStage,
+  StudioWorkbenchToolbar,
+  StudioWorkbenchTopStrip,
+} from '../components/StudioWorkbenchShell'
 import {
   registerDwMonacoThemes,
   loadEditorAppearance,
@@ -539,22 +544,23 @@ export default function ProbePage() {
   }
 
   const rightPane = (
-    <div style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-        {sidebarCollapsed && (
-          <Tooltip title="显示探查目录">
-            <Button type="text" size="small" icon={<MenuUnfoldOutlined />} onClick={() => setSidebarCollapsedPersist(false)} />
-          </Tooltip>
-        )}
-        <h2 style={{ margin: 0 }}>数据探查</h2>
-      </div>
+    <>
+      <StudioWorkbenchTopStrip padded>
+        <StudioWorkbenchExpandSidebarButton
+          collapsed={sidebarCollapsed}
+          onExpand={() => setSidebarCollapsedPersist(false)}
+          tooltip="显示探查目录"
+        />
+        <span style={{ fontWeight: 600, fontSize: 13 }}>数据探查</span>
+      </StudioWorkbenchTopStrip>
       <Alert
         type="info"
         showIcon
-        style={{ marginBottom: 12 }}
+        banner
+        style={{ flexShrink: 0 }}
         message="支持多条 SELECT（分号分隔）。已单独配置数据源的查询保持原配置；新建查询继承空间默认数据源。"
       />
-      <Space wrap style={{ marginBottom: 8 }}>
+      <StudioWorkbenchToolbar wrap>
         <Select
           allowClear
           style={{ width: 280 }}
@@ -604,9 +610,10 @@ export default function ProbePage() {
             导出 CSV（最多 {activeStmt.rows.length} 行）
           </Button>
         )}
+        <div style={{ flex: 1 }} />
         <EditorAppearanceToolbar value={editorAppearance} onChange={setEditorAppearance} />
-      </Space>
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden' }}>
+      </StudioWorkbenchToolbar>
+      <StudioWorkbenchStage>
         {resultPanelOpen ? (
           <ResizableVerticalSplit
             storageKey="gido.probe.editorResultSplitRatio"
@@ -715,9 +722,10 @@ export default function ProbePage() {
             />
           </div>
         )}
-      </div>
-    </div>
+      </StudioWorkbenchStage>
+    </>
   )
+
 
   if (!wsId) {
     return <Alert type="warning" showIcon message="请先选择工作区" />
@@ -725,18 +733,15 @@ export default function ProbePage() {
 
   return (
     <>
-      <ResizableSidebar
+      <StudioWorkbenchShell
         storageKey="gido.probe.sidebarWidth"
         defaultWidth={240}
         minWidth={180}
         maxWidth={520}
         collapsed={sidebarCollapsed}
-        style={{ height: 'calc(100vh - 112px)', margin: -24, overflow: 'hidden' }}
-        left={(
-          <div style={{ display: 'flex', flexDirection: 'column', background: '#fafafa', height: '100%', minHeight: 0 }}>
-            <div style={{ padding: '10px 12px', borderBottom: '1px solid #f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontWeight: 600, fontSize: 13 }}>探查目录</span>
-              <Space size={0}>
+        sidebarTitle="探查目录"
+        sidebarActions={(
+          <>
                 <Tooltip title="新建目录">
                   <Button type="text" size="small" icon={<FolderAddOutlined />} onClick={() => addFolder(null)} />
                 </Tooltip>
@@ -746,9 +751,10 @@ export default function ProbePage() {
                 <Tooltip title="隐藏探查目录">
                   <Button type="text" size="small" icon={<MenuFoldOutlined />} onClick={() => setSidebarCollapsedPersist(true)} />
                 </Tooltip>
-              </Space>
-            </div>
-            <div style={{ flex: 1, overflow: 'auto', padding: '4px 0' }} className="probe-script-tree">
+          </>
+        )}
+        treeBodyClassName="probe-script-tree"
+        tree={(
               <WorkspaceFolderTree
                 rootTitle="探查查询"
                 treeClassName="probe-script-tree"
@@ -792,11 +798,10 @@ export default function ProbePage() {
                   { key: 'add-s', label: '新建查询', onClick: () => addScript(f.id) },
                 ]}
               />
-            </div>
-          </div>
         )}
-        right={rightPane}
-      />
+      >
+        {rightPane}
+      </StudioWorkbenchShell>
 
       <Modal title="新建目录" open={folderModal} onOk={handleCreateFolder} onCancel={() => { setFolderModal(false); setFolderParentId(null) }} width={360}>
         <Form form={folderForm} layout="vertical" style={{ marginTop: 16 }}>
