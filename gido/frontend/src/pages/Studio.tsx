@@ -1236,7 +1236,7 @@ export default function StudioPage() {
 
         {activeNode ? (
           <>
-            {/* 工具栏：只读用 Tag，不在每次点选脚本时弹 toast（对齐 DataWorks/Databricks View-only） */}
+            {/* 工具栏：只读用 Tag，不在每次点选脚本时弹 toast（静默 View-only） */}
             <div style={{ padding: '6px 12px', borderBottom: '1px solid #f0f0f0', background: '#fff', display: 'flex', alignItems: 'center', gap: 8 }}>
               {!canWrite && (
                 <Tooltip title="可查看与运行（若有权限），不能新建或修改脚本">

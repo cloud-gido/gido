@@ -1,6 +1,6 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
-"""平台角色权限矩阵（对齐 DataWorks/Databricks 式 Dev / Ops / Analyst 分离）。"""
+"""平台角色权限矩阵（对齐商业化 Dev / Ops / Analyst 分离）。"""
 from __future__ import annotations
 
 import os
