@@ -453,6 +453,15 @@ export default function StreamMonitorPage() {
     }
   }
 
+  const completedRestorePoints = useMemo(
+    () => restorePoints.filter(point => (
+      (!point.status || String(point.status).toLowerCase() === 'completed')
+      && (!point.point_type || point.point_type === 'savepoint')
+      && Boolean(point.path || point.location)
+    )),
+    [restorePoints],
+  )
+
   const submitLifecycleAction = async () => {
     if (!actionRow) return
     let streamingProperties: string
@@ -464,6 +473,16 @@ export default function StreamMonitorPage() {
     }
     if (actionKind === 'restart' && restoreMode === 'specific' && restorePointId == null) {
       message.warning('请选择恢复点')
+      return
+    }
+    if (
+      actionKind === 'restart'
+      && (restoreMode === 'latest' || restoreMode === 'specific')
+      && completedRestorePoints.length === 0
+    ) {
+      message.error(
+        `「${actionRow.name}」没有可用的成功 Savepoint。请先对该作业「保存并停止」成功，或改用无状态启动。`,
+      )
       return
     }
     const config = {
@@ -1059,7 +1078,7 @@ export default function StreamMonitorPage() {
           showIcon
           style={{ marginBottom: 16 }}
           message={`正在保存状态并停止：${stoppingJobs.map(j => j.name).join('、')}`}
-          description="按钮变灰表示已受理、后台生成恢复点。请等待成功「已停止」或失败「仍运行中」的提示；不必刷新。可点历史里的操作记录查看进度。"
+          description="按钮变灰表示已受理。进度只显示在本页；完成后行状态变为「已停止」或回到「运行中」。可点历史里的操作记录查看详情。"
         />
       )}
 
@@ -1242,11 +1261,31 @@ export default function StreamMonitorPage() {
           </Form.Item>
           {actionKind === 'restart' && (
             <>
+              {completedRestorePoints.length === 0 ? (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: 16 }}
+                  message={`「${actionRow?.name || '当前作业'}」暂无成功恢复点`}
+                  description="恢复点按作业隔离。请确认打开的是做过「保存并停止」且成功的那条作业；或改用无状态启动。"
+                />
+              ) : (
+                <Alert
+                  type="success"
+                  showIcon
+                  style={{ marginBottom: 16 }}
+                  message={`「${actionRow?.name || '当前作业'}」可用成功恢复点 ${completedRestorePoints.length} 个`}
+                />
+              )}
               <Form.Item label="恢复方式">
                 <Radio.Group value={restoreMode} onChange={e => setRestoreMode(e.target.value)}>
                   <Space direction="vertical">
-                    <Radio value="latest">最近可用恢复点</Radio>
-                    <Radio value="specific">指定恢复点</Radio>
+                    <Radio value="latest" disabled={completedRestorePoints.length === 0}>
+                      最近可用恢复点
+                    </Radio>
+                    <Radio value="specific" disabled={completedRestorePoints.length === 0}>
+                      指定恢复点
+                    </Radio>
                     <Radio value="stateless">无状态启动</Radio>
                   </Space>
                 </Radio.Group>
@@ -1256,10 +1295,8 @@ export default function StreamMonitorPage() {
                   <Select
                     value={restorePointId}
                     onChange={setRestorePointId}
-                    placeholder={restorePoints.length ? '选择成功 Savepoint' : '暂无可用恢复点'}
-                    options={restorePoints
-                      .filter(point => (!point.status || point.status === 'completed') && (!point.point_type || point.point_type === 'savepoint'))
-                      .map(point => ({
+                    placeholder={completedRestorePoints.length ? '选择成功 Savepoint' : '暂无可用恢复点'}
+                    options={completedRestorePoints.map(point => ({
                       value: point.id ?? point.path ?? point.location,
                       label: `${point.point_type || point.type || point.kind || 'Savepoint'} · ${point.path || point.location || point.id || '—'}`,
                     }))}

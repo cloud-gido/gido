@@ -4449,7 +4449,14 @@ def restart_streaming_job(
                 )
             )
             if not same_running_restart:
-                raise HTTPException(status_code=409, detail="没有可用的成功 Savepoint")
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"作业「{job.name}」(id={job.id}) 没有可用的成功 Savepoint。"
+                        "请先对该作业执行「保存并停止」并确认恢复点历史出现 completed 路径；"
+                        "或改用无状态启动。"
+                    ),
+                )
         else:
             restore_path = _assert_durable_restore_path(restore.path or "")
             metadata = {}
