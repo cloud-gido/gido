@@ -1016,7 +1016,9 @@ export default function StreamPipelinePage() {
           <Button type="primary" icon={<PlusOutlined />} onClick={newPipeline} disabled={!canWrite}>新建管道</Button>
         </Space>
       </div>
-      {!canWrite && <Alert showIcon type="info" style={{ marginBottom: 16 }} message="当前为只读模式" description="需要 gido:stream:write 权限才能保存和提交管道。" />}
+      {!canWrite && (
+        <Tag style={{ marginBottom: 16 }}>只读 · 可查看管道，保存与提交需写权限</Tag>
+      )}
       <Row gutter={16} align="stretch">
         <Col xs={24} xxl={5}>
           <Card size="small" title={<Space><DatabaseOutlined />管道定义<Badge count={pipelines.length} showZero /></Space>}

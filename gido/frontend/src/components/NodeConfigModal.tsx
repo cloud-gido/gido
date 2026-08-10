@@ -46,6 +46,8 @@ interface NodeConfigModalProps {
   workspaceId: number
   /** 关闭时是否释放本会话占用的编辑锁（工作流侧建议 true；Studio 已占锁时 false） */
   releaseOnClose?: boolean
+  /** 平台/空间写权限；无写权限时静默只读，不抢锁、不因打开弹窗弹 403 */
+  canWrite?: boolean
   onClose: () => void
   onSaved?: (node: StudioNode) => void
   /** 可选：由 Studio 注入，与页面内锁状态保持一致 */
@@ -87,6 +89,7 @@ export default function NodeConfigModal({
   nodeId,
   workspaceId,
   releaseOnClose = true,
+  canWrite = true,
   onClose,
   onSaved,
   ensureEditLock,
@@ -156,13 +159,16 @@ export default function NodeConfigModal({
 
   const tryAcquire = useCallback(async (force = false, silent = false): Promise<boolean> => {
     if (!nodeId) return false
+    // 只读角色：不抢锁、不打 acquire API（避免运维打开配置就 403 toast）
+    if (!canWrite) return false
     if (ensureEditLock && !force) {
       const ok = await ensureEditLock({ silent })
       if (ok) {
         setHoldsLock(true)
         return true
       }
-      // fall through to direct API (force steal or ensure failed)
+      // 父级已判定失败（无权限 / 409 等），不再二次请求
+      return false
     }
     try {
       const res: any = await studioApi.acquireEditLock(nodeId, force || undefined)
@@ -175,13 +181,15 @@ export default function NodeConfigModal({
       if (!silent) {
         if (e?.response?.status === 409) {
           message.warning(e?.response?.data?.detail || '节点正由他人编辑')
+        } else if (e?.response?.status === 403) {
+          message.error(e?.response?.data?.detail || '无节点编辑权限')
         } else if (e?.response?.status !== 401) {
           message.error(e?.response?.data?.detail || '无法获取编辑锁')
         }
       }
       return false
     }
-  }, [nodeId, ensureEditLock])
+  }, [nodeId, ensureEditLock, canWrite])
 
   useEffect(() => {
     if (!open || !nodeId || !workspaceId) return
@@ -204,7 +212,7 @@ export default function NodeConfigModal({
         setWorkflows(Array.isArray(wfs?.items) ? wfs.items : (Array.isArray(wfs) ? wfs : []))
         const vals = normalizeFormValues(n)
         const draftKey = scriptDraftStorageKey(`studio.${workspaceId}`, nodeId)
-        const restored = !n.is_locked
+        const restored = canWrite && !n.is_locked
           ? restoreScriptLocalDraft(draftKey, n.script_content ?? '')
           : null
         if (restored != null) {
@@ -215,7 +223,7 @@ export default function NodeConfigModal({
           setScriptDirty(false)
         }
         form.setFieldsValue(vals)
-        if (!n.is_locked) {
+        if (canWrite && !n.is_locked) {
           await tryAcquire(false, true)
         }
       } catch (e: any) {
@@ -225,7 +233,7 @@ export default function NodeConfigModal({
       }
     })()
     return () => { cancelled = true }
-  }, [open, nodeId, workspaceId, form, tryAcquire])
+  }, [open, nodeId, workspaceId, form, tryAcquire, canWrite])
 
   const modalDraftKey = nodeId != null
     ? scriptDraftStorageKey(`studio.${workspaceId}`, nodeId)
@@ -237,7 +245,7 @@ export default function NodeConfigModal({
   nodeIdRef.current = nodeId
 
   const scriptAutosave = useScriptAutosave({
-    enabled: Boolean(showScriptEditor && holdsLock && node && !node.is_locked && nodeId),
+    enabled: Boolean(showScriptEditor && canWrite && holdsLock && node && !node.is_locked && nodeId),
     dirty: scriptDirty,
     value: scriptContent,
     storageKey: modalDraftKey,
@@ -298,6 +306,10 @@ export default function NodeConfigModal({
 
   const handleOk = async () => {
     if (!node || !nodeId) return
+    if (!canWrite) {
+      message.warning('当前角色无节点编辑权限，无法保存')
+      return
+    }
     if (node.is_locked) {
       message.warning('脚本已锁定（发布治理），无法修改配置；请先在数据开发中解锁')
       return
@@ -387,8 +399,9 @@ export default function NodeConfigModal({
     }
   }
 
-  const readOnly = Boolean(node?.is_locked) || (!holdsLock && Boolean(node?.edit_lock_user_id))
-  const scriptReadOnly = Boolean(node?.is_locked) || !holdsLock
+  const lockReadOnly = Boolean(node?.is_locked) || (!holdsLock && Boolean(node?.edit_lock_user_id))
+  const formDisabled = !canWrite || Boolean(node?.is_locked)
+  const scriptReadOnly = !canWrite || Boolean(node?.is_locked) || !holdsLock
 
   return (
     <Modal
@@ -396,8 +409,9 @@ export default function NodeConfigModal({
         <Space>
           <span>节点配置</span>
           {node && <Tag>{node.node_type}</Tag>}
+          {!canWrite && <Tag>只读</Tag>}
           {node?.is_locked && <Tag color="orange">已锁定</Tag>}
-          {node?.edit_lock_username && (
+          {node?.edit_lock_username && canWrite && (
             <Tag color={holdsLock ? 'green' : 'gold'}>
               编辑锁 {node.edit_lock_username}{holdsLock ? '（我）' : ''}
             </Tag>
@@ -408,7 +422,7 @@ export default function NodeConfigModal({
       onOk={() => void handleOk()}
       onCancel={() => void handleClose()}
       confirmLoading={saving}
-      okButtonProps={{ disabled: Boolean(node?.is_locked) }}
+      okButtonProps={{ disabled: formDisabled }}
       okText={showScriptEditor
         ? `保存版本${scriptAutosave.versionDirty ? ' *' : ''}`
         : '保存'}
@@ -419,24 +433,24 @@ export default function NodeConfigModal({
       footer={(_, { OkBtn, CancelBtn }) => (
         <Space style={{ width: '100%', justifyContent: 'space-between' }}>
           <Space>
-            {!node?.is_locked && !holdsLock && node?.edit_lock_username && (
+            {canWrite && !node?.is_locked && !holdsLock && node?.edit_lock_username && (
               <Button size="small" danger icon={<LockOutlined />} onClick={handleSteal}>抢锁</Button>
             )}
             <AutosaveStatusHint
-              visible={Boolean(showScriptEditor && holdsLock && !node?.is_locked)}
+              visible={Boolean(showScriptEditor && canWrite && holdsLock && !node?.is_locked)}
               status={scriptAutosave.status}
               hint={scriptAutosave.hint}
             />
           </Space>
           <Space>
             <CancelBtn />
-            <OkBtn />
+            {canWrite && <OkBtn />}
           </Space>
         </Space>
       )}
     >
       <Spin spinning={loading}>
-        <Form form={form} layout="vertical" style={{ marginTop: 8 }} disabled={Boolean(node?.is_locked)}>
+        <Form form={form} layout="vertical" style={{ marginTop: 8 }} disabled={formDisabled}>
           <Form.Item name="name" label="节点名称" rules={[{ required: true }]} style={{ marginBottom: 12 }}>
             <Input />
           </Form.Item>
@@ -655,7 +669,7 @@ export default function NodeConfigModal({
                         label="自定义变量（对象）"
                         tooltip={'标准 JSON 用双引号；含时间宏的键会同步到 Dolphin 全局参数'}
                       >
-                        <Input.TextArea rows={4} placeholder={'{"xx": "yy"}'} disabled={readOnly && !holdsLock} />
+                        <Input.TextArea rows={4} placeholder={'{"xx": "yy"}'} disabled={formDisabled || (lockReadOnly && !holdsLock)} />
                       </Form.Item>
                     )}
                     {(node?.node_type === 'SYNC' || node?.node_type === 'DEPENDENT') && (

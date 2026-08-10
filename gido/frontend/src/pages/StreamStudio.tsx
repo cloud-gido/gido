@@ -911,13 +911,13 @@ export default function StreamStudioPage() {
                 await streamingApi.moveFolderParent(folderId, targetParentId)
                 await load(false)
               }}
-              folderMenuExtra={f => [
+              folderMenuExtra={f => canWrite ? [
                 {
                   key: 'add-job',
                   label: '新建作业',
                   onClick: () => openCreateJob(f.id),
                 },
-              ]}
+              ] : []}
             />
           </div>
         </div>
@@ -930,6 +930,11 @@ export default function StreamStudioPage() {
             <Card
               title={
                 <Space wrap>
+                  {!canWrite && (
+                    <Tooltip title="可查看与运行（若有权限），不能修改作业定义">
+                      <Tag style={{ margin: 0 }}>只读</Tag>
+                    </Tooltip>
+                  )}
                   <span>{selected.name}</span>
                   <Button
                     type="link"

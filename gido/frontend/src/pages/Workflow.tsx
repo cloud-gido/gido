@@ -17,7 +17,7 @@ import {
 import { workflowApi, studioApi, approvalApi } from '../api'
 import { useAppStore } from '../store'
 import { formatInTimeZone } from '../utils/datetime'
-import { isWorkspaceAdmin } from '../perm'
+import { isWorkspaceAdmin, can, P } from '../perm'
 import DAGEditor, { DAGEditorRef } from '../components/DAGEditor'
 import NodeConfigModal from '../components/NodeConfigModal'
 import CronBuilder from '../components/CronBuilder'
@@ -47,6 +47,8 @@ export default function WorkflowPage() {
   const { currentWorkspace, user } = useAppStore()
   const wsId = currentWorkspace?.id
   const canPublishDirect = isWorkspaceAdmin(user, currentWorkspace)
+  /** 节点脚本/配置属 Studio 写权限；运维可看 DAG、双击只读打开，不抢锁 */
+  const canWriteStudioNode = can(user, P.GIDO_BATCH_STUDIO_WRITE, currentWorkspace)
   const displayTz = currentWorkspace?.timezone || 'Asia/Shanghai'
   const [workflows, setWorkflows] = useState<any[]>([])
   const [listTotal, setListTotal] = useState(0)
@@ -714,6 +716,7 @@ export default function WorkflowPage() {
           open={nodeConfigOpen}
           nodeId={nodeConfigId}
           workspaceId={wsId}
+          canWrite={canWriteStudioNode}
           releaseOnClose
           onClose={() => {
             setNodeConfigOpen(false)

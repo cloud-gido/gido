@@ -7,7 +7,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type Key, type PointerEvent } from 'react'
 import {
   Button, Input, Select, Tag, message, Spin, Tooltip,
-  Modal, Form, Dropdown, Tabs, Space, Badge, Table, Alert
+  Modal, Form, Dropdown, Tabs, Space, Badge, Table
 } from 'antd'
 import {
   PlayCircleOutlined, SaveOutlined, CloudUploadOutlined, PlusOutlined,
@@ -233,7 +233,8 @@ export default function StudioPage() {
     setOpenTabs(prev => (prev.find(t => t.id === node.id) ? prev : [...prev, node]))
     setActiveTabId(node.id)
     setLogPanelOpen(false)
-    if (wsId != null && !node.is_locked) {
+    // 只读角色不恢复本地草稿，避免无写权限时反复提示「持有编辑锁后将自动保存」
+    if (wsId != null && canWrite && !node.is_locked) {
       const key = scriptDraftStorageKey(`studio.${wsId}`, node.id)
       const restored = restoreScriptLocalDraft(key, node.script_content ?? '')
       if (restored != null) {
@@ -241,7 +242,7 @@ export default function StudioPage() {
         message.info('已恢复本地未同步草稿，持有编辑锁后将自动保存到服务端')
       }
     }
-  }, [wsId])
+  }, [wsId, canWrite])
 
   const prevWsIdRef = useRef<number | undefined>(undefined)
   const studioRestoreDoneRef = useRef(false)
@@ -636,16 +637,17 @@ export default function StudioPage() {
     [activeTabId],
   )
 
-  /** 协作编辑锁：仅在用户点击/聚焦脚本区或显式保存等写操作时再占用，避免一进页面就弹 409 */
+  /**
+   * 协作编辑锁：仅有写权限时在点击/聚焦脚本区或显式写操作时占用。
+   * 只读角色（运维/分析等）绝不抢锁、绝不因点选脚本弹权限提示（成熟产品：静默只读）。
+   */
   const acquireLockPromiseRef = useRef<Promise<boolean> | null>(null)
   const requestEditLockOnInteraction = useCallback(
     async (opts?: { silent?: boolean }): Promise<boolean> => {
       const silent = opts?.silent ?? false
       if (activeTabId == null || !activeNode || activeNode.is_locked) return false
-      if (!canWrite) {
-        if (!opts?.silent) message.warning('当前角色无数据开发编辑权限，无法创建或修改脚本')
-        return false
-      }
+      // 无写权限：静默拒绝。提示只留给显式「新建 / 保存 / 格式化」等入口。
+      if (!canWrite) return false
       const tabId = activeTabId
       if (editLockHeldRef.current[tabId] === true) return true
       if (acquireLockPromiseRef.current) return acquireLockPromiseRef.current
@@ -688,18 +690,20 @@ export default function StudioPage() {
   const handleEditorAreaPointerDown = useCallback(
     (e: PointerEvent<HTMLDivElement>) => {
       if (e.button !== 0) return
+      if (!canWrite) return
       if (activeTabId == null || !activeNode || activeNode.is_locked) return
       if (editLockHeldRef.current[activeTabId] === true) return
       void requestEditLockOnInteraction()
     },
-    [activeTabId, activeNode, requestEditLockOnInteraction],
+    [canWrite, activeTabId, activeNode, requestEditLockOnInteraction],
   )
 
   const handleEditorAreaFocusCapture = useCallback(() => {
+    if (!canWrite) return
     if (activeTabId == null || !activeNode || activeNode.is_locked) return
     if (editLockHeldRef.current[activeTabId] === true) return
     void requestEditLockOnInteraction()
-  }, [activeTabId, activeNode, requestEditLockOnInteraction])
+  }, [canWrite, activeTabId, activeNode, requestEditLockOnInteraction])
 
   const onEditorChange = (val: string | undefined) => {
     if (activeTabId === null || !canEdit) return
@@ -709,6 +713,10 @@ export default function StudioPage() {
   // 显式「保存版本」：写入服务端并生成版本历史
   const handleSave = async (): Promise<boolean> => {
     if (!activeNode) return false
+    if (!canWrite) {
+      message.warning('当前角色无数据开发编辑权限，无法保存')
+      return false
+    }
     if (activeNode.is_locked) {
       message.warning('脚本已锁定，无法保存')
       return false
@@ -854,6 +862,10 @@ export default function StudioPage() {
   // SQL 格式化
   const handleFormat = async () => {
     if (!activeNode || activeNode.node_type !== 'SQL') return
+    if (!canWrite) {
+      message.warning('当前角色无数据开发编辑权限，无法格式化')
+      return
+    }
     if (activeNode.is_locked) {
       message.warning('脚本已锁定，无法格式化')
       return
@@ -1224,17 +1236,13 @@ export default function StudioPage() {
 
         {activeNode ? (
           <>
-            {!canWrite && (
-              <Alert
-                type="info"
-                showIcon
-                style={{ margin: '8px 12px 0' }}
-                message="只读模式"
-                description="当前账号为运维/只读类角色，可查看与运行（若有运行权限），不能新建或修改脚本。需要开发请联系管理员调整平台角色。"
-              />
-            )}
-            {/* 工具栏 */}
+            {/* 工具栏：只读用 Tag，不在每次点选脚本时弹 toast（对齐 DataWorks/Databricks View-only） */}
             <div style={{ padding: '6px 12px', borderBottom: '1px solid #f0f0f0', background: '#fff', display: 'flex', alignItems: 'center', gap: 8 }}>
+              {!canWrite && (
+                <Tooltip title="可查看与运行（若有权限），不能新建或修改脚本">
+                  <Tag style={{ margin: 0 }}>只读</Tag>
+                </Tooltip>
+              )}
               <Button
                 type="primary"
                 icon={isRunning ? <LoadingOutlined /> : <PlayCircleOutlined />}
@@ -1497,6 +1505,7 @@ export default function StudioPage() {
           open={configModal}
           nodeId={activeNode?.id ?? null}
           workspaceId={wsId}
+          canWrite={canWrite}
           releaseOnClose={false}
           ensureEditLock={requestEditLockOnInteraction}
           onClose={() => setConfigModal(false)}
