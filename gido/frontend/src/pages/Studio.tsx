@@ -7,7 +7,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type Key, type PointerEvent } from 'react'
 import {
   Button, Input, Select, Tag, message, Spin, Tooltip,
-  Modal, Form, Dropdown, Tabs, Space, Badge, Table
+  Modal, Form, Dropdown, Tabs, Space, Badge, Table, Alert
 } from 'antd'
 import {
   PlayCircleOutlined, SaveOutlined, CloudUploadOutlined, PlusOutlined,
@@ -21,7 +21,7 @@ import { format as sqlFormat } from 'sql-formatter'
 import { studioApi, datasourceApi, approvalApi, workflowApi } from '../api'
 import { BRAND } from '../branding'
 import { useAppStore } from '../store'
-import { isWorkspaceAdmin } from '../perm'
+import { can, isWorkspaceAdmin, P } from '../perm'
 import EditorAppearanceToolbar from '../components/EditorAppearanceToolbar'
 import ResizableSidebar from '../components/ResizableSidebar'
 import ResizableVerticalSplit from '../components/ResizableVerticalSplit'
@@ -126,6 +126,8 @@ export default function StudioPage() {
   const { currentWorkspace, pendingOpenNodeId, setPendingOpenNodeId, user } = useAppStore()
   const wsId = currentWorkspace?.id
   const canPublishDirect = isWorkspaceAdmin(user, currentWorkspace)
+  const canWrite = can(user, P.GIDO_BATCH_STUDIO_WRITE, currentWorkspace)
+  const canRun = can(user, P.GIDO_BATCH_STUDIO_RUN, currentWorkspace)
 
   // 节点列表
   const [nodes, setNodes] = useState<any[]>([])
@@ -533,7 +535,7 @@ export default function StudioPage() {
     ? (dirtyMap[activeTabId] ?? activeNode?.script_content ?? '')
     : ''
   const holdsEditLock = activeTabId !== null && editLockHeld[activeTabId] === true
-  const canEdit = Boolean(activeNode && !activeNode.is_locked && holdsEditLock)
+  const canEdit = Boolean(canWrite && activeNode && !activeNode.is_locked && holdsEditLock)
   const isDirty = activeTabId !== null && dirtyMap[activeTabId] !== undefined
   const studioDraftKey =
     wsId != null && activeTabId != null ? scriptDraftStorageKey(`studio.${wsId}`, activeTabId) : null
@@ -640,6 +642,10 @@ export default function StudioPage() {
     async (opts?: { silent?: boolean }): Promise<boolean> => {
       const silent = opts?.silent ?? false
       if (activeTabId == null || !activeNode || activeNode.is_locked) return false
+      if (!canWrite) {
+        if (!opts?.silent) message.warning('当前角色无数据开发编辑权限，无法创建或修改脚本')
+        return false
+      }
       const tabId = activeTabId
       if (editLockHeldRef.current[tabId] === true) return true
       if (acquireLockPromiseRef.current) return acquireLockPromiseRef.current
@@ -662,6 +668,8 @@ export default function StudioPage() {
           if (!silent) {
             if (e?.response?.status === 409) {
               message.warning(e?.response?.data?.detail || '脚本正由他人编辑，如需编辑请使用「抢锁编辑」')
+            } else if (e?.response?.status === 403) {
+              message.error(e?.response?.data?.detail || '无脚本编辑权限')
             } else if (e?.response?.status !== 401) {
               message.error(e?.response?.data?.detail || '无法获取编辑锁')
             }
@@ -674,7 +682,7 @@ export default function StudioPage() {
       acquireLockPromiseRef.current = p
       return p
     },
-    [activeTabId, activeNode],
+    [activeTabId, activeNode, canWrite],
   )
 
   const handleEditorAreaPointerDown = useCallback(
@@ -887,57 +895,66 @@ export default function StudioPage() {
 
   // 新建节点
   const handleCreate = async () => {
-    const values = await createForm.validateFields()
-    values.workspace_id = wsId
-    values.folder_id = createFolderId
-    values.script_content = values.node_type === 'SQL'
-      ? buildDefaultSqlPublishScript({
-          scriptName: values.name,
-          author: user?.username || user?.full_name || '',
-          jobName: values.name,
-        })
-      : values.node_type === 'PYTHON'
-        ? [
-            'from gido_job import job',
-            '',
-            'job.writelog("start")',
-            '# 全局变量：源码 "${var_key}" 跑前展开；或 job.var("var_key")',
-            '# webhook = "${LARK_WEBHOOK_URL}"',
-            '# webhook = job.var("LARK_WEBHOOK_URL", default="")',
-            'rows = job.execute("SELECT 1 AS n")',
-            'job.writelog(f"rows={len(rows)}")',
-            'for r in rows:',
-            '    job.writelog(r)',
-          ].join('\n')
-        : values.node_type === 'SYNC'
-          ? '{"sync_task_id": null}'
-          : values.node_type === 'DEPENDENT'
-            ? '# DEPENDENT：等待其他工作流成功（无脚本，请在节点配置中选择依赖工作流）\n'
-            : values.node_type === 'VIRTUAL'
-              ? '# VIRTUAL\n'
-              : '#!/bin/bash\necho "hello gido"'
-    if (values.node_type === 'SYNC') {
-      values.params = { sync_task_id: null }
+    if (!canWrite) {
+      message.warning('当前角色无数据开发编辑权限，无法新建节点')
+      return
     }
-    if (values.node_type === 'DEPENDENT') {
-      values.params = {
-        relation: 'AND',
-        depend_items: [{ depend_workflow_id: null, cycle: 'day', date_value: 'today' }],
-        depend_workflow_id: null,
-        cycle: 'day',
-        date_value: 'today',
+    try {
+      const values = await createForm.validateFields()
+      values.workspace_id = wsId
+      values.folder_id = createFolderId
+      values.script_content = values.node_type === 'SQL'
+        ? buildDefaultSqlPublishScript({
+            scriptName: values.name,
+            author: user?.username || user?.full_name || '',
+            jobName: values.name,
+          })
+        : values.node_type === 'PYTHON'
+          ? [
+              'from gido_job import job',
+              '',
+              'job.writelog("start")',
+              '# 全局变量：源码 "${var_key}" 跑前展开；或 job.var("var_key")',
+              '# webhook = "${LARK_WEBHOOK_URL}"',
+              '# webhook = job.var("LARK_WEBHOOK_URL", default="")',
+              'rows = job.execute("SELECT 1 AS n")',
+              'job.writelog(f"rows={len(rows)}")',
+              'for r in rows:',
+              '    job.writelog(r)',
+            ].join('\n')
+          : values.node_type === 'SYNC'
+            ? '{"sync_task_id": null}'
+            : values.node_type === 'DEPENDENT'
+              ? '# DEPENDENT：等待其他工作流成功（无脚本，请在节点配置中选择依赖工作流）\n'
+              : values.node_type === 'VIRTUAL'
+                ? '# VIRTUAL\n'
+                : '#!/bin/bash\necho "hello gido"'
+      if (values.node_type === 'SYNC') {
+        values.params = { sync_task_id: null }
       }
+      if (values.node_type === 'DEPENDENT') {
+        values.params = {
+          relation: 'AND',
+          depend_items: [{ depend_workflow_id: null, cycle: 'day', date_value: 'today' }],
+          depend_workflow_id: null,
+          cycle: 'day',
+          date_value: 'today',
+        }
+      }
+      if ((values.node_type === 'SQL' || values.node_type === 'PYTHON') && !values.datasource_id) {
+        delete values.datasource_id
+      }
+      const node: any = await studioApi.createNode(values)
+      setCreateModal(false)
+      createForm.resetFields()
+      setCreateFolderId(null)
+      await load()
+      openNode(node)
+      message.success('创建成功')
+    } catch (e: any) {
+      if (e?.errorFields) return
+      message.error(e?.response?.data?.detail || '创建失败')
     }
-    if ((values.node_type === 'SQL' || values.node_type === 'PYTHON') && !values.datasource_id) {
-      delete values.datasource_id
-    }
-    const node: any = await studioApi.createNode(values)
-    setCreateModal(false)
-    createForm.resetFields()
-    setCreateFolderId(null)
-    await load()
-    openNode(node)
-    message.success('创建成功')
   }
 
   // 打开节点配置（与工作流 DAG 共用 NodeConfigModal）
@@ -1074,11 +1091,11 @@ export default function StudioPage() {
         <div style={{ padding: '10px 12px', borderBottom: '1px solid #f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ fontWeight: 600, fontSize: 13 }}>{BRAND.offline}</span>
           <Space size={0}>
-            <Tooltip title="新建目录">
-              <Button type="text" size="small" icon={<FolderAddOutlined />} onClick={() => { setFolderParentId(null); setFolderModal(true) }} />
+            <Tooltip title={canWrite ? '新建目录' : '无编辑权限'}>
+              <Button type="text" size="small" icon={<FolderAddOutlined />} disabled={!canWrite} onClick={() => { setFolderParentId(null); setFolderModal(true) }} />
             </Tooltip>
-            <Tooltip title="新建节点">
-              <Button type="text" size="small" icon={<PlusOutlined />} onClick={() => { setCreateFolderId(null); setCreateModal(true) }} />
+            <Tooltip title={canWrite ? '新建节点' : '无编辑权限'}>
+              <Button type="text" size="small" icon={<PlusOutlined />} disabled={!canWrite} onClick={() => { setCreateFolderId(null); setCreateModal(true) }} />
             </Tooltip>
             <Tooltip title="隐藏节点列表">
               <Button type="text" size="small" icon={<MenuFoldOutlined />} onClick={() => setSidebarCollapsedPersist(true)} />
@@ -1090,6 +1107,7 @@ export default function StudioPage() {
             rootTitle="节点列表"
             treeClassName="studio-node-tree"
             showRootCreateButton={false}
+            readOnly={!canWrite}
             folders={folders}
             leaves={nodes}
             expandedKeys={treeExpandedKeys}
@@ -1097,6 +1115,10 @@ export default function StudioPage() {
             selectedLeafId={activeTabId}
             onSelectLeaf={openNode}
             onCreateFolder={parentId => {
+              if (!canWrite) {
+                message.warning('当前角色无数据开发编辑权限')
+                return
+              }
               setFolderParentId(parentId)
               setFolderModal(true)
             }}
@@ -1136,9 +1158,9 @@ export default function StudioPage() {
               await studioApi.moveFolderParent(folderId, targetParentId)
               await load()
             }}
-            folderMenuExtra={f => [
+            folderMenuExtra={f => canWrite ? [
               { key: 'add-node', label: '新建节点', onClick: () => { setCreateFolderId(f.id); setCreateModal(true) } },
-            ]}
+            ] : []}
           />
         </div>
       </div>
@@ -1202,14 +1224,24 @@ export default function StudioPage() {
 
         {activeNode ? (
           <>
+            {!canWrite && (
+              <Alert
+                type="info"
+                showIcon
+                style={{ margin: '8px 12px 0' }}
+                message="只读模式"
+                description="当前账号为运维/只读类角色，可查看与运行（若有运行权限），不能新建或修改脚本。需要开发请联系管理员调整平台角色。"
+              />
+            )}
             {/* 工具栏 */}
             <div style={{ padding: '6px 12px', borderBottom: '1px solid #f0f0f0', background: '#fff', display: 'flex', alignItems: 'center', gap: 8 }}>
               <Button
                 type="primary"
                 icon={isRunning ? <LoadingOutlined /> : <PlayCircleOutlined />}
                 onClick={handleRun}
-                disabled={isRunning}
+                disabled={isRunning || !canRun}
                 size="small"
+                title={canRun ? undefined : '无运行权限'}
               >
                 {isRunning ? '运行中...' : '运行'}
               </Button>
@@ -1218,7 +1250,7 @@ export default function StudioPage() {
                 onClick={handleSave}
                 size="small"
                 type={scriptAutosave.versionDirty ? 'default' : 'text'}
-                disabled={activeNode.is_locked}
+                disabled={!canWrite || activeNode.is_locked}
                 title="写入服务端并生成版本历史（后台自动落草稿，不记版本、无打扰提示）"
               >
                 保存版本{scriptAutosave.versionDirty ? ' *' : ''}
@@ -1229,7 +1261,7 @@ export default function StudioPage() {
                 hint={scriptAutosave.hint}
               />
               {activeNode?.node_type === 'SQL' && (
-                <Button icon={<FormatPainterOutlined />} onClick={() => void handleFormat()} size="small" disabled={activeNode.is_locked}>格式化</Button>
+                <Button icon={<FormatPainterOutlined />} onClick={() => void handleFormat()} size="small" disabled={!canWrite || activeNode.is_locked}>格式化</Button>
               )}
               {(activeNode?.node_type === 'SQL' || activeNode?.node_type === 'PYTHON') && dsResolve && (
                 <Tag
@@ -1248,19 +1280,19 @@ export default function StudioPage() {
                 onClick={handlePublish}
                 size="small"
                 title={canPublishDirect ? '提交后锁定脚本，需解锁再改' : '提交审批，管理员通过后锁定脚本'}
-                disabled={activeNode.is_locked || isNodePendingApproval}
+                disabled={!canWrite || activeNode.is_locked || isNodePendingApproval}
               >
                 {isNodePendingApproval ? '审批中' : canPublishDirect ? '提交' : '提交审批'}
               </Button>
-              {activeNode.is_locked && (
+              {activeNode.is_locked && canWrite && (
                 <Button icon={<UnlockOutlined />} size="small" onClick={handleUnlock}>
                   解锁
                 </Button>
               )}
-              {!canEdit && !activeNode.is_locked && activeNode.edit_lock_username && (
+              {canWrite && !canEdit && !activeNode.is_locked && activeNode.edit_lock_username && (
                 <Button size="small" danger icon={<LockOutlined />} onClick={handleStealEditLock}>抢锁编辑</Button>
               )}
-              <Button icon={<SettingOutlined />} onClick={openConfig} size="small">配置</Button>
+              <Button icon={<SettingOutlined />} onClick={openConfig} size="small" disabled={!canWrite && !canRun}>配置</Button>
               <Button
                 icon={<AimOutlined />}
                 onClick={locateActiveInTree}
@@ -1404,8 +1436,10 @@ export default function StudioPage() {
         ) : (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12, color: '#666', background: '#fafafa' }}>
             <FileOutlined style={{ fontSize: 48, color: '#bfbfbf' }} />
-            <p style={{ fontSize: 14 }}>从左侧双击节点打开脚本，或新建节点</p>
-            <Button icon={<PlusOutlined />} onClick={() => setCreateModal(true)}>新建节点</Button>
+            <p style={{ fontSize: 14 }}>
+              {canWrite ? '从左侧双击节点打开脚本，或新建节点' : '从左侧双击节点打开脚本（当前为只读角色）'}
+            </p>
+            <Button icon={<PlusOutlined />} disabled={!canWrite} onClick={() => setCreateModal(true)}>新建节点</Button>
           </div>
         )}
       </div>

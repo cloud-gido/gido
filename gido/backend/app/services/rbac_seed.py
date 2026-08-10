@@ -2020,6 +2020,7 @@ def seed_roles(db: Session, by_code: dict[str, Permission]) -> dict[str, Role]:
             P.GIDO_BATCH_WORKFLOW_RUN,
             P.GIDO_BATCH_STUDIO_RUN,
             P.GIDO_SERVICE_RUN,
+            P.GIDO_STREAM_RUN,  # 与商业化运维一致：可部署/停止，不可改作业定义
         ):
             operator_codes.append(by_code[c])
     # 去重保序
@@ -2042,7 +2043,13 @@ def seed_roles(db: Session, by_code: dict[str, Permission]) -> dict[str, Role]:
         ("developer", "开发工程师", "内置；业务开发全权限（无系统管理）", True, no_system),
         ("workspace_steward", "空间管理员（数据源）", "内置；仅数据源读写 + 查看空间列表；实际可操作范围由「空间成员角色」限定在自己归属的空间", True, workspace_steward_perms),
         ("analyst", "数据分析（只读）", "内置；数据探查 + 数据字典 + 数据源查看（无开发/工作流/运维/系统管理）", True, read_only),
-        ("operator", "运维工程师", "内置；只读 + 运维写 + 部分运行", True, operator_perms),
+        (
+            "operator",
+            "运维工程师",
+            "内置；各模块只读 + 批/流/服务运行与运维写；不可改 Studio/Stream 作业定义与 Serve 配置",
+            True,
+            operator_perms,
+        ),
     ]
 
     out: dict[str, Role] = {}
