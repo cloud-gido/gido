@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -549,6 +550,71 @@ def test_stop_failure_unknown_cluster_stays_running(monkeypatch):
 
     assert job.status == "running"
     assert job.lifecycle_state == "RUNNING"
+
+
+def test_restart_from_suspended_uses_restore_path_not_bare_resume(monkeypatch):
+    """suspended + 最近恢复点必须带 initialSavepointPath，不能只 resume。"""
+    from app.api import streaming as streaming_api
+
+    db = _session()
+    job = _job(db)
+    release = _approved_operator_release(db, job)
+    job.current_running_release_id = release.id
+    job.flink_operator_deployment_name = "gido-sql-1-1"
+    job.status = "cancelled"
+    job.lifecycle_state = "SUSPENDED"
+    restore = StreamingRestorePoint(
+        job_id=job.id,
+        release_id=release.id,
+        point_type="savepoint",
+        status="completed",
+        path="s3://state/savepoints/chosen",
+        metadata_json='{"flink_version":"v2_0"}',
+        created_by=7,
+        completed_at=datetime.utcnow(),
+    )
+    db.add(restore)
+    db.commit()
+
+    captured = {}
+    resumed = []
+
+    def _deploy(_db, source_job, source_release, user, **kwargs):
+        captured.update(kwargs)
+        runtime_job = streaming_api._runtime_job_from_release(
+            source_job,
+            source_release,
+            parallelism=kwargs.get("parallelism"),
+            streaming_properties=kwargs.get("streaming_properties"),
+        )
+        runtime_job.flink_job_id = "jid-restored"
+        runtime_job.flink_operator_deployment_name = "gido-sql-1-1"
+        runtime_job.status = "running"
+        return runtime_job, {"flink_job_id": "jid-restored"}
+
+    monkeypatch.setattr(streaming_api, "require_streaming_job", lambda *a, **k: job)
+    monkeypatch.setattr(streaming_api, "_execute_approved_release_deployment", _deploy)
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.resume_flink_deployment",
+        lambda *a, **k: resumed.append(True),
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.read_flink_deployment",
+        lambda *a, **k: {"spec": {"job": {"state": "suspended"}}},
+    )
+    monkeypatch.setattr(streaming_api.settings, "FLINK_OPERATOR_FLINK_VERSION", "v2_0")
+
+    out = restart_streaming_job(
+        job.id,
+        StreamingRestartBody(release_id=release.id, restore_mode="latest"),
+        db=db,
+        current_user=SimpleNamespace(id=7),
+    )
+
+    assert resumed == []
+    assert captured["restore_path"] == "s3://state/savepoints/chosen"
+    assert job.lifecycle_state == "RUNNING"
+    assert out.get("flink_job_id") == "jid-restored" or job.flink_job_id == "jid-restored"
 
 
 def test_restart_uses_selected_completed_restore_point(monkeypatch):

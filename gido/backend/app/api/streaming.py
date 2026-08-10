@@ -4536,8 +4536,12 @@ def restart_streaming_job(
             and same_release
             and no_runtime_override
             and body.restore_mode == "latest"
+            and not restore_path
+            and prior_status == "running"
         ):
-            was_running = prior_status == "running"
+            # 仅「仍在跑、无新恢复点」时用 restartNonce 热重启。
+            # 从 suspended 恢复必须带 initialSavepointPath；否则 Operator 可能沿用
+            # 残留的 upgradeSavepointPath（甚至是 checkpoint），JM 会 0↔1 起不来。
             resume_flink_deployment(
                 deployment_name,
                 _operator_namespace(),
@@ -4545,11 +4549,7 @@ def restart_streaming_job(
                 upgrade_mode="savepoint",
             )
             result = {
-                "message": (
-                    "已通过 restartNonce 触发同配置有状态重启"
-                    if was_running
-                    else "已从最近 Savepoint 恢复 suspended FlinkDeployment"
-                ),
+                "message": "已通过 restartNonce 触发同配置有状态重启",
                 "flink_operator_deployment_name": deployment_name,
             }
             job.status = "running"
