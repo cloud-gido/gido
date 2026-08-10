@@ -135,7 +135,18 @@ sequenceDiagram
 
 ---
 
-## 5. 点「停止」再「重启」，会从 checkpoint / savepoint 续跑吗？
+## 5. 点「保存并停止」再「重启」，会从 checkpoint / savepoint 续跑吗？
+
+### 产品契约（对外承诺）
+
+| 结果 | 用户看到的状态 | 恢复点 |
+|------|----------------|--------|
+| 成功 | 已停止 | 本次成功路径入库，可选用 |
+| 失败 | **仍为运行中**（操作记录失败） | 无本次成功点；不静默无状态停掉 |
+| 清理集群 | 已停止（已清理） | 无；须二次确认丢弃状态 |
+
+内部可能对半成品 `suspended` 做 resume 补偿，但对外不呈现「停了又起」或长期「停止失败待确认」。
+仅当 CR 已挂起且无可用恢复点时，才进入少数「停止未完成」需处理态。
 
 ### 结论（当前默认）
 
@@ -289,7 +300,7 @@ ORDER BY id DESC LIMIT 5;
 | 观察 | `wait_for_completed_savepoint` 认 `savepointInfo`、`upgradeSavepointPath`、以及相关 `FlinkStateSnapshot` |
 | 新鲜度 | 停止前收集已有 Snapshot 的 path/name，等待时**忽略**，只认本次新产生的 COMPLETED |
 | RBAC | Role `gido-backend-operator`（及部署清单）增加 `flinkstatesnapshots`；deployment 侧 `apps/bigdata/gido/gido.yaml` 由 ArgoCD sync |
-| 产品行为不变 | 超时仍 resume + 记失败，不静默无状态停止 |
+| 产品行为 | 超时仍 resume + 记失败，作业回到「运行中」；不静默无状态停止；不长期 STOP_FAILED |
 
 生产若与测试分离部署：除 backend 镜像外，须运维同步 Role（话术见内部沟通）；仅合代码不够。
 

@@ -480,7 +480,7 @@ def test_stop_timeout_keeps_job_running_and_audits_failure(monkeypatch):
         lambda *a, **k: cr,
     )
 
-    with pytest.raises(HTTPException, match="集群状态=running"):
+    with pytest.raises(HTTPException, match="作业仍在运行"):
         stop_streaming_job_with_savepoint(
             job.id,
             StreamingStopBody(timeout_seconds=10, wait=True),
@@ -489,6 +489,64 @@ def test_stop_timeout_keeps_job_running_and_audits_failure(monkeypatch):
         )
 
     assert resumed == [True]
+    assert job.status == "running"
+    assert job.lifecycle_state == "RUNNING"
+
+
+def test_stop_failure_unknown_cluster_stays_running(monkeypatch):
+    """resume 结果未知时也不进入 STOP_FAILED 悬空态。"""
+    from app.api import streaming as streaming_api
+    from app.services import flink_operator_submit
+
+    db = _session()
+    job = _job(db)
+    release = _approved_operator_release(db, job)
+    job.current_running_release_id = release.id
+    job.flink_operator_deployment_name = "gido-sql-1-1"
+    job.flink_job_id = "jid-running"
+    job.status = "running"
+    job.lifecycle_state = "RUNNING"
+    db.commit()
+
+    cr = {
+        "spec": {
+            "flinkConfiguration": {"state.savepoints.dir": "s3://state/savepoints"},
+            "job": {"parallelism": 2},
+        }
+    }
+    monkeypatch.setattr(streaming_api, "require_streaming_job", lambda *a, **k: job)
+    monkeypatch.setattr(flink_operator_submit, "_operator_namespace", lambda: "flink")
+    monkeypatch.setattr(flink_operator_submit, "read_flink_deployment", lambda *a, **k: cr)
+    monkeypatch.setattr(
+        flink_operator_submit,
+        "extract_savepoint_status_from_cr",
+        lambda value: (None, None, None),
+    )
+    monkeypatch.setattr(flink_operator_submit, "suspend_flink_deployment", lambda *a, **k: {})
+    monkeypatch.setattr(
+        flink_operator_submit,
+        "ensure_flink_deployment_savepoint_dirs",
+        lambda *a, **k: False,
+    )
+    monkeypatch.setattr(
+        flink_operator_submit,
+        "wait_for_completed_savepoint",
+        lambda *a, **k: (_ for _ in ()).throw(TimeoutError("savepoint timeout")),
+    )
+    monkeypatch.setattr(
+        flink_operator_submit,
+        "resume_flink_deployment",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("resume failed")),
+    )
+
+    with pytest.raises(HTTPException, match="仍运行中"):
+        stop_streaming_job_with_savepoint(
+            job.id,
+            StreamingStopBody(timeout_seconds=10, wait=True),
+            db=db,
+            current_user=SimpleNamespace(id=7),
+        )
+
     assert job.status == "running"
     assert job.lifecycle_state == "RUNNING"
 

@@ -4001,6 +4001,32 @@ def deploy_streaming_job_release(
         raise HTTPException(status_code=500, detail=f"部署失败: {detail}") from exc
 
 
+def _apply_planned_stop_failure(
+    job: StreamingJob,
+    *,
+    cluster_state: str,
+) -> tuple[str, str]:
+    """计划停止失败后的产品契约：优先回到「仍运行中」，避免 STOP_FAILED 悬空态。
+
+    Returns:
+        (cluster_state_normalized, user-facing detail prefix)
+    """
+    state = (cluster_state or "unknown").strip().lower() or "unknown"
+    if state == "running":
+        job.status = "running"
+        job.lifecycle_state = "RUNNING"
+        return state, "保存状态未成功，作业仍在运行"
+    if state == "suspended":
+        # CR 已挂起但无成功恢复点：需清理或手工恢复，属少数需处理态
+        job.status = "cancelled"
+        job.lifecycle_state = "STOP_FAILED"
+        return state, "保存状态未成功，集群已挂起且无可用恢复点"
+    # resume 结果未知时仍按「未停成功 = 仍应按运行中对待」，避免红态悬空
+    job.status = "running"
+    job.lifecycle_state = "RUNNING"
+    return state, "保存状态未成功，作业按仍运行中处理"
+
+
 def _finalize_savepoint_stop(
     *,
     db: Session,
@@ -4070,7 +4096,7 @@ def _finalize_savepoint_stop(
         job.updated_at = datetime.utcnow()
         db.commit()
         return {
-            "message": "Savepoint 已完成，作业已挂起",
+            "message": "已停止并保存状态，可从恢复点重新启动",
             "operation_id": operation.id,
             "restore_point": _streaming_restore_point_public_dict(restore),
         }
@@ -4101,22 +4127,14 @@ def _finalize_savepoint_stop(
             status="failed",
             error_message=str(exc),
         )
-        if cluster_state == "running":
-            job.status = "running"
-            job.lifecycle_state = "RUNNING"
-        elif cluster_state == "suspended":
-            job.status = "cancelled"
-            job.lifecycle_state = "SUSPENDED"
-        else:
-            job.status = "failed"
-            job.lifecycle_state = "STOP_FAILED"
+        state, prefix = _apply_planned_stop_failure(job, cluster_state=cluster_state)
         job.updated_at = datetime.utcnow()
         db.commit()
         raise HTTPException(
             status_code=500,
             detail=(
-                f"Savepoint 停止失败；集群状态={cluster_state}，"
-                f"请在作业运维确认后重试: {exc}"
+                f"{prefix}（集群={state}）。可重试「保存并停止」，"
+                f"或查看操作记录；仅在集群异常时再使用「清理集群」: {exc}"
             ),
         ) from exc
 
@@ -4190,8 +4208,7 @@ def _finalize_savepoint_stop_background(
                         error_message="后台 Savepoint 停止异常",
                     )
                 if job and str(job.lifecycle_state or "").upper() in ("SAVING_STATE", "SUSPENDING"):
-                    job.lifecycle_state = "STOP_FAILED"
-                    job.status = "failed"
+                    _apply_planned_stop_failure(job, cluster_state="unknown")
                     job.updated_at = datetime.utcnow()
                 db.commit()
             except Exception:
@@ -4207,7 +4224,11 @@ def stop_streaming_job_with_savepoint(
     db: Session = Depends(get_db_flink),
     current_user: User = Depends(get_current_user),
 ):
-    """Savepoint 停止：默认异步提交（立刻返回），后台等待完成；wait=true 时同步等待。"""
+    """停止并保存状态：默认异步提交，后台等待 Savepoint；wait=true 时同步等待。
+
+    产品契约：成功 → 已停止 + 恢复点；失败 → 作业仍按运行中（操作记录失败），
+    不静默无状态停止，也不长期停留在「停止失败待确认」。
+    """
     import threading
 
     from app.services.flink_operator_submit import (
@@ -4229,7 +4250,7 @@ def stop_streaming_job_with_savepoint(
     if lifecycle in ("SAVING_STATE", "SUSPENDING"):
         raise HTTPException(
             status_code=409,
-            detail="作业正在 Savepoint 停止中，请稍候查看状态或操作记录；勿重复点击",
+            detail="正在保存状态并停止，请稍候查看状态或操作记录；勿重复点击",
         )
     deployment_name = _operator_deployment_name_for_job(job)
     if not deployment_name:
@@ -4248,7 +4269,7 @@ def stop_streaming_job_with_savepoint(
     if not savepoint_dir:
         raise HTTPException(
             status_code=409,
-            detail="未配置持久 Savepoint 目录，拒绝把默认停止退化为无状态停止",
+            detail="未配置持久恢复点目录，无法执行「保存并停止」（拒绝退化为丢弃状态）",
         )
     _, previous_path, _ = extract_savepoint_status_from_cr(before)
     previous_trigger_id, previous_trigger_timestamp = (
@@ -4314,11 +4335,13 @@ def stop_streaming_job_with_savepoint(
         restore.error_message = str(exc)
         restore.completed_at = datetime.utcnow()
         finish_streaming_operation(operation, status="failed", error_message=str(exc))
-        job.lifecycle_state = "STOP_FAILED"
-        job.status = "failed"
+        _apply_planned_stop_failure(job, cluster_state="running")
         job.updated_at = datetime.utcnow()
         db.commit()
-        raise HTTPException(status_code=500, detail=f"触发 Savepoint 停止失败: {exc}") from exc
+        raise HTTPException(
+            status_code=500,
+            detail=f"触发「保存并停止」失败，作业仍在运行: {exc}",
+        ) from exc
 
     finalize_kwargs = dict(
         deployment_name=deployment_name,
@@ -4351,7 +4374,10 @@ def stop_streaming_job_with_savepoint(
         daemon=True,
     ).start()
     return {
-        "message": "已提交 Savepoint 停止，后台执行中；状态变为「正在保存/挂起」，完成后自动更新，可在操作记录查看进度",
+        "message": (
+            "已提交「保存并停止」，后台生成恢复点；"
+            "行状态为「正在保存状态」，完成后变为已停止。进度见操作记录"
+        ),
         "operation_id": operation.id,
         "accepted": True,
         "lifecycle_state": job.lifecycle_state,
@@ -5166,7 +5192,7 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
                     note = f"；回收中: {', '.join(terminating)}"
                 return {
                     "message": (
-                        f"已停止：已删除 FlinkDeployment"
+                        f"已清理集群（丢弃状态）：已删除 FlinkDeployment"
                         f"{(' (' + ', '.join(deleted_ok) + ')') if deleted_ok else ''}"
                         f"（namespace={ns_note}），Operator 将回收 JM/TM Pod{note}"
                     ),
@@ -5176,8 +5202,8 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
                 }
             return {
                 "message": (
-                    f"已停止：集群中已无对应 FlinkDeployment"
-                    f"（已查 {primary_ns}），已将平台状态标为已停止"
+                    f"已清理集群：命名空间 {primary_ns} 中已无对应 FlinkDeployment，"
+                    "平台已标为已停止（本次无恢复点）"
                 ),
                 "deleted": [],
                 "namespace": primary_ns,
@@ -5186,7 +5212,7 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
             finish_streaming_operation(
                 operation,
                 status="failed",
-                error_message="强制停止失败",
+                error_message="清理集群失败",
             )
             db.commit()
             raise
@@ -5197,7 +5223,7 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
                 error_message=str(e),
             )
             db.commit()
-            raise HTTPException(status_code=500, detail=f"停止失败: {e}")
+            raise HTTPException(status_code=500, detail=f"清理集群失败: {e}")
     if not job.flink_job_id:
         if getattr(job, "flink_application_cluster_id", None):
             detail = (
@@ -5346,6 +5372,15 @@ def _apply_status_from_operator_cr(db: Session, job: StreamingJob, cr: Dict[str,
     spec_state = (cr.get("spec", {}).get("job", {}).get("state") or "").strip().lower()
     jid, lifecycle, err = extract_status_from_cr(cr)
     lifecycle_up = (lifecycle or "").strip().upper()
+    platform_lc = str(getattr(job, "lifecycle_state", None) or "").upper()
+
+    # 计划停止进行中：spec 会先变成 suspended，但 Savepoint 尚未完成——勿抢先标「已停止」
+    if platform_lc in ("SAVING_STATE", "SUSPENDING"):
+        return {
+            "flink_status": platform_lc,
+            "note": "正在保存状态并停止（以平台操作进度为准）",
+            "status": "running",
+        }
 
     if spec_state == "suspended":
         if job.status != "cancelled" or getattr(job, "lifecycle_state", None) != "SUSPENDED":

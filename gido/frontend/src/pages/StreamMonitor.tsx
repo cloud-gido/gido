@@ -7,13 +7,13 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   Table, Button, Space, Tag, message, Typography, Alert, Drawer, Tooltip, Input, Select, Card,
-  Row, Col, Statistic, Tabs, Descriptions, Modal, Form, InputNumber, Radio, Switch,
+  Row, Col, Statistic, Tabs, Descriptions, Modal, Form, InputNumber, Radio, Switch, Dropdown, Checkbox,
 } from 'antd'
 import {
   ReloadOutlined, LinkOutlined, BugOutlined, StopOutlined, SearchOutlined,
   ClusterOutlined, CloseCircleOutlined, ContainerOutlined, SyncOutlined, ThunderboltOutlined,
   CloudServerOutlined,
-  RocketOutlined, HistoryOutlined, RetweetOutlined,
+  RocketOutlined, HistoryOutlined, RetweetOutlined, MoreOutlined,
 } from '@ant-design/icons'
 import { streamingApi } from '../api'
 import { useAppStore } from '../store'
@@ -73,6 +73,21 @@ const PLATFORM_STATUS_LABEL: Record<string, string> = {
   finished: '已完成',
   failed: '失败',
   cancelled: '已停止',
+}
+
+const OPERATION_TYPE_LABEL: Record<string, string> = {
+  stop: '保存并停止',
+  cancel: '清理集群',
+  restart: '重启/恢复',
+  deploy: '部署',
+  'stateless-start': '无状态启动',
+}
+
+const OPERATION_STATUS_LABEL: Record<string, string> = {
+  pending: '待执行',
+  running: '进行中',
+  succeeded: '成功',
+  failed: '失败',
 }
 
 const FLINK_STATUS_LABEL: Record<string, string> = {
@@ -301,16 +316,17 @@ export default function StreamMonitorPage() {
   const handleStop = async (row: any) => {
     try {
       const res: any = await streamingApi.stopJob(row.id, { mode: 'savepoint' })
-      message.success(res?.message || '已提交 Savepoint 停止')
+      message.success(res?.message || '已提交「保存并停止」')
       setJobs(prev => prev.map(j => (
         j.id === row.id
-          ? { ...j, lifecycle_state: res?.lifecycle_state || 'SUSPENDING' }
+          ? { ...j, lifecycle_state: res?.lifecycle_state || 'SAVING_STATE' }
           : j
       )))
       await loadJobs(false)
     } catch (e: any) {
-      const detail = e?.response?.data?.detail || e?.message || '停止失败'
-      message.error(typeof detail === 'string' ? detail : '停止失败')
+      const detail = e?.response?.data?.detail || e?.message || '保存并停止失败'
+      message.error(typeof detail === 'string' ? detail : '保存并停止失败')
+      await loadJobs(false)
       throw e
     }
   }
@@ -318,31 +334,32 @@ export default function StreamMonitorPage() {
   const handleForceStop = async (row: any) => {
     try {
       const res: any = await streamingApi.cancelJob(row.id)
-      message.success(res?.message || '已提交强制停止')
+      message.success(res?.message || '已清理集群')
       await loadJobs(false)
     } catch (e: any) {
-      message.error(e?.response?.data?.detail || '强制停止失败')
+      message.error(e?.response?.data?.detail || '清理集群失败')
       throw e
     }
   }
 
   const confirmStop = (row: any) => {
     Modal.confirm({
-      title: 'Savepoint 停止作业？',
+      title: '保存状态并停止作业？',
+      width: 480,
       content: (
         <div>
           <p style={{ marginBottom: 8 }}>
-            确认后立即提交并关闭弹窗，不阻塞运维页。集群在后台做 Savepoint（通常几十秒到两分钟）。
+            将先生成恢复点，再挂起集群。成功后作业为「已停止」，可从恢复点重新启动。
           </p>
           <p style={{ marginBottom: 8, color: 'rgba(0,0,0,0.65)' }}>
-            行状态会变为「正在保存状态 / 正在挂起」；完成后自动变为已停止。可在「操作记录」查看进度。
+            提交后行状态为「正在保存状态」；请在「操作记录」查看进度。请勿重复点击。
           </p>
           <p style={{ marginBottom: 0, color: 'rgba(0,0,0,0.65)' }}>
-            若失败或卡住，请用「强停」清集群。请勿在停止进行中重复点击。
+            若失败：作业应仍为「运行中」，可重试。仅在集群异常时使用「更多 → 清理集群」。
           </p>
         </div>
       ),
-      okText: '提交停止',
+      okText: '保存并停止',
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: () => handleStop(row),
@@ -350,13 +367,37 @@ export default function StreamMonitorPage() {
   }
 
   const confirmForceStop = (row: any) => {
+    let acknowledged = false
     Modal.confirm({
-      title: '强制停止不会创建 Savepoint，确认继续？',
-      content: '立即删除 FlinkDeployment / 清理集群资源。适合僵尸作业、Savepoint 失败或调度失败。',
-      okText: '强制停止',
+      title: '清理集群（丢弃状态）？',
+      width: 480,
+      content: (
+        <div>
+          <Alert
+            type="error"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message="不会创建恢复点，本次停止后无法从状态续跑"
+          />
+          <p style={{ marginBottom: 12, color: 'rgba(0,0,0,0.65)' }}>
+            将删除 FlinkDeployment 并回收 JM/TM。适用于僵尸作业、保存状态反复失败或需腾出资源。
+            日常停机请使用「保存并停止」。
+          </p>
+          <Checkbox onChange={(e) => { acknowledged = e.target.checked }}>
+            我确认丢弃状态，且了解无法从本次清理恢复
+          </Checkbox>
+        </div>
+      ),
+      okText: '清理集群',
       okButtonProps: { danger: true },
       cancelText: '取消',
-      onOk: () => handleForceStop(row),
+      onOk: () => {
+        if (!acknowledged) {
+          message.warning('请先勾选确认丢弃状态')
+          return Promise.reject()
+        }
+        return handleForceStop(row)
+      },
     })
   }
 
@@ -526,13 +567,20 @@ export default function StreamMonitorPage() {
       SUSPENDING: { key: 'active', label: '正在挂起', color: 'processing' },
       DEPLOYING: { key: 'active', label: '正在部署', color: 'processing' },
       RESTORING: { key: 'active', label: '正在恢复', color: 'processing' },
-      SUSPENDED: { key: 'stopped', label: '已挂起', color: 'warning' },
+      SUSPENDED: { key: 'stopped', label: '已停止', color: 'warning' },
       RESTORE_FAILED: { key: 'needs_attention', label: '恢复失败', color: 'error' },
       DEPLOY_FAILED: { key: 'needs_attention', label: '部署失败', color: 'error' },
-      STOP_FAILED: { key: 'needs_attention', label: '停止失败待确认', color: 'error' },
-      FORCE_STOPPED: { key: 'stopped', label: '已强制停止', color: 'error' },
+      // 仅「已挂起且无恢复点」等少数情况；成功失败路径应回到运行中/已停止
+      STOP_FAILED: { key: 'needs_attention', label: '停止未完成', color: 'error' },
+      FORCE_STOPPED: { key: 'stopped', label: '已停止（已清理）', color: 'warning' },
     }
-    if (transitions[lifecycle]) return transitions[lifecycle]
+    if (transitions[lifecycle]) {
+      // 兼容旧数据：STOP_FAILED 但集群/平台仍显示 running → 按运行中
+      if (lifecycle === 'STOP_FAILED' && (platform === 'running' || /RUNNING|STABLE/i.test(flink))) {
+        return { key: 'active', label: '运行中', color: 'processing' }
+      }
+      return transitions[lifecycle]
+    }
     if (/NOT_FOUND_ON_OPERATOR|SUSPENDED/i.test(flink) || platform === 'cancelled') {
       return { key: 'stopped', label: '已停止', color: 'warning' }
     }
@@ -825,7 +873,7 @@ export default function StreamMonitorPage() {
       title: '生命周期操作',
       key: 'lifecycle-actions',
       fixed: 'right' as const,
-      width: 280,
+      width: 300,
       render: (_: unknown, row: any) => {
         const state = unifiedJobState(row).key
         const lifecycle = String(row.lifecycle_state || '').toUpperCase()
@@ -834,11 +882,12 @@ export default function StreamMonitorPage() {
           || (row.current_approved_release_id && row.current_approved_release_id !== row.current_running_release_id)
           || (row.approval_status === 'approved' && !row.deployed_at)
         const active = state === 'active'
-        // 失败/需处理时平台可能仍挂着 FlinkDeployment，必须允许停止/强停清集群，否则部署会被 409 卡住
+        // 失败/需处理时平台可能仍挂着 FlinkDeployment，必须允许停止/清理，否则部署会被 409 卡住
         const canStop = !stopping && (active
           || state === 'needs_attention'
           || Boolean(isOperatorJob(row) && row.flink_operator_deployment_name))
         const canRestart = !stopping && (active || state === 'stopped' || state === 'needs_attention')
+        const canForceClear = canStop || stopping
         return (
           <Space size={4} wrap>
             <Button size="small" type={approved ? 'primary' : 'default'} icon={<RocketOutlined />}
@@ -850,12 +899,24 @@ export default function StreamMonitorPage() {
               onClick={() => void openLifecycleAction(row, 'restart')}>
               重启/恢复
             </Button>
-            <Tooltip title={stopping ? 'Savepoint 停止进行中，请稍候或查看操作记录' : undefined}>
+            <Tooltip title={stopping ? '正在保存状态，请稍候或打开操作记录' : '先生成恢复点再停止'}>
               <Button size="small" danger disabled={!canStop} icon={<StopOutlined />}
-                onClick={() => confirmStop(row)}>{stopping ? '停止中' : '停止'}</Button>
+                onClick={() => confirmStop(row)}>{stopping ? '保存中…' : '保存并停止'}</Button>
             </Tooltip>
-            <Button size="small" danger type="text" disabled={!canStop && !stopping}
-              onClick={() => confirmForceStop(row)}>强停</Button>
+            <Dropdown
+              menu={{
+                items: [{
+                  key: 'force-clear',
+                  danger: true,
+                  disabled: !canForceClear,
+                  label: '清理集群（丢弃状态）',
+                  onClick: () => confirmForceStop(row),
+                }],
+              }}
+              trigger={['click']}
+            >
+              <Button size="small" type="text" icon={<MoreOutlined />} aria-label="更多运维操作" />
+            </Dropdown>
           </Space>
         )
       },
@@ -868,8 +929,8 @@ export default function StreamMonitorPage() {
         <div>
           <Typography.Title level={4} style={{ marginBottom: 4 }}>作业运维</Typography.Title>
           <Paragraph type="secondary" style={{ marginBottom: 0, maxWidth: 920 }}>
-            对标实时计算「运维管理」：查看作业与 FlinkDeployment 运行态、停止、诊断与 Flink UI。
-            本页周期性同步集群状态，并负责发布版本部署、Savepoint 停止与恢复；逻辑编辑请到
+            部署运行中的作业；默认「保存并停止」会生成恢复点，失败时作业仍保持运行。
+            清理集群（丢弃状态）在「更多」中。诊断与 Flink UI 见行内入口；逻辑编辑请到
             {' '}<Link to={R.stream.studio}>作业开发</Link>
             ，Source → Paimon 标准链路请到
             {' '}<Link to={R.stream.pipelines}>数据管道</Link>
@@ -1155,8 +1216,26 @@ export default function StreamMonitorPage() {
           dataSource={operations}
           pagination={{ pageSize: 10 }}
           columns={[
-            { title: '操作', key: 'operation', width: 130, render: (_: unknown, row: any) => row.operation_type || row.operation || row.action || row.type || '—' },
-            { title: '状态', key: 'status', width: 110, render: (_: unknown, row: any) => row.status ? <Tag>{row.status}</Tag> : '—' },
+            {
+              title: '操作',
+              key: 'operation',
+              width: 130,
+              render: (_: unknown, row: any) => {
+                const raw = String(row.operation_type || row.operation || row.action || row.type || '')
+                return OPERATION_TYPE_LABEL[raw] || raw || '—'
+              },
+            },
+            {
+              title: '状态',
+              key: 'status',
+              width: 110,
+              render: (_: unknown, row: any) => {
+                const st = String(row.status || '')
+                if (!st) return '—'
+                const color = st === 'succeeded' ? 'success' : st === 'failed' ? 'error' : st === 'running' ? 'processing' : 'default'
+                return <Tag color={color}>{OPERATION_STATUS_LABEL[st] || st}</Tag>
+              },
+            },
             { title: '操作人', key: 'user', width: 120, render: (_: unknown, row: any) => row.operator_username || row.created_by_username || row.username || row.requested_by || '—' },
             { title: '时间', key: 'time', width: 180, render: (_: unknown, row: any) => formatInTimeZone(row.requested_at || row.created_at || row.started_at, displayTz) },
             { title: '详情', key: 'detail', ellipsis: true, render: (_: unknown, row: any) => row.message || row.detail || row.error_message || row.error || '—' },

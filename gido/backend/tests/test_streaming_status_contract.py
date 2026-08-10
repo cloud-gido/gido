@@ -40,6 +40,29 @@ def _rt_cfg():
     return SimpleNamespace()
 
 
+def test_apply_cr_preserves_planned_stop_in_progress(monkeypatch):
+    """计划停止进行中：即使 CR 已 suspended，也不抢先标已停止。"""
+    deleted = []
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.delete_flink_deployment",
+        lambda *a, **k: deleted.append(True),
+    )
+    job = _job(status="running", flink_job_id="jid-1", lifecycle_state="SUSPENDING")
+    cr = {
+        "spec": {"job": {"state": "suspended"}},
+        "status": {
+            "lifecycleState": "SUSPENDED",
+            "jobStatus": {"jobId": "jid-1"},
+        },
+    }
+    out = streaming_api._apply_status_from_operator_cr(_db(), job, cr, "gido-sql-1-42")
+    assert job.status == "running"
+    assert job.lifecycle_state == "SUSPENDING"
+    assert job.flink_job_id == "jid-1"
+    assert out["flink_status"] == "SUSPENDING"
+    assert deleted == []
+
+
 def test_apply_cr_running_corrects_cancelled_db(monkeypatch):
     """集群 CR 仍在 → 即使库内 cancelled 也纠正为 running；不删 CR。"""
     deleted = []

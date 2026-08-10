@@ -20,7 +20,7 @@ GitHub Actions（`.github/workflows/ci.yml` → `docker-flink-runtime`）构建 
 ```
 作业开发：编辑 / 保存版本 / 提交不可变发布版本
                               ↓
-作业运维：部署 / Savepoint 停止 / 选择恢复点重启 / 资源调整
+作业运维：部署 / 保存并停止 / 选择恢复点重启 / 资源调整
                               ↓
                     GIDO Backend + 状态与操作审计
                               ↓
@@ -36,7 +36,7 @@ GitHub Actions（`.github/workflows/ci.yml` → `docker-flink-runtime`）构建 
 | 区域 | 职责 |
 |------|------|
 | 作业开发 | SQL/JAR、依赖、默认参数、草稿与版本历史、提交发布 |
-| 作业运维 | 首次部署、Savepoint 停止、恢复/重启、运行资源、诊断、Flink UI、恢复点与操作历史 |
+| 作业运维 | 首次部署、保存并停止、恢复/重启、运行资源、诊断、Flink UI、恢复点与操作历史 |
 | 数据管道 | 配置化 Kafka→Paimon、Schema Contract、预检、生成物与发布 |
 | 资源管理 | JAR、连接器、依赖文件；与作业运维同级，位于其下方 |
 
