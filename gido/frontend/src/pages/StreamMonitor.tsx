@@ -190,7 +190,7 @@ export default function StreamMonitorPage() {
   const displayTz = currentWorkspace?.timezone || 'Asia/Shanghai'
   const [jobs, setJobs] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
-  const [flinkMap, setFlinkMap] = useState<Record<number, { flink_status?: string; status?: string }>>({})
+  const [flinkMap, setFlinkMap] = useState<Record<number, { flink_status?: string; status?: string; lifecycle_state?: string }>>({})
   const [diagOpen, setDiagOpen] = useState(false)
   const [diagRow, setDiagRow] = useState<any | null>(null)
   const [diagExceptions, setDiagExceptions] = useState<any>(null)
@@ -263,9 +263,13 @@ export default function StreamMonitorPage() {
     if (!wsId || jobs.length === 0) return
     try {
       const res: any = await streamingApi.syncJobsStatus(wsId)
-      const next: Record<number, { flink_status?: string; status?: string }> = {}
+      const next: Record<number, { flink_status?: string; status?: string; lifecycle_state?: string }> = {}
       for (const s of res?.items || []) {
-        next[s.id] = { flink_status: s.flink_status, status: s.status }
+        next[s.id] = {
+          flink_status: s.flink_status,
+          status: s.status,
+          lifecycle_state: s.lifecycle_state,
+        }
       }
       setFlinkMap(prev => ({ ...prev, ...next }))
       message.success(`已同步 ${res?.synced ?? 0} 个活跃作业`)
