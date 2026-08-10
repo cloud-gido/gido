@@ -4231,6 +4231,7 @@ def stop_streaming_job_with_savepoint(
     savepoint_dir = (
         (settings.FLINK_OPERATOR_SAVEPOINT_DIR or "").strip()
         or str(flink_conf.get("state.savepoints.dir") or "").strip()
+        or str(flink_conf.get("execution.checkpointing.savepoint-dir") or "").strip()
     )
     if not savepoint_dir:
         raise HTTPException(
@@ -4270,6 +4271,7 @@ def stop_streaming_job_with_savepoint(
             deployment_name,
             namespace,
             upgrade_mode="savepoint",
+            savepoint_dir=savepoint_dir,
         )
         job.lifecycle_state = "SUSPENDING"
         db.commit()

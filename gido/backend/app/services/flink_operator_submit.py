@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 FLINK_DEPLOYMENT_GROUP = "flink.apache.org"
 FLINK_DEPLOYMENT_VERSION = "v1beta1"
 FLINK_DEPLOYMENT_PLURAL = "flinkdeployments"
+FLINK_STATE_SNAPSHOT_PLURAL = "flinkstatesnapshots"
 
 _SQL_SET_PATTERN = re.compile(
     r"SET\s+'([^']+)'\s*=\s*'(.*?)'\s*;",
@@ -285,7 +286,11 @@ def _base_flink_conf(*, enable_http_artifacts: bool = False) -> Dict[str, str]:
         flink_conf["execution.checkpointing.interval"] = (
             settings.FLINK_OPERATOR_CHECKPOINT_INTERVAL or "60s"
         )
-        flink_conf["execution.checkpointing.savepoint-dir"] = _resolve_savepoint_dir(ckpt)
+        sp_dir = _resolve_savepoint_dir(ckpt)
+        # Flink 官方认 state.savepoints.dir；Operator 文档也常校验
+        # execution.checkpointing.savepoint-dir。两边都写，避免计划停止挂起。
+        flink_conf["state.savepoints.dir"] = sp_dir
+        flink_conf["execution.checkpointing.savepoint-dir"] = sp_dir
     _apply_s3_irsa_flink_conf(flink_conf)
     rest_ex = (settings.FLINK_K8S_REST_EXPOSED_TYPE or "LoadBalancer").strip()
     if rest_ex:
@@ -869,6 +874,7 @@ def patch_flink_deployment_job_state(
     namespace: Optional[str] = None,
     upgrade_mode: Optional[str] = None,
     restart_nonce: Optional[int] = None,
+    flink_configuration_patch: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Patch Operator job lifecycle fields without replacing the CR."""
     desired_state = (state or "").strip().lower()
@@ -883,6 +889,16 @@ def patch_flink_deployment_job_state(
     if restart_nonce is not None:
         job_patch["restartNonce"] = int(restart_nonce)
 
+    body: Dict[str, Any] = {"spec": {"job": job_patch}}
+    if flink_configuration_patch:
+        cleaned = {
+            str(k): (v if isinstance(v, str) else str(v))
+            for k, v in flink_configuration_patch.items()
+            if v is not None and str(v).strip()
+        }
+        if cleaned:
+            body["spec"]["flinkConfiguration"] = cleaned
+
     api = _custom_objects_api()
     ns = namespace or _operator_namespace()
     return api.patch_namespaced_custom_object(
@@ -891,7 +907,7 @@ def patch_flink_deployment_job_state(
         namespace=ns,
         plural=FLINK_DEPLOYMENT_PLURAL,
         name=deployment_name,
-        body={"spec": {"job": job_patch}},
+        body=body,
     )
 
 
@@ -900,13 +916,27 @@ def suspend_flink_deployment(
     namespace: Optional[str] = None,
     *,
     upgrade_mode: str = "savepoint",
+    savepoint_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Suspend a deployment through an Operator-managed savepoint."""
+    """Suspend a deployment through an Operator-managed savepoint.
+
+    When ``savepoint_dir`` is set, also merge Flink savepoint directory keys so
+    already-running CRs (missing ``state.savepoints.dir``) can still complete a
+    planned stop without a full redeploy.
+    """
+    fc_patch: Optional[Dict[str, str]] = None
+    sp = (savepoint_dir or "").strip()
+    if sp:
+        fc_patch = {
+            "state.savepoints.dir": sp,
+            "execution.checkpointing.savepoint-dir": sp,
+        }
     return patch_flink_deployment_job_state(
         deployment_name,
         "suspended",
         namespace=namespace,
         upgrade_mode=upgrade_mode,
+        flink_configuration_patch=fc_patch,
     )
 
 
@@ -937,12 +967,16 @@ def _first_text(*values: Any) -> Optional[str]:
 def extract_savepoint_status_from_cr(
     cr: Dict[str, Any],
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """Return normalized ``(status, path, error)`` from Operator savepointInfo."""
+    """Return normalized ``(status, path, error)`` from Operator savepoint status.
+
+    Prefer legacy ``savepointInfo`` when present; also accept
+    ``jobStatus.upgradeSavepointPath`` (Operator 1.10+ / 1.15 upgrade path).
+    """
     status = cr.get("status") or {}
     job_status = status.get("jobStatus") or status.get("job_status") or {}
     info = job_status.get("savepointInfo") or job_status.get("savepoint_info") or {}
     if not isinstance(info, dict):
-        return None, None, None
+        info = {}
     last = (
         info.get("lastSavepoint")
         or info.get("last_savepoint")
@@ -1004,7 +1038,97 @@ def extract_savepoint_status_from_cr(
         info.get("triggerId"), info.get("trigger_id"), info.get("triggerTimestamp")
     ):
         savepoint_state = "PENDING"
+
+    # Operator 1.15：计划停止/升级 Savepoint 常写在 upgradeSavepointPath，
+    # 而 savepointInfo 可能一直为空（改由 FlinkStateSnapshot 跟踪）。
+    upgrade_path = _first_text(
+        job_status.get("upgradeSavepointPath"),
+        job_status.get("upgrade_savepoint_path"),
+    )
+    if upgrade_path and not path:
+        path = upgrade_path
+        if not savepoint_state or savepoint_state in nonterminal_states:
+            savepoint_state = "COMPLETED"
+    elif upgrade_path and path and upgrade_path != path and savepoint_state in (
+        None,
+        *nonterminal_states,
+    ):
+        # 优先采用升级路径（本次计划停止）
+        path = upgrade_path
+        savepoint_state = "COMPLETED"
+
     return savepoint_state, path, error
+
+
+def list_flink_state_snapshots(
+    *,
+    namespace: Optional[str] = None,
+    deployment_name: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """List FlinkStateSnapshot CRs; empty list when CRD/RBAC unavailable."""
+    api = _custom_objects_api()
+    ns = namespace or _operator_namespace()
+    try:
+        out = api.list_namespaced_custom_object(
+            group=FLINK_DEPLOYMENT_GROUP,
+            version=FLINK_DEPLOYMENT_VERSION,
+            namespace=ns,
+            plural=FLINK_STATE_SNAPSHOT_PLURAL,
+            _request_timeout=10,
+        )
+    except Exception as exc:
+        logger.info(
+            "list FlinkStateSnapshot skipped (ns=%s): %s",
+            ns,
+            exc,
+        )
+        return []
+    items = out.get("items") if isinstance(out, dict) else None
+    if not isinstance(items, list):
+        return []
+    if not deployment_name:
+        return [i for i in items if isinstance(i, dict)]
+    wanted = str(deployment_name).strip()
+    matched: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        ref = ((item.get("spec") or {}).get("jobReference") or {})
+        if str(ref.get("name") or "").strip() == wanted:
+            matched.append(item)
+    return matched
+
+
+def extract_completed_savepoint_from_snapshots(
+    snapshots: List[Dict[str, Any]],
+    *,
+    previous_path: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return ``(path, error)`` from FlinkStateSnapshot list for savepoint type."""
+    best_path: Optional[str] = None
+    best_error: Optional[str] = None
+    for item in snapshots:
+        spec = item.get("spec") or {}
+        status = item.get("status") or {}
+        if not isinstance(spec, dict) or not isinstance(status, dict):
+            continue
+        # checkpoint-only resources have spec.checkpoint; savepoints have spec.savepoint
+        if spec.get("checkpoint") is not None and spec.get("savepoint") is None:
+            continue
+        state = _first_text(status.get("state"), status.get("status"))
+        state_u = state.upper().replace("-", "_") if state else ""
+        path = _first_text(status.get("path"), status.get("savepointPath"))
+        err = _first_text(status.get("error"), status.get("errorMessage"), status.get("failureCause"))
+        if state_u in ("FAILED", "FAILURE", "ERROR", "ABANDONED") and err:
+            best_error = err
+            continue
+        if state_u == "COMPLETED" and path:
+            if previous_path and path == previous_path:
+                continue
+            best_path = path
+            best_error = None
+            # keep scanning; last completed wins (list order not guaranteed)
+    return best_path, best_error
 
 
 def extract_savepoint_trigger_from_cr(
@@ -1139,7 +1263,12 @@ def wait_for_completed_savepoint(
     previous_trigger_id: Optional[str] = None,
     previous_trigger_timestamp: Optional[str] = None,
 ) -> str:
-    """Wait for a completed savepoint and return its durable path."""
+    """Wait for a completed savepoint and return its durable path.
+
+    Observes (in order):
+    1. ``savepointInfo`` / ``upgradeSavepointPath`` on FlinkDeployment
+    2. related ``FlinkStateSnapshot`` CRs (Operator 1.15 default)
+    """
     ns = namespace or _operator_namespace()
     deadline = time.monotonic() + max(0.0, float(timeout_seconds))
     while True:
@@ -1179,6 +1308,20 @@ def wait_for_completed_savepoint(
         )
         if savepoint_state == "COMPLETED" and path and is_fresh:
             return path
+
+        snapshots = list_flink_state_snapshots(
+            namespace=ns, deployment_name=deployment_name
+        )
+        snap_path, snap_error = extract_completed_savepoint_from_snapshots(
+            snapshots, previous_path=previous_path
+        )
+        if snap_error and not snap_path:
+            raise RuntimeError(
+                f"Savepoint for FlinkDeployment {ns}/{deployment_name} failed: {snap_error}"
+            )
+        if snap_path:
+            return snap_path
+
         if time.monotonic() >= deadline:
             raise TimeoutError(
                 f"Timed out waiting for savepoint of FlinkDeployment {ns}/{deployment_name}"

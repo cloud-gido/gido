@@ -70,6 +70,7 @@ def test_build_flink_deployment_sets_savepoint_dir_when_checkpoint_configured(mo
     )
     fc = body["spec"]["flinkConfiguration"]
     assert fc["state.checkpoints.dir"] == "s3://my-bucket/flink-checkpoints"
+    assert fc["state.savepoints.dir"] == "s3://my-bucket/flink-savepoints"
     assert fc["execution.checkpointing.savepoint-dir"] == "s3://my-bucket/flink-savepoints"
 
 

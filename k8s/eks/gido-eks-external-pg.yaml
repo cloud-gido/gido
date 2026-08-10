@@ -148,7 +148,7 @@ metadata:
   namespace: flink
 rules:
   - apiGroups: ["flink.apache.org"]
-    resources: ["flinkdeployments", "flinksessionjobs"]
+    resources: ["flinkdeployments", "flinksessionjobs", "flinkstatesnapshots"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["services", "pods", "configmaps", "secrets", "pods/log"]

@@ -294,6 +294,74 @@ def test_extract_savepoint_status_across_operator_field_names():
     )
 
 
+def test_extract_savepoint_status_from_upgrade_savepoint_path():
+    from app.services import flink_operator_submit as fos
+
+    cr = {
+        "status": {
+            "jobStatus": {
+                "savepointInfo": {
+                    "lastPeriodicSavepointTimestamp": 0,
+                    "savepointHistory": [],
+                },
+                "upgradeSavepointPath": "s3a://bucket/flink/savepoints/savepoint-xyz",
+            }
+        }
+    }
+    assert fos.extract_savepoint_status_from_cr(cr) == (
+        "COMPLETED",
+        "s3a://bucket/flink/savepoints/savepoint-xyz",
+        None,
+    )
+
+
+def test_extract_completed_savepoint_from_snapshots_ignores_old_path():
+    from app.services import flink_operator_submit as fos
+
+    snaps = [
+        {
+            "spec": {"savepoint": {}, "jobReference": {"name": "job-1"}},
+            "status": {"state": "COMPLETED", "path": "s3://old"},
+        },
+        {
+            "spec": {"savepoint": {}, "jobReference": {"name": "job-1"}},
+            "status": {"state": "COMPLETED", "path": "s3://new"},
+        },
+    ]
+    path, err = fos.extract_completed_savepoint_from_snapshots(
+        snaps, previous_path="s3://old"
+    )
+    assert path == "s3://new"
+    assert err is None
+
+
+def test_suspend_patches_savepoint_dirs(monkeypatch):
+    from app.services import flink_operator_submit as fos
+
+    calls = []
+
+    class FakeApi:
+        def patch_namespaced_custom_object(self, **kwargs):
+            calls.append(kwargs)
+            return kwargs["body"]
+
+    monkeypatch.setattr(fos, "_custom_objects_api", lambda: FakeApi())
+    fos.suspend_flink_deployment(
+        "job-1",
+        "operator-ns",
+        savepoint_dir="s3a://bucket/flink/savepoints",
+    )
+    assert calls[0]["body"] == {
+        "spec": {
+            "job": {"state": "suspended", "upgradeMode": "savepoint"},
+            "flinkConfiguration": {
+                "state.savepoints.dir": "s3a://bucket/flink/savepoints",
+                "execution.checkpointing.savepoint-dir": "s3a://bucket/flink/savepoints",
+            },
+        }
+    }
+
+
 def test_wait_for_completed_savepoint_success(monkeypatch):
     from app.services import flink_operator_submit as fos
 
@@ -318,6 +386,7 @@ def test_wait_for_completed_savepoint_success(monkeypatch):
         ]
     )
     monkeypatch.setattr(fos, "read_flink_deployment", lambda *a, **k: next(responses))
+    monkeypatch.setattr(fos, "list_flink_state_snapshots", lambda **k: [])
     monkeypatch.setattr(fos.time, "sleep", lambda _: None)
 
     assert (
@@ -325,6 +394,65 @@ def test_wait_for_completed_savepoint_success(monkeypatch):
             "job-1", "operator-ns", timeout_seconds=5, poll_interval_seconds=0
         )
         == "s3://bucket/savepoint-2"
+    )
+
+
+def test_wait_for_completed_savepoint_via_upgrade_path(monkeypatch):
+    from app.services import flink_operator_submit as fos
+
+    responses = iter(
+        [
+            {"status": {"jobStatus": {"savepointInfo": {"savepointHistory": []}}}},
+            {
+                "status": {
+                    "jobStatus": {
+                        "upgradeSavepointPath": "s3a://bucket/sp-upgrade",
+                        "savepointInfo": {"savepointHistory": []},
+                    }
+                }
+            },
+        ]
+    )
+    monkeypatch.setattr(fos, "read_flink_deployment", lambda *a, **k: next(responses))
+    monkeypatch.setattr(fos, "list_flink_state_snapshots", lambda **k: [])
+    monkeypatch.setattr(fos.time, "sleep", lambda _: None)
+    assert (
+        fos.wait_for_completed_savepoint(
+            "job-1", timeout_seconds=5, poll_interval_seconds=0
+        )
+        == "s3a://bucket/sp-upgrade"
+    )
+
+
+def test_wait_for_completed_savepoint_via_flink_state_snapshot(monkeypatch):
+    from app.services import flink_operator_submit as fos
+
+    monkeypatch.setattr(
+        fos,
+        "read_flink_deployment",
+        lambda *a, **k: {
+            "status": {"jobStatus": {"savepointInfo": {"savepointHistory": []}}}
+        },
+    )
+    monkeypatch.setattr(
+        fos,
+        "list_flink_state_snapshots",
+        lambda **k: [
+            {
+                "spec": {"savepoint": {}, "jobReference": {"name": "job-1"}},
+                "status": {
+                    "state": "COMPLETED",
+                    "path": "s3a://bucket/from-snapshot",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(fos.time, "sleep", lambda _: None)
+    assert (
+        fos.wait_for_completed_savepoint(
+            "job-1", timeout_seconds=5, poll_interval_seconds=0
+        )
+        == "s3a://bucket/from-snapshot"
     )
 
 
@@ -354,6 +482,7 @@ def test_wait_for_completed_savepoint_ignores_previous_path(monkeypatch):
         ]
     )
     monkeypatch.setattr(fos, "read_flink_deployment", lambda *a, **k: next(responses))
+    monkeypatch.setattr(fos, "list_flink_state_snapshots", lambda **k: [])
     monkeypatch.setattr(fos.time, "sleep", lambda _: None)
 
     assert fos.wait_for_completed_savepoint(
@@ -382,6 +511,8 @@ def test_wait_for_completed_savepoint_failure_never_returns_path(monkeypatch):
         }
     }
     monkeypatch.setattr(fos, "read_flink_deployment", lambda *a, **k: cr)
+    monkeypatch.setattr(fos, "list_flink_state_snapshots", lambda **k: [])
+    monkeypatch.setattr(fos.time, "sleep", lambda _: None)
 
     with pytest.raises(RuntimeError, match="savepoint failed"):
         fos.wait_for_completed_savepoint("job-1", timeout_seconds=0)
