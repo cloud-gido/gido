@@ -314,6 +314,7 @@ def delete_user(
         raise HTTPException(status_code=404, detail="用户不存在")
     if is_platform_admin(u) and not is_platform_admin(current_user):
         raise HTTPException(status_code=403, detail="无权删除管理员账号")
-    db.delete(u)
-    db.commit()
+    from app.services.user_delete import delete_platform_user
+
+    delete_platform_user(db, u, actor=current_user)
     return {"message": "已删除"}
