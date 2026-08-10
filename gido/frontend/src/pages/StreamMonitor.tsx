@@ -328,11 +328,8 @@ export default function StreamMonitorPage() {
   const handleStop = async (row: any) => {
     try {
       const res: any = await streamingApi.stopJob(row.id, { mode: 'savepoint' })
-      message.loading({
-        content: '正在保存状态并停止…完成后行状态会自动变为「已停止」或回到「运行中」',
-        key: `stop-${row.id}`,
-        duration: 0,
-      })
+      // 不用 duration:0 的全局 loading：会跟到其它页面置顶。进度只留在本页 Alert。
+      message.success(res?.message || '已提交「保存并停止」，进度见本页提示')
       if (res?.operation_id != null) {
         notifiedStopOpsRef.current.delete(Number(res.operation_id))
       }
@@ -347,7 +344,6 @@ export default function StreamMonitorPage() {
       )))
       await loadJobs(false)
     } catch (e: any) {
-      message.destroy(`stop-${row.id}`)
       const detail = e?.response?.data?.detail || e?.message || '保存并停止失败'
       message.error(typeof detail === 'string' ? detail : '保存并停止失败')
       await loadJobs(false)
@@ -599,7 +595,7 @@ export default function StreamMonitorPage() {
     }
   }, [wsId, stoppingJobs.length])
 
-  /** 保存并停止进行中：盯操作记录，成功/失败明确提示（避免灰按钮干等后刷新才发现） */
+  /** 保存并停止进行中：盯操作记录；仅在本页用短 toast 报结果，离开页面即停止提示 */
   useEffect(() => {
     if (!stoppingJobs.length) return
     let alive = true
@@ -619,7 +615,6 @@ export default function StreamMonitorPage() {
           if (st !== 'succeeded' && st !== 'failed') continue
           if (opId && notifiedStopOpsRef.current.has(opId)) continue
           if (opId) notifiedStopOpsRef.current.add(opId)
-          message.destroy(`stop-${row.id}`)
           if (st === 'succeeded') {
             message.success(`「${row.name}」已停止并保存状态，可从恢复点重启`)
           } else {
@@ -638,6 +633,13 @@ export default function StreamMonitorPage() {
       window.clearInterval(t)
     }
   }, [stoppingJobs])
+
+  // 离开运维页时清掉可能残留的全局 stop loading（兼容旧版 duration:0）
+  useEffect(() => () => {
+    for (const row of jobsRef.current) {
+      message.destroy(`stop-${row.id}`)
+    }
+  }, [])
 
   const unifiedJobState = (row: any) => {
     const platform = String(flinkMap[row.id]?.status || row.status || '').toLowerCase()
