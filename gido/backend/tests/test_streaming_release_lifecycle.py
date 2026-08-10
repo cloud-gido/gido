@@ -400,6 +400,11 @@ def test_stop_persists_new_savepoint_and_suspends(monkeypatch):
     monkeypatch.setattr(flink_operator_submit, "suspend_flink_deployment", lambda *a, **k: {})
     monkeypatch.setattr(
         flink_operator_submit,
+        "ensure_flink_deployment_savepoint_dirs",
+        lambda *a, **k: False,
+    )
+    monkeypatch.setattr(
+        flink_operator_submit,
         "wait_for_completed_savepoint",
         lambda *a, **k: "s3://state/savepoints/new",
     )
@@ -451,6 +456,11 @@ def test_stop_timeout_keeps_job_running_and_audits_failure(monkeypatch):
         lambda value: (None, None, None),
     )
     monkeypatch.setattr(flink_operator_submit, "suspend_flink_deployment", lambda *a, **k: {})
+    monkeypatch.setattr(
+        flink_operator_submit,
+        "ensure_flink_deployment_savepoint_dirs",
+        lambda *a, **k: False,
+    )
     monkeypatch.setattr(
         flink_operator_submit,
         "wait_for_completed_savepoint",

@@ -4213,11 +4213,13 @@ def stop_streaming_job_with_savepoint(
     from app.services.flink_operator_submit import (
         _operator_namespace,
         collect_completed_savepoint_snapshot_idents,
+        ensure_flink_deployment_savepoint_dirs,
         extract_savepoint_status_from_cr,
         extract_savepoint_trigger_from_cr,
         list_flink_state_snapshots,
         read_flink_deployment,
         suspend_flink_deployment,
+        wait_for_flink_deployment_running,
     )
 
     job = require_streaming_job(
@@ -4283,11 +4285,27 @@ def stop_streaming_job_with_savepoint(
     job.lifecycle_state = "SAVING_STATE"
     db.commit()
     try:
+        # 缺目录时先只补 flinkConfiguration（保持 running），等稳定后再纯 suspend。
+        # 切勿与 suspended 同一次 PATCH，否则 Operator 会当成配置升级而重启作业。
+        if ensure_flink_deployment_savepoint_dirs(
+            deployment_name,
+            savepoint_dir,
+            namespace=namespace,
+            current_flink_configuration=flink_conf,
+        ):
+            wait_for_flink_deployment_running(
+                deployment_name,
+                namespace,
+                timeout_seconds=min(float(body.timeout_seconds), 120.0),
+            )
+            before = read_flink_deployment(deployment_name, namespace)
+            flink_conf = (before.get("spec") or {}).get("flinkConfiguration") or {}
         suspend_flink_deployment(
             deployment_name,
             namespace,
             upgrade_mode="savepoint",
             savepoint_dir=savepoint_dir,
+            current_flink_configuration=flink_conf,
         )
         job.lifecycle_state = "SUSPENDING"
         db.commit()

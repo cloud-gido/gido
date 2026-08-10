@@ -377,6 +377,11 @@ def test_suspend_patches_savepoint_dirs(monkeypatch):
             return kwargs["body"]
 
     monkeypatch.setattr(fos, "_custom_objects_api", lambda: FakeApi())
+    monkeypatch.setattr(
+        fos,
+        "read_flink_deployment",
+        lambda *a, **k: {"spec": {"flinkConfiguration": {}}},
+    )
     fos.suspend_flink_deployment(
         "job-1",
         "operator-ns",
@@ -391,6 +396,32 @@ def test_suspend_patches_savepoint_dirs(monkeypatch):
             },
         }
     }
+
+
+def test_suspend_skips_identical_savepoint_dir_patch(monkeypatch):
+    from app.services import flink_operator_submit as fos
+
+    calls = []
+
+    class FakeApi:
+        def patch_namespaced_custom_object(self, **kwargs):
+            calls.append(kwargs)
+            return kwargs["body"]
+
+    monkeypatch.setattr(fos, "_custom_objects_api", lambda: FakeApi())
+    fos.suspend_flink_deployment(
+        "job-1",
+        "operator-ns",
+        savepoint_dir="s3a://bucket/flink/savepoints",
+        current_flink_configuration={
+            "state.savepoints.dir": "s3a://bucket/flink/savepoints",
+            "execution.checkpointing.savepoint-dir": "s3a://bucket/flink/savepoints/",
+        },
+    )
+    assert calls[0]["body"] == {
+        "spec": {"job": {"state": "suspended", "upgradeMode": "savepoint"}}
+    }
+    assert "flinkConfiguration" not in calls[0]["body"]["spec"]
 
 
 def test_wait_for_completed_savepoint_success(monkeypatch):

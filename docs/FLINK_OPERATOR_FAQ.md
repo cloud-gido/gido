@@ -229,6 +229,9 @@ GIDO 曾只注入 `execution.checkpointing.savepoint-dir`，未写 Flink 官方�
 **坑 6 — CR 残留 `status.error=Job Not Found` 导致一点停止就失败**  
 强停/失败停止后 Operator 常把 `Job Not Found` 留在 `status.error` 上，即使新 `jobId` 已在 `INITIALIZING`/`RUNNING`。旧逻辑把任意 `status.error` 当硬失败，会在数秒内 `failed while saving: Job Not Found` 并 resume，前端出现「停止失败待确认」。应仅在 job/lifecycle 真正 FAILED 时采纳该错误；陈旧 Job Not Found 在启动/运行态下忽略。
 
+**坑 7 — 每次停止都 PATCH 相同的 `flinkConfiguration`**  
+为补 `state.savepoints.dir`，若与 `suspended` **同一次**写入（或目录已存在仍重复 PATCH），Operator 会当成配置变更升级，作业被重启；GIDO 随即 `Job Not Found` → resume，WebUI 看到「停了又起」。正确做法：仅在目录缺失时先单独补配置并等 `RUNNING`，再只 PATCH `state=suspended`。
+
 ### 8.3 怎么在 Pod 里快速核对（无本机 kubectl 时）
 
 进 **gido-backend** Pod（`/app`），用自带客户端：

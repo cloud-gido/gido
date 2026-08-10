@@ -917,20 +917,37 @@ def suspend_flink_deployment(
     *,
     upgrade_mode: str = "savepoint",
     savepoint_dir: Optional[str] = None,
+    current_flink_configuration: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Suspend a deployment through an Operator-managed savepoint.
 
-    When ``savepoint_dir`` is set, also merge Flink savepoint directory keys so
-    already-running CRs (missing ``state.savepoints.dir``) can still complete a
-    planned stop without a full redeploy.
+    Savepoint directory keys are patched **only when missing or different**.
+    Re-patching identical ``flinkConfiguration`` on every stop bumps the CR
+    generation and makes Operator restart the job (Job Not Found → resume loop).
     """
     fc_patch: Optional[Dict[str, str]] = None
     sp = (savepoint_dir or "").strip()
     if sp:
-        fc_patch = {
+        current_fc = current_flink_configuration
+        if current_fc is None:
+            try:
+                cr = read_flink_deployment(deployment_name, namespace)
+                current_fc = (cr.get("spec") or {}).get("flinkConfiguration") or {}
+            except Exception:
+                current_fc = {}
+        if not isinstance(current_fc, dict):
+            current_fc = {}
+        desired = {
             "state.savepoints.dir": sp,
             "execution.checkpointing.savepoint-dir": sp,
         }
+        need: Dict[str, str] = {}
+        for key, value in desired.items():
+            cur = str(current_fc.get(key) or "").strip().rstrip("/")
+            want = value.strip().rstrip("/")
+            if cur != want:
+                need[key] = value
+        fc_patch = need or None
     return patch_flink_deployment_job_state(
         deployment_name,
         "suspended",
@@ -938,6 +955,48 @@ def suspend_flink_deployment(
         upgrade_mode=upgrade_mode,
         flink_configuration_patch=fc_patch,
     )
+
+
+def ensure_flink_deployment_savepoint_dirs(
+    deployment_name: str,
+    savepoint_dir: str,
+    *,
+    namespace: Optional[str] = None,
+    current_flink_configuration: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Patch missing savepoint dirs while keeping job running. Return True if patched."""
+    sp = (savepoint_dir or "").strip()
+    if not sp:
+        return False
+    current_fc = current_flink_configuration
+    if current_fc is None:
+        cr = read_flink_deployment(deployment_name, namespace)
+        current_fc = (cr.get("spec") or {}).get("flinkConfiguration") or {}
+    if not isinstance(current_fc, dict):
+        current_fc = {}
+    desired = {
+        "state.savepoints.dir": sp,
+        "execution.checkpointing.savepoint-dir": sp,
+    }
+    need: Dict[str, str] = {}
+    for key, value in desired.items():
+        cur = str(current_fc.get(key) or "").strip().rstrip("/")
+        want = value.strip().rstrip("/")
+        if cur != want:
+            need[key] = value
+    if not need:
+        return False
+    api = _custom_objects_api()
+    ns = namespace or _operator_namespace()
+    api.patch_namespaced_custom_object(
+        group=FLINK_DEPLOYMENT_GROUP,
+        version=FLINK_DEPLOYMENT_VERSION,
+        namespace=ns,
+        plural=FLINK_DEPLOYMENT_PLURAL,
+        name=deployment_name,
+        body={"spec": {"flinkConfiguration": need}},
+    )
+    return True
 
 
 def resume_flink_deployment(
