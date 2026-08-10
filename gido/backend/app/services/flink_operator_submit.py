@@ -1207,16 +1207,44 @@ def extract_savepoint_trigger_from_cr(
 
 
 def _operator_failure_from_cr(cr: Dict[str, Any]) -> Optional[str]:
-    _, lifecycle, error = extract_status_from_cr(cr)
-    if error:
-        return error
+    """Return a hard failure message only when the deployment/job is actually failed.
+
+    Operator often leaves a stale ``status.error`` such as ``Job Not Found`` after a
+    bad stop/restart, even while a new jobId is ``INITIALIZING`` / ``RUNNING``.
+    Treating that as fatal aborts Savepoint wait within seconds and triggers resume.
+    """
+    jid, lifecycle, error = extract_status_from_cr(cr)
     job_status = (cr.get("status") or {}).get("jobStatus") or {}
     job_state = _first_text(job_status.get("state"), job_status.get("jobState"))
+    job_u = (job_state or "").upper()
+    life_u = (lifecycle or "").upper()
     failed_states = {"FAILED", "FAILING", "ERROR"}
-    if lifecycle and lifecycle.upper() in failed_states:
-        return f"FlinkDeployment entered {lifecycle}"
-    if job_state and job_state.upper() in failed_states:
-        return f"Flink job entered {job_state}"
+    # Job still progressing or already past the point where a stale JM 404 matters.
+    non_fatal_job_states = {
+        "INITIALIZING",
+        "CREATED",
+        "RECONCILING",
+        "RESTARTING",
+        "RUNNING",
+        "CANCELLING",
+        "CANCELED",
+        "CANCELLED",
+        "SUSPENDED",
+        "FINISHED",
+    }
+    if life_u in failed_states:
+        return error or f"FlinkDeployment entered {lifecycle}"
+    if job_u in failed_states:
+        return error or f"Flink job entered {job_state}"
+    if error:
+        err_l = error.lower()
+        if "job not found" in err_l and (job_u in non_fatal_job_states or bool(jid)):
+            return None
+        if job_u in non_fatal_job_states:
+            return None
+        if not job_u and not jid:
+            return error
+        return error
     return None
 
 

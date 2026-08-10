@@ -226,8 +226,8 @@ GIDO 曾只注入 `execution.checkpointing.savepoint-dir`，未写 Flink 官方�
 **坑 4 — 超时后 resume + 历史 Snapshot 残留**  
 超时路径会 `resume` 作业；Operator 已完成的 `FlinkStateSnapshot` 仍留在命名空间。若后续等待逻辑「见 COMPLETED 即成功」且不忽略停止前已有 Snapshot，会把**旧路径**误认为本次停止成功。
 
-**坑 5 — `lastReconciledSpec.upgradeMode` 可能仍是 `stateless`**  
-环境变量已是 `FLINK_OPERATOR_UPGRADE_MODE=savepoint`，但历史作业首次部署若按默认 `stateless` 对齐过，需结合 live `spec.job.upgradeMode` 与停止时的显式 PATCH 一起看，勿只看 reconciled 快照断章取义。
+**坑 6 — CR 残留 `status.error=Job Not Found` 导致一点停止就失败**  
+强停/失败停止后 Operator 常把 `Job Not Found` 留在 `status.error` 上，即使新 `jobId` 已在 `INITIALIZING`/`RUNNING`。旧逻辑把任意 `status.error` 当硬失败，会在数秒内 `failed while saving: Job Not Found` 并 resume，前端出现「停止失败待确认」。应仅在 job/lifecycle 真正 FAILED 时采纳该错误；陈旧 Job Not Found 在启动/运行态下忽略。
 
 ### 8.3 怎么在 Pod 里快速核对（无本机 kubectl 时）
 

@@ -549,6 +549,76 @@ def test_wait_for_completed_savepoint_failure_never_returns_path(monkeypatch):
         fos.wait_for_completed_savepoint("job-1", timeout_seconds=0)
 
 
+def test_operator_failure_ignores_stale_job_not_found():
+    from app.services import flink_operator_submit as fos
+
+    starting = {
+        "status": {
+            "lifecycleState": "DEPLOYED",
+            "error": "Job Not Found",
+            "jobStatus": {"state": "INITIALIZING", "jobId": "new-jid"},
+        }
+    }
+    assert fos._operator_failure_from_cr(starting) is None
+
+    running = {
+        "status": {
+            "lifecycleState": "STABLE",
+            "error": "Job Not Found",
+            "jobStatus": {"state": "RUNNING", "jobId": "jid-1"},
+        }
+    }
+    assert fos._operator_failure_from_cr(running) is None
+
+    failed = {
+        "status": {
+            "lifecycleState": "DEPLOYED",
+            "error": "Job Not Found",
+            "jobStatus": {"state": "FAILED", "jobId": "jid-1"},
+        }
+    }
+    assert fos._operator_failure_from_cr(failed) == "Job Not Found"
+
+
+def test_wait_for_completed_savepoint_ignores_stale_job_not_found(monkeypatch):
+    from app.services import flink_operator_submit as fos
+
+    responses = iter(
+        [
+            {
+                "status": {
+                    "error": "Job Not Found",
+                    "jobStatus": {
+                        "state": "RUNNING",
+                        "jobId": "jid-1",
+                        "savepointInfo": {"savepointHistory": []},
+                    },
+                }
+            },
+            {
+                "status": {
+                    "error": "Job Not Found",
+                    "jobStatus": {
+                        "state": "RUNNING",
+                        "jobId": "jid-1",
+                        "upgradeSavepointPath": "s3a://bucket/new-sp",
+                        "savepointInfo": {"savepointHistory": []},
+                    },
+                }
+            },
+        ]
+    )
+    monkeypatch.setattr(fos, "read_flink_deployment", lambda *a, **k: next(responses))
+    monkeypatch.setattr(fos, "list_flink_state_snapshots", lambda **k: [])
+    monkeypatch.setattr(fos.time, "sleep", lambda _: None)
+    assert (
+        fos.wait_for_completed_savepoint(
+            "job-1", timeout_seconds=5, poll_interval_seconds=0
+        )
+        == "s3a://bucket/new-sp"
+    )
+
+
 def test_wait_for_suspended_success_and_timeout(monkeypatch):
     import pytest
 
