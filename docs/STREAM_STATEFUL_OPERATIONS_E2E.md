@@ -5,9 +5,15 @@
 ## 前置条件
 
 - Flink Kubernetes Operator 1.15.x 与 Flink 2.0.x CRD 已安装。
-- `FLINK_OPERATOR_NAMESPACE` 指向测试作业命名空间；GIDO ServiceAccount 对该命名空间具有 FlinkDeployment `get/list/create/patch/delete` 权限。
+- `FLINK_OPERATOR_NAMESPACE` 指向测试作业命名空间；GIDO ServiceAccount 对该命名空间具有：
+  - `flinkdeployments` / `flinksessionjobs`：`get/list/create/patch/delete`
+  - **`flinkstatesnapshots`：`get/list/watch`（建议与上相同 verbs）** — Operator 1.15 计划停止依赖此 CR，缺权会 403 导致平台误判超时。
 - `FLINK_OPERATOR_CHECKPOINT_DIR` 与 `FLINK_OPERATOR_SAVEPOINT_DIR` 指向 JM/TM 可读写的持久对象存储。
+- 部署出的 FlinkDeployment `flinkConfiguration` 须同时可见：
+  - `state.checkpoints.dir`
+  - **`state.savepoints.dir`**（官方键；仅有 `execution.checkpointing.savepoint-dir` 不够）
 - 测试 SQL/JAR 使用稳定 operator UID；输入源可重复构造数据，输出端可以核对恢复前后的连续性。
+- Savepoint 超时排障见 [FLINK_OPERATOR_FAQ.md §8](./FLINK_OPERATOR_FAQ.md#8-qa计划停止-savepoint-一直超时checkpoint-却正常)。
 
 ## SQL 作业
 
@@ -23,8 +29,11 @@
 6. 点击默认“停止”，确认过渡状态依次包含保存状态/挂起，最后为已停止。
 7. 确认：
    - CR 仍存在且 `spec.job.state=suspended`；
-   - 恢复点历史存在成功 Savepoint 路径；
-   - Savepoint 失败时作业不应被标记为已停止。
+   - CR `flinkConfiguration` 含 `state.savepoints.dir`；
+   - 命名空间内出现**本次**新的 `FlinkStateSnapshot`（COMPLETED + path），或 `upgradeSavepointPath` 已更新；
+   - 恢复点历史存在成功 Savepoint 路径（与 Snapshot/路径一致）；
+   - Savepoint 失败时作业不应被标记为已停止（操作记录有明确错误，而非静默无状态）；
+   - 若仅有历史 Snapshot、本次超时：不得把旧 COMPLETED 路径记为本轮成功。
 8. 选择最近 Savepoint 重启，同时调整 TM 副本或并行度。
 9. 确认恢复后结果连续、没有从头消费，运行版本和资源参数正确。
 10. 再次停止，选择历史 Savepoint 重启，确认选定路径被使用。
@@ -89,3 +98,4 @@
 - 旧资源 URL 仍可访问，但菜单位于“作业运维”下。
 - Studio 草稿自动保存不写版本历史；“保存版本”仍写历史。
 - Session/K8s Application 遗留模式在关闭兼容开关时不出现在新运维交互中。
+- **计划停止**：backend 可 list `flinkstatesnapshots`；不得只依赖空的 `savepointInfo`；Checkpoint 成功不能当作 Savepoint 配置已完备。排障见 [FLINK_OPERATOR_FAQ §8](./FLINK_OPERATOR_FAQ.md#8-qa计划停止-savepoint-一直超时checkpoint-却正常)。
