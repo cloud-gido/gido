@@ -790,8 +790,22 @@ def delete_app(app_id: int, db: Session = Depends(get_db), current_user: User = 
     if not app:
         raise HTTPException(status_code=404, detail="应用不存在")
     assert_workspace_data_capability(db, current_user, app.workspace_id, "developer", PC.GIDO_SERVICE_WRITE)
-    db.delete(app)
-    db.commit()
+    # 调用日志 / 授权外键未必带 ON DELETE（历史库），先显式清理再删应用
+    db.query(DataApiInvocationLog).filter(DataApiInvocationLog.app_id == app_id).update(
+        {DataApiInvocationLog.app_id: None},
+        synchronize_session=False,
+    )
+    db.query(ConsumerAppApiGrant).filter(ConsumerAppApiGrant.app_id == app_id).delete(synchronize_session=False)
+    try:
+        db.delete(app)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        from sqlalchemy.exc import IntegrityError
+
+        if isinstance(e, IntegrityError):
+            raise HTTPException(status_code=400, detail="应用仍被业务数据引用，无法删除") from e
+        raise
     return {"ok": True}
 
 

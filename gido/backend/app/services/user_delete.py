@@ -123,14 +123,76 @@ def detach_user_references(db: Session, user_id: int, *, reassign_to: int) -> No
         pass
 
     try:
-        from app.api.streaming import StreamingJob, StreamingJobRelease
+        from app.api.streaming import (
+            StreamingJob,
+            StreamingJobHistory,
+            StreamingJobRelease,
+            StreamingOperation,
+            StreamingRestorePoint,
+        )
 
-        for model in (StreamingJob, StreamingJobRelease):
-            for col_name in ("owner_id", "created_by", "updated_by", "edit_lock_user_id"):
+        for model, cols in (
+            (StreamingJob, ("owner_id", "created_by", "last_submitted_by")),
+            (StreamingJobHistory, ("saved_by",)),
+            (StreamingJobRelease, ("submitted_by", "approved_by")),
+            (StreamingRestorePoint, ("created_by",)),
+            (StreamingOperation, ("requested_by",)),
+        ):
+            for col_name in cols:
                 col = getattr(model, col_name, None)
                 if col is None:
                     continue
-                _null(db, model, col, user_id)
+                if col_name in ("created_by",) and model is StreamingJob:
+                    _reassign(db, model, col, user_id, reassign_to)
+                else:
+                    _null(db, model, col, user_id)
+
+        # 制品库
+        for model_name in (
+            "JarArtifact",
+            "JarArtifactVersion",
+            "ConnectorArtifact",
+            "ConnectorArtifactVersion",
+            "FileArtifact",
+            "FileArtifactVersion",
+            "FlinkSessionProfile",
+        ):
+            model = getattr(
+                __import__("app.api.streaming", fromlist=[model_name]), model_name, None
+            )
+            if model is None:
+                try:
+                    model = getattr(
+                        __import__("app.api.streaming_resource_library", fromlist=[model_name]),
+                        model_name,
+                        None,
+                    )
+                except Exception:
+                    model = None
+            if model is None:
+                continue
+            for col_name in ("owner_id", "created_by", "uploaded_by"):
+                col = getattr(model, col_name, None)
+                if col is not None:
+                    _null(db, model, col, user_id)
+    except Exception:
+        pass
+
+    try:
+        from app.api.stream_pipeline import StreamPipelineSloPolicy
+
+        col = getattr(StreamPipelineSloPolicy, "updated_by", None)
+        if col is not None:
+            _null(db, StreamPipelineSloPolicy, col, user_id)
+    except Exception:
+        pass
+
+    try:
+        from app.models.workspace import AdhocRun
+
+        col = getattr(AdhocRun, "triggered_by", None)
+        if col is not None:
+            _null(db, AdhocRun, col, user_id)
     except Exception:
         pass
 

@@ -176,6 +176,8 @@ def delete_role(
         raise HTTPException(status_code=400, detail="不能删除内置角色")
     if db.query(User).filter(User.role_id == role_id).first():
         raise HTTPException(status_code=400, detail="仍有用户绑定此角色，请先调整用户角色")
+    role.permissions = []
+    db.flush()
     db.delete(role)
     db.commit()
     return {"message": "已删除"}

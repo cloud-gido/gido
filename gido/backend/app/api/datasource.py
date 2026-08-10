@@ -194,9 +194,20 @@ def delete_datasource(ds_id: int, db: Session = Depends(get_db), current_user: U
     if not ds:
         raise HTTPException(status_code=404, detail="数据源不存在")
     assert_workspace_data_capability(db, current_user, ds.workspace_id, "admin", PC.GIDO_BATCH_DATASOURCE_WRITE)
+    from app.services.datasource_delete import assert_datasource_deletable
+    from sqlalchemy.exc import IntegrityError
+
+    assert_datasource_deletable(db, ds)
     try_delete_gido_datasource_mirror(db, ds)
-    db.delete(ds)
-    db.commit()
+    try:
+        db.delete(ds)
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="数据源仍被业务数据引用，无法删除。请先解除占用或将其停用。",
+        ) from e
     return {"message": "删除成功"}
 
 

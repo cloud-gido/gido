@@ -823,7 +823,17 @@ def delete_schema_contract(contract_id: int, db: Session = Depends(get_db), curr
                 "release_ids": references[:50],
             },
         )
-    db.delete(row); db.commit()
+    # 显式清理版本/审计（不依赖历史库 ON DELETE CASCADE）
+    row.current_version_id = None
+    db.flush()
+    db.query(StreamSchemaEvolutionAudit).filter(
+        StreamSchemaEvolutionAudit.contract_id == contract_id
+    ).delete(synchronize_session=False)
+    db.query(StreamSchemaVersion).filter(StreamSchemaVersion.contract_id == contract_id).delete(
+        synchronize_session=False
+    )
+    db.delete(row)
+    db.commit()
     return {"deleted": True, "id": contract_id}
 
 
@@ -1035,7 +1045,11 @@ def delete_deployment_group(group_id: int, db: Session = Depends(get_db), curren
         raise HTTPException(
             409, "部署组包含运行中作业；请先 Savepoint 停止后再删除"
         )
-    db.delete(row); db.commit()
+    db.query(StreamDeploymentGroupMember).filter(
+        StreamDeploymentGroupMember.group_id == group_id
+    ).delete(synchronize_session=False)
+    db.delete(row)
+    db.commit()
     return {"deleted": True, "id": group_id}
 
 

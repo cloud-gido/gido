@@ -4872,11 +4872,75 @@ def execute_streaming_job_submit(
         raise HTTPException(status_code=500, detail=f"提交失败: {e}")
 
 
+def _purge_streaming_job_local_records(db: Session, job: StreamingJob) -> None:
+    """删除实时作业前清理本地依赖，避免 release 环状外键导致 500。
+
+    顺序：断开 job→release 指针 → 断开 ops/restore→release → 删 ops/restore/release/history
+    → 部署组成员 / SLO / 审批单。
+    """
+    job_id = int(job.id)
+    job.current_approved_release_id = None
+    job.current_running_release_id = None
+    db.flush()
+
+    db.query(StreamingOperation).filter(StreamingOperation.job_id == job_id).update(
+        {
+            StreamingOperation.release_id: None,
+            StreamingOperation.restore_point_id: None,
+        },
+        synchronize_session=False,
+    )
+    db.query(StreamingRestorePoint).filter(StreamingRestorePoint.job_id == job_id).update(
+        {StreamingRestorePoint.release_id: None},
+        synchronize_session=False,
+    )
+    db.flush()
+
+    db.query(StreamingOperation).filter(StreamingOperation.job_id == job_id).delete(synchronize_session=False)
+    db.query(StreamingRestorePoint).filter(StreamingRestorePoint.job_id == job_id).delete(
+        synchronize_session=False
+    )
+    db.query(StreamingJobRelease).filter(StreamingJobRelease.job_id == job_id).delete(
+        synchronize_session=False
+    )
+    db.query(StreamingJobHistory).filter(StreamingJobHistory.job_id == job_id).delete(
+        synchronize_session=False
+    )
+
+    try:
+        from app.api.stream_pipeline import StreamDeploymentGroupMember, StreamPipelineSloPolicy
+
+        db.query(StreamDeploymentGroupMember).filter(
+            StreamDeploymentGroupMember.job_id == job_id
+        ).delete(synchronize_session=False)
+        db.query(StreamPipelineSloPolicy).filter(StreamPipelineSloPolicy.job_id == job_id).delete(
+            synchronize_session=False
+        )
+    except Exception:
+        logger.debug("purge streaming pipeline side-tables skipped", exc_info=True)
+
+    try:
+        from app.models.workspace import PublishApproval
+
+        db.query(PublishApproval).filter(
+            PublishApproval.resource_id == job_id,
+            PublishApproval.resource_type.in_(
+                ("streaming_job", "stream_job", "flink_job", "stream")
+            ),
+        ).delete(synchronize_session=False)
+    except Exception:
+        logger.debug("purge streaming approvals skipped", exc_info=True)
+
+
 @router.delete("/jobs/{job_id}")
 def delete_job(job_id: int, db: Session = Depends(get_db_flink), current_user: User = Depends(get_current_user)):
     job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_WRITE)
     if getattr(job, "is_locked", False) and not workspace_data_full_control(db, current_user, job.workspace_id):
         raise HTTPException(status_code=403, detail="作业已锁定，仅空间管理员或平台管理员可删除")
+    # 业界常见：运行中不可硬删，需先停止（与工作流「先下线再删」一致）
+    if str(job.status or "").lower() == "running":
+        raise HTTPException(status_code=409, detail="作业运行中，请先停止后再删除")
+
     op_dep_del = _operator_deployment_name_for_job(job)
     should_stop_flink = bool(job.flink_job_id or op_dep_del)
     if should_stop_flink:
@@ -4898,14 +4962,25 @@ def delete_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
                 _flink_client_for_job(db, job).cancel_job(job.flink_job_id, jm_base=jm_ov)
         except Exception:
             logger.warning(
-                "删除前停止 Flink 任务失败 job_id=%s flink_job_id=%s deployment=%s",
+                "删除前清理 Flink 资源失败 job_id=%s flink_job_id=%s deployment=%s",
                 job.id,
                 job.flink_job_id,
                 getattr(job, "flink_operator_deployment_name", None),
                 exc_info=True,
             )
-    db.delete(job)
-    db.commit()
+
+    from sqlalchemy.exc import IntegrityError
+
+    try:
+        _purge_streaming_job_local_records(db, job)
+        db.delete(job)
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="作业仍被业务数据引用，无法删除。请确认已停止并解除部署组绑定后重试。",
+        ) from e
     return {"message": "已删除"}
 
 

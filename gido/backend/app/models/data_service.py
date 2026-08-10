@@ -106,7 +106,7 @@ class DataApiInvocationLog(Base):
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = Column(Integer, ForeignKey("dw_workspaces.id"), index=True)
     api_id = Column(Integer, ForeignKey("dw_data_apis.id", ondelete="SET NULL"), nullable=True, index=True)
-    app_id = Column(Integer, ForeignKey("dw_consumer_apps.id"), nullable=True)
+    app_id = Column(Integer, ForeignKey("dw_consumer_apps.id", ondelete="SET NULL"), nullable=True)
     trace_id = Column(String(64), index=True)
     http_method = Column(String(8))
     client_ip = Column(String(64))

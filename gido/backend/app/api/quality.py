@@ -69,8 +69,17 @@ def delete_rule(rule_id: int, db: Session = Depends(get_db), current_user: User 
     if not rule:
         raise HTTPException(status_code=404, detail="规则不存在")
     assert_workspace_data_capability(db, current_user, rule.workspace_id, "developer", PC.GIDO_BATCH_QUALITY_WRITE)
-    db.delete(rule)
-    db.commit()
+    from app.models.workspace import QualityCheckRecord
+    from sqlalchemy.exc import IntegrityError
+
+    # 检查记录随规则删除（历史审计挂在规则上，业界常见级联清理）
+    db.query(QualityCheckRecord).filter(QualityCheckRecord.rule_id == rule_id).delete(synchronize_session=False)
+    try:
+        db.delete(rule)
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="规则仍被引用，无法删除。可先停用该规则。") from e
     return {"message": "删除成功"}
 
 
