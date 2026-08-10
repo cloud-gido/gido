@@ -40,14 +40,43 @@ def _rt_cfg():
     return SimpleNamespace()
 
 
+def test_apply_cr_reconciles_failed_stop_operation(monkeypatch):
+    """卡在 SAVING_STATE 但 stop 操作已失败 → 纠偏为仍运行中。"""
+    job = _job(status="running", flink_job_id="jid-1", lifecycle_state="SAVING_STATE")
+    failed_op = SimpleNamespace(
+        status="failed",
+        operation_type="stop",
+        requested_at="2026-01-01",
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.order_by.return_value.first.return_value = failed_op
+    cr = {
+        "spec": {"job": {"state": "running"}},
+        "status": {
+            "lifecycleState": "STABLE",
+            "jobStatus": {"jobId": "jid-1"},
+        },
+    }
+    out = streaming_api._apply_status_from_operator_cr(db, job, cr, "gido-sql-1-42")
+    assert job.lifecycle_state == "RUNNING"
+    assert job.status == "running"
+    assert out["lifecycle_state"] == "RUNNING"
+    assert out["status"] == "running"
+
+
 def test_apply_cr_preserves_planned_stop_in_progress(monkeypatch):
-    """计划停止进行中：即使 CR 已 suspended，也不抢先标已停止。"""
+    """计划停止进行中且操作未终态：即使 CR 已 suspended，也不抢先标已停止。"""
     deleted = []
     monkeypatch.setattr(
         "app.services.flink_operator_submit.delete_flink_deployment",
         lambda *a, **k: deleted.append(True),
     )
     job = _job(status="running", flink_job_id="jid-1", lifecycle_state="SUSPENDING")
+    db = MagicMock()
+    db.query.return_value.filter.return_value.order_by.return_value.first.return_value = SimpleNamespace(
+        status="running",
+        operation_type="stop",
+    )
     cr = {
         "spec": {"job": {"state": "suspended"}},
         "status": {
@@ -55,7 +84,7 @@ def test_apply_cr_preserves_planned_stop_in_progress(monkeypatch):
             "jobStatus": {"jobId": "jid-1"},
         },
     }
-    out = streaming_api._apply_status_from_operator_cr(_db(), job, cr, "gido-sql-1-42")
+    out = streaming_api._apply_status_from_operator_cr(db, job, cr, "gido-sql-1-42")
     assert job.status == "running"
     assert job.lifecycle_state == "SUSPENDING"
     assert job.flink_job_id == "jid-1"
@@ -125,11 +154,13 @@ def test_sync_cr_missing_marks_cancelled_without_delete(monkeypatch):
         lambda job, runtime_cfg=None: {"hints": []},
     )
 
-    job = _job(status="running", flink_job_id="jid-1")
+    job = _job(status="running", flink_job_id="jid-1", lifecycle_state="SUSPENDING")
     out = streaming_api._sync_one_job_live_status(_db(), job, cr_cache={})
     assert out["status"] == "cancelled"
     assert out["flink_status"] == "NOT_FOUND_ON_OPERATOR"
+    assert out["lifecycle_state"] == "FORCE_STOPPED"
     assert job.status == "cancelled"
+    assert job.lifecycle_state == "FORCE_STOPPED"
     assert deleted == []
 
 

@@ -312,18 +312,38 @@ export default function StreamMonitorPage() {
   }
 
   const canRun = can(user, P.GIDO_STREAM_RUN, currentWorkspace)
+  const stoppingJobs = useMemo(
+    () => jobs.filter(j => {
+      const lc = String(j.lifecycle_state || '').toUpperCase()
+      return lc === 'SAVING_STATE' || lc === 'SUSPENDING'
+    }),
+    [jobs],
+  )
+  const notifiedStopOpsRef = useRef<Set<number>>(new Set())
 
   const handleStop = async (row: any) => {
     try {
       const res: any = await streamingApi.stopJob(row.id, { mode: 'savepoint' })
-      message.success(res?.message || '已提交「保存并停止」')
+      message.loading({
+        content: '正在保存状态并停止…完成后行状态会自动变为「已停止」或回到「运行中」',
+        key: `stop-${row.id}`,
+        duration: 0,
+      })
+      if (res?.operation_id != null) {
+        notifiedStopOpsRef.current.delete(Number(res.operation_id))
+      }
       setJobs(prev => prev.map(j => (
         j.id === row.id
-          ? { ...j, lifecycle_state: res?.lifecycle_state || 'SAVING_STATE' }
+          ? {
+              ...j,
+              lifecycle_state: res?.lifecycle_state || 'SAVING_STATE',
+              _pending_stop_operation_id: res?.operation_id,
+            }
           : j
       )))
       await loadJobs(false)
     } catch (e: any) {
+      message.destroy(`stop-${row.id}`)
       const detail = e?.response?.data?.detail || e?.message || '保存并停止失败'
       message.error(typeof detail === 'string' ? detail : '保存并停止失败')
       await loadJobs(false)
@@ -352,10 +372,10 @@ export default function StreamMonitorPage() {
             将先生成恢复点，再挂起集群。成功后作业为「已停止」，可从恢复点重新启动。
           </p>
           <p style={{ marginBottom: 8, color: 'rgba(0,0,0,0.65)' }}>
-            提交后行状态为「正在保存状态」；请在「操作记录」查看进度。请勿重复点击。
+            提交后按钮会暂时不可用，行状态为「正在保存状态」。请留在本页等待提示；成功变为「已停止」，失败回到「运行中」。
           </p>
           <p style={{ marginBottom: 0, color: 'rgba(0,0,0,0.65)' }}>
-            若失败：作业应仍为「运行中」，可重试。仅在集群异常时使用「更多 → 清理集群」。
+            中途刷新不会中断后台停止，但可能暂时看不到进度。也可打开「操作记录」查看。
           </p>
         </div>
       ),
@@ -517,32 +537,45 @@ export default function StreamMonitorPage() {
       try {
         const res: any = await streamingApi.syncJobsStatus(wsId)
         if (!alive) return
-        const nextMap: Record<number, { flink_status?: string; status?: string }> = {}
+        const nextMap: Record<number, { flink_status?: string; status?: string; lifecycle_state?: string }> = {}
         for (const s of res?.items || []) {
-          nextMap[s.id] = { flink_status: s.flink_status, status: s.status }
+          nextMap[s.id] = {
+            flink_status: s.flink_status,
+            status: s.status,
+            lifecycle_state: s.lifecycle_state,
+          }
         }
         setFlinkMap(prev => {
           let changed = false
           for (const [id, u] of Object.entries(nextMap)) {
             const key = Number(id)
             const old = prev[key]
-            if (!old || old.status !== u.status || old.flink_status !== u.flink_status) {
+            if (
+              !old
+              || old.status !== u.status
+              || old.flink_status !== u.flink_status
+              || old.lifecycle_state !== u.lifecycle_state
+            ) {
               changed = true
               break
             }
           }
           return changed ? { ...prev, ...nextMap } : prev
         })
-        // 仅当某作业 status 真有变化时改 jobs，避免 synced=需对账数量 导致整表每轮重建、Popconfirm 闪烁
+        // 回填 status + lifecycle：停止过程中 status 常一直是 running，必须靠 lifecycle 才能离开「保存中」
         setJobs(prev => {
           let changed = false
           const next = prev.map(j => {
             const u = nextMap[j.id]
-            if (u?.status != null && u.status !== j.status) {
-              changed = true
-              return { ...j, status: u.status }
+            if (!u) return j
+            const patch: Record<string, unknown> = {}
+            if (u.status != null && u.status !== j.status) patch.status = u.status
+            if (u.lifecycle_state != null && u.lifecycle_state !== j.lifecycle_state) {
+              patch.lifecycle_state = u.lifecycle_state
             }
-            return j
+            if (!Object.keys(patch).length) return j
+            changed = true
+            return { ...j, ...patch }
           })
           return changed ? next : prev
         })
@@ -551,59 +584,129 @@ export default function StreamMonitorPage() {
       }
     }
     poll()
-    const t = window.setInterval(poll, 8000)
+    const hasStopping = jobsRef.current.some(j => {
+      const lc = String(j.lifecycle_state || '').toUpperCase()
+      return lc === 'SAVING_STATE' || lc === 'SUSPENDING'
+    })
+    const t = window.setInterval(poll, hasStopping ? 3000 : 8000)
     return () => {
       alive = false
       window.clearInterval(t)
     }
-  }, [wsId])
+  }, [wsId, stoppingJobs.length])
+
+  /** 保存并停止进行中：盯操作记录，成功/失败明确提示（避免灰按钮干等后刷新才发现） */
+  useEffect(() => {
+    if (!stoppingJobs.length) return
+    let alive = true
+    const tick = async () => {
+      for (const row of stoppingJobs) {
+        if (!alive) return
+        try {
+          const value: any = await streamingApi.getOperations(row.id)
+          const ops = asItems(value, 'operations')
+          const stopOp = ops.find((op: any) => String(op.operation_type || op.operation || '') === 'stop')
+            || (row._pending_stop_operation_id != null
+              ? ops.find((op: any) => Number(op.id) === Number(row._pending_stop_operation_id))
+              : null)
+          if (!stopOp) continue
+          const opId = Number(stopOp.id)
+          const st = String(stopOp.status || '').toLowerCase()
+          if (st !== 'succeeded' && st !== 'failed') continue
+          if (opId && notifiedStopOpsRef.current.has(opId)) continue
+          if (opId) notifiedStopOpsRef.current.add(opId)
+          message.destroy(`stop-${row.id}`)
+          if (st === 'succeeded') {
+            message.success(`「${row.name}」已停止并保存状态，可从恢复点重启`)
+          } else {
+            message.error(
+              `「${row.name}」保存并停止失败，作业应仍在运行。${stopOp.error_message || stopOp.error || ''}`.trim(),
+            )
+          }
+          await loadJobs(false)
+        } catch { /* ignore */ }
+      }
+    }
+    void tick()
+    const t = window.setInterval(() => { void tick() }, 3000)
+    return () => {
+      alive = false
+      window.clearInterval(t)
+    }
+  }, [stoppingJobs])
 
   const unifiedJobState = (row: any) => {
     const platform = String(flinkMap[row.id]?.status || row.status || '').toLowerCase()
     const flink = String(flinkMap[row.id]?.flink_status || row.flink_status || '')
     const lifecycle = String(row.lifecycle_state || '').toUpperCase()
+    const hasPendingApprovedRelease = (releaseMap[row.id] || []).some(release => isApprovedNotDeployed(release, row))
+      || (row.current_approved_release_id
+        && row.current_running_release_id
+        && Number(row.current_approved_release_id) !== Number(row.current_running_release_id))
+      || (row.approval_status === 'approved' && !row.deployed_at && !row.flink_operator_deployment_name
+        && !row.current_running_release_id)
+
     const transitions: Record<string, { key: string; label: string; color: string }> = {
       SAVING_STATE: { key: 'active', label: '正在保存状态', color: 'processing' },
       SUSPENDING: { key: 'active', label: '正在挂起', color: 'processing' },
       DEPLOYING: { key: 'active', label: '正在部署', color: 'processing' },
       RESTORING: { key: 'active', label: '正在恢复', color: 'processing' },
-      SUSPENDED: { key: 'stopped', label: '已停止', color: 'warning' },
+      SUSPENDED: {
+        key: 'stopped',
+        label: hasPendingApprovedRelease ? '已停止 · 有待部署版本' : '已停止',
+        color: 'warning',
+      },
       RESTORE_FAILED: { key: 'needs_attention', label: '恢复失败', color: 'error' },
       DEPLOY_FAILED: { key: 'needs_attention', label: '部署失败', color: 'error' },
-      // 仅「已挂起且无恢复点」等少数情况；成功失败路径应回到运行中/已停止
       STOP_FAILED: { key: 'needs_attention', label: '停止未完成', color: 'error' },
-      FORCE_STOPPED: { key: 'stopped', label: '已停止（已清理）', color: 'warning' },
+      FORCE_STOPPED: {
+        key: 'stopped',
+        label: hasPendingApprovedRelease ? '已停止（已清理）· 有待部署版本' : '已停止（已清理）',
+        color: 'warning',
+      },
     }
     if (transitions[lifecycle]) {
-      // 兼容旧数据：STOP_FAILED 但集群/平台仍显示 running → 按运行中
       if (lifecycle === 'STOP_FAILED' && (platform === 'running' || /RUNNING|STABLE/i.test(flink))) {
         return { key: 'active', label: '运行中', color: 'processing' }
       }
       return transitions[lifecycle]
     }
-    if (/NOT_FOUND_ON_OPERATOR|SUSPENDED/i.test(flink) || platform === 'cancelled') {
-      return { key: 'stopped', label: '已停止', color: 'warning' }
+
+    const stoppedByCluster = /NOT_FOUND_ON_OPERATOR|SUSPENDED/i.test(flink)
+      || platform === 'cancelled'
+      || /CANCEL|NOT_FOUND_ON_JM/i.test(flink)
+    if (stoppedByCluster) {
+      return {
+        key: 'stopped',
+        label: hasPendingApprovedRelease ? '已停止 · 有待部署版本' : '已停止',
+        color: 'warning',
+      }
     }
     if (row.last_submit_error || platform === 'failed' || /FAILED/i.test(flink)) {
       return { key: 'needs_attention', label: '需处理', color: 'error' }
     }
-    if ((releaseMap[row.id] || []).some(release => isApprovedNotDeployed(release, row))
-      || (row.current_approved_release_id && row.current_approved_release_id !== row.current_running_release_id)
-      || (row.approval_status === 'approved' && !row.deployed_at && !row.flink_operator_deployment_name)) {
-      return { key: 'ready_to_deploy', label: '已批准待部署', color: 'cyan' }
-    }
-    if (platform === 'draft') return { key: 'draft', label: '草稿', color: 'default' }
-    if (/DEPLOY|START|INITIALIZING|CREATED|PENDING/i.test(flink)) {
+    // 运行中/启动中优先于「待部署」，避免停完或仍在跑时被误标成已批准待部署
+    if (/DEPLOY|START|INITIALIZING|CREATED|PENDING/i.test(flink) || lifecycle === 'DEPLOYING') {
       return { key: 'active', label: '启动中', color: 'processing' }
     }
-    if (platform === 'running' || /RUNNING|STABLE/i.test(flink)) {
-      return { key: 'active', label: '运行中', color: 'processing' }
+    if (platform === 'running' || lifecycle === 'RUNNING' || /RUNNING|STABLE/i.test(flink)) {
+      return {
+        key: 'active',
+        label: hasPendingApprovedRelease ? '运行中 · 有新版本可部署' : '运行中',
+        color: 'processing',
+      }
     }
     if (platform === 'finished' || /FINISHED/i.test(flink)) {
       return { key: 'terminal', label: '已结束', color: 'success' }
     }
-    if (/CANCEL|NOT_FOUND_ON_JM/i.test(flink)) {
-      return { key: 'stopped', label: '已停止', color: 'warning' }
+    if (hasPendingApprovedRelease || (row.approval_status === 'approved' && !row.deployed_at && !row.flink_operator_deployment_name)) {
+      return { key: 'ready_to_deploy', label: '已批准待部署', color: 'cyan' }
+    }
+    if (platform === 'draft' || lifecycle === 'DRAFT' || lifecycle === 'APPROVED' || lifecycle === 'PENDING_APPROVAL') {
+      if (lifecycle === 'APPROVED' || lifecycle === 'PENDING_APPROVAL') {
+        return { key: 'ready_to_deploy', label: lifecycle === 'PENDING_APPROVAL' ? '待审批' : '已批准待部署', color: 'cyan' }
+      }
+      return { key: 'draft', label: '草稿', color: 'default' }
     }
     return { key: 'other', label: '未知', color: 'default' }
   }
@@ -942,6 +1045,16 @@ export default function StreamMonitorPage() {
 
       {overviewErr && (
         <Alert type="warning" showIcon style={{ marginBottom: 16 }} message="FlinkDeployment 概览加载失败" description={overviewErr} />
+      )}
+
+      {stoppingJobs.length > 0 && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`正在保存状态并停止：${stoppingJobs.map(j => j.name).join('、')}`}
+          description="按钮变灰表示已受理、后台生成恢复点。请等待成功「已停止」或失败「仍运行中」的提示；不必刷新。可点历史里的操作记录查看进度。"
+        />
       )}
 
       <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>

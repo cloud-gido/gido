@@ -5351,7 +5351,11 @@ def _build_failure_payload(
 
 
 def _status_payload(job: StreamingJob, *, runtime_cfg: FlinkRuntimeConfig, **extra):
-    out = {"status": job.status, "flink_operational": _compute_flink_operational(job, runtime_cfg=runtime_cfg)}
+    out = {
+        "status": job.status,
+        "lifecycle_state": getattr(job, "lifecycle_state", None),
+        "flink_operational": _compute_flink_operational(job, runtime_cfg=runtime_cfg),
+    }
     out.update(extra)
     if "failure" not in out:
         failure = _build_failure_payload(
@@ -5374,12 +5378,58 @@ def _apply_status_from_operator_cr(db: Session, job: StreamingJob, cr: Dict[str,
     lifecycle_up = (lifecycle or "").strip().upper()
     platform_lc = str(getattr(job, "lifecycle_state", None) or "").upper()
 
-    # 计划停止进行中：spec 会先变成 suspended，但 Savepoint 尚未完成——勿抢先标「已停止」
+    # 计划停止进行中：spec 会先变成 suspended，但 Savepoint 尚未完成——勿抢先标「已停止」。
+    # 若后台操作已终态而 lifecycle 仍卡在过渡态（线程异常/进程重启），按操作结果纠偏。
     if platform_lc in ("SAVING_STATE", "SUSPENDING"):
+        latest_stop = (
+            db.query(StreamingOperation)
+            .filter(
+                StreamingOperation.job_id == job.id,
+                StreamingOperation.operation_type == "stop",
+            )
+            .order_by(StreamingOperation.requested_at.desc())
+            .first()
+        )
+        op_status = str(getattr(latest_stop, "status", None) or "").lower()
+        if op_status == "succeeded":
+            _mark_job_stopped(db, job, clear_runtime=True)
+            job.flink_operator_deployment_name = dep_name
+            job.lifecycle_state = "SUSPENDED"
+            db.commit()
+            return {
+                "flink_status": "SUSPENDED",
+                "note": "保存并停止已完成（由操作记录纠偏）",
+                "status": "cancelled",
+                "lifecycle_state": "SUSPENDED",
+            }
+        if op_status == "failed":
+            # 失败契约：仍按运行中；若集群其实已挂起则落入下方 suspended 分支
+            if spec_state == "suspended":
+                job.status = "cancelled"
+                job.lifecycle_state = "STOP_FAILED"
+                job.updated_at = datetime.utcnow()
+                db.commit()
+                return {
+                    "flink_status": "SUSPENDED",
+                    "note": "保存并停止失败，集群已挂起且无成功恢复点",
+                    "status": "cancelled",
+                    "lifecycle_state": "STOP_FAILED",
+                }
+            job.status = "running"
+            job.lifecycle_state = "RUNNING"
+            job.updated_at = datetime.utcnow()
+            db.commit()
+            return {
+                "flink_status": lifecycle_up or "RUNNING",
+                "note": "保存并停止失败，作业仍在运行",
+                "status": "running",
+                "lifecycle_state": "RUNNING",
+            }
         return {
             "flink_status": platform_lc,
             "note": "正在保存状态并停止（以平台操作进度为准）",
             "status": "running",
+            "lifecycle_state": platform_lc,
         }
 
     if spec_state == "suspended":
@@ -5477,9 +5527,21 @@ def _sync_one_job_live_status(
                 logger.debug("Operator CR 状态解析失败 job_id=%s dep=%s", job.id, dep_name, exc_info=True)
         elif cr_listed_missing:
             # 仅回填 GIDO：集群已无 CR → 平台显示已停止（不删任何东西）
-            if (job.status or "").lower() not in ("cancelled", "finished", "failed"):
+            platform_lc = str(getattr(job, "lifecycle_state", None) or "").upper()
+            if (job.status or "").lower() not in ("cancelled", "finished", "failed") or platform_lc in (
+                "SAVING_STATE",
+                "SUSPENDING",
+                "RUNNING",
+                "DEPLOYING",
+                "RESTORING",
+            ):
                 _mark_job_stopped(db, job, clear_runtime=True)
                 job.flink_operator_deployment_name = dep_name
+                # 停止过程中 CR 消失：按已清理；其它情况标挂起停止，避免残留 approved/RUNNING 误导前端
+                if platform_lc in ("SAVING_STATE", "SUSPENDING"):
+                    job.lifecycle_state = "FORCE_STOPPED"
+                elif platform_lc not in ("SUSPENDED", "FORCE_STOPPED"):
+                    job.lifecycle_state = "SUSPENDED"
                 db.commit()
             return _status_payload(
                 job,
@@ -5487,6 +5549,7 @@ def _sync_one_job_live_status(
                 flink_status="NOT_FOUND_ON_OPERATOR",
                 note="集群中已无对应 FlinkDeployment，已将平台状态回填为已停止",
                 status="cancelled",
+                lifecycle_state=getattr(job, "lifecycle_state", None),
             )
         elif not job.flink_job_id:
             if job.status == "cancelled":
@@ -5507,8 +5570,16 @@ def _sync_one_job_live_status(
     try:
         detail = fc.fetch_job_document(job.flink_job_id, jm_base=jm_ov, timeout=jm_timeout)
         if detail is None:
-            if job.status == "running":
+            if job.status == "running" or str(getattr(job, "lifecycle_state", None) or "").upper() in (
+                "SAVING_STATE",
+                "SUSPENDING",
+                "RUNNING",
+            ):
                 _mark_job_stopped(db, job, clear_runtime=False)
+                lc = str(getattr(job, "lifecycle_state", None) or "").upper()
+                if lc not in ("SUSPENDED", "FORCE_STOPPED"):
+                    job.lifecycle_state = "SUSPENDED"
+                db.commit()
             return _status_payload(
                 job,
                 runtime_cfg=rt_cfg,
@@ -5586,6 +5657,9 @@ def sync_workspace_jobs_status(
             {
                 "id": job.id,
                 "status": payload.get("status", job.status),
+                "lifecycle_state": payload.get(
+                    "lifecycle_state", getattr(job, "lifecycle_state", None)
+                ),
                 "flink_status": payload.get("flink_status"),
                 "note": payload.get("note"),
                 "error": payload.get("error"),
