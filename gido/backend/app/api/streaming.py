@@ -4013,6 +4013,8 @@ def _finalize_savepoint_stop(
     previous_path: Optional[str],
     previous_trigger_id: Optional[str],
     previous_trigger_timestamp: Optional[str],
+    ignore_snapshot_paths: Optional[set] = None,
+    ignore_snapshot_names: Optional[set] = None,
 ) -> dict:
     """等待 Savepoint 完成并回填；供同步 wait=true 与后台线程共用。"""
     from app.services.flink_operator_submit import (
@@ -4030,6 +4032,8 @@ def _finalize_savepoint_stop(
             previous_path=previous_path,
             previous_trigger_id=previous_trigger_id,
             previous_trigger_timestamp=previous_trigger_timestamp,
+            ignore_snapshot_paths=ignore_snapshot_paths,
+            ignore_snapshot_names=ignore_snapshot_names,
         )
         final_cr = wait_for_flink_deployment_suspended(
             deployment_name,
@@ -4128,6 +4132,8 @@ def _finalize_savepoint_stop_background(
     previous_path: Optional[str],
     previous_trigger_id: Optional[str],
     previous_trigger_timestamp: Optional[str],
+    ignore_snapshot_paths: Optional[set] = None,
+    ignore_snapshot_names: Optional[set] = None,
 ) -> None:
     from app.core.database import SessionLocal
 
@@ -4152,6 +4158,8 @@ def _finalize_savepoint_stop_background(
                 previous_path=previous_path,
                 previous_trigger_id=previous_trigger_id,
                 previous_trigger_timestamp=previous_trigger_timestamp,
+                ignore_snapshot_paths=ignore_snapshot_paths,
+                ignore_snapshot_names=ignore_snapshot_names,
             )
         except HTTPException:
             # 失败态已写入库；后台线程不再向外抛
@@ -4204,8 +4212,10 @@ def stop_streaming_job_with_savepoint(
 
     from app.services.flink_operator_submit import (
         _operator_namespace,
+        collect_completed_savepoint_snapshot_idents,
         extract_savepoint_status_from_cr,
         extract_savepoint_trigger_from_cr,
+        list_flink_state_snapshots,
         read_flink_deployment,
         suspend_flink_deployment,
     )
@@ -4242,6 +4252,12 @@ def stop_streaming_job_with_savepoint(
     previous_trigger_id, previous_trigger_timestamp = (
         extract_savepoint_trigger_from_cr(before)
     )
+    # 忽略停止前已存在的 Snapshot，避免把历史 COMPLETED 误当成本次成功
+    ignore_snapshot_paths, ignore_snapshot_names = collect_completed_savepoint_snapshot_idents(
+        list_flink_state_snapshots(namespace=namespace, deployment_name=deployment_name)
+    )
+    if previous_path:
+        ignore_snapshot_paths.add(previous_path)
     operation = create_streaming_operation(
         db,
         job,
@@ -4293,6 +4309,8 @@ def stop_streaming_job_with_savepoint(
         previous_path=previous_path,
         previous_trigger_id=previous_trigger_id,
         previous_trigger_timestamp=previous_trigger_timestamp,
+        ignore_snapshot_paths=ignore_snapshot_paths,
+        ignore_snapshot_names=ignore_snapshot_names,
     )
     if body.wait:
         return _finalize_savepoint_stop(

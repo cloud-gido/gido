@@ -320,10 +320,12 @@ def test_extract_completed_savepoint_from_snapshots_ignores_old_path():
 
     snaps = [
         {
+            "metadata": {"name": "old-snap"},
             "spec": {"savepoint": {}, "jobReference": {"name": "job-1"}},
             "status": {"state": "COMPLETED", "path": "s3://old"},
         },
         {
+            "metadata": {"name": "new-snap"},
             "spec": {"savepoint": {}, "jobReference": {"name": "job-1"}},
             "status": {"state": "COMPLETED", "path": "s3://new"},
         },
@@ -333,6 +335,35 @@ def test_extract_completed_savepoint_from_snapshots_ignores_old_path():
     )
     assert path == "s3://new"
     assert err is None
+
+    path2, err2 = fos.extract_completed_savepoint_from_snapshots(
+        snaps,
+        ignore_paths={"s3://old", "s3://new"},
+        ignore_names={"old-snap", "new-snap"},
+    )
+    assert path2 is None
+    assert err2 is None
+
+
+def test_collect_completed_savepoint_snapshot_idents():
+    from app.services import flink_operator_submit as fos
+
+    paths, names = fos.collect_completed_savepoint_snapshot_idents(
+        [
+            {
+                "metadata": {"name": "sp-1"},
+                "spec": {"savepoint": {}},
+                "status": {"state": "COMPLETED", "path": "s3://a"},
+            },
+            {
+                "metadata": {"name": "sp-pending"},
+                "spec": {"savepoint": {}},
+                "status": {"state": "IN_PROGRESS"},
+            },
+        ]
+    )
+    assert paths == {"s3://a"}
+    assert names == {"sp-1"}
 
 
 def test_suspend_patches_savepoint_dirs(monkeypatch):

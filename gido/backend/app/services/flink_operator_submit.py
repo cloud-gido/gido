@@ -1103,17 +1103,31 @@ def extract_completed_savepoint_from_snapshots(
     snapshots: List[Dict[str, Any]],
     *,
     previous_path: Optional[str] = None,
+    ignore_paths: Optional[set] = None,
+    ignore_names: Optional[set] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
-    """Return ``(path, error)`` from FlinkStateSnapshot list for savepoint type."""
+    """Return ``(path, error)`` from FlinkStateSnapshot list for savepoint type.
+
+    ``ignore_paths`` / ``ignore_names`` skip snapshots that already existed before
+    the current planned stop (avoids treating a prior COMPLETED upgrade SP as success).
+    """
+    ignored_paths = {str(p).strip() for p in (ignore_paths or set()) if str(p).strip()}
+    if previous_path and str(previous_path).strip():
+        ignored_paths.add(str(previous_path).strip())
+    ignored_names = {str(n).strip() for n in (ignore_names or set()) if str(n).strip()}
     best_path: Optional[str] = None
     best_error: Optional[str] = None
     for item in snapshots:
         spec = item.get("spec") or {}
         status = item.get("status") or {}
+        meta = item.get("metadata") or {}
         if not isinstance(spec, dict) or not isinstance(status, dict):
             continue
         # checkpoint-only resources have spec.checkpoint; savepoints have spec.savepoint
         if spec.get("checkpoint") is not None and spec.get("savepoint") is None:
+            continue
+        name = _first_text(meta.get("name"))
+        if name and name in ignored_names:
             continue
         state = _first_text(status.get("state"), status.get("status"))
         state_u = state.upper().replace("-", "_") if state else ""
@@ -1123,12 +1137,41 @@ def extract_completed_savepoint_from_snapshots(
             best_error = err
             continue
         if state_u == "COMPLETED" and path:
-            if previous_path and path == previous_path:
+            if path in ignored_paths:
                 continue
             best_path = path
             best_error = None
             # keep scanning; last completed wins (list order not guaranteed)
     return best_path, best_error
+
+
+def collect_completed_savepoint_snapshot_idents(
+    snapshots: List[Dict[str, Any]],
+) -> Tuple[set, set]:
+    """Return ``(paths, names)`` of already-completed savepoint snapshots."""
+    paths: set = set()
+    names: set = set()
+    for item in snapshots:
+        if not isinstance(item, dict):
+            continue
+        spec = item.get("spec") or {}
+        status = item.get("status") or {}
+        meta = item.get("metadata") or {}
+        if not isinstance(spec, dict) or not isinstance(status, dict):
+            continue
+        if spec.get("checkpoint") is not None and spec.get("savepoint") is None:
+            continue
+        state = _first_text(status.get("state"), status.get("status"))
+        state_u = state.upper().replace("-", "_") if state else ""
+        if state_u != "COMPLETED":
+            continue
+        path = _first_text(status.get("path"), status.get("savepointPath"))
+        name = _first_text(meta.get("name"))
+        if path:
+            paths.add(path)
+        if name:
+            names.add(name)
+    return paths, names
 
 
 def extract_savepoint_trigger_from_cr(
@@ -1262,6 +1305,8 @@ def wait_for_completed_savepoint(
     previous_path: Optional[str] = None,
     previous_trigger_id: Optional[str] = None,
     previous_trigger_timestamp: Optional[str] = None,
+    ignore_snapshot_paths: Optional[set] = None,
+    ignore_snapshot_names: Optional[set] = None,
 ) -> str:
     """Wait for a completed savepoint and return its durable path.
 
@@ -1313,7 +1358,10 @@ def wait_for_completed_savepoint(
             namespace=ns, deployment_name=deployment_name
         )
         snap_path, snap_error = extract_completed_savepoint_from_snapshots(
-            snapshots, previous_path=previous_path
+            snapshots,
+            previous_path=previous_path,
+            ignore_paths=ignore_snapshot_paths,
+            ignore_names=ignore_snapshot_names,
         )
         if snap_error and not snap_path:
             raise RuntimeError(
