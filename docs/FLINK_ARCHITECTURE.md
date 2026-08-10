@@ -12,7 +12,8 @@ GitHub Actions（`.github/workflows/ci.yml` → `docker-flink-runtime`）构建 
 
 遗留 **Session** / **K8s Application** 提交仅当环境变量 `GIDO_LEGACY_FLINK_SUBMIT=true` 时可用。
 
-答疑（CR / Operator / JM·TM / 停止与 checkpoint）：见 [FLINK_OPERATOR_FAQ.md](./FLINK_OPERATOR_FAQ.md)。
+答疑（CR / Operator / JM·TM / 停止与 checkpoint）：见 [FLINK_OPERATOR_FAQ.md](./FLINK_OPERATOR_FAQ.md)。  
+计划停止超时（Checkpoint 正常但 Savepoint 失败）专项 QA：见 [FAQ §8](./FLINK_OPERATOR_FAQ.md#8-qa计划停止-savepoint-一直超时checkpoint-却正常)。
 
 ## 架构示意
 
