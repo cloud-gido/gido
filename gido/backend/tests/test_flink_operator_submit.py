@@ -315,6 +315,69 @@ def test_extract_savepoint_status_from_upgrade_savepoint_path():
     )
 
 
+def test_extract_savepoint_ignores_checkpoint_upgrade_path():
+    """Sticky upgradeSavepointPath after last-state must not fake SP success."""
+    from app.services import flink_operator_submit as fos
+
+    cr = {
+        "status": {
+            "jobStatus": {
+                "upgradeSavepointPath": (
+                    "s3a://bucket/flink/checkpoints/2dd081702c3cdbb6bd22a71becb70cd6/chk-3"
+                ),
+            }
+        }
+    }
+    assert fos.extract_savepoint_status_from_cr(cr) == (None, None, None)
+    assert not fos.is_flink_savepoint_path(
+        "s3a://bucket/flink/checkpoints/abc/chk-3"
+    )
+    assert fos.is_flink_savepoint_path(
+        "s3a://bucket/flink/savepoints/savepoint-5fdba3-58ba1b9943db"
+    )
+
+
+def test_wait_for_completed_savepoint_skips_checkpoint_upgrade_path(monkeypatch):
+    from app.services import flink_operator_submit as fos
+
+    calls = {"n": 0}
+
+    def _read(_name, _ns=None):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return {
+                "status": {
+                    "jobStatus": {
+                        "state": "RUNNING",
+                        "upgradeSavepointPath": (
+                            "s3a://bucket/flink/checkpoints/jid/chk-3"
+                        ),
+                    }
+                }
+            }
+        return {
+            "status": {
+                "jobStatus": {
+                    "state": "RUNNING",
+                    "upgradeSavepointPath": "s3a://bucket/flink/savepoints/savepoint-new",
+                }
+            }
+        }
+
+    monkeypatch.setattr(fos, "read_flink_deployment", _read)
+    monkeypatch.setattr(fos, "list_flink_state_snapshots", lambda **k: [])
+    monkeypatch.setattr(fos, "_operator_namespace", lambda: "flink")
+    path = fos.wait_for_completed_savepoint(
+        "dep",
+        "flink",
+        timeout_seconds=5,
+        poll_interval_seconds=0,
+        previous_path="s3a://bucket/flink/checkpoints/jid/chk-3",
+    )
+    assert path == "s3a://bucket/flink/savepoints/savepoint-new"
+    assert calls["n"] >= 3
+
+
 def test_extract_completed_savepoint_from_snapshots_ignores_old_path():
     from app.services import flink_operator_submit as fos
 

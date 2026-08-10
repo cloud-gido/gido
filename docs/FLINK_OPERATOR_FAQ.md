@@ -243,6 +243,9 @@ GIDO 曾只注入 `execution.checkpointing.savepoint-dir`，未写 Flink 官方�
 **坑 7 — 每次停止都 PATCH 相同的 `flinkConfiguration`**  
 为补 `state.savepoints.dir`，若与 `suspended` **同一次**写入（或目录已存在仍重复 PATCH），Operator 会当成配置变更升级，作业被重启；GIDO 随即 `Job Not Found` → resume，WebUI 看到「停了又起」。正确做法：仅在目录缺失时先单独补配置并等 `RUNNING`，再只 PATCH `state=suspended`。
 
+**坑 8 — `upgradeSavepointPath` 残留 Checkpoint 路径**  
+last-state / 失败恢复后，CR 上 `jobStatus.upgradeSavepointPath` 可能指向 `.../flink/checkpoints/.../chk-N`。旧逻辑把任意非空 upgrade 路径当成「Savepoint 已完成」，随后去等 `suspend`，作业其实从未做完计划停止 SP → `Timed out waiting for … to suspend`，且 Snapshot 仍只有历史那条。应忽略 checkpoint URI，只认 savepoint 目录 / `FlinkStateSnapshot`。
+
 ### 8.3 怎么在 Pod 里快速核对（无本机 kubectl 时）
 
 进 **gido-backend** Pod（`/app`），用自带客户端：

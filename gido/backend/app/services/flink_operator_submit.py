@@ -1023,6 +1023,24 @@ def _first_text(*values: Any) -> Optional[str]:
     return None
 
 
+def is_flink_savepoint_path(path: Optional[str]) -> bool:
+    """True when URI is acceptable as a planned-stop savepoint path.
+
+    Operator may leave ``upgradeSavepointPath`` pointing at a checkpoint
+    (e.g. ``.../flink/checkpoints/.../chk-3``) after last-state recovery.
+    Treating that as a completed planned-stop savepoint makes GIDO skip waiting
+    for a real Snapshot, then time out on suspend.
+    """
+    value = (path or "").strip().lower()
+    if not value:
+        return False
+    if "/checkpoints/" in value or "/checkpoint/" in value:
+        return False
+    if "/chk-" in value or value.rstrip("/").split("/")[-1].startswith("chk-"):
+        return False
+    return True
+
+
 def extract_savepoint_status_from_cr(
     cr: Dict[str, Any],
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -1030,6 +1048,7 @@ def extract_savepoint_status_from_cr(
 
     Prefer legacy ``savepointInfo`` when present; also accept
     ``jobStatus.upgradeSavepointPath`` (Operator 1.10+ / 1.15 upgrade path).
+    Checkpoint URIs in ``upgradeSavepointPath`` are ignored.
     """
     status = cr.get("status") or {}
     job_status = status.get("jobStatus") or status.get("job_status") or {}
@@ -1055,6 +1074,8 @@ def extract_savepoint_status_from_cr(
         info.get("savepointPath"),
         info.get("savepoint_path"),
     )
+    if path and not is_flink_savepoint_path(path):
+        path = None
     raw_state = _first_text(
         info.get("status"),
         info.get("state"),
@@ -1100,10 +1121,13 @@ def extract_savepoint_status_from_cr(
 
     # Operator 1.15：计划停止/升级 Savepoint 常写在 upgradeSavepointPath，
     # 而 savepointInfo 可能一直为空（改由 FlinkStateSnapshot 跟踪）。
+    # 注意：last-state 恢复后该字段可能残留 checkpoint 路径，必须剔除。
     upgrade_path = _first_text(
         job_status.get("upgradeSavepointPath"),
         job_status.get("upgrade_savepoint_path"),
     )
+    if upgrade_path and not is_flink_savepoint_path(upgrade_path):
+        upgrade_path = None
     if upgrade_path and not path:
         path = upgrade_path
         if not savepoint_state or savepoint_state in nonterminal_states:
@@ -1438,7 +1462,12 @@ def wait_for_completed_savepoint(
             if has_previous_trigger
             else (not previous_path or path != previous_path)
         )
-        if savepoint_state == "COMPLETED" and path and is_fresh:
+        if (
+            savepoint_state == "COMPLETED"
+            and path
+            and is_fresh
+            and is_flink_savepoint_path(path)
+        ):
             return path
 
         snapshots = list_flink_state_snapshots(
@@ -1454,7 +1483,7 @@ def wait_for_completed_savepoint(
             raise RuntimeError(
                 f"Savepoint for FlinkDeployment {ns}/{deployment_name} failed: {snap_error}"
             )
-        if snap_path:
+        if snap_path and is_flink_savepoint_path(snap_path):
             return snap_path
 
         if time.monotonic() >= deadline:

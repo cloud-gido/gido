@@ -3746,6 +3746,13 @@ def _assert_durable_restore_path(path: str) -> str:
             status_code=409,
             detail="恢复点路径不是受支持的持久存储 URI",
         )
+    from app.services.flink_operator_submit import is_flink_savepoint_path
+
+    if not is_flink_savepoint_path(value):
+        raise HTTPException(
+            status_code=409,
+            detail="恢复点路径看起来是 Checkpoint 而非 Savepoint，拒绝用作计划恢复点",
+        )
     return value
 
 
