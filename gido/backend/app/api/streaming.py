@@ -4614,6 +4614,7 @@ def restart_streaming_job(
                 job.flink_job_id = str(info["job_id"])
             job.status = "running"
             job.lifecycle_state = "RUNNING"
+            job.last_submit_error = None
             if deployment_name and not job.flink_operator_deployment_name:
                 job.flink_operator_deployment_name = deployment_name
             result = {
@@ -4773,6 +4774,7 @@ def restart_streaming_job(
                 job.flink_job_id = str(info["job_id"])
             job.status = "running"
             job.lifecycle_state = "RUNNING"
+            job.last_submit_error = None
             result = {
                 **result,
                 "restart_action": "replace_deployment",
@@ -5808,9 +5810,15 @@ def _apply_status_from_operator_cr(db: Session, job: StreamingJob, cr: Dict[str,
             }
 
     if is_flink_job_live_on_cr(cr, require_tm_replicas=True):
-        if job.status != "running" or getattr(job, "lifecycle_state", None) != "RUNNING":
+        if (
+            job.status != "running"
+            or getattr(job, "lifecycle_state", None) != "RUNNING"
+            or getattr(job, "last_submit_error", None)
+        ):
             job.status = "running"
             job.lifecycle_state = "RUNNING"
+            # 成功跑起来后清掉历史提交错误，避免 UI 仍标「需处理」
+            job.last_submit_error = None
             job.updated_at = datetime.utcnow()
             db.commit()
         if jid:
@@ -5827,9 +5835,14 @@ def _apply_status_from_operator_cr(db: Session, job: StreamingJob, cr: Dict[str,
         }
 
     if lifecycle_up in ("STABLE", "DEPLOYED", "CREATED", "RUNNING") and job_state_up == "RUNNING":
-        if job.status != "running" or getattr(job, "lifecycle_state", None) != "RUNNING":
+        if (
+            job.status != "running"
+            or getattr(job, "lifecycle_state", None) != "RUNNING"
+            or getattr(job, "last_submit_error", None)
+        ):
             job.status = "running"
             job.lifecycle_state = "RUNNING"
+            job.last_submit_error = None
             job.updated_at = datetime.utcnow()
             db.commit()
         if jid:

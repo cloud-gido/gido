@@ -116,6 +116,29 @@ def test_apply_cr_running_corrects_cancelled_db(monkeypatch):
     assert deleted == []
 
 
+def test_apply_cr_live_clears_stale_last_submit_error(monkeypatch):
+    """作业已 RUNNING 时清掉历史提交错误，避免 UI 仍标「需处理」。"""
+    job = _job(
+        status="failed",
+        flink_job_id="jid-old",
+        lifecycle_state="DEPLOY_FAILED",
+        last_submit_error="nodes is forbidden",
+    )
+    cr = {
+        "spec": {"job": {"state": "running"}},
+        "status": {
+            "lifecycleState": "STABLE",
+            "jobStatus": {"jobId": "jid-new", "state": "RUNNING"},
+            "taskManager": {"replicas": 1},
+        },
+    }
+    out = streaming_api._apply_status_from_operator_cr(_db(), job, cr, "gido-sql-1-42")
+    assert job.status == "running"
+    assert job.lifecycle_state == "RUNNING"
+    assert job.last_submit_error is None
+    assert out is None  # 有 jobId 时继续查 JM
+
+
 def test_apply_cr_failed_sets_failed(monkeypatch):
     deleted = []
     monkeypatch.setattr(

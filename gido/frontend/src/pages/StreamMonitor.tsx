@@ -785,8 +785,18 @@ export default function StreamMonitorPage() {
       },
     }
     if (transitions[lifecycle]) {
-      if (lifecycle === 'STOP_FAILED' && (platform === 'running' || /RUNNING|STABLE/i.test(flink))) {
-        return { key: 'active', label: '运行中', color: 'processing' }
+      if (
+        (lifecycle === 'STOP_FAILED'
+          || lifecycle === 'DEPLOY_FAILED'
+          || lifecycle === 'RESTORE_FAILED'
+          || lifecycle === 'FORCE_STOP_FAILED')
+        && (platform === 'running' || /RUNNING|STABLE/i.test(flink))
+      ) {
+        return {
+          key: 'active',
+          label: hasPendingApprovedRelease ? '运行中 · 有新版本可部署' : '运行中',
+          color: 'processing',
+        }
       }
       return transitions[lifecycle]
     }
@@ -804,6 +814,14 @@ export default function StreamMonitorPage() {
     if (/JM_UNREACHABLE/i.test(flink)) {
       return { key: 'needs_attention', label: 'JM 不可达', color: 'error' }
     }
+    // 运行中优先于陈旧 last_submit_error：集群已健康时勿再标「需处理」
+    if (platform === 'running' || lifecycle === 'RUNNING' || /RUNNING|STABLE/i.test(flink)) {
+      return {
+        key: 'active',
+        label: hasPendingApprovedRelease ? '运行中 · 有新版本可部署' : '运行中',
+        color: 'processing',
+      }
+    }
     if (row.last_submit_error || platform === 'failed' || /FAILED|RESTORE_FAILED/i.test(flink)) {
       return { key: 'needs_attention', label: '需处理', color: 'error' }
     }
@@ -812,13 +830,6 @@ export default function StreamMonitorPage() {
       return {
         key: 'active',
         label: lifecycle === 'RESTORING' ? '正在恢复' : '启动中',
-        color: 'processing',
-      }
-    }
-    if (platform === 'running' || lifecycle === 'RUNNING' || /RUNNING|STABLE/i.test(flink)) {
-      return {
-        key: 'active',
-        label: hasPendingApprovedRelease ? '运行中 · 有新版本可部署' : '运行中',
         color: 'processing',
       }
     }
