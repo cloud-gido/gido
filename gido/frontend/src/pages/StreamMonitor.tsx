@@ -592,15 +592,45 @@ export default function StreamMonitorPage() {
           confirm_stateless: restoreMode === 'stateless',
         }
     setActionLoading(true)
+    const loadingKey = actionKind === 'deploy' ? 'stream-deploy' : 'stream-restart'
+    message.loading({
+      content: actionKind === 'deploy'
+        ? '正在部署，等待作业 RUNNING（最长约 3 分钟）…'
+        : '正在恢复，等待作业 RUNNING（最长约 3 分钟）…',
+      key: loadingKey,
+      duration: 0,
+    })
+    // 立刻反映到列表，避免弹窗长时间无反馈像「没点上」
+    if (actionKind === 'restart') {
+      setJobs(prev => prev.map(j => (
+        j.id === actionRow.id
+          ? { ...j, status: 'running', lifecycle_state: 'RESTORING' }
+          : j
+      )))
+    } else {
+      setJobs(prev => prev.map(j => (
+        j.id === actionRow.id
+          ? { ...j, status: 'running', lifecycle_state: 'DEPLOYING' }
+          : j
+      )))
+    }
     try {
       const res: any = actionKind === 'deploy'
         ? await streamingApi.deployJob(actionRow.id, payload)
         : await streamingApi.restartJob(actionRow.id, payload)
-      message.success(res?.message || (actionKind === 'deploy' ? '已提交部署' : '已提交重启/恢复'))
+      message.success({
+        content: res?.message || (actionKind === 'deploy' ? '已提交部署' : '已提交重启/恢复'),
+        key: loadingKey,
+      })
       setActionOpen(false)
       await loadJobs()
     } catch (e: any) {
-      message.error(e?.response?.data?.detail || (actionKind === 'deploy' ? '部署失败' : '重启失败'))
+      const detail = e?.response?.data?.detail || e?.message
+      const text = typeof detail === 'string'
+        ? detail
+        : (actionKind === 'deploy' ? '部署失败' : '重启失败')
+      message.error({ content: text, key: loadingKey })
+      await loadJobs(false)
     } finally {
       setActionLoading(false)
     }
