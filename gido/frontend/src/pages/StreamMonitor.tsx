@@ -246,7 +246,7 @@ export default function StreamMonitorPage() {
   const [advancedJson, setAdvancedJson] = useState('{}')
   const [resourceTier, setResourceTier] = useState('')
   const [operatorResources, setOperatorResources] = useState<OperatorResourceForm>({ ...EMPTY_OPERATOR_RESOURCES })
-  const [restoreMode, setRestoreMode] = useState<'latest' | 'specific' | 'stateless'>('latest')
+  const [restoreMode, setRestoreMode] = useState<'latest' | 'specific' | 'last-state' | 'stateless'>('latest')
   const [restorePointId, setRestorePointId] = useState<number | string | undefined>()
   const [allowNonRestoredState, setAllowNonRestoredState] = useState(false)
   const [restorePoints, setRestorePoints] = useState<any[]>([])
