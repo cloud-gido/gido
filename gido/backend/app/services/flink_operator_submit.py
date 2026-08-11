@@ -1055,10 +1055,11 @@ def is_flink_deployment_savepoint_resume_stuck(cr: Optional[Dict[str, Any]]) -> 
     """True when Operator left a finished/suspended cluster that bare resume cannot heal.
 
     Healthy after「保存并停止」: ``spec.state=suspended`` + ``lifecycle=SUSPENDED`` +
-    ``jobStatus=FINISHED``. That is NOT stuck — use savepointRedeploy.
+    ``jobStatus=FINISHED`` + TM scaled to 0. That is NOT stuck — savepointRedeploy OK.
 
-    Stuck commercial symptom: ``spec.state=running`` but status still
-    ``SUSPENDED``/``FINISHED`` (often TM replicas 0) — JM 0↔1 / empty resume.
+    Stuck commercial symptoms:
+    - ``spec.state=running`` but status still ``SUSPENDED``/``FINISHED`` (TM often 0)
+    - Job already terminal while ``spec`` still ``running`` (UI FINISHED, pods linger)
     """
     info = inspect_flink_deployment_job_fields(cr)
     if info["deleting"]:
@@ -1069,7 +1070,9 @@ def is_flink_deployment_savepoint_resume_stuck(cr: Optional[Dict[str, Any]]) -> 
     job_state = info["job_state"]
     if lifecycle == "SUSPENDED" and job_state in ("FINISHED", "CANCELED", "FAILED", ""):
         return True
-    if job_state == "FINISHED" and info["tm_replicas"] == 0:
+    # Terminal Flink job under a still-"running" desired state cannot be healed by
+    # bare resume / mid-drain savepointRedeploy — reclaim CR.
+    if job_state in ("FINISHED", "CANCELED", "FAILED"):
         return True
     return False
 
@@ -1085,7 +1088,9 @@ def classify_flink_restart_action(
     Returns one of:
     - ``hot_restart``: bump restartNonce only (still running, no restore path)
     - ``savepoint_redeploy``: patch running + initialSavepointPath + savepointRedeployNonce
-    - ``replace_deployment``: delete/recreate (or full apply) — stuck / missing / terminating
+      (only when cleanly suspended **and** TM already scaled to 0)
+    - ``replace_deployment``: delete/recreate (or full apply) — stuck / missing /
+      terminating / pods still draining after stop
     """
     path = (restore_path or "").strip()
     if cr is None:
@@ -1096,11 +1101,16 @@ def classify_flink_restart_action(
     if info["deleting"]:
         return "replace_deployment"
     if path:
-        # Clean suspend: Operator resumes in place with savepointRedeployNonce.
-        if info["spec_state"] == "suspended" or info["lifecycle"] == "SUSPENDED":
+        # Clean, fully scaled-down suspend: Operator can savepointRedeploy in place.
+        # If JM/TM pods are still up after stop (common: suspend waits for FINISHED,
+        # not replicas=0), in-place redeploy often tears down to 0 and never recovers
+        # — reclaim CR and submit with initialSavepointPath instead.
+        clean_suspend = (
+            info["spec_state"] == "suspended" or info["lifecycle"] == "SUSPENDED"
+        )
+        fully_scaled_down = info["tm_replicas"] == 0
+        if clean_suspend and fully_scaled_down:
             return "savepoint_redeploy"
-        # Healthy running cluster but caller asked for an explicit restore point →
-        # replace so graph/args and savepoint apply atomically.
         return "replace_deployment"
     if (
         prefer_hot_restart
@@ -1550,14 +1560,49 @@ def _operator_failure_from_cr(cr: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def is_flink_job_live_on_cr(
+    cr: Optional[Dict[str, Any]],
+    *,
+    previous_job_id: Optional[str] = None,
+    require_tm_replicas: bool = True,
+) -> bool:
+    """Top-tier readiness: job truly RUNNING with capacity — not STABLE+stale jobId."""
+    info = inspect_flink_deployment_job_fields(cr)
+    if info["spec_state"] != "running":
+        return False
+    if info["job_state"] != "RUNNING":
+        return False
+    jid = str(info.get("job_id") or "").strip()
+    if not jid:
+        return False
+    prev = str(previous_job_id or "").strip()
+    if prev and jid == prev:
+        return False
+    if require_tm_replicas and int(info.get("tm_replicas") or -1) < 1:
+        return False
+    return True
+
+
+def is_flink_deployment_fully_suspended(cr: Optional[Dict[str, Any]]) -> bool:
+    """Suspend complete only when desired suspended, terminal/suspended status, TM=0."""
+    info = inspect_flink_deployment_job_fields(cr)
+    if info["spec_state"] != "suspended":
+        return False
+    reconciled = info["job_state"] in ("SUSPENDED", "FINISHED") or info["lifecycle"] == "SUSPENDED"
+    if not reconciled:
+        return False
+    return info["tm_replicas"] == 0
+
+
 def wait_for_flink_deployment_suspended(
     deployment_name: str,
     namespace: Optional[str] = None,
     *,
     timeout_seconds: float = 60.0,
     poll_interval_seconds: float = 1.0,
+    require_scaled_down: bool = True,
 ) -> Dict[str, Any]:
-    """Wait until the Operator has reconciled the requested suspended state."""
+    """Wait until suspended is reconciled; by default also wait TM replicas=0."""
     ns = namespace or _operator_namespace()
     deadline = time.monotonic() + max(0.0, float(timeout_seconds))
     while True:
@@ -1567,20 +1612,18 @@ def wait_for_flink_deployment_suspended(
             raise RuntimeError(
                 f"FlinkDeployment {ns}/{deployment_name} failed while suspending: {failure}"
             )
-        spec_state = _first_text(((cr.get("spec") or {}).get("job") or {}).get("state"))
-        status = cr.get("status") or {}
-        job_status = status.get("jobStatus") or {}
-        job_state = _first_text(job_status.get("state"), job_status.get("jobState"))
-        lifecycle = _first_text(status.get("lifecycleState"), status.get("state"))
+        info = inspect_flink_deployment_job_fields(cr)
         reconciled = (
-            (job_state or "").upper() in ("SUSPENDED", "FINISHED")
-            or (lifecycle or "").upper() == "SUSPENDED"
+            info["job_state"] in ("SUSPENDED", "FINISHED")
+            or info["lifecycle"] == "SUSPENDED"
         )
-        if (spec_state or "").lower() == "suspended" and reconciled:
+        scaled_ok = (not require_scaled_down) or info["tm_replicas"] == 0
+        if info["spec_state"] == "suspended" and reconciled and scaled_ok:
             return cr
         if time.monotonic() >= deadline:
             raise TimeoutError(
                 f"Timed out waiting for FlinkDeployment {ns}/{deployment_name} to suspend"
+                + (" and scale TM to 0" if require_scaled_down else "")
             )
         time.sleep(max(0.0, float(poll_interval_seconds)))
 
@@ -1591,8 +1634,10 @@ def wait_for_flink_deployment_running(
     *,
     timeout_seconds: float = 60.0,
     poll_interval_seconds: float = 1.0,
+    previous_job_id: Optional[str] = None,
+    require_tm_replicas: bool = True,
 ) -> Dict[str, Any]:
-    """Wait until a running desired state is reconciled to a live Flink job."""
+    """Wait until Flink job is live: jobStatus=RUNNING, new jobId, TM>=1."""
     ns = namespace or _operator_namespace()
     deadline = time.monotonic() + max(0.0, float(timeout_seconds))
     while True:
@@ -1602,26 +1647,18 @@ def wait_for_flink_deployment_running(
             raise RuntimeError(
                 f"FlinkDeployment {ns}/{deployment_name} failed while resuming: {failure}"
             )
-        spec_state = _first_text(
-            ((cr.get("spec") or {}).get("job") or {}).get("state")
-        )
-        status = cr.get("status") or {}
-        job_status = status.get("jobStatus") or {}
-        job_state = _first_text(
-            job_status.get("state"),
-            job_status.get("jobState"),
-        )
-        job_id = _first_text(job_status.get("jobId"), job_status.get("jobID"))
-        lifecycle = _first_text(status.get("lifecycleState"), status.get("state"))
-        reconciled = (job_state or "").upper() == "RUNNING" or (
-            bool(job_id)
-            and (lifecycle or "").upper() in ("STABLE", "DEPLOYED", "RUNNING")
-        )
-        if (spec_state or "").lower() == "running" and reconciled:
+        if is_flink_job_live_on_cr(
+            cr,
+            previous_job_id=previous_job_id,
+            require_tm_replicas=require_tm_replicas,
+        ):
             return cr
         if time.monotonic() >= deadline:
             raise TimeoutError(
-                f"Timed out waiting for FlinkDeployment {ns}/{deployment_name} to resume"
+                f"Timed out waiting for FlinkDeployment {ns}/{deployment_name} to resume "
+                f"(require jobStatus=RUNNING"
+                f"{', TM>=1' if require_tm_replicas else ''}"
+                f"{', new jobId' if previous_job_id else ''})"
             )
         time.sleep(max(0.0, float(poll_interval_seconds)))
 

@@ -105,7 +105,8 @@ def test_apply_cr_running_corrects_cancelled_db(monkeypatch):
         "spec": {"job": {"state": "running"}},
         "status": {
             "lifecycleState": "STABLE",
-            "jobStatus": {"jobId": "jid-abc"},
+            "jobStatus": {"jobId": "jid-abc", "state": "RUNNING"},
+            "taskManager": {"replicas": 1},
         },
     }
     early = streaming_api._apply_status_from_operator_cr(_db(), job, cr, "gido-sql-1-42")
@@ -164,6 +165,38 @@ def test_sync_cr_missing_marks_cancelled_without_delete(monkeypatch):
     assert deleted == []
 
 
+def test_sync_cr_missing_during_restoring_keeps_lifecycle(monkeypatch):
+    """重启 replace 删 CR 窗口：不得把 RESTORING 回填成 SUSPENDED。"""
+    deleted = []
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.delete_flink_deployment",
+        lambda *a, **k: deleted.append(True),
+    )
+    monkeypatch.setattr(streaming_api, "_flink_runtime_cfg_for_job", lambda db, job: _rt_cfg())
+    monkeypatch.setattr(streaming_api, "_flink_client_for_job", lambda db, job: MagicMock())
+    monkeypatch.setattr(streaming_api, "_jm_base_for_job", lambda *a, **k: None)
+    monkeypatch.setattr(streaming_api, "_operator_deployment_name_for_job", lambda job: "gido-sql-1-42")
+    monkeypatch.setattr(
+        streaming_api,
+        "_compute_flink_operational",
+        lambda job, runtime_cfg=None: {"hints": []},
+    )
+
+    job = _job(status="running", flink_job_id="jid-1", lifecycle_state="RESTORING")
+    out = streaming_api._sync_one_job_live_status(_db(), job, cr_cache={})
+    assert out["flink_status"] == "NOT_FOUND_ON_OPERATOR"
+    assert out["lifecycle_state"] == "RESTORING"
+    assert job.status == "running"
+    assert job.lifecycle_state == "RESTORING"
+    assert deleted == []
+
+    job2 = _job(status="running", flink_job_id=None, lifecycle_state="DEPLOYING")
+    out2 = streaming_api._sync_one_job_live_status(_db(), job2, cr_cache={})
+    assert out2["lifecycle_state"] == "DEPLOYING"
+    assert job2.lifecycle_state == "DEPLOYING"
+    assert deleted == []
+
+
 def test_sync_cr_running_never_deletes(monkeypatch):
     deleted = []
     monkeypatch.setattr(
@@ -186,7 +219,8 @@ def test_sync_cr_running_never_deletes(monkeypatch):
         "spec": {"job": {"state": "running"}},
         "status": {
             "lifecycleState": "STABLE",
-            "jobStatus": {"jobId": "jid-live"},
+            "jobStatus": {"jobId": "jid-live", "state": "RUNNING"},
+            "taskManager": {"replicas": 1},
         },
     }
     job = _job(status="cancelled", flink_job_id=None)

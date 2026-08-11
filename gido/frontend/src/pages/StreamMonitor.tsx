@@ -104,10 +104,15 @@ const PLATFORM_STATUS_LABEL: Record<string, string> = {
 const OPERATION_TYPE_LABEL: Record<string, string> = {
   stop: '保存并停止',
   cancel: '清理集群',
+  'force-stop': '清理集群',
+  force_stop: '清理集群',
   restart: '重启/恢复',
   deploy: '部署',
   'stateless-start': '无状态启动',
 }
+
+/** 保存并停止默认等待 Snapshot 时长（秒），与后端 StreamingStopBody 默认一致 */
+const STOP_SAVEPOINT_TIMEOUT_SECONDS = 300
 
 const OPERATION_STATUS_LABEL: Record<string, string> = {
   pending: '待执行',
@@ -125,6 +130,7 @@ const FLINK_STATUS_LABEL: Record<string, string> = {
   SUSPENDED: '已暂停',
   NOT_FOUND_ON_JM: 'JM 未找到',
   UNKNOWN: '未知',
+  JM_UNREACHABLE: 'JM 不可达',
   RUNNING: '运行中',
   INITIALIZING: '初始化',
   FINISHED: '已完成',
@@ -145,6 +151,7 @@ function flinkStatusDisplay(fs: string | undefined) {
     SUSPENDED: 'warning',
     NOT_FOUND_ON_JM: 'volcano',
     UNKNOWN: 'default',
+    JM_UNREACHABLE: 'error',
     RUNNING: 'processing',
     INITIALIZING: 'processing',
     FINISHED: 'success',
@@ -353,9 +360,12 @@ export default function StreamMonitorPage() {
 
   const handleStop = async (row: any) => {
     try {
-      const res: any = await streamingApi.stopJob(row.id, { mode: 'savepoint' })
+      const res: any = await streamingApi.stopJob(row.id, {
+        mode: 'savepoint',
+        timeout_seconds: STOP_SAVEPOINT_TIMEOUT_SECONDS,
+      })
       // 不用 duration:0 的全局 loading：会跟到其它页面置顶。进度只留在本页 Alert。
-      message.success(res?.message || '已提交「保存并停止」，进度见本页提示')
+      message.success(res?.message || '已提交「保存并停止」，正在等待 Snapshot，进度见本页提示')
       if (res?.operation_id != null) {
         notifiedStopOpsRef.current.delete(Number(res.operation_id))
       }
@@ -395,10 +405,11 @@ export default function StreamMonitorPage() {
       content: (
         <div>
           <p style={{ marginBottom: 8 }}>
-            将先生成恢复点，再挂起集群。成功后作业为「已停止」，可从恢复点重新启动。
+            将先生成恢复点（等待 FlinkStateSnapshot），再挂起集群。成功后作业为「已停止」，可从恢复点重新启动。
           </p>
           <p style={{ marginBottom: 8, color: 'rgba(0,0,0,0.65)' }}>
-            提交后按钮会暂时不可用，行状态为「正在保存状态」。请留在本页等待提示；成功变为「已停止」，失败回到「运行中」。
+            提交后按钮会暂时不可用，行状态为「正在保存状态」。大状态作业默认最长约
+            {' '}{Math.round(STOP_SAVEPOINT_TIMEOUT_SECONDS / 60)} 分钟。请留在本页等待提示；成功变为「已停止」，失败回到「运行中」。
           </p>
           <p style={{ marginBottom: 0, color: 'rgba(0,0,0,0.65)' }}>
             中途刷新不会中断后台停止，但可能暂时看不到进度。也可打开「操作记录」查看。
@@ -472,9 +483,25 @@ export default function StreamMonitorPage() {
     if (kind === 'restart') {
       try {
         const value: any = await streamingApi.getRestorePoints(row.id)
-        setRestorePoints(asItems(value, 'restore_points'))
+        const points = asItems(value, 'restore_points')
+        setRestorePoints(points)
+        const hasCompleted = points.some((point: any) => (
+          (!point.status || String(point.status).toLowerCase() === 'completed')
+          && (!point.point_type || point.point_type === 'savepoint')
+          && Boolean(point.path || point.location)
+        ))
+        const running = String(row.status || '').toLowerCase() === 'running'
+          || String(row.lifecycle_state || '').toUpperCase() === 'RUNNING'
+        if (!hasCompleted && !running) {
+          setRestoreMode('stateless')
+        } else {
+          setRestoreMode('latest')
+        }
       } catch {
         setRestorePoints([])
+        const running = String(row.status || '').toLowerCase() === 'running'
+          || String(row.lifecycle_state || '').toUpperCase() === 'RUNNING'
+        setRestoreMode(running ? 'latest' : 'stateless')
       }
     }
   }
@@ -487,6 +514,14 @@ export default function StreamMonitorPage() {
     )),
     [restorePoints],
   )
+
+  /** 与后端一致：仍在跑且无恢复点时允许 latest → 热重启（restartNonce） */
+  const canHotRestartWithoutSavepoint = useMemo(() => {
+    if (!actionRow) return false
+    const st = String(actionRow.status || '').toLowerCase()
+    const lc = String(actionRow.lifecycle_state || '').toUpperCase()
+    return st === 'running' || lc === 'RUNNING'
+  }, [actionRow])
 
   const submitLifecycleAction = async () => {
     if (!actionRow) return
@@ -503,8 +538,19 @@ export default function StreamMonitorPage() {
     }
     if (
       actionKind === 'restart'
-      && (restoreMode === 'latest' || restoreMode === 'specific')
+      && restoreMode === 'specific'
       && completedRestorePoints.length === 0
+    ) {
+      message.error(
+        `「${actionRow.name}」没有可用的成功 Savepoint。请先对该作业「保存并停止」成功，或改用无状态启动。`,
+      )
+      return
+    }
+    if (
+      actionKind === 'restart'
+      && restoreMode === 'latest'
+      && completedRestorePoints.length === 0
+      && !canHotRestartWithoutSavepoint
     ) {
       message.error(
         `「${actionRow.name}」没有可用的成功 Savepoint。请先对该作业「保存并停止」成功，或改用无状态启动。`,
@@ -733,12 +779,19 @@ export default function StreamMonitorPage() {
         color: 'warning',
       }
     }
-    if (row.last_submit_error || platform === 'failed' || /FAILED/i.test(flink)) {
+    if (/JM_UNREACHABLE/i.test(flink)) {
+      return { key: 'needs_attention', label: 'JM 不可达', color: 'error' }
+    }
+    if (row.last_submit_error || platform === 'failed' || /FAILED|RESTORE_FAILED/i.test(flink)) {
       return { key: 'needs_attention', label: '需处理', color: 'error' }
     }
     // 运行中/启动中优先于「待部署」，避免停完或仍在跑时被误标成已批准待部署
-    if (/DEPLOY|START|INITIALIZING|CREATED|PENDING/i.test(flink) || lifecycle === 'DEPLOYING') {
-      return { key: 'active', label: '启动中', color: 'processing' }
+    if (/DEPLOY|START|INITIALIZING|CREATED|PENDING/i.test(flink) || lifecycle === 'DEPLOYING' || lifecycle === 'RESTORING') {
+      return {
+        key: 'active',
+        label: lifecycle === 'RESTORING' ? '正在恢复' : '启动中',
+        color: 'processing',
+      }
     }
     if (platform === 'running' || lifecycle === 'RUNNING' || /RUNNING|STABLE/i.test(flink)) {
       return {
@@ -1053,7 +1106,13 @@ export default function StreamMonitorPage() {
               onClick={() => void openLifecycleAction(row, 'restart')}>
               重启/恢复
             </Button>
-            <Tooltip title={stopping ? '正在保存状态，请稍候或打开操作记录' : '先生成恢复点再停止'}>
+            <Tooltip
+              title={
+                stopping
+                  ? '正在等待 FlinkStateSnapshot / Savepoint，请稍候或打开操作记录'
+                  : `先生成恢复点再停止（默认最长约 ${Math.round(STOP_SAVEPOINT_TIMEOUT_SECONDS / 60)} 分钟）`
+              }
+            >
               <Button size="small" danger disabled={!canStop} icon={<StopOutlined />}
                 onClick={() => confirmStop(row)}>{stopping ? '保存中…' : '保存并停止'}</Button>
             </Tooltip>
@@ -1104,7 +1163,7 @@ export default function StreamMonitorPage() {
           showIcon
           style={{ marginBottom: 16 }}
           message={`正在保存状态并停止：${stoppingJobs.map(j => j.name).join('、')}`}
-          description="按钮变灰表示已受理。进度只显示在本页；完成后行状态变为「已停止」或回到「运行中」。可点历史里的操作记录查看详情。"
+          description={`已受理，正在等待 FlinkStateSnapshot / Savepoint 完成（默认最长约 ${Math.round(STOP_SAVEPOINT_TIMEOUT_SECONDS / 60)} 分钟）。进度只显示在本页；成功后变为「已停止」，失败则回到「运行中」。可点历史里的操作记录查看详情。`}
         />
       )}
 
@@ -1293,7 +1352,11 @@ export default function StreamMonitorPage() {
                   showIcon
                   style={{ marginBottom: 16 }}
                   message={`「${actionRow?.name || '当前作业'}」暂无成功恢复点`}
-                  description="恢复点按作业隔离。请确认打开的是做过「保存并停止」且成功的那条作业；或改用无状态启动。"
+                  description={
+                    canHotRestartWithoutSavepoint
+                      ? '作业仍在运行：可选择「热重启（同配置，无需恢复点）」；或改用无状态启动。恢复点按作业隔离。'
+                      : '恢复点按作业隔离。请确认打开的是做过「保存并停止」且成功的那条作业；或改用无状态启动。'
+                  }
                 />
               ) : (
                 <Alert
@@ -1306,16 +1369,33 @@ export default function StreamMonitorPage() {
               <Form.Item label="恢复方式">
                 <Radio.Group value={restoreMode} onChange={e => setRestoreMode(e.target.value)}>
                   <Space direction="vertical">
-                    <Radio value="latest" disabled={completedRestorePoints.length === 0}>
-                      最近可用恢复点
+                    <Radio
+                      value="latest"
+                      disabled={completedRestorePoints.length === 0 && !canHotRestartWithoutSavepoint}
+                    >
+                      {completedRestorePoints.length === 0 && canHotRestartWithoutSavepoint
+                        ? '热重启（同配置，无需恢复点）'
+                        : '最近可用恢复点'}
                     </Radio>
                     <Radio value="specific" disabled={completedRestorePoints.length === 0}>
                       指定恢复点
+                    </Radio>
+                    <Radio value="last-state">
+                      最近状态（last-state，快速有状态）
                     </Radio>
                     <Radio value="stateless">无状态启动</Radio>
                   </Space>
                 </Radio.Group>
               </Form.Item>
+              {restoreMode === 'last-state' && (
+                <Alert
+                  type="info"
+                  showIcon
+                  style={{ marginBottom: 16 }}
+                  message="从 Operator HA / 最近 Checkpoint 恢复"
+                  description="比 Savepoint 更快，适合健康作业的快速重启；不依赖平台恢复点历史。需集群已启用 Checkpoint 与 HA。"
+                />
+              )}
               {restoreMode === 'specific' && (
                 <Form.Item label="恢复点">
                   <Select

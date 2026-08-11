@@ -597,14 +597,26 @@ def test_restart_from_suspended_uses_restore_path_not_bare_resume(monkeypatch):
         "app.services.flink_operator_submit.resume_flink_deployment_from_savepoint",
         lambda *a, **k: redeployed.append(dict(k)) or {},
     )
+    suspended_cr = {
+        "spec": {"job": {"state": "suspended"}},
+        "status": {
+            "lifecycleState": "SUSPENDED",
+            "jobStatus": {"state": "FINISHED"},
+            "taskManager": {"replicas": 0},
+        },
+    }
     monkeypatch.setattr(
         "app.services.flink_operator_submit.read_flink_deployment",
+        lambda *a, **k: suspended_cr,
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.wait_for_flink_deployment_running",
         lambda *a, **k: {
-            "spec": {"job": {"state": "suspended"}},
+            "spec": {"job": {"state": "running"}},
             "status": {
-                "lifecycleState": "SUSPENDED",
-                "jobStatus": {"state": "FINISHED"},
-                "taskManager": {"replicas": 0},
+                "lifecycleState": "STABLE",
+                "jobStatus": {"state": "RUNNING", "jobId": "jid-restored"},
+                "taskManager": {"replicas": 1},
             },
         },
     )
@@ -686,6 +698,17 @@ def test_restart_stuck_running_spec_with_suspended_status_replaces(monkeypatch):
             },
         },
     )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.wait_for_flink_deployment_running",
+        lambda *a, **k: {
+            "spec": {"job": {"state": "running"}},
+            "status": {
+                "lifecycleState": "STABLE",
+                "jobStatus": {"state": "RUNNING", "jobId": "jid-new"},
+                "taskManager": {"replicas": 1},
+            },
+        },
+    )
     monkeypatch.setattr(streaming_api.settings, "FLINK_OPERATOR_FLINK_VERSION", "v2_0")
 
     out = restart_streaming_job(
@@ -737,6 +760,20 @@ def test_restart_uses_selected_completed_restore_point(monkeypatch):
 
     monkeypatch.setattr(streaming_api, "require_streaming_job", lambda *a, **k: job)
     monkeypatch.setattr(streaming_api, "_execute_approved_release_deployment", _restart)
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.read_flink_deployment",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("missing")),
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.wait_for_flink_deployment_running",
+        lambda *a, **k: {
+            "spec": {"job": {"state": "running"}},
+            "status": {
+                "jobStatus": {"state": "RUNNING", "jobId": "jid-restored"},
+                "taskManager": {"replicas": 1},
+            },
+        },
+    )
     monkeypatch.setattr(streaming_api.settings, "FLINK_OPERATOR_FLINK_VERSION", "v2_0")
 
     out = restart_streaming_job(

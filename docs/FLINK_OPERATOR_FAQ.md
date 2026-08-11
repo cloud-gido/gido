@@ -217,7 +217,7 @@ sequenceDiagram
 
 | 表象 | 细节 |
 |------|------|
-| 运维页「Savepoint 停止」失败 | 操作记录 / 恢复点：`Timed out waiting for savepoint of FlinkDeployment …`（默认约 120s） |
+| 运维页「Savepoint 停止」失败 | 操作记录 / 恢复点：`Timed out waiting for savepoint of FlinkDeployment …`（默认约 **300s**） |
 | 停止过程中 CR | 长时间 `spec.job.state=suspended` 且 `jobStatus.state=RUNNING`，随后被 GIDO **resume** 回 `running` |
 | Checkpoint | JM REST / 运维诊断显示周期 Checkpoint **正常** |
 | `savepointInfo` | 多为空壳：`savepointHistory: []`，GIDO 解析结果 `(None, None, None)` |
@@ -307,16 +307,57 @@ ORDER BY id DESC LIMIT 5;
 
 生产若与测试分离部署：除 backend 镜像外，须运维同步 Role（话术见内部沟通）；仅合代码不够。
 
-### 8.5 优化与后续建议
+### 8.5 运维产品契约（状态 / 操作 / 重启分流）
 
-1. **默认超时**：大状态作业可考虑将 UI/API 默认从 120s 提高到 300s，并在运维页展示「正在等待 Snapshot」进度（仍以 Snapshot/路径为准，而非盲目加长）。
-2. **状态机**：`SAVING_STATE` / `SUSPENDING` 期间禁止状态同步把作业提前标成已挂起且清空 `flink_job_id`，避免与后台 finalize 打架。
-3. **后台等待**：daemon 线程在多副本 / 滚动时可能丢失；中长期改为可恢复的任务队列或 Operator 侧事件驱动。
-4. **E2E**：清单须覆盖「RBAC 可 list Snapshot」「CR 含 `state.savepoints.dir`」「停止成功后恢复点 path 非空」；见 [STREAM_STATEFUL_OPERATIONS_E2E.md](./STREAM_STATEFUL_OPERATIONS_E2E.md)。
+#### 用户可见状态
+
+| UI 约等于 | lifecycle_state | 平台 status | 集群预期 |
+|-----------|-----------------|-------------|---------|
+| 已批准待部署 | `approved` | draft | 无 CR |
+| 正在部署 / 运行中 | `DEPLOYING` / `RUNNING` | running | CR running |
+| 正在保存状态 / 正在挂起 | `SAVING_STATE` / `SUSPENDING` | running | 计划停止中 |
+| 已停止 | `SUSPENDED` | cancelled | CR 保留、TM≈0 |
+| 已停止（已清理） | `FORCE_STOPPED` | cancelled | CR 已删 |
+| 部署失败 / 恢复失败 | `DEPLOY_FAILED` / `RESTORE_FAILED` | failed 等 | 视情况 |
+
+#### 操作契约
+
+| 操作 | API | 成功 | 失败 |
+|------|-----|------|------|
+| 部署 | `POST .../deploy` | `RUNNING` | `DEPLOY_FAILED` |
+| 保存并停止 | `POST .../stop`（默认超时 **300s**） | `SUSPENDED` + 恢复点 completed | resume 回运行中 + 操作失败 |
+| 清理集群 | `POST .../cancel`（操作类型 `force-stop`） | `FORCE_STOPPED`，无恢复点 | 操作失败 |
+| 重启/恢复 | `POST .../restart` | 见下表分流 | `RESTORE_FAILED` |
+
+#### 重启分流（`classify_flink_restart_action`）
+
+| CR 事实 | 恢复点 / 模式 | 动作 |
+|---------|---------------|------|
+| 缺失 / Terminating / stuck（`spec=running` 但仍 SUSPENDED/FINISHED） | 任意 | 回收 CR（超时清 finalizer）再带 path 重建 |
+| 干净挂起且 TM replicas=0 | Savepoint path | `savepointRedeployNonce` + path → **等到 job RUNNING 且 TM≥1** |
+| 挂起但 Pod 未缩完 / 终态残留 | Savepoint path | 重建（不赌 in-place）→ 同上就绪门闩 |
+| 仍在跑、同 release、无新 path | 热重启 | `restartNonce` → 就绪门闩 |
+| `restore_mode=last-state` | 无平台 SP | Operator `upgradeMode=last-state`（HA/最近 CP） |
+| 显式无状态 | — | 强制重建 |
+
+#### 顶级就绪契约（对标 VVP / Operator 生产）
+
+| 阶段 | 成功条件 |
+|------|----------|
+| 保存并停止 | 新 Savepoint path + `spec=suspended` + **TM replicas=0**（缩容超时仍保留 SP，重启走 replace） |
+| 标成 RUNNING | `jobStatus.state=RUNNING` + **新 jobId** + **TM≥1**；否则保持 `RESTORING` |
+| 状态同步 | JM Connection refused → `JM_UNREACHABLE`，不得长期假 RUNNING；`DEPLOYING`/`RESTORING` 缺 CR 不标 SUSPENDED |
+
+同步契约：`DEPLOYING` / `RESTORING` 期间 CR 短暂消失**不得**回填为 `SUSPENDED`。
+
+### 8.6 优化与后续建议
+
+1. **默认超时**：API/运维页默认 **300s**；进度文案标明「正在等待 FlinkStateSnapshot」。
+2. **状态机**：`SAVING_STATE` / `SUSPENDING` 期间禁止状态同步把作业提前标成已挂起且清空 `flink_job_id`；`RESTORING`/`DEPLOYING` 缺 CR 保持原 lifecycle。
+3. **后台等待（技术债）**：停止 finalize 仍用进程内 daemon 线程，多副本 / 滚动时可能丢等待 → 作业长期停在 `SAVING_STATE`。中长期改为可恢复任务队列或 Operator 事件驱动；在此之前运维可查操作记录并必要时重试「保存并停止」。
+4. **E2E**：见 [STREAM_STATEFUL_OPERATIONS_E2E.md](./STREAM_STATEFUL_OPERATIONS_E2E.md)。
 5. **运维排障口令**：先看操作记录是否 `Timed out waiting for savepoint` → 再看 Snapshot CR 是否已有 COMPLETED → 区分「真没做成」与「做成了平台没看见」。
-6. **重启（商业路径）**：平台按 CR 状态自动分流——干净挂起走 `savepointRedeployNonce`；
-   `spec=running` 但仍 `SUSPENDED/FINISHED`（卡住）则先回收 CR（超时清 finalizer）再带 path 重建；
-   仍在跑且无新恢复点才 `restartNonce` 热重启。运维页点「重启」即可，无需进 Pod 手搓。
+6. **卡住重启**：平台显示 RUNNING 但 JM `Connection refused`、Pod=0 时，升级含分流逻辑的 backend 后对「从最近恢复点重启」应走 replace；必要时手工清 finalizer。
 
 ---
 

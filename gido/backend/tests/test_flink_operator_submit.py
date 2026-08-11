@@ -293,12 +293,30 @@ def test_classify_restart_action_stuck_vs_clean_suspend():
             "taskManager": {"replicas": 0},
         },
     }
+    # Stop succeeded (FINISHED) but JM/TM pods not drained yet — must replace,
+    # not in-place savepointRedeploy (commercial failure mode for job 308).
+    draining = {
+        "spec": {"job": {"state": "suspended"}},
+        "status": {
+            "lifecycleState": "SUSPENDED",
+            "jobStatus": {"state": "FINISHED"},
+            "taskManager": {"replicas": 1},
+        },
+    }
     stuck = {
         "spec": {"job": {"state": "running", "initialSavepointPath": "s3a://sp"}},
         "status": {
             "lifecycleState": "SUSPENDED",
             "jobStatus": {"state": "FINISHED"},
             "taskManager": {"replicas": 0},
+        },
+    }
+    finished_pods_up = {
+        "spec": {"job": {"state": "running"}},
+        "status": {
+            "lifecycleState": "STABLE",
+            "jobStatus": {"state": "FINISHED"},
+            "taskManager": {"replicas": 2},
         },
     }
     running = {
@@ -309,17 +327,24 @@ def test_classify_restart_action_stuck_vs_clean_suspend():
             "taskManager": {"replicas": 2},
         },
     }
+    path = "s3a://bucket/flink/savepoints/sp1"
     assert fos.classify_flink_restart_action(
-        clean, restore_path="s3a://bucket/flink/savepoints/sp1", prefer_hot_restart=False
+        clean, restore_path=path, prefer_hot_restart=False
     ) == "savepoint_redeploy"
     assert fos.classify_flink_restart_action(
-        stuck, restore_path="s3a://bucket/flink/savepoints/sp1", prefer_hot_restart=False
+        draining, restore_path=path, prefer_hot_restart=False
+    ) == "replace_deployment"
+    assert fos.classify_flink_restart_action(
+        stuck, restore_path=path, prefer_hot_restart=False
+    ) == "replace_deployment"
+    assert fos.classify_flink_restart_action(
+        finished_pods_up, restore_path=path, prefer_hot_restart=False
     ) == "replace_deployment"
     assert fos.classify_flink_restart_action(
         running, restore_path=None, prefer_hot_restart=True
     ) == "hot_restart"
     assert fos.classify_flink_restart_action(
-        None, restore_path="s3a://bucket/flink/savepoints/sp1", prefer_hot_restart=False
+        None, restore_path=path, prefer_hot_restart=False
     ) == "replace_deployment"
 
 
@@ -818,11 +843,31 @@ def test_wait_for_suspended_success_and_timeout(monkeypatch):
         "spec": {"job": {"state": "suspended"}},
         "status": {
             "jobStatus": {"state": "SUSPENDED"},
+            "taskManager": {"replicas": 0},
             "reconciliationStatus": {"state": "DEPLOYED"},
         },
     }
     monkeypatch.setattr(fos, "read_flink_deployment", lambda *a, **k: suspended)
     assert fos.wait_for_flink_deployment_suspended("job-1", timeout_seconds=0) is suspended
+
+    # FINISHED but pods still draining — not complete when require_scaled_down
+    draining = {
+        "spec": {"job": {"state": "suspended"}},
+        "status": {
+            "lifecycleState": "SUSPENDED",
+            "jobStatus": {"state": "FINISHED"},
+            "taskManager": {"replicas": 1},
+        },
+    }
+    monkeypatch.setattr(fos, "read_flink_deployment", lambda *a, **k: draining)
+    with pytest.raises(TimeoutError, match="scale TM"):
+        fos.wait_for_flink_deployment_suspended("job-1", timeout_seconds=0)
+    assert (
+        fos.wait_for_flink_deployment_suspended(
+            "job-1", timeout_seconds=0, require_scaled_down=False
+        )
+        is draining
+    )
 
     pending = {
         "spec": {"job": {"state": "suspended"}},
@@ -840,10 +885,28 @@ def test_wait_for_running_requires_reconciled_job(monkeypatch):
 
     running = {
         "spec": {"job": {"state": "running"}},
-        "status": {"jobStatus": {"state": "RUNNING", "jobId": "jid-1"}},
+        "status": {
+            "jobStatus": {"state": "RUNNING", "jobId": "jid-1"},
+            "taskManager": {"replicas": 1},
+        },
     }
     monkeypatch.setattr(fos, "read_flink_deployment", lambda *a, **k: running)
     assert fos.wait_for_flink_deployment_running("job-1", timeout_seconds=0) is running
+
+    # STABLE + stale jobId + FINISHED + tm=0 must NOT count as live
+    zombie = {
+        "spec": {"job": {"state": "running"}},
+        "status": {
+            "lifecycleState": "STABLE",
+            "jobStatus": {"state": "FINISHED", "jobId": "old-jid"},
+            "taskManager": {"replicas": 0},
+        },
+    }
+    monkeypatch.setattr(fos, "read_flink_deployment", lambda *a, **k: zombie)
+    with pytest.raises(TimeoutError, match="to resume"):
+        fos.wait_for_flink_deployment_running(
+            "job-1", timeout_seconds=0, previous_job_id="old-jid"
+        )
 
     pending = {
         "spec": {"job": {"state": "running"}},

@@ -1929,14 +1929,18 @@ class StreamingRestartBody(StreamingDeployBody):
     @classmethod
     def _validate_restore_mode(cls, value: str) -> str:
         mode = (value or "latest").strip().lower()
-        if mode not in ("latest", "specific", "stateless"):
-            raise ValueError("restore_mode 须为 latest、specific 或 stateless")
+        # last-state: Operator 快速有状态恢复（HA/最近 checkpoint），对标商业 PaaS
+        if mode not in ("latest", "specific", "stateless", "last-state"):
+            raise ValueError(
+                "restore_mode 须为 latest、specific、last-state 或 stateless"
+            )
         return mode
 
 
 class StreamingStopBody(BaseModel):
     mode: str = "savepoint"
-    timeout_seconds: float = Field(default=120.0, ge=5.0, le=900.0)
+    # 大状态作业 Snapshot 常超过 2 分钟；默认 300s，仍可在请求里缩短/加长（上限 900）
+    timeout_seconds: float = Field(default=300.0, ge=5.0, le=900.0)
     # False（默认）：触发挂起后立即返回，Savepoint 在后台完成，避免运维页弹窗卡死
     # True：同步等到完成/失败（单测与脚本）
     wait: bool = False
@@ -4086,11 +4090,23 @@ def _finalize_savepoint_stop(
             ignore_snapshot_paths=ignore_snapshot_paths,
             ignore_snapshot_names=ignore_snapshot_names,
         )
-        final_cr = wait_for_flink_deployment_suspended(
-            deployment_name,
-            namespace,
-            timeout_seconds=timeout_seconds,
-        )
+        drain_incomplete = False
+        try:
+            final_cr = wait_for_flink_deployment_suspended(
+                deployment_name,
+                namespace,
+                timeout_seconds=timeout_seconds,
+                require_scaled_down=True,
+            )
+        except TimeoutError:
+            # Savepoint 已成功：接受作业挂起，但资源未缩完（重启将走 replace）
+            final_cr = wait_for_flink_deployment_suspended(
+                deployment_name,
+                namespace,
+                timeout_seconds=min(30.0, float(timeout_seconds)),
+                require_scaled_down=False,
+            )
+            drain_incomplete = True
         restore.status = "completed"
         restore.path = _assert_durable_restore_path(savepoint_path)
         restore.flink_job_id = job.flink_job_id
@@ -4104,6 +4120,7 @@ def _finalize_savepoint_stop(
                     "parallelism"
                 ),
                 "release_id": job.current_running_release_id,
+                "drain_incomplete": drain_incomplete,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -4114,16 +4131,26 @@ def _finalize_savepoint_stop(
         finish_streaming_operation(
             operation,
             status="succeeded",
-            result_payload={"savepoint_path": restore.path},
+            result_payload={
+                "savepoint_path": restore.path,
+                "drain_incomplete": drain_incomplete,
+            },
         )
         job.status = "cancelled"
         job.lifecycle_state = "SUSPENDED"
         job.updated_at = datetime.utcnow()
         db.commit()
+        msg = "已停止并保存状态，可从恢复点重新启动"
+        if drain_incomplete:
+            msg = (
+                "已保存恢复点并挂起作业；TaskManager 尚未完全释放，"
+                "重启将回收重建集群（不影响从 Savepoint 续跑）"
+            )
         return {
-            "message": "已停止并保存状态，可从恢复点重新启动",
+            "message": msg,
             "operation_id": operation.id,
             "restore_point": _streaming_restore_point_public_dict(restore),
+            "drain_incomplete": drain_incomplete,
         }
     except Exception as exc:
         cluster_state = "unknown"
@@ -4137,6 +4164,7 @@ def _finalize_savepoint_stop(
                 deployment_name,
                 namespace,
                 timeout_seconds=min(float(timeout_seconds), 60.0),
+                require_tm_replicas=False,
             )
             cluster_state = str(
                 (((after_resume.get("spec") or {}).get("job") or {}).get("state"))
@@ -4420,9 +4448,11 @@ def restart_streaming_job(
         _operator_namespace,
         classify_flink_restart_action,
         ensure_flink_deployment_gone,
+        inspect_flink_deployment_job_fields,
         read_flink_deployment,
         resume_flink_deployment,
         resume_flink_deployment_from_savepoint,
+        wait_for_flink_deployment_running,
     )
 
     job = require_streaming_job(
@@ -4437,6 +4467,10 @@ def restart_streaming_job(
                 status_code=400,
                 detail="无状态启动会丢弃已有状态，必须显式确认",
             )
+    elif body.restore_mode == "last-state":
+        # Operator last-state：从 HA / 最近 checkpoint 恢复，无需平台 Savepoint 记录
+        restore = None
+        restore_path = None
     else:
         restore_query = db.query(StreamingRestorePoint).filter(
             StreamingRestorePoint.job_id == job.id,
@@ -4475,7 +4509,7 @@ def restart_streaming_job(
                     detail=(
                         f"作业「{job.name}」(id={job.id}) 没有可用的成功 Savepoint。"
                         "请先对该作业执行「保存并停止」并确认恢复点历史出现 completed 路径；"
-                        "或改用无状态启动。"
+                        "或改用「最近状态(last-state)」/无状态启动。"
                     ),
                 )
         else:
@@ -4543,50 +4577,143 @@ def restart_streaming_job(
                 current_cr = read_flink_deployment(deployment_name, namespace)
             except Exception:
                 current_cr = None
+        previous_job_id = str(job.flink_job_id or "").strip() or None
+        if current_cr is not None:
+            cr_jid = inspect_flink_deployment_job_fields(current_cr).get("job_id")
+            if cr_jid:
+                previous_job_id = str(cr_jid).strip() or previous_job_id
 
         action = classify_flink_restart_action(
             current_cr,
             restore_path=restore_path,
             prefer_hot_restart=prefer_hot_restart,
         )
-        # Stateless always replaces so Operator never inherits sticky upgrade paths.
+        # Stateless / last-state replace always reclaim sticky upgrade paths when needed.
         if body.restore_mode == "stateless":
             action = "replace_deployment"
+        elif body.restore_mode == "last-state":
+            # Prefer in-place last-state resume when CR is usable; else replace.
+            if action == "hot_restart" or (
+                current_cr is not None
+                and inspect_flink_deployment_job_fields(current_cr)["spec_state"]
+                == "suspended"
+                and inspect_flink_deployment_job_fields(current_cr)["tm_replicas"] == 0
+            ):
+                action = "last_state_resume"
+            else:
+                action = "replace_deployment"
+
+        readiness_timeout = 180.0
+        result: dict = {}
+        restart_done = False
+
+        def _mark_running_from_cr(live_cr: dict, *, restart_action: str, message: str) -> None:
+            nonlocal result, restart_done
+            info = inspect_flink_deployment_job_fields(live_cr)
+            if info.get("job_id"):
+                job.flink_job_id = str(info["job_id"])
+            job.status = "running"
+            job.lifecycle_state = "RUNNING"
+            if deployment_name and not job.flink_operator_deployment_name:
+                job.flink_operator_deployment_name = deployment_name
+            result = {
+                "message": message,
+                "flink_operator_deployment_name": deployment_name,
+                "restart_action": restart_action,
+                "restore_path": restore_path,
+                "flink_job_id": job.flink_job_id,
+            }
+            restart_done = True
 
         if action == "hot_restart" and deployment_name:
-            resume_flink_deployment(
-                deployment_name,
-                namespace,
-                restart_nonce=int(datetime.utcnow().timestamp() * 1000),
-                upgrade_mode="savepoint",
-            )
-            result = {
-                "message": "已通过 restartNonce 触发同配置有状态重启",
-                "flink_operator_deployment_name": deployment_name,
-                "restart_action": action,
-            }
-            job.status = "running"
-            job.lifecycle_state = "RUNNING"
+            try:
+                resume_flink_deployment(
+                    deployment_name,
+                    namespace,
+                    restart_nonce=int(datetime.utcnow().timestamp() * 1000),
+                    upgrade_mode="savepoint",
+                )
+                live = wait_for_flink_deployment_running(
+                    deployment_name,
+                    namespace,
+                    timeout_seconds=readiness_timeout,
+                    previous_job_id=previous_job_id,
+                    require_tm_replicas=True,
+                )
+                _mark_running_from_cr(
+                    live,
+                    restart_action="hot_restart",
+                    message="已通过 restartNonce 完成同配置有状态重启（作业 RUNNING）",
+                )
+            except Exception as hot_exc:
+                logger.warning(
+                    "hot_restart 未就绪，回退 replace job_id=%s err=%s",
+                    job.id,
+                    hot_exc,
+                )
+                action = "replace_deployment"
+        elif action == "last_state_resume" and deployment_name:
+            try:
+                resume_flink_deployment(
+                    deployment_name,
+                    namespace,
+                    restart_nonce=int(datetime.utcnow().timestamp() * 1000),
+                    upgrade_mode="last-state",
+                )
+                live = wait_for_flink_deployment_running(
+                    deployment_name,
+                    namespace,
+                    timeout_seconds=readiness_timeout,
+                    previous_job_id=previous_job_id,
+                    require_tm_replicas=True,
+                )
+                _mark_running_from_cr(
+                    live,
+                    restart_action="last_state_resume",
+                    message="已通过 Operator last-state 从最近状态恢复（作业 RUNNING）",
+                )
+            except Exception as ls_exc:
+                logger.warning(
+                    "last_state_resume 未就绪，回退 replace job_id=%s err=%s",
+                    job.id,
+                    ls_exc,
+                )
+                action = "replace_deployment"
         elif action == "savepoint_redeploy" and deployment_name and restore_path:
-            resume_flink_deployment_from_savepoint(
-                deployment_name,
-                namespace,
-                savepoint_path=restore_path,
-                allow_non_restored_state=bool(body.allow_non_restored_state),
-            )
-            result = {
-                "message": "已从 Savepoint 触发 Operator savepointRedeploy 恢复",
-                "flink_operator_deployment_name": deployment_name,
-                "restore_path": restore_path,
-                "restart_action": action,
-            }
-            job.status = "running"
-            job.lifecycle_state = "RUNNING"
-            if not job.flink_operator_deployment_name:
-                job.flink_operator_deployment_name = deployment_name
-        else:
-            # Commercial recovery: stuck SUSPENDED/FINISHED or missing CR →
-            # reclaim deployment then submit a fresh CR with the restore path.
+            try:
+                resume_flink_deployment_from_savepoint(
+                    deployment_name,
+                    namespace,
+                    savepoint_path=restore_path,
+                    allow_non_restored_state=bool(body.allow_non_restored_state),
+                )
+                live = wait_for_flink_deployment_running(
+                    deployment_name,
+                    namespace,
+                    timeout_seconds=readiness_timeout,
+                    previous_job_id=previous_job_id,
+                    require_tm_replicas=True,
+                )
+                _mark_running_from_cr(
+                    live,
+                    restart_action="savepoint_redeploy",
+                    message="已从 Savepoint 恢复且作业已 RUNNING",
+                )
+            except Exception as redeploy_exc:
+                logger.warning(
+                    "savepoint_redeploy 未恢复到 RUNNING，回退 replace_deployment "
+                    "job_id=%s deployment=%s err=%s",
+                    job.id,
+                    deployment_name,
+                    redeploy_exc,
+                )
+                action = "replace_deployment"
+                try:
+                    current_cr = read_flink_deployment(deployment_name, namespace)
+                except Exception:
+                    current_cr = current_cr
+
+        if not restart_done:
             if deployment_name and current_cr is not None:
                 try:
                     ensure_flink_deployment_gone(
@@ -4603,13 +4730,25 @@ def restart_streaming_job(
                             "请稍后重试重启；若仍失败请联系平台运维检查 Operator。"
                         ),
                     ) from exc
+            deploy_properties = body.streaming_properties
+            if body.restore_mode == "last-state":
+                # Force Operator upgradeMode=last-state on fresh CR submit.
+                base_props = _parse_job_streaming_properties(
+                    deploy_properties
+                    if deploy_properties is not None
+                    else release.streaming_properties
+                )
+                op_res = dict(base_props.get("operator_resources") or {})
+                op_res["upgradeMode"] = "last-state"
+                base_props["operator_resources"] = op_res
+                deploy_properties = json.dumps(base_props, ensure_ascii=False)
             runtime_job, result = _execute_approved_release_deployment(
                 db,
                 job,
                 release,
                 current_user,
                 parallelism=body.parallelism,
-                streaming_properties=body.streaming_properties,
+                streaming_properties=deploy_properties,
                 restore_path=restore_path,
                 allow_non_restored_state=body.allow_non_restored_state,
             )
@@ -4617,13 +4756,29 @@ def restart_streaming_job(
                 runtime_job,
                 job,
                 release_id=release.id,
-                lifecycle_state="RUNNING",
+                lifecycle_state="RESTORING",
             )
+            dep = _operator_deployment_name_for_job(job) or deployment_name
+            if not dep:
+                raise HTTPException(status_code=500, detail="重建部署后缺少 FlinkDeployment 名称")
+            live = wait_for_flink_deployment_running(
+                dep,
+                namespace,
+                timeout_seconds=readiness_timeout,
+                previous_job_id=previous_job_id,
+                require_tm_replicas=True,
+            )
+            info = inspect_flink_deployment_job_fields(live)
+            if info.get("job_id"):
+                job.flink_job_id = str(info["job_id"])
+            job.status = "running"
+            job.lifecycle_state = "RUNNING"
             result = {
                 **result,
                 "restart_action": "replace_deployment",
                 "message": result.get("message")
-                or "已回收旧部署并从 Savepoint/发布定义重新拉起",
+                or "已回收旧部署并重新拉起，作业已 RUNNING",
+                "flink_job_id": job.flink_job_id,
             }
         operation.flink_job_id = job.flink_job_id
         operation.flink_deployment_name = _operator_deployment_name_for_job(job)
@@ -4634,7 +4789,7 @@ def restart_streaming_job(
         )
         db.commit()
         return {
-            "message": "作业已提交重启/恢复",
+            "message": result.get("message") or "作业已恢复并进入 RUNNING",
             "operation_id": operation.id,
             "release_id": release.id,
             "restore_point_id": restore.id if restore else None,
@@ -5518,9 +5673,44 @@ def _apply_status_from_operator_cr(db: Session, job: StreamingJob, cr: Dict[str,
         job.updated_at = datetime.utcnow()
         db.commit()
 
-    if lifecycle_up in ("STABLE", "DEPLOYED", "CREATED", "RUNNING") or (
-        jid and lifecycle_up not in ("FAILED", "FAILING", "")
+    from app.services.flink_operator_submit import (
+        inspect_flink_deployment_job_fields,
+        is_flink_job_live_on_cr,
+    )
+
+    cr_info = inspect_flink_deployment_job_fields(cr)
+    job_state_up = str(cr_info.get("job_state") or "").upper()
+    tm_replicas = int(cr_info.get("tm_replicas") or -1)
+
+    # 终态 / TM=0 僵尸：禁止抬成 RUNNING（即使有陈旧 jobId + STABLE）
+    if job_state_up in ("FINISHED", "CANCELED", "CANCELLED", "FAILED") or (
+        tm_replicas == 0 and job_state_up not in ("RUNNING", "RESTARTING", "INITIALIZING", "CREATED")
     ):
+        if platform_lc in ("RESTORING", "DEPLOYING"):
+            return {
+                "flink_status": job_state_up or lifecycle_up or "UNKNOWN",
+                "note": "部署/恢复中：集群尚未达到 RUNNING",
+                "status": job.status,
+                "lifecycle_state": platform_lc,
+            }
+        if job_state_up in ("FINISHED", "CANCELED", "CANCELLED") and spec_state == "running":
+            if job.status != "failed" and platform_lc != "RESTORE_FAILED":
+                job.status = "failed"
+                job.lifecycle_state = "RESTORE_FAILED"
+                job.last_submit_error = (
+                    job.last_submit_error
+                    or "集群 job 已结束但 desired state 仍为 running（可能恢复失败 / Pod=0）"
+                )
+                job.updated_at = datetime.utcnow()
+                db.commit()
+            return {
+                "flink_status": job_state_up or "FAILED",
+                "note": "集群作业已终态且未健康运行",
+                "status": "failed",
+                "lifecycle_state": "RESTORE_FAILED",
+            }
+
+    if is_flink_job_live_on_cr(cr, require_tm_replicas=True):
         if job.status != "running" or getattr(job, "lifecycle_state", None) != "RUNNING":
             job.status = "running"
             job.lifecycle_state = "RUNNING"
@@ -5528,6 +5718,25 @@ def _apply_status_from_operator_cr(db: Session, job: StreamingJob, cr: Dict[str,
             db.commit()
         if jid:
             return None  # 继续查 JM
+        return {"flink_status": "RUNNING", "status": "running"}
+
+    # 启动中：有 desired running 但尚未 live — 保持 RESTORING/DEPLOYING，勿假 RUNNING
+    if spec_state == "running" and platform_lc in ("RESTORING", "DEPLOYING"):
+        return {
+            "flink_status": job_state_up or lifecycle_up or "STARTING",
+            "note": "等待作业 RUNNING 且 TaskManager 就绪",
+            "status": "running",
+            "lifecycle_state": platform_lc,
+        }
+
+    if lifecycle_up in ("STABLE", "DEPLOYED", "CREATED", "RUNNING") and job_state_up == "RUNNING":
+        if job.status != "running" or getattr(job, "lifecycle_state", None) != "RUNNING":
+            job.status = "running"
+            job.lifecycle_state = "RUNNING"
+            job.updated_at = datetime.utcnow()
+            db.commit()
+        if jid:
+            return None
         return {"flink_status": lifecycle_up or "RUNNING", "status": "running"}
 
     if err or lifecycle_up == "FAILED":
@@ -5596,12 +5805,23 @@ def _sync_one_job_live_status(
         elif cr_listed_missing:
             # 仅回填 GIDO：集群已无 CR → 平台显示已停止（不删任何东西）
             platform_lc = str(getattr(job, "lifecycle_state", None) or "").upper()
+            # 部署/恢复会先删再重建 CR：短暂 404 不得标成 SUSPENDED，否则运维页闪「已停止」
+            if platform_lc in ("DEPLOYING", "RESTORING"):
+                return _status_payload(
+                    job,
+                    runtime_cfg=rt_cfg,
+                    flink_status="NOT_FOUND_ON_OPERATOR",
+                    note=(
+                        "部署/恢复进行中，FlinkDeployment 暂时不可见（可能正在回收重建），"
+                        "保持当前 lifecycle，不回填为已停止"
+                    ),
+                    status=job.status,
+                    lifecycle_state=platform_lc,
+                )
             if (job.status or "").lower() not in ("cancelled", "finished", "failed") or platform_lc in (
                 "SAVING_STATE",
                 "SUSPENDING",
                 "RUNNING",
-                "DEPLOYING",
-                "RESTORING",
             ):
                 _mark_job_stopped(db, job, clear_runtime=True)
                 job.flink_operator_deployment_name = dep_name
@@ -5680,7 +5900,41 @@ def _sync_one_job_live_status(
         db.commit()
         return _status_payload(job, runtime_cfg=rt_cfg, flink_status=flink_state, detail=detail, status=job.status)
     except Exception as e:
-        return _status_payload(job, runtime_cfg=rt_cfg, flink_status="UNKNOWN", error=str(e), status=job.status)
+        err_text = str(e)
+        refused = "Connection refused" in err_text or "Max retries exceeded" in err_text
+        platform_lc = str(getattr(job, "lifecycle_state", None) or "").upper()
+        if refused and platform_lc not in (
+            "SAVING_STATE",
+            "SUSPENDING",
+            "RESTORING",
+            "DEPLOYING",
+        ):
+            # JM 不可达且非过渡态：勿继续谎称运行中
+            if (job.status or "").lower() == "running":
+                job.status = "failed"
+                job.lifecycle_state = "RESTORE_FAILED"
+                job.last_submit_error = (
+                    "JobManager 不可达（Connection refused）；集群可能 Pod=0 或恢复失败"
+                )
+                job.updated_at = datetime.utcnow()
+                db.commit()
+            return _status_payload(
+                job,
+                runtime_cfg=rt_cfg,
+                flink_status="JM_UNREACHABLE",
+                error=err_text,
+                status=job.status,
+                lifecycle_state=getattr(job, "lifecycle_state", None),
+                note="JobManager REST 不可达，已降级平台状态",
+            )
+        return _status_payload(
+            job,
+            runtime_cfg=rt_cfg,
+            flink_status="JM_UNREACHABLE" if refused else "UNKNOWN",
+            error=err_text,
+            status=job.status,
+            lifecycle_state=platform_lc or None,
+        )
 
 
 @router.get("/jobs-status-sync")
