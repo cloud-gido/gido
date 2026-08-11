@@ -412,7 +412,8 @@ export default function StreamMonitorPage() {
       }
       await loadJobs(false)
     } catch (e: any) {
-      message.error(e?.response?.data?.detail || '清理集群失败')
+      const detail = e?.response?.data?.detail || e?.message || '清理集群失败'
+      message.error(typeof detail === 'string' ? detail : '清理集群失败')
       throw e
     }
   }

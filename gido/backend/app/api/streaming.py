@@ -5271,7 +5271,6 @@ def delete_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
     return {"message": "已删除"}
 
 
-@router.post("/jobs/{job_id}/cancel")
 def _finalize_force_stop_background(
     *,
     job_id: int,
@@ -5337,6 +5336,7 @@ def _finalize_force_stop_background(
         db.close()
 
 
+@router.post("/jobs/{job_id}/cancel")
 def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: User = Depends(get_current_user)):
     """清理集群（丢弃状态）。
 
