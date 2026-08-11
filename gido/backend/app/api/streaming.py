@@ -5272,11 +5272,78 @@ def delete_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
 
 
 @router.post("/jobs/{job_id}/cancel")
-def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: User = Depends(get_current_user)):
-    """停止 Flink 任务。
+def _finalize_force_stop_background(
+    *,
+    job_id: int,
+    operation_id: int,
+    refs: List[tuple],
+) -> None:
+    """后台等到 CR gone（卡住清 finalizer），再把 FORCE_STOPPING → FORCE_STOPPED。"""
+    from app.core.database import SessionLocal
+    from app.services.flink_operator_submit import ensure_flink_deployment_gone
 
-    Operator 模式：删除与作业相关的全部 FlinkDeployment CR（库内名 + gido.io/job-id 标签），
-    并校验删除后集群侧已无 CR；禁止「删错名字 → 404 却报成功」导致 Flink 仍在跑。
+    db = SessionLocal()
+    try:
+        job = db.query(StreamingJob).filter(StreamingJob.id == job_id).first()
+        operation = db.query(StreamingOperation).filter(StreamingOperation.id == operation_id).first()
+        if not job or not operation:
+            return
+        if operation.status in ("succeeded", "failed"):
+            return
+        stuck: List[str] = []
+        reclaimed: List[str] = []
+        for ns, name in refs:
+            try:
+                ensure_flink_deployment_gone(
+                    name,
+                    namespace=ns,
+                    timeout_seconds=90.0,
+                    clear_finalizers_after_seconds=35.0,
+                )
+                reclaimed.append(f"{ns}/{name}")
+            except Exception as exc:
+                stuck.append(f"{ns}/{name}: {exc}")
+                logger.warning(
+                    "后台清理集群回收失败 job_id=%s ref=%s/%s",
+                    job_id,
+                    ns,
+                    name,
+                    exc_info=True,
+                )
+        if stuck:
+            job.lifecycle_state = "FORCE_STOP_FAILED"
+            job.last_submit_error = "清理集群未完全回收: " + "; ".join(stuck)
+            job.updated_at = datetime.utcnow()
+            finish_streaming_operation(
+                operation,
+                status="failed",
+                error_message=job.last_submit_error,
+            )
+        else:
+            job.status = "cancelled"
+            job.lifecycle_state = "FORCE_STOPPED"
+            job.flink_job_id = None
+            job.flink_application_jm_rest = None
+            job.updated_at = datetime.utcnow()
+            finish_streaming_operation(
+                operation,
+                status="succeeded",
+                result_payload={"reclaimed": reclaimed, "async": True},
+            )
+        db.commit()
+    except Exception:
+        logger.exception("后台清理集群异常 job_id=%s operation_id=%s", job_id, operation_id)
+    finally:
+        db.close()
+
+
+def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: User = Depends(get_current_user)):
+    """清理集群（丢弃状态）。
+
+    丝滑两段式（对标成熟 PaaS）：
+    1) 立即 DELETE 受理 → 平台进入 FORCE_STOPPING，接口快速返回；
+    2) 短等 CR 消失；未消失则后台 ensure_gone（超时清 finalizer）→ FORCE_STOPPED。
+    禁止把 Terminating 直接当最终成功。
     """
     job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_RUN)
     operation = create_streaming_operation(
@@ -5300,10 +5367,13 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
     )
     if is_operator:
         try:
+            import time as _time
+
             from app.services.flink_operator_submit import (
                 _operator_namespace,
-                ensure_flink_deployment_gone,
+                delete_flink_deployment,
                 find_flink_deployment_refs_for_job,
+                flink_deployment_deletion_state,
             )
 
             primary_ns = _operator_namespace()
@@ -5332,33 +5402,16 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
             deleted_ok: List[str] = []
             deleted_ns: List[str] = []
             skipped_forbidden: List[str] = []
-            stuck: List[str] = []
-            # 与重启回收一致：必须等到 CR 消失；Terminating 卡住时清 finalizer。
-            # 旧逻辑 20s 内接受 terminating 会让平台显示已清理、Kuboard 仍挂 Pod。
             for ns, name in all_refs:
                 try:
-                    ensure_flink_deployment_gone(
-                        name,
-                        namespace=ns,
-                        timeout_seconds=90.0,
-                        clear_finalizers_after_seconds=35.0,
-                    )
+                    delete_flink_deployment(name, namespace=ns)
                     deleted_ok.append(name)
                     if ns not in deleted_ns:
                         deleted_ns.append(ns)
                 except PermissionError as e:
                     skipped_forbidden.append(f"{ns}/{name}")
                     logger.warning("cancel: skip forbidden delete %s/%s: %s", ns, name, e)
-                except TimeoutError as e:
-                    stuck.append(f"{ns}/{name} ({e})")
-                    logger.error("cancel: reclaim timeout %s/%s: %s", ns, name, e)
 
-            if stuck:
-                raise RuntimeError(
-                    "清理集群失败：FlinkDeployment 未能完全回收（可能 finalizer 卡住）: "
-                    + "; ".join(stuck)
-                    + f"。命名空间 {primary_ns}；可稍后重试，或联系运维检查 Operator。"
-                )
             if not deleted_ok and not all_refs and skipped_forbidden:
                 raise RuntimeError(
                     f"停止失败：对 {primary_ns} 无删除权限 "
@@ -5366,11 +5419,26 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
                     "请检查 Role/RoleBinding 是否允许 delete/patch flinkdeployments。"
                 )
 
+            # 短等：多数情况下 Operator 很快回收，可同步标完成
+            pending = [
+                (ns, name)
+                for ns, name in all_refs
+                if f"{ns}/{name}" not in skipped_forbidden
+            ]
+            deadline = _time.monotonic() + 5.0
+            while pending and _time.monotonic() < deadline:
+                pending = [
+                    (ns, name)
+                    for ns, name in pending
+                    if flink_deployment_deletion_state(name, namespace=ns) != "gone"
+                ]
+                if pending:
+                    _time.sleep(1.0)
+
             _release_operator_ui_tunnel(job)
             if job.job_type == "SQL" and _normalize_sql_submit_mode(getattr(job, "flink_sql_submit_mode", None)) == "flink_operator":
                 from app.services.sql_artifact import delete_sql_script_configmap
 
-                # SQL ConfigMap 与 FlinkDeployment 使用同一配置命名空间。
                 for ns in sorted({primary_ns, *[n for n, _ in all_refs]}):
                     try:
                         delete_sql_script_configmap(job.id, int(job.workspace_id or 0), ns)
@@ -5384,36 +5452,71 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
             job.flink_job_id = None
             job.flink_application_jm_rest = None
             job.status = "cancelled"
-            job.lifecycle_state = "FORCE_STOPPED"
             job.updated_at = datetime.utcnow()
             operation.flink_deployment_name = primary
-            finish_streaming_operation(
-                operation,
-                status="succeeded",
-                result_payload={
-                    "deleted": deleted_ok,
-                    "namespace": ",".join(deleted_ns or [primary_ns]),
-                    "reclaimed": True,
-                },
-            )
-            db.commit()
             ns_note = ",".join(deleted_ns or [primary_ns])
-            if deleted_ok:
+
+            if not pending:
+                job.lifecycle_state = "FORCE_STOPPED"
+                finish_streaming_operation(
+                    operation,
+                    status="succeeded",
+                    result_payload={
+                        "deleted": deleted_ok,
+                        "namespace": ns_note,
+                        "reclaimed": True,
+                    },
+                )
+                db.commit()
+                if deleted_ok or all_refs:
+                    return {
+                        "message": (
+                            f"已清理集群（丢弃状态）：FlinkDeployment 已完全回收"
+                            f"{(' (' + ', '.join(deleted_ok) + ')') if deleted_ok else ''}"
+                            f"（namespace={ns_note}）"
+                        ),
+                        "deleted": deleted_ok,
+                        "namespace": ns_note,
+                        "lifecycle_state": "FORCE_STOPPED",
+                        "accepted": True,
+                    }
                 return {
                     "message": (
-                        f"已清理集群（丢弃状态）：FlinkDeployment 已完全回收"
-                        f"（{', '.join(deleted_ok)}，namespace={ns_note}），JM/TM Pod 应已释放"
+                        f"已清理集群：命名空间 {primary_ns} 中已无对应 FlinkDeployment，"
+                        "平台已标为已停止（本次无恢复点）"
                     ),
-                    "deleted": deleted_ok,
-                    "namespace": ns_note,
+                    "deleted": [],
+                    "namespace": primary_ns,
+                    "lifecycle_state": "FORCE_STOPPED",
+                    "accepted": True,
                 }
+
+            # 仍 Terminating：先丝滑返回「清理中」，后台等到 gone（必要时清 finalizer）
+            job.lifecycle_state = "FORCE_STOPPING"
+            db.commit()
+            import threading
+
+            threading.Thread(
+                target=_finalize_force_stop_background,
+                kwargs={
+                    "job_id": int(job.id),
+                    "operation_id": int(operation.id),
+                    "refs": list(pending),
+                },
+                name=f"gido-force-stop-{job.id}",
+                daemon=True,
+            ).start()
             return {
                 "message": (
-                    f"已清理集群：命名空间 {primary_ns} 中已无对应 FlinkDeployment，"
-                    "平台已标为已停止（本次无恢复点）"
+                    "已提交清理集群：资源回收中。行状态为「正在清理」；"
+                    "完成后变为「已停止（已清理）」。若长时间卡住可查看操作记录。"
                 ),
-                "deleted": [],
-                "namespace": primary_ns,
+                "deleted": deleted_ok,
+                "pending": [f"{ns}/{name}" for ns, name in pending],
+                "namespace": ns_note,
+                "lifecycle_state": "FORCE_STOPPING",
+                "accepted": True,
+                "operation_id": operation.id,
             }
         except HTTPException:
             finish_streaming_operation(
@@ -5584,6 +5687,16 @@ def _apply_status_from_operator_cr(db: Session, job: StreamingJob, cr: Dict[str,
     jid, lifecycle, err = extract_status_from_cr(cr)
     lifecycle_up = (lifecycle or "").strip().upper()
     platform_lc = str(getattr(job, "lifecycle_state", None) or "").upper()
+
+    # 清理中：CR 仍在（含 Terminating）不得抬成 RUNNING，保持 FORCE_STOPPING
+    if platform_lc == "FORCE_STOPPING":
+        deleting = bool(str(((cr.get("metadata") or {}).get("deletionTimestamp") or "")).strip())
+        return {
+            "flink_status": "TERMINATING" if deleting else (lifecycle_up or "UNKNOWN"),
+            "note": "正在清理集群，等待 FlinkDeployment 完全回收",
+            "status": "cancelled",
+            "lifecycle_state": "FORCE_STOPPING",
+        }
 
     # 计划停止进行中：spec 会先变成 suspended，但 Savepoint 尚未完成——勿抢先标「已停止」。
     # 若后台操作已终态而 lifecycle 仍卡在过渡态（线程异常/进程重启），按操作结果纠偏。
@@ -5801,6 +5914,22 @@ def _sync_one_job_live_status(
                     ),
                     status=job.status,
                     lifecycle_state=platform_lc,
+                )
+            if platform_lc == "FORCE_STOPPING":
+                job.status = "cancelled"
+                job.lifecycle_state = "FORCE_STOPPED"
+                job.flink_job_id = None
+                job.flink_application_jm_rest = None
+                job.flink_operator_deployment_name = dep_name
+                job.updated_at = datetime.utcnow()
+                db.commit()
+                return _status_payload(
+                    job,
+                    runtime_cfg=rt_cfg,
+                    flink_status="NOT_FOUND_ON_OPERATOR",
+                    note="清理完成：FlinkDeployment 已消失",
+                    status="cancelled",
+                    lifecycle_state="FORCE_STOPPED",
                 )
             if (job.status or "").lower() not in ("cancelled", "finished", "failed") or platform_lc in (
                 "SAVING_STATE",

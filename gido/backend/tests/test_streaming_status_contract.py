@@ -234,15 +234,19 @@ def test_sync_cr_running_never_deletes(monkeypatch):
 
 
 def test_cancel_job_deletes_flink_deployment(monkeypatch):
-    reclaimed = []
+    deleted = []
 
-    def _gone(name, namespace=None, **k):
-        reclaimed.append((namespace, name))
-        return "gone"
+    def _delete(name, namespace=None, *a, **k):
+        deleted.append((namespace, name))
+        return True
 
     monkeypatch.setattr(
-        "app.services.flink_operator_submit.ensure_flink_deployment_gone",
-        _gone,
+        "app.services.flink_operator_submit.delete_flink_deployment",
+        _delete,
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.flink_deployment_deletion_state",
+        lambda *a, **k: "gone",
     )
     monkeypatch.setattr(
         "app.services.flink_operator_submit.find_flink_deployment_refs_for_job",
@@ -267,18 +271,26 @@ def test_cancel_job_deletes_flink_deployment(monkeypatch):
 
     user = SimpleNamespace(id=1)
     out = streaming_api.cancel_job(42, db=_db(), current_user=user)
-    assert reclaimed == [("bigdata", "gido-sql-1-42")]
+    assert deleted == [("bigdata", "gido-sql-1-42")]
+    assert out.get("lifecycle_state") == "FORCE_STOPPED"
     assert "完全回收" in out["message"]
     assert "bigdata" in out.get("namespace", "")
 
 
-def test_cancel_job_fails_when_reclaim_times_out(monkeypatch):
-    """Terminating 卡住不得报成功；须 TimeoutError → 清理失败。"""
+def test_cancel_job_async_when_still_terminating(monkeypatch):
+    """短等未 gone → FORCE_STOPPING + 后台回收，接口不阻塞 90s。"""
+    import threading
+    import time
+
+    bg = []
+
     monkeypatch.setattr(
-        "app.services.flink_operator_submit.ensure_flink_deployment_gone",
-        lambda *a, **k: (_ for _ in ()).throw(
-            TimeoutError("Timed out waiting for FlinkDeployment to be deleted")
-        ),
+        "app.services.flink_operator_submit.delete_flink_deployment",
+        lambda *a, **k: True,
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.flink_deployment_deletion_state",
+        lambda *a, **k: "terminating",
     )
     monkeypatch.setattr(
         "app.services.flink_operator_submit.find_flink_deployment_refs_for_job",
@@ -295,31 +307,61 @@ def test_cancel_job_fails_when_reclaim_times_out(monkeypatch):
         "require_streaming_job",
         lambda db, user, job_id, *a, **k: _job(status="running", flink_job_id="jid-1", job_type="SQL"),
     )
+    op = SimpleNamespace(id=99, status="pending", flink_deployment_name=None, started_at=None)
+    monkeypatch.setattr(streaming_api, "create_streaming_operation", lambda *a, **k: op)
+    monkeypatch.setattr(
+        "app.services.sql_artifact.delete_sql_script_configmap",
+        lambda *a, **k: None,
+    )
 
-    from fastapi import HTTPException
+    class _Clock:
+        def __init__(self):
+            self.t = 0.0
 
-    try:
-        streaming_api.cancel_job(42, db=_db(), current_user=SimpleNamespace(id=1))
-        assert False, "expected HTTPException"
-    except HTTPException as e:
-        assert e.status_code == 500
-        assert "未能完全回收" in str(e.detail)
-        assert "bigdata" in str(e.detail)
+        def monotonic(self):
+            return self.t
+
+        def sleep(self, s):
+            self.t += float(s)
+
+    clock = _Clock()
+    monkeypatch.setattr(time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(time, "sleep", clock.sleep)
+
+    class _ImmediateThread:
+        def __init__(self, target=None, kwargs=None, name=None, daemon=None):
+            self._kwargs = kwargs or {}
+
+        def start(self):
+            bg.append(dict(self._kwargs))
+
+    monkeypatch.setattr(threading, "Thread", _ImmediateThread)
+
+    out = streaming_api.cancel_job(42, db=_db(), current_user=SimpleNamespace(id=1))
+    assert out.get("lifecycle_state") == "FORCE_STOPPING"
+    assert out.get("accepted") is True
+    assert "回收中" in out["message"]
+    assert bg and bg[0]["refs"] == [("bigdata", "gido-sql-1-42")]
+    assert bg[0]["operation_id"] == 99
 
 
 def test_cancel_job_skips_forbidden_namespace_guess(monkeypatch):
     """无权 ns 上猜测 DELETE 会 403；只应对可读到的 CR 发删除。"""
-    reclaimed = []
+    deleted = []
 
-    def _gone(name, namespace=None, **k):
+    def _delete(name, namespace=None, *a, **k):
         if namespace == "flink":
             raise PermissionError("forbidden flink")
-        reclaimed.append((namespace, name))
-        return "gone"
+        deleted.append((namespace, name))
+        return True
 
     monkeypatch.setattr(
-        "app.services.flink_operator_submit.ensure_flink_deployment_gone",
-        _gone,
+        "app.services.flink_operator_submit.delete_flink_deployment",
+        _delete,
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.flink_deployment_deletion_state",
+        lambda *a, **k: "gone",
     )
     monkeypatch.setattr(
         "app.services.flink_operator_submit.find_flink_deployment_refs_for_job",
@@ -338,7 +380,7 @@ def test_cancel_job_skips_forbidden_namespace_guess(monkeypatch):
     )
 
     out = streaming_api.cancel_job(204, db=_db(), current_user=SimpleNamespace(id=1))
-    assert reclaimed == [("bigdata", "gido-jar-1-204")]
+    assert deleted == [("bigdata", "gido-jar-1-204")]
     assert "bigdata" in out.get("namespace", "")
 
 

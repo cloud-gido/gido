@@ -356,6 +356,10 @@ export default function StreamMonitorPage() {
     }),
     [jobs],
   )
+  const cleaningJobs = useMemo(
+    () => jobs.filter(j => String(j.lifecycle_state || '').toUpperCase() === 'FORCE_STOPPING'),
+    [jobs],
+  )
   const notifiedStopOpsRef = useRef<Set<number>>(new Set())
 
   const handleStop = async (row: any) => {
@@ -390,7 +394,22 @@ export default function StreamMonitorPage() {
   const handleForceStop = async (row: any) => {
     try {
       const res: any = await streamingApi.cancelJob(row.id)
-      message.success(res?.message || '已清理集群')
+      const lc = String(res?.lifecycle_state || '').toUpperCase()
+      setJobs(prev => prev.map(j => (
+        j.id === row.id
+          ? {
+              ...j,
+              status: 'cancelled',
+              lifecycle_state: lc || (res?.accepted ? 'FORCE_STOPPING' : 'FORCE_STOPPED'),
+              flink_job_id: null,
+            }
+          : j
+      )))
+      if (lc === 'FORCE_STOPPING' || (res?.accepted && lc !== 'FORCE_STOPPED')) {
+        message.success(res?.message || '已提交清理，资源回收中')
+      } else {
+        message.success(res?.message || '已清理集群')
+      }
       await loadJobs(false)
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '清理集群失败')
@@ -677,7 +696,7 @@ export default function StreamMonitorPage() {
     poll()
     const hasStopping = jobsRef.current.some(j => {
       const lc = String(j.lifecycle_state || '').toUpperCase()
-      return lc === 'SAVING_STATE' || lc === 'SUSPENDING'
+      return lc === 'SAVING_STATE' || lc === 'SUSPENDING' || lc === 'FORCE_STOPPING'
     })
     const t = window.setInterval(poll, hasStopping ? 3000 : 8000)
     return () => {
@@ -756,6 +775,8 @@ export default function StreamMonitorPage() {
       RESTORE_FAILED: { key: 'needs_attention', label: '恢复失败', color: 'error' },
       DEPLOY_FAILED: { key: 'needs_attention', label: '部署失败', color: 'error' },
       STOP_FAILED: { key: 'needs_attention', label: '停止未完成', color: 'error' },
+      FORCE_STOPPING: { key: 'active', label: '正在清理集群', color: 'processing' },
+      FORCE_STOP_FAILED: { key: 'needs_attention', label: '清理未完成', color: 'error' },
       FORCE_STOPPED: {
         key: 'stopped',
         label: hasPendingApprovedRelease ? '已停止（已清理）· 有待部署版本' : '已停止（已清理）',
@@ -1085,16 +1106,17 @@ export default function StreamMonitorPage() {
         const state = unifiedJobState(row).key
         const lifecycle = String(row.lifecycle_state || '').toUpperCase()
         const stopping = lifecycle === 'SAVING_STATE' || lifecycle === 'SUSPENDING'
+        const cleaning = lifecycle === 'FORCE_STOPPING'
         const approved = (releaseMap[row.id] || []).some(release => isApprovedNotDeployed(release, row))
           || (row.current_approved_release_id && row.current_approved_release_id !== row.current_running_release_id)
           || (row.approval_status === 'approved' && !row.deployed_at)
         const active = state === 'active'
         // 失败/需处理时平台可能仍挂着 FlinkDeployment，必须允许停止/清理，否则部署会被 409 卡住
-        const canStop = !stopping && (active
+        const canStop = !stopping && !cleaning && (active
           || state === 'needs_attention'
           || Boolean(isOperatorJob(row) && row.flink_operator_deployment_name))
-        const canRestart = !stopping && (active || state === 'stopped' || state === 'needs_attention')
-        const canForceClear = canStop || stopping
+        const canRestart = !stopping && !cleaning && (active || state === 'stopped' || state === 'needs_attention')
+        const canForceClear = (canStop || stopping) && !cleaning
         return (
           <Space size={4} wrap>
             <Button size="small" type={approved ? 'primary' : 'default'} icon={<RocketOutlined />}
@@ -1164,6 +1186,15 @@ export default function StreamMonitorPage() {
           style={{ marginBottom: 16 }}
           message={`正在保存状态并停止：${stoppingJobs.map(j => j.name).join('、')}`}
           description={`已受理，正在等待 FlinkStateSnapshot / Savepoint 完成（默认最长约 ${Math.round(STOP_SAVEPOINT_TIMEOUT_SECONDS / 60)} 分钟）。进度只显示在本页；成功后变为「已停止」，失败则回到「运行中」。可点历史里的操作记录查看详情。`}
+        />
+      )}
+      {cleaningJobs.length > 0 && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`正在清理集群：${cleaningJobs.map(j => j.name).join('、')}`}
+          description="已请求删除 FlinkDeployment，正在等待资源完全回收（卡住时平台会尝试解除 finalizer）。完成后变为「已停止（已清理）」。"
         />
       )}
 
