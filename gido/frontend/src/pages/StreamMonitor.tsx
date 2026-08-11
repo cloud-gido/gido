@@ -208,13 +208,44 @@ function releaseStatus(release: any): string {
   return String(release?.status || release?.approval_status || release?.state || '').toLowerCase()
 }
 
+/** 是否真有「比当前运行版本更新的已批准版本」可部署（勿把历史 approved 全算待部署）。 */
+function hasNewerApprovedRelease(job: any, releases: any[] = []): boolean {
+  const runningId = job?.current_running_release_id != null
+    ? Number(job.current_running_release_id)
+    : null
+  const approvedId = job?.current_approved_release_id != null
+    ? Number(job.current_approved_release_id)
+    : null
+
+  if (approvedId != null && runningId != null) {
+    return approvedId !== runningId
+  }
+  if (approvedId != null && runningId == null) {
+    // 已批准但从未记过 running：仅当还没有集群部署时提示待部署
+    return !job?.flink_operator_deployment_name
+  }
+
+  const approved = (releases || []).filter((r) => {
+    const s = releaseStatus(r)
+    return s === 'approved' || r?.approved === true
+  })
+  if (!approved.length) return false
+  const latest = approved.reduce((a, b) => (
+    Number(b.version ?? b.id) > Number(a.version ?? a.id) ? b : a
+  ))
+  if (runningId != null) return Number(latest.id) !== runningId
+  return !job?.flink_operator_deployment_name
+}
+
+/** @deprecated 仅用于兼容；待部署判断请用 hasNewerApprovedRelease */
 function isApprovedNotDeployed(release: any, job?: any): boolean {
   const status = releaseStatus(release)
-  const deployment = String(release?.deployment_status || '').toLowerCase()
-  return (status === 'approved' || release?.approved === true)
-    && (!job?.current_running_release_id || Number(job.current_running_release_id) !== Number(release?.id))
-    && !release?.deployed_at
-    && !['deployed', 'deploying', 'running'].includes(deployment)
+  if (!(status === 'approved' || release?.approved === true)) return false
+  const runningId = job?.current_running_release_id != null
+    ? Number(job.current_running_release_id)
+    : null
+  if (runningId != null) return Number(release?.id) !== runningId
+  return !job?.flink_operator_deployment_name
 }
 
 export default function StreamMonitorPage() {
@@ -786,12 +817,12 @@ export default function StreamMonitorPage() {
     const platform = String(flinkMap[row.id]?.status || row.status || '').toLowerCase()
     const flink = String(flinkMap[row.id]?.flink_status || row.flink_status || '')
     const lifecycle = String(row.lifecycle_state || '').toUpperCase()
-    const hasPendingApprovedRelease = (releaseMap[row.id] || []).some(release => isApprovedNotDeployed(release, row))
-      || (row.current_approved_release_id
-        && row.current_running_release_id
-        && Number(row.current_approved_release_id) !== Number(row.current_running_release_id))
-      || (row.approval_status === 'approved' && !row.deployed_at && !row.flink_operator_deployment_name
-        && !row.current_running_release_id)
+    const hasPendingApprovedRelease = hasNewerApprovedRelease(row, releaseMap[row.id] || [])
+    const starting = lifecycle === 'DEPLOYING' || lifecycle === 'RESTORING'
+      || /DEPLOY|START|INITIALIZING|CREATED|PENDING|RESTARTING/i.test(flink)
+    const runningHint = hasPendingApprovedRelease ? '运行中 · 有新版本可部署' : '运行中'
+    const stoppedHint = hasPendingApprovedRelease ? '已停止 · 有待部署版本' : '已停止'
+    const cleanedHint = hasPendingApprovedRelease ? '已停止（已清理）· 有待部署版本' : '已停止（已清理）'
 
     const transitions: Record<string, { key: string; label: string; color: string }> = {
       SAVING_STATE: { key: 'active', label: '正在保存状态', color: 'processing' },
@@ -800,7 +831,7 @@ export default function StreamMonitorPage() {
       RESTORING: { key: 'active', label: '正在恢复', color: 'processing' },
       SUSPENDED: {
         key: 'stopped',
-        label: hasPendingApprovedRelease ? '已停止 · 有待部署版本' : '已停止',
+        label: stoppedHint,
         color: 'warning',
       },
       RESTORE_FAILED: { key: 'needs_attention', label: '恢复失败', color: 'error' },
@@ -810,21 +841,31 @@ export default function StreamMonitorPage() {
       FORCE_STOP_FAILED: { key: 'needs_attention', label: '清理未完成', color: 'error' },
       FORCE_STOPPED: {
         key: 'stopped',
-        label: hasPendingApprovedRelease ? '已停止（已清理）· 有待部署版本' : '已停止（已清理）',
+        label: cleanedHint,
         color: 'warning',
       },
     }
     if (transitions[lifecycle]) {
+      // 部署/恢复进行中，或集群已在启动：不要被陈旧 DEPLOY_FAILED 盖成「部署失败」
+      if (lifecycle === 'DEPLOYING' || lifecycle === 'RESTORING') {
+        return transitions[lifecycle]
+      }
       if (
         (lifecycle === 'STOP_FAILED'
           || lifecycle === 'DEPLOY_FAILED'
           || lifecycle === 'RESTORE_FAILED'
           || lifecycle === 'FORCE_STOP_FAILED')
-        && (platform === 'running' || /RUNNING|STABLE/i.test(flink))
+        && (starting || platform === 'running' || /RUNNING|STABLE/i.test(flink))
       ) {
+        if (starting && lifecycle === 'DEPLOY_FAILED') {
+          return { key: 'active', label: '正在部署', color: 'processing' }
+        }
+        if (starting && lifecycle === 'RESTORE_FAILED') {
+          return { key: 'active', label: '正在恢复', color: 'processing' }
+        }
         return {
           key: 'active',
-          label: hasPendingApprovedRelease ? '运行中 · 有新版本可部署' : '运行中',
+          label: runningHint,
           color: 'processing',
         }
       }
@@ -837,36 +878,36 @@ export default function StreamMonitorPage() {
     if (stoppedByCluster) {
       return {
         key: 'stopped',
-        label: hasPendingApprovedRelease ? '已停止 · 有待部署版本' : '已停止',
+        label: stoppedHint,
         color: 'warning',
       }
     }
     if (/JM_UNREACHABLE/i.test(flink)) {
       return { key: 'needs_attention', label: 'JM 不可达', color: 'error' }
     }
-    // 运行中优先于陈旧 last_submit_error：集群已健康时勿再标「需处理」
+    // 启动中优先于「运行中 / 需处理」，避免刚提交就闪失败或假运行中
+    if (starting) {
+      return {
+        key: 'active',
+        label: lifecycle === 'RESTORING' ? '正在恢复' : (lifecycle === 'DEPLOYING' ? '正在部署' : '启动中'),
+        color: 'processing',
+      }
+    }
+    // 运行中优先于陈旧 last_submit_error
     if (platform === 'running' || lifecycle === 'RUNNING' || /RUNNING|STABLE/i.test(flink)) {
       return {
         key: 'active',
-        label: hasPendingApprovedRelease ? '运行中 · 有新版本可部署' : '运行中',
+        label: runningHint,
         color: 'processing',
       }
     }
     if (row.last_submit_error || platform === 'failed' || /FAILED|RESTORE_FAILED/i.test(flink)) {
       return { key: 'needs_attention', label: '需处理', color: 'error' }
     }
-    // 运行中/启动中优先于「待部署」，避免停完或仍在跑时被误标成已批准待部署
-    if (/DEPLOY|START|INITIALIZING|CREATED|PENDING/i.test(flink) || lifecycle === 'DEPLOYING' || lifecycle === 'RESTORING') {
-      return {
-        key: 'active',
-        label: lifecycle === 'RESTORING' ? '正在恢复' : '启动中',
-        color: 'processing',
-      }
-    }
     if (platform === 'finished' || /FINISHED/i.test(flink)) {
       return { key: 'terminal', label: '已结束', color: 'success' }
     }
-    if (hasPendingApprovedRelease || (row.approval_status === 'approved' && !row.deployed_at && !row.flink_operator_deployment_name)) {
+    if (hasPendingApprovedRelease) {
       return { key: 'ready_to_deploy', label: '已批准待部署', color: 'cyan' }
     }
     if (platform === 'draft' || lifecycle === 'DRAFT' || lifecycle === 'APPROVED' || lifecycle === 'PENDING_APPROVAL') {
@@ -1149,9 +1190,7 @@ export default function StreamMonitorPage() {
         const lifecycle = String(row.lifecycle_state || '').toUpperCase()
         const stopping = lifecycle === 'SAVING_STATE' || lifecycle === 'SUSPENDING'
         const cleaning = lifecycle === 'FORCE_STOPPING'
-        const approved = (releaseMap[row.id] || []).some(release => isApprovedNotDeployed(release, row))
-          || (row.current_approved_release_id && row.current_approved_release_id !== row.current_running_release_id)
-          || (row.approval_status === 'approved' && !row.deployed_at)
+        const approved = hasNewerApprovedRelease(row, releaseMap[row.id] || [])
         const active = state === 'active'
         // 失败/需处理时平台可能仍挂着 FlinkDeployment，必须允许停止/清理，否则部署会被 409 卡住
         const canStop = !stopping && !cleaning && (active
