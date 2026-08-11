@@ -31,6 +31,32 @@ import StreamRuntimeConfig, {
 
 const { Paragraph, Text } = Typography
 
+/** 恢复点/操作耗时展示：秒 → 可读文案 */
+function formatElapsedSeconds(seconds?: number | null): string {
+  if (seconds == null || Number.isNaN(Number(seconds))) return '—'
+  const s = Math.max(0, Math.floor(Number(seconds)))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  const rest = s % 60
+  if (m < 60) return rest ? `${m}m ${rest}s` : `${m}m`
+  const h = Math.floor(m / 60)
+  const remM = m % 60
+  return remM ? `${h}h ${remM}m` : `${h}h`
+}
+
+function restorePointDurationSeconds(row: any): number | null {
+  if (row?.duration_seconds != null && !Number.isNaN(Number(row.duration_seconds))) {
+    return Math.max(0, Math.floor(Number(row.duration_seconds)))
+  }
+  const startRaw = row?.created_at
+  const endRaw = row?.completed_at
+  if (!startRaw || !endRaw) return null
+  const start = new Date(startRaw).getTime()
+  const end = new Date(endRaw).getTime()
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null
+  return Math.max(0, Math.floor((end - start) / 1000))
+}
+
 type DeploymentRow = {
   name?: string
   namespace?: string
@@ -1339,7 +1365,7 @@ export default function StreamMonitorPage() {
         title={`恢复点历史 · ${operationRow?.name || ''}`}
         open={restoreDrawerOpen}
         onClose={() => setRestoreDrawerOpen(false)}
-        width={760}
+        width={860}
       >
         <Table
           rowKey={(row: any) => row.id ?? row.path ?? row.location}
@@ -1354,6 +1380,18 @@ export default function StreamMonitorPage() {
             { title: '发布版本', key: 'release', width: 100, render: (_: unknown, row: any) => row.release_id ? `#${row.release_id}` : '—' },
             { title: '并行度', key: 'parallelism', width: 86, render: (_: unknown, row: any) => parseJsonObject(row.metadata_json).parallelism ?? '—' },
             { title: '创建时间', key: 'time', width: 180, render: (_: unknown, row: any) => formatInTimeZone(row.created_at || row.completed_at || row.timestamp, displayTz) },
+            {
+              title: '执行时间',
+              key: 'duration',
+              width: 110,
+              render: (_: unknown, row: any) => {
+                const seconds = restorePointDurationSeconds(row)
+                if (seconds != null) return formatElapsedSeconds(seconds)
+                const st = String(row.status || '').toLowerCase()
+                if (st === 'pending' || st === 'running' || st === 'in_progress') return '进行中'
+                return '—'
+              },
+            },
             { title: '错误', key: 'error', ellipsis: true, render: (_: unknown, row: any) => row.error_message || '—' },
           ] as any}
           locale={{ emptyText: '暂无恢复点，或后端尚未返回 restore_points 字段' }}

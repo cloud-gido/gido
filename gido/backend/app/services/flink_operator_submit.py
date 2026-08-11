@@ -1006,13 +1006,232 @@ def resume_flink_deployment(
     restart_nonce: Optional[int] = None,
     upgrade_mode: str = "savepoint",
 ) -> Dict[str, Any]:
-    """Resume an existing suspended CR, optionally forcing a restart reconciliation."""
+    """Resume an existing suspended CR, optionally forcing a restart reconciliation.
+
+    Note: if ``spec.job.state`` is already ``running``, this is a no-op for Operator
+    unless ``restart_nonce`` changes. For savepoint restore use
+    :func:`resume_flink_deployment_from_savepoint` instead.
+    """
     return patch_flink_deployment_job_state(
         deployment_name,
         "running",
         namespace=namespace,
         upgrade_mode=upgrade_mode,
         restart_nonce=restart_nonce,
+    )
+
+
+def inspect_flink_deployment_job_fields(cr: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Normalize FlinkDeployment facts used by commercial restart decisions."""
+    cr = cr or {}
+    meta = cr.get("metadata") or {}
+    spec_job = ((cr.get("spec") or {}).get("job") or {})
+    status = cr.get("status") or {}
+    job_status = status.get("jobStatus") or {}
+    tm = status.get("taskManager") or {}
+    try:
+        tm_replicas = int(tm.get("replicas") if tm.get("replicas") is not None else -1)
+    except (TypeError, ValueError):
+        tm_replicas = -1
+    spec_state = str(spec_job.get("state") or "").strip().lower()
+    lifecycle = str(status.get("lifecycleState") or status.get("state") or "").strip().upper()
+    job_state = str(job_status.get("state") or "").strip().upper()
+    deleting = bool(str(meta.get("deletionTimestamp") or "").strip())
+    finalizers = [str(x) for x in (meta.get("finalizers") or []) if str(x).strip()]
+    return {
+        "spec_state": spec_state,
+        "lifecycle": lifecycle,
+        "job_state": job_state,
+        "job_id": job_status.get("jobId") or job_status.get("jobID"),
+        "initial_savepoint_path": str(spec_job.get("initialSavepointPath") or "").strip() or None,
+        "upgrade_savepoint_path": str(job_status.get("upgradeSavepointPath") or "").strip() or None,
+        "tm_replicas": tm_replicas,
+        "deleting": deleting,
+        "finalizers": finalizers,
+    }
+
+
+def is_flink_deployment_savepoint_resume_stuck(cr: Optional[Dict[str, Any]]) -> bool:
+    """True when Operator left a finished/suspended cluster that bare resume cannot heal.
+
+    Healthy after「保存并停止」: ``spec.state=suspended`` + ``lifecycle=SUSPENDED`` +
+    ``jobStatus=FINISHED``. That is NOT stuck — use savepointRedeploy.
+
+    Stuck commercial symptom: ``spec.state=running`` but status still
+    ``SUSPENDED``/``FINISHED`` (often TM replicas 0) — JM 0↔1 / empty resume.
+    """
+    info = inspect_flink_deployment_job_fields(cr)
+    if info["deleting"]:
+        return True
+    if info["spec_state"] != "running":
+        return False
+    lifecycle = info["lifecycle"]
+    job_state = info["job_state"]
+    if lifecycle == "SUSPENDED" and job_state in ("FINISHED", "CANCELED", "FAILED", ""):
+        return True
+    if job_state == "FINISHED" and info["tm_replicas"] == 0:
+        return True
+    return False
+
+
+def classify_flink_restart_action(
+    cr: Optional[Dict[str, Any]],
+    *,
+    restore_path: Optional[str],
+    prefer_hot_restart: bool,
+) -> str:
+    """Decide restart strategy for an existing (or missing) FlinkDeployment.
+
+    Returns one of:
+    - ``hot_restart``: bump restartNonce only (still running, no restore path)
+    - ``savepoint_redeploy``: patch running + initialSavepointPath + savepointRedeployNonce
+    - ``replace_deployment``: delete/recreate (or full apply) — stuck / missing / terminating
+    """
+    path = (restore_path or "").strip()
+    if cr is None:
+        return "replace_deployment"
+    if is_flink_deployment_savepoint_resume_stuck(cr):
+        return "replace_deployment"
+    info = inspect_flink_deployment_job_fields(cr)
+    if info["deleting"]:
+        return "replace_deployment"
+    if path:
+        # Clean suspend: Operator resumes in place with savepointRedeployNonce.
+        if info["spec_state"] == "suspended" or info["lifecycle"] == "SUSPENDED":
+            return "savepoint_redeploy"
+        # Healthy running cluster but caller asked for an explicit restore point →
+        # replace so graph/args and savepoint apply atomically.
+        return "replace_deployment"
+    if (
+        prefer_hot_restart
+        and info["spec_state"] == "running"
+        and info["lifecycle"] not in ("SUSPENDED", "FAILED", "")
+        and info["job_state"] in ("RUNNING", "RESTARTING", "RECONCILING", "CREATED", "INITIALIZING")
+    ):
+        return "hot_restart"
+    return "replace_deployment"
+
+
+def resume_flink_deployment_from_savepoint(
+    deployment_name: str,
+    namespace: Optional[str] = None,
+    *,
+    savepoint_path: str,
+    allow_non_restored_state: bool = False,
+    redeploy_nonce: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Resume/restore via Operator ``savepointRedeployNonce`` (commercial path).
+
+    Always writes ``initialSavepointPath`` and bumps ``savepointRedeployNonce`` so
+    that even when ``spec.job.state`` is already ``running``, Operator restarts from
+    the durable savepoint instead of no-op resume.
+    """
+    path = (savepoint_path or "").strip()
+    if not path:
+        raise ValueError("savepoint_path is required")
+    if not is_flink_savepoint_path(path):
+        raise ValueError(f"not a durable Flink savepoint path: {path}")
+    nonce = int(redeploy_nonce if redeploy_nonce is not None else time.time() * 1000)
+    body = {
+        "spec": {
+            "job": {
+                "state": "running",
+                "upgradeMode": "savepoint",
+                "initialSavepointPath": path,
+                "allowNonRestoredState": bool(allow_non_restored_state),
+                "savepointRedeployNonce": nonce,
+                "restartNonce": nonce,
+            }
+        }
+    }
+    api = _custom_objects_api()
+    ns = namespace or _operator_namespace()
+    return api.patch_namespaced_custom_object(
+        group=FLINK_DEPLOYMENT_GROUP,
+        version=FLINK_DEPLOYMENT_VERSION,
+        namespace=ns,
+        plural=FLINK_DEPLOYMENT_PLURAL,
+        name=deployment_name,
+        body=body,
+    )
+
+
+def clear_flink_deployment_finalizers(
+    deployment_name: str,
+    namespace: Optional[str] = None,
+) -> bool:
+    """Clear CR finalizers so a stuck Terminating FlinkDeployment can be reclaimed."""
+    api = _custom_objects_api()
+    ns = namespace or _operator_namespace()
+    try:
+        cr = read_flink_deployment(deployment_name, namespace=ns)
+    except Exception as e:
+        from kubernetes.client import ApiException  # type: ignore
+
+        if isinstance(e, ApiException) and getattr(e, "status", None) == 404:
+            return False
+        raise
+    finalizers = ((cr.get("metadata") or {}).get("finalizers") or [])
+    if not finalizers:
+        return False
+    api.patch_namespaced_custom_object(
+        group=FLINK_DEPLOYMENT_GROUP,
+        version=FLINK_DEPLOYMENT_VERSION,
+        namespace=ns,
+        plural=FLINK_DEPLOYMENT_PLURAL,
+        name=deployment_name,
+        body={"metadata": {"finalizers": []}},
+    )
+    logger.warning(
+        "已清除 FlinkDeployment finalizers %s/%s (was %s)",
+        ns,
+        deployment_name,
+        finalizers,
+    )
+    return True
+
+
+def ensure_flink_deployment_gone(
+    deployment_name: str,
+    *,
+    namespace: Optional[str] = None,
+    timeout_seconds: float = 90.0,
+    clear_finalizers_after_seconds: float = 35.0,
+) -> str:
+    """Delete FlinkDeployment and wait until gone.
+
+    If Operator finalizer stalls Terminating past ``clear_finalizers_after_seconds``,
+    clear finalizers once (commercial recovery — same outcome as Kuboard force-delete).
+    Returns ``gone`` or raises ``TimeoutError``.
+    """
+    ns = namespace or _operator_namespace()
+    state = flink_deployment_deletion_state(deployment_name, namespace=ns)
+    if state == "gone":
+        return "gone"
+    if state == "exists":
+        delete_flink_deployment(deployment_name, namespace=ns)
+    deadline = time.monotonic() + max(5.0, float(timeout_seconds))
+    clear_after = time.monotonic() + max(0.0, float(clear_finalizers_after_seconds))
+    cleared = False
+    while time.monotonic() < deadline:
+        state = flink_deployment_deletion_state(deployment_name, namespace=ns)
+        if state == "gone":
+            return "gone"
+        if state == "terminating" and (not cleared) and time.monotonic() >= clear_after:
+            try:
+                cleared = clear_flink_deployment_finalizers(deployment_name, namespace=ns) or True
+            except Exception:
+                logger.warning(
+                    "清除 FlinkDeployment finalizer 失败 %s/%s",
+                    ns,
+                    deployment_name,
+                    exc_info=True,
+                )
+                cleared = True
+        time.sleep(1.5)
+    raise TimeoutError(
+        f"Timed out waiting for FlinkDeployment {ns}/{deployment_name} to be deleted "
+        f"(last_state={flink_deployment_deletion_state(deployment_name, namespace=ns)})"
     )
 
 

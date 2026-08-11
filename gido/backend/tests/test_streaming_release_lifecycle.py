@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +27,7 @@ from app.api.streaming import (
     create_streaming_operation,
     deploy_streaming_job_release,
     _runtime_job_from_release,
+    _streaming_restore_point_public_dict,
     restart_streaming_job,
     stop_streaming_job_with_savepoint,
     update_job,
@@ -553,7 +554,7 @@ def test_stop_failure_unknown_cluster_stays_running(monkeypatch):
 
 
 def test_restart_from_suspended_uses_restore_path_not_bare_resume(monkeypatch):
-    """suspended + 最近恢复点必须带 initialSavepointPath，不能只 resume。"""
+    """干净挂起（spec=suspended）+ 恢复点：走 savepointRedeploy，不能只 resume。"""
     from app.api import streaming as streaming_api
 
     db = _session()
@@ -576,31 +577,36 @@ def test_restart_from_suspended_uses_restore_path_not_bare_resume(monkeypatch):
     db.add(restore)
     db.commit()
 
-    captured = {}
+    redeployed = []
     resumed = []
-
-    def _deploy(_db, source_job, source_release, user, **kwargs):
-        captured.update(kwargs)
-        runtime_job = streaming_api._runtime_job_from_release(
-            source_job,
-            source_release,
-            parallelism=kwargs.get("parallelism"),
-            streaming_properties=kwargs.get("streaming_properties"),
-        )
-        runtime_job.flink_job_id = "jid-restored"
-        runtime_job.flink_operator_deployment_name = "gido-sql-1-1"
-        runtime_job.status = "running"
-        return runtime_job, {"flink_job_id": "jid-restored"}
+    replaced = []
 
     monkeypatch.setattr(streaming_api, "require_streaming_job", lambda *a, **k: job)
-    monkeypatch.setattr(streaming_api, "_execute_approved_release_deployment", _deploy)
+    monkeypatch.setattr(
+        streaming_api,
+        "_execute_approved_release_deployment",
+        lambda *a, **k: replaced.append(dict(k)) or (_ for _ in ()).throw(
+            AssertionError("clean suspend should patch, not replace")
+        ),
+    )
     monkeypatch.setattr(
         "app.services.flink_operator_submit.resume_flink_deployment",
-        lambda *a, **k: resumed.append(True),
+        lambda *a, **k: resumed.append(dict(k)),
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.resume_flink_deployment_from_savepoint",
+        lambda *a, **k: redeployed.append(dict(k)) or {},
     )
     monkeypatch.setattr(
         "app.services.flink_operator_submit.read_flink_deployment",
-        lambda *a, **k: {"spec": {"job": {"state": "suspended"}}},
+        lambda *a, **k: {
+            "spec": {"job": {"state": "suspended"}},
+            "status": {
+                "lifecycleState": "SUSPENDED",
+                "jobStatus": {"state": "FINISHED"},
+                "taskManager": {"replicas": 0},
+            },
+        },
     )
     monkeypatch.setattr(streaming_api.settings, "FLINK_OPERATOR_FLINK_VERSION", "v2_0")
 
@@ -612,9 +618,88 @@ def test_restart_from_suspended_uses_restore_path_not_bare_resume(monkeypatch):
     )
 
     assert resumed == []
-    assert captured["restore_path"] == "s3://state/savepoints/chosen"
+    assert replaced == []
+    assert out.get("restart_action") == "savepoint_redeploy"
+    assert redeployed and redeployed[0]["savepoint_path"] == "s3://state/savepoints/chosen"
     assert job.lifecycle_state == "RUNNING"
-    assert out.get("flink_job_id") == "jid-restored" or job.flink_job_id == "jid-restored"
+
+
+def test_restart_stuck_running_spec_with_suspended_status_replaces(monkeypatch):
+    """spec=running 但 lifecycle 仍 SUSPENDED/FINISHED：回收 CR 后带 path 重建。"""
+    from app.api import streaming as streaming_api
+
+    db = _session()
+    job = _job(db)
+    release = _approved_operator_release(db, job)
+    job.current_running_release_id = release.id
+    job.flink_operator_deployment_name = "gido-sql-1-1"
+    job.status = "cancelled"
+    job.lifecycle_state = "SUSPENDED"
+    restore = StreamingRestorePoint(
+        job_id=job.id,
+        release_id=release.id,
+        point_type="savepoint",
+        status="completed",
+        path="s3://state/savepoints/stuck-sp",
+        metadata_json='{"flink_version":"v2_0"}',
+        created_by=7,
+        completed_at=datetime.utcnow(),
+    )
+    db.add(restore)
+    db.commit()
+
+    gone = []
+    captured = {}
+    redeployed = []
+
+    def _deploy(_db, source_job, source_release, user, **kwargs):
+        captured.update(kwargs)
+        runtime_job = streaming_api._runtime_job_from_release(
+            source_job,
+            source_release,
+            parallelism=kwargs.get("parallelism"),
+            streaming_properties=kwargs.get("streaming_properties"),
+        )
+        runtime_job.flink_job_id = "jid-new"
+        runtime_job.flink_operator_deployment_name = "gido-sql-1-1"
+        runtime_job.status = "running"
+        return runtime_job, {"flink_job_id": "jid-new"}
+
+    monkeypatch.setattr(streaming_api, "require_streaming_job", lambda *a, **k: job)
+    monkeypatch.setattr(streaming_api, "_execute_approved_release_deployment", _deploy)
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.ensure_flink_deployment_gone",
+        lambda *a, **k: gone.append(True) or "gone",
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.resume_flink_deployment_from_savepoint",
+        lambda *a, **k: redeployed.append(True),
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.read_flink_deployment",
+        lambda *a, **k: {
+            "spec": {"job": {"state": "running", "initialSavepointPath": "s3://old"}},
+            "status": {
+                "lifecycleState": "SUSPENDED",
+                "jobStatus": {"state": "FINISHED"},
+                "taskManager": {"replicas": 0},
+            },
+        },
+    )
+    monkeypatch.setattr(streaming_api.settings, "FLINK_OPERATOR_FLINK_VERSION", "v2_0")
+
+    out = restart_streaming_job(
+        job.id,
+        StreamingRestartBody(release_id=release.id, restore_mode="latest"),
+        db=db,
+        current_user=SimpleNamespace(id=7),
+    )
+
+    assert gone == [True]
+    assert redeployed == []
+    assert captured["restore_path"] == "s3://state/savepoints/stuck-sp"
+    assert out.get("restart_action") == "replace_deployment"
+    assert job.lifecycle_state == "RUNNING"
 
 
 def test_restart_uses_selected_completed_restore_point(monkeypatch):
@@ -744,3 +829,31 @@ def test_publish_approval_submission_binds_requested_release(monkeypatch):
     )
 
     assert approval.release_id == first.id
+
+
+def test_restore_point_public_dict_includes_duration_for_failed():
+    started = datetime(2026, 8, 11, 3, 0, 0)
+    ended = started + timedelta(seconds=125)
+    row = StreamingRestorePoint(
+        id=9,
+        job_id=1,
+        point_type="savepoint",
+        status="failed",
+        error_message="Timed out waiting for savepoint",
+        created_at=started,
+        completed_at=ended,
+    )
+    out = _streaming_restore_point_public_dict(row)
+    assert out["duration_seconds"] == 125
+    assert out["status"] == "failed"
+    assert out["completed_at"] == ended
+
+    pending = StreamingRestorePoint(
+        id=10,
+        job_id=1,
+        point_type="savepoint",
+        status="pending",
+        created_at=started,
+        completed_at=None,
+    )
+    assert _streaming_restore_point_public_dict(pending)["duration_seconds"] is None

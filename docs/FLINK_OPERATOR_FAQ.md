@@ -314,6 +314,9 @@ ORDER BY id DESC LIMIT 5;
 3. **后台等待**：daemon 线程在多副本 / 滚动时可能丢失；中长期改为可恢复的任务队列或 Operator 侧事件驱动。
 4. **E2E**：清单须覆盖「RBAC 可 list Snapshot」「CR 含 `state.savepoints.dir`」「停止成功后恢复点 path 非空」；见 [STREAM_STATEFUL_OPERATIONS_E2E.md](./STREAM_STATEFUL_OPERATIONS_E2E.md)。
 5. **运维排障口令**：先看操作记录是否 `Timed out waiting for savepoint` → 再看 Snapshot CR 是否已有 COMPLETED → 区分「真没做成」与「做成了平台没看见」。
+6. **重启（商业路径）**：平台按 CR 状态自动分流——干净挂起走 `savepointRedeployNonce`；
+   `spec=running` 但仍 `SUSPENDED/FINISHED`（卡住）则先回收 CR（超时清 finalizer）再带 path 重建；
+   仍在跑且无新恢复点才 `restartNonce` 热重启。运维页点「重启」即可，无需进 Pod 手搓。
 
 ---
 

@@ -1888,6 +1888,8 @@ class StreamingRestorePointResponse(BaseModel):
     created_by: Optional[int] = None
     created_at: datetime
     completed_at: Optional[datetime] = None
+    # created_at → completed_at；成功/失败只要有结束时间都会返回
+    duration_seconds: Optional[int] = None
 
 
 class StreamingOperationResponse(BaseModel):
@@ -3511,6 +3513,21 @@ def create_streaming_restore_point(
     return restore
 
 
+def _restore_point_duration_seconds(row: StreamingRestorePoint) -> Optional[int]:
+    """Savepoint 执行耗时（秒）；失败也会有 completed_at。"""
+    started = row.created_at
+    ended = row.completed_at
+    if started is None or ended is None:
+        return None
+    try:
+        delta = (ended - started).total_seconds()
+    except Exception:
+        return None
+    if delta < 0:
+        return 0
+    return int(delta)
+
+
 def _streaming_restore_point_public_dict(row: StreamingRestorePoint) -> dict:
     return {
         "id": row.id,
@@ -3527,6 +3544,7 @@ def _streaming_restore_point_public_dict(row: StreamingRestorePoint) -> dict:
         "created_by": row.created_by,
         "created_at": row.created_at,
         "completed_at": row.completed_at,
+        "duration_seconds": _restore_point_duration_seconds(row),
     }
 
 
@@ -4400,8 +4418,11 @@ def restart_streaming_job(
 ):
     from app.services.flink_operator_submit import (
         _operator_namespace,
+        classify_flink_restart_action,
+        ensure_flink_deployment_gone,
         read_flink_deployment,
         resume_flink_deployment,
+        resume_flink_deployment_from_savepoint,
     )
 
     job = require_streaming_job(
@@ -4474,7 +4495,6 @@ def restart_streaming_job(
                         f"{runtime_version} 不兼容"
                     ),
                 )
-    prior_lifecycle = str(job.lifecycle_state or "").upper()
     prior_status = str(job.status or "").lower()
     operation_type = (
         "stateless-start" if body.restore_mode == "stateless" else "restart"
@@ -4508,53 +4528,81 @@ def restart_streaming_job(
             == _parse_job_streaming_properties(release.streaming_properties)
         )
         no_runtime_override = parallelism_unchanged and properties_unchanged
-        deployment_name = _operator_deployment_name_for_job(job)
-        can_patch_existing = False
-        if deployment_name and (
-            prior_status == "running" or prior_lifecycle == "SUSPENDED"
-        ):
-            try:
-                current_cr = read_flink_deployment(
-                    deployment_name,
-                    _operator_namespace(),
-                )
-                current_state = str(
-                    (((current_cr.get("spec") or {}).get("job") or {}).get("state"))
-                    or ""
-                ).strip().lower()
-                can_patch_existing = (
-                    (prior_status == "running" and current_state == "running")
-                    or (
-                        prior_lifecycle == "SUSPENDED"
-                        and current_state == "suspended"
-                    )
-                )
-            except Exception:
-                can_patch_existing = False
-        if (
-            can_patch_existing
-            and same_release
+        prefer_hot_restart = (
+            same_release
             and no_runtime_override
             and body.restore_mode == "latest"
             and not restore_path
             and prior_status == "running"
-        ):
-            # 仅「仍在跑、无新恢复点」时用 restartNonce 热重启。
-            # 从 suspended 恢复必须带 initialSavepointPath；否则 Operator 可能沿用
-            # 残留的 upgradeSavepointPath（甚至是 checkpoint），JM 会 0↔1 起不来。
+        )
+        deployment_name = _operator_deployment_name_for_job(job)
+        namespace = _operator_namespace()
+        current_cr = None
+        if deployment_name:
+            try:
+                current_cr = read_flink_deployment(deployment_name, namespace)
+            except Exception:
+                current_cr = None
+
+        action = classify_flink_restart_action(
+            current_cr,
+            restore_path=restore_path,
+            prefer_hot_restart=prefer_hot_restart,
+        )
+        # Stateless always replaces so Operator never inherits sticky upgrade paths.
+        if body.restore_mode == "stateless":
+            action = "replace_deployment"
+
+        if action == "hot_restart" and deployment_name:
             resume_flink_deployment(
                 deployment_name,
-                _operator_namespace(),
+                namespace,
                 restart_nonce=int(datetime.utcnow().timestamp() * 1000),
                 upgrade_mode="savepoint",
             )
             result = {
                 "message": "已通过 restartNonce 触发同配置有状态重启",
                 "flink_operator_deployment_name": deployment_name,
+                "restart_action": action,
             }
             job.status = "running"
             job.lifecycle_state = "RUNNING"
+        elif action == "savepoint_redeploy" and deployment_name and restore_path:
+            resume_flink_deployment_from_savepoint(
+                deployment_name,
+                namespace,
+                savepoint_path=restore_path,
+                allow_non_restored_state=bool(body.allow_non_restored_state),
+            )
+            result = {
+                "message": "已从 Savepoint 触发 Operator savepointRedeploy 恢复",
+                "flink_operator_deployment_name": deployment_name,
+                "restore_path": restore_path,
+                "restart_action": action,
+            }
+            job.status = "running"
+            job.lifecycle_state = "RUNNING"
+            if not job.flink_operator_deployment_name:
+                job.flink_operator_deployment_name = deployment_name
         else:
+            # Commercial recovery: stuck SUSPENDED/FINISHED or missing CR →
+            # reclaim deployment then submit a fresh CR with the restore path.
+            if deployment_name and current_cr is not None:
+                try:
+                    ensure_flink_deployment_gone(
+                        deployment_name,
+                        namespace=namespace,
+                        timeout_seconds=90.0,
+                        clear_finalizers_after_seconds=35.0,
+                    )
+                except TimeoutError as exc:
+                    raise HTTPException(
+                        status_code=504,
+                        detail=(
+                            f"回收旧 FlinkDeployment 超时：{exc}。"
+                            "请稍后重试重启；若仍失败请联系平台运维检查 Operator。"
+                        ),
+                    ) from exc
             runtime_job, result = _execute_approved_release_deployment(
                 db,
                 job,
@@ -4571,6 +4619,12 @@ def restart_streaming_job(
                 release_id=release.id,
                 lifecycle_state="RUNNING",
             )
+            result = {
+                **result,
+                "restart_action": "replace_deployment",
+                "message": result.get("message")
+                or "已回收旧部署并从 Savepoint/发布定义重新拉起",
+            }
         operation.flink_job_id = job.flink_job_id
         operation.flink_deployment_name = _operator_deployment_name_for_job(job)
         finish_streaming_operation(

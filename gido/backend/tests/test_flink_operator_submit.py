@@ -258,6 +258,102 @@ def test_patch_suspend_and_resume_lifecycle_fields(monkeypatch):
     }
 
 
+def test_resume_from_savepoint_bumps_redeploy_nonce(monkeypatch):
+    from app.services import flink_operator_submit as fos
+
+    calls = []
+
+    class FakeApi:
+        def patch_namespaced_custom_object(self, **kwargs):
+            calls.append(kwargs)
+            return kwargs["body"]
+
+    monkeypatch.setattr(fos, "_custom_objects_api", lambda: FakeApi())
+    fos.resume_flink_deployment_from_savepoint(
+        "job-1",
+        "operator-ns",
+        savepoint_path="s3a://bucket/flink/savepoints/savepoint-abc",
+        redeploy_nonce=99,
+    )
+    job = calls[0]["body"]["spec"]["job"]
+    assert job["state"] == "running"
+    assert job["initialSavepointPath"].endswith("savepoint-abc")
+    assert job["savepointRedeployNonce"] == 99
+    assert job["restartNonce"] == 99
+
+
+def test_classify_restart_action_stuck_vs_clean_suspend():
+    from app.services import flink_operator_submit as fos
+
+    clean = {
+        "spec": {"job": {"state": "suspended"}},
+        "status": {
+            "lifecycleState": "SUSPENDED",
+            "jobStatus": {"state": "FINISHED"},
+            "taskManager": {"replicas": 0},
+        },
+    }
+    stuck = {
+        "spec": {"job": {"state": "running", "initialSavepointPath": "s3a://sp"}},
+        "status": {
+            "lifecycleState": "SUSPENDED",
+            "jobStatus": {"state": "FINISHED"},
+            "taskManager": {"replicas": 0},
+        },
+    }
+    running = {
+        "spec": {"job": {"state": "running"}},
+        "status": {
+            "lifecycleState": "STABLE",
+            "jobStatus": {"state": "RUNNING"},
+            "taskManager": {"replicas": 2},
+        },
+    }
+    assert fos.classify_flink_restart_action(
+        clean, restore_path="s3a://bucket/flink/savepoints/sp1", prefer_hot_restart=False
+    ) == "savepoint_redeploy"
+    assert fos.classify_flink_restart_action(
+        stuck, restore_path="s3a://bucket/flink/savepoints/sp1", prefer_hot_restart=False
+    ) == "replace_deployment"
+    assert fos.classify_flink_restart_action(
+        running, restore_path=None, prefer_hot_restart=True
+    ) == "hot_restart"
+    assert fos.classify_flink_restart_action(
+        None, restore_path="s3a://bucket/flink/savepoints/sp1", prefer_hot_restart=False
+    ) == "replace_deployment"
+
+
+def test_ensure_flink_deployment_gone_clears_finalizers(monkeypatch):
+    from app.services import flink_operator_submit as fos
+
+    states = ["exists", "terminating", "terminating", "gone"]
+    cleared = []
+
+    monkeypatch.setattr(
+        fos,
+        "flink_deployment_deletion_state",
+        lambda *a, **k: states.pop(0) if states else "gone",
+    )
+    monkeypatch.setattr(fos, "delete_flink_deployment", lambda *a, **k: True)
+    monkeypatch.setattr(
+        fos,
+        "clear_flink_deployment_finalizers",
+        lambda *a, **k: cleared.append(True) or True,
+    )
+    monkeypatch.setattr(fos.time, "sleep", lambda *_: None)
+    # Force clear quickly
+    assert (
+        fos.ensure_flink_deployment_gone(
+            "job-1",
+            namespace="ns",
+            timeout_seconds=10,
+            clear_finalizers_after_seconds=0,
+        )
+        == "gone"
+    )
+    assert cleared == [True]
+
+
 def test_extract_savepoint_status_across_operator_field_names():
     from app.services import flink_operator_submit as fos
 
