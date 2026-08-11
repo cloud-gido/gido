@@ -326,7 +326,7 @@ ORDER BY id DESC LIMIT 5;
 |------|-----|------|------|
 | 部署 | `POST .../deploy` | `RUNNING` | `DEPLOY_FAILED` |
 | 保存并停止 | `POST .../stop`（默认超时 **300s**） | `SUSPENDED` + 恢复点 completed | resume 回运行中 + 操作失败 |
-| 清理集群 | `POST .../cancel`（操作类型 `force-stop`） | `FORCE_STOPPED`，无恢复点 | 操作失败 |
+| 清理集群 | `POST .../cancel`（操作类型 `force-stop`） | CR **完全消失**后才 `FORCE_STOPPED`（卡住 Terminating 时清 finalizer）；无恢复点 | 回收超时则失败，不得假成功留 Pod |
 | 重启/恢复 | `POST .../restart` | 见下表分流 | `RESTORE_FAILED` |
 
 #### 重启分流（`classify_flink_restart_action`）

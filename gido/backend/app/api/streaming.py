@@ -5302,9 +5302,8 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
         try:
             from app.services.flink_operator_submit import (
                 _operator_namespace,
-                delete_flink_deployment,
+                ensure_flink_deployment_gone,
                 find_flink_deployment_refs_for_job,
-                wait_flink_deployment_reclaimed,
             )
 
             primary_ns = _operator_namespace()
@@ -5315,68 +5314,56 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
                 namespace=primary_ns,
             )
             # 强制停止只操作统一配置的 Operator namespace，不跨命名空间猜测。
-
-            deleted_ok: List[str] = []
-            deleted_ns: List[str] = []
-            skipped_forbidden: List[str] = []
-            for ns, name in refs:
-                # 直接删 CR；403（无权 ns）跳过，勿中断整次停止
-                try:
-                    if delete_flink_deployment(name, namespace=ns):
-                        deleted_ok.append(name)
-                        if ns not in deleted_ns:
-                            deleted_ns.append(ns)
-                except PermissionError as e:
-                    skipped_forbidden.append(f"{ns}/{name}")
-                    logger.warning("cancel: skip forbidden delete %s/%s: %s", ns, name, e)
-
-            # 再扫一遍候选空间，防止漏删
             more = find_flink_deployment_refs_for_job(
                 int(job.id),
                 workspace_id=int(job.workspace_id or 0) or None,
                 preferred_name=None,
                 namespace=primary_ns,
             )
-            for ns, name in more:
-                if (ns, name) in refs:
+            seen_refs: set = set()
+            all_refs: List[tuple] = []
+            for ns, name in list(refs) + list(more):
+                key = (ns, name)
+                if key in seen_refs:
                     continue
+                seen_refs.add(key)
+                all_refs.append(key)
+
+            deleted_ok: List[str] = []
+            deleted_ns: List[str] = []
+            skipped_forbidden: List[str] = []
+            stuck: List[str] = []
+            # 与重启回收一致：必须等到 CR 消失；Terminating 卡住时清 finalizer。
+            # 旧逻辑 20s 内接受 terminating 会让平台显示已清理、Kuboard 仍挂 Pod。
+            for ns, name in all_refs:
                 try:
-                    if delete_flink_deployment(name, namespace=ns):
-                        deleted_ok.append(name)
-                        if ns not in deleted_ns:
-                            deleted_ns.append(ns)
-                        refs.append((ns, name))
+                    ensure_flink_deployment_gone(
+                        name,
+                        namespace=ns,
+                        timeout_seconds=90.0,
+                        clear_finalizers_after_seconds=35.0,
+                    )
+                    deleted_ok.append(name)
+                    if ns not in deleted_ns:
+                        deleted_ns.append(ns)
                 except PermissionError as e:
                     skipped_forbidden.append(f"{ns}/{name}")
                     logger.warning("cancel: skip forbidden delete %s/%s: %s", ns, name, e)
-
-            # 只校验「实际尝试删除且非无权跳过」的目标
-            check_refs = [(ns, name) for ns, name in refs if f"{ns}/{name}" not in skipped_forbidden]
-            stuck: List[str] = []
-            terminating: List[str] = []
-            for ns, name in check_refs:
-                state = wait_flink_deployment_reclaimed(name, namespace=ns, timeout_seconds=20.0)
-                if state == "gone":
-                    continue
-                if state in ("terminating", "unknown"):
-                    # Terminating=已受理；unknown=API 抖动，不阻断（平台已标停止，运维可对账）
-                    if state == "terminating":
-                        terminating.append(f"{ns}/{name}")
-                    continue
-                stuck.append(f"{ns}/{name}")
+                except TimeoutError as e:
+                    stuck.append(f"{ns}/{name} ({e})")
+                    logger.error("cancel: reclaim timeout %s/%s: %s", ns, name, e)
 
             if stuck:
                 raise RuntimeError(
-                    "已请求删除但 FlinkDeployment 仍未进入回收: "
-                    + ", ".join(stuck)
-                    + f"。当前停止命名空间为 {primary_ns}；"
-                    "请核对 FLINK_OPERATOR_NAMESPACE 与 ServiceAccount RBAC。"
+                    "清理集群失败：FlinkDeployment 未能完全回收（可能 finalizer 卡住）: "
+                    + "; ".join(stuck)
+                    + f"。命名空间 {primary_ns}；可稍后重试，或联系运维检查 Operator。"
                 )
-            if not deleted_ok and not terminating and not check_refs and skipped_forbidden:
+            if not deleted_ok and not all_refs and skipped_forbidden:
                 raise RuntimeError(
                     f"停止失败：对 {primary_ns} 无删除权限 "
                     + f"（跳过: {', '.join(skipped_forbidden)}）。"
-                    "请检查 Role/RoleBinding 是否允许 delete flinkdeployments。"
+                    "请检查 Role/RoleBinding 是否允许 delete/patch flinkdeployments。"
                 )
 
             _release_operator_ui_tunnel(job)
@@ -5384,13 +5371,15 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
                 from app.services.sql_artifact import delete_sql_script_configmap
 
                 # SQL ConfigMap 与 FlinkDeployment 使用同一配置命名空间。
-                for ns in sorted({primary_ns, *[n for n, _ in refs]}):
+                for ns in sorted({primary_ns, *[n for n, _ in all_refs]}):
                     try:
                         delete_sql_script_configmap(job.id, int(job.workspace_id or 0), ns)
                     except Exception:
                         logger.debug("delete sql configmap skip ns=%s job=%s", ns, job.id, exc_info=True)
 
-            primary = (deleted_ok[0] if deleted_ok else None) or (refs[0][1] if refs else dep_name)
+            primary = (deleted_ok[0] if deleted_ok else None) or (
+                all_refs[0][1] if all_refs else dep_name
+            )
             job.flink_operator_deployment_name = primary
             job.flink_job_id = None
             job.flink_application_jm_rest = None
@@ -5403,24 +5392,19 @@ def cancel_job(job_id: int, db: Session = Depends(get_db_flink), current_user: U
                 status="succeeded",
                 result_payload={
                     "deleted": deleted_ok,
-                    "terminating": terminating,
                     "namespace": ",".join(deleted_ns or [primary_ns]),
+                    "reclaimed": True,
                 },
             )
             db.commit()
             ns_note = ",".join(deleted_ns or [primary_ns])
-            if deleted_ok or terminating:
-                note = ""
-                if terminating:
-                    note = f"；回收中: {', '.join(terminating)}"
+            if deleted_ok:
                 return {
                     "message": (
-                        f"已清理集群（丢弃状态）：已删除 FlinkDeployment"
-                        f"{(' (' + ', '.join(deleted_ok) + ')') if deleted_ok else ''}"
-                        f"（namespace={ns_note}），Operator 将回收 JM/TM Pod{note}"
+                        f"已清理集群（丢弃状态）：FlinkDeployment 已完全回收"
+                        f"（{', '.join(deleted_ok)}，namespace={ns_note}），JM/TM Pod 应已释放"
                     ),
                     "deleted": deleted_ok,
-                    "terminating": terminating,
                     "namespace": ns_note,
                 }
             return {
