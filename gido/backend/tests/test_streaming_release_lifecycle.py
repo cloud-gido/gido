@@ -354,6 +354,22 @@ def test_deploy_uses_immutable_release_without_overwriting_draft(monkeypatch):
 
     monkeypatch.setattr(streaming_api, "require_streaming_job", lambda *a, **k: job)
     monkeypatch.setattr(streaming_api, "_execute_approved_release_deployment", _deploy)
+    monkeypatch.setattr(streaming_api, "_operator_deployment_name_for_job", lambda j: "gido-sql-1-1")
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit._operator_namespace",
+        lambda: "flink",
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.wait_for_flink_deployment_running",
+        lambda *a, **k: {
+            "spec": {"job": {"state": "running"}},
+            "status": {
+                "lifecycleState": "STABLE",
+                "jobStatus": {"state": "RUNNING", "jobId": "jid-release"},
+                "taskManager": {"replicas": 1},
+            },
+        },
+    )
 
     out = deploy_streaming_job_release(
         job.id,
@@ -365,9 +381,64 @@ def test_deploy_uses_immutable_release_without_overwriting_draft(monkeypatch):
     assert out["release_id"] == release.id
     assert job.script_content == "SELECT draft_changed_after_approval"
     assert job.current_running_release_id == release.id
+    assert job.current_approved_release_id == release.id
     assert job.flink_job_id == "jid-release"
     assert job.lifecycle_state == "RUNNING"
     assert db.query(StreamingJobHistory).filter_by(job_id=job.id).count() == 0
+
+
+def test_deploy_timeout_keeps_deploying_not_failed(monkeypatch):
+    """就绪超时：部署已提交则保持 DEPLOYING，勿闪 DEPLOY_FAILED。"""
+    from app.api import streaming as streaming_api
+
+    db = _session()
+    job = _job(db)
+    release = _approved_operator_release(db, job)
+    db.commit()
+
+    def _deploy(_db, source_job, source_release, user, **kwargs):
+        runtime_job = streaming_api._runtime_job_from_release(source_job, source_release)
+        runtime_job.flink_operator_deployment_name = "gido-sql-1-1"
+        runtime_job.status = "running"
+        return runtime_job, {"flink_job_id": None}
+
+    monkeypatch.setattr(streaming_api, "require_streaming_job", lambda *a, **k: job)
+    monkeypatch.setattr(streaming_api, "_execute_approved_release_deployment", _deploy)
+    monkeypatch.setattr(streaming_api, "_operator_deployment_name_for_job", lambda j: "gido-sql-1-1")
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit._operator_namespace",
+        lambda: "flink",
+    )
+    monkeypatch.setattr(
+        "app.services.flink_operator_submit.wait_for_flink_deployment_running",
+        lambda *a, **k: (_ for _ in ()).throw(TimeoutError("Timed out waiting for RUNNING")),
+    )
+
+    out = deploy_streaming_job_release(
+        job.id,
+        StreamingDeployBody(release_id=release.id),
+        db=db,
+        current_user=SimpleNamespace(id=7),
+    )
+    assert out.get("accepted") is True
+    assert job.lifecycle_state == "DEPLOYING"
+    assert job.last_submit_error is None
+    assert job.current_running_release_id == release.id
+
+
+def test_pending_deploy_flag_only_when_approved_differs_from_running():
+    """与前端 hasNewerApprovedRelease 对齐：仅 approved≠running（或未部署）才待部署。"""
+    def has_newer(approved, running, deployment_name: str | None) -> bool:
+        if approved is not None and running is not None:
+            return int(approved) != int(running)
+        if approved is not None and running is None:
+            return not deployment_name
+        return False
+
+    assert has_newer(8, 8, "gido-sql-1-1") is False
+    assert has_newer(9, 8, "gido-sql-1-1") is True
+    assert has_newer(8, None, "gido-sql-1-1") is False
+    assert has_newer(8, None, None) is True
 
 
 def test_stop_persists_new_savepoint_and_suspends(monkeypatch):
