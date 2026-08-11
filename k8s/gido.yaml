@@ -57,7 +57,7 @@ data:
   FLINK_K8S_NAMESPACE: "flink"
   FLINK_K8S_CLUSTER_DOMAIN: "cluster.local"
   FLINK_K8S_APPLICATION_JM_REST_TEMPLATE: "http://{cluster_id}-rest.flink.svc.cluster.local:8081"
-  FLINK_K8S_REST_EXPOSED_TYPE: "LoadBalancer"
+  FLINK_K8S_REST_EXPOSED_TYPE: "ClusterIP"
   # 浏览器经 GIDO 反向代理打开 Flink UI，无需再 port-forward JM（只保留 frontend 8080 即可）
   FLINK_OPERATOR_UI_PROXY_ENABLED: "true"
   FLINK_OPERATOR_NAMESPACE: "flink"

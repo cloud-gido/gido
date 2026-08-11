@@ -292,7 +292,7 @@ def _base_flink_conf(*, enable_http_artifacts: bool = False) -> Dict[str, str]:
         flink_conf["state.savepoints.dir"] = sp_dir
         flink_conf["execution.checkpointing.savepoint-dir"] = sp_dir
     _apply_s3_irsa_flink_conf(flink_conf)
-    rest_ex = (settings.FLINK_K8S_REST_EXPOSED_TYPE or "LoadBalancer").strip()
+    rest_ex = (settings.FLINK_K8S_REST_EXPOSED_TYPE or "ClusterIP").strip()
     if rest_ex:
         flink_conf["kubernetes.rest-service.exposed.type"] = rest_ex
     return flink_conf
@@ -1817,7 +1817,7 @@ def _resolve_jm_rest_via_k8s_expose(
         resolve_application_jm_rest_via_nodeport,
     )
 
-    rest_type = (settings.FLINK_K8S_REST_EXPOSED_TYPE or "LoadBalancer").strip().lower()
+    rest_type = (settings.FLINK_K8S_REST_EXPOSED_TYPE or "ClusterIP").strip().lower()
     ctx = (settings.FLINK_K8S_CONTEXT or "").strip() or None
     if rest_type == "loadbalancer":
         lb = resolve_application_jm_rest_via_loadbalancer(
@@ -1952,7 +1952,7 @@ def browser_jm_base_for_deployment(
         )
 
         ctx = (settings.FLINK_K8S_CONTEXT or "").strip() or None
-        rest_type = (settings.FLINK_K8S_REST_EXPOSED_TYPE or "LoadBalancer").strip().lower()
+        rest_type = (settings.FLINK_K8S_REST_EXPOSED_TYPE or "ClusterIP").strip().lower()
         kc_path = kc if kc and os.path.isfile(kc) else None
         if rest_type == "loadbalancer":
             lb = resolve_application_jm_rest_via_loadbalancer(

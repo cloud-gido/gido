@@ -114,8 +114,9 @@ class Settings(BaseSettings):
     # 可选：覆盖 sql-gateway REST 广告地址（留空则 flink-sql-gateway.<namespace>.svc.<domain>）
     FLINK_K8S_SQL_GATEWAY_REST_HOST: Optional[str] = None
     FLINK_K8S_CONTEXT: Optional[str] = None
-    # 生产常见 LoadBalancer；本机 Kind 在 .env 覆盖为 NodePort
-    FLINK_K8S_REST_EXPOSED_TYPE: Optional[str] = "LoadBalancer"
+    # 集群内 Backend 走 Service DNS；默认 ClusterIP，避免 LoadBalancer 未就绪时 Operator list nodes 403。
+    # 本机 Kind 在 kind-local.env 覆盖为 NodePort；确需对外 LB 时再显式设 LoadBalancer 并开 rbac.nodesRule。
+    FLINK_K8S_REST_EXPOSED_TYPE: Optional[str] = "ClusterIP"
     # Gateway 执行 SQL 时要把作业提交到哪套 JM REST（hostname 必须能被 Gateway 进程解析；默认同 FLINK_URL）
     FLINK_GATEWAY_JOBMANAGER_REST_URL: Optional[str] = None
     # Flink Web UI（浏览器打开作业拓扑用）；不填则用 FLINK_URL（与 JM REST 同 host:port）

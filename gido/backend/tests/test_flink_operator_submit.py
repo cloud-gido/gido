@@ -25,7 +25,7 @@ def test_build_flink_deployment_body_structure():
     assert body["spec"]["job"]["entryClass"] == "com.example.Job"
     assert body["spec"]["job"]["jarURI"].startswith("http://")
     assert body["spec"]["job"]["args"] == ["--k", "v"]
-    assert body["spec"]["flinkConfiguration"]["kubernetes.rest-service.exposed.type"] == "LoadBalancer"
+    assert body["spec"]["flinkConfiguration"]["kubernetes.rest-service.exposed.type"] == "ClusterIP"
     assert body["spec"]["flinkConfiguration"]["taskmanager.numberOfTaskSlots"] == "2"
 
 
