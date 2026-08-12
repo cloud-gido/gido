@@ -20,6 +20,8 @@ env:
   REGISTRY: ghcr.io
   # org 仓库 push 包须用 owner 作用户名，不能用 github.actor
   REGISTRY_USER: ${{ github.repository_owner }}
+  # Node 24 Actions runtime：用系统 CA，避免 metadata-action 报 self-signed certificate
+  NODE_OPTIONS: --use-system-ca
 
 jobs:
   frontend:
@@ -29,10 +31,10 @@ jobs:
       run:
         working-directory: gido/frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: gido/frontend/package-lock.json
       - run: npm ci
@@ -45,7 +47,7 @@ jobs:
 #      run:
 #        working-directory: gido/backend
 #    steps:
-#      - uses: actions/checkout@v4
+#      - uses: actions/checkout@v5
 #      - uses: actions/setup-python@v5
 #        with:
 #          python-version: "3.11"
@@ -60,7 +62,7 @@ jobs:
     name: Open-source compliance
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Reject legacy dataworks naming in source
         run: |
           set -euo pipefail
@@ -117,7 +119,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 2
 
@@ -170,7 +172,7 @@ jobs:
 
       - name: Extract metadata (tags, labels) for backend
         id: meta_backend
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository }}/gido-backend
           tags: |
@@ -179,7 +181,7 @@ jobs:
             type=sha,prefix=${{ github.ref_name }}-
 
       - name: Build and push backend image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: gido/backend
           push: true
@@ -192,7 +194,7 @@ jobs:
 
       - name: Extract metadata (tags, labels) for frontend
         id: meta_frontend
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository }}/gido-frontend
           tags: |
@@ -201,7 +203,7 @@ jobs:
             type=sha,prefix=${{ github.ref_name }}-
 
       - name: Build and push frontend image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: gido/frontend
           push: true
@@ -210,7 +212,7 @@ jobs:
 
       - name: Extract metadata (tags, labels) for flink-runtime
         id: meta_flink
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository }}/gido-flink-runtime
           tags: |
@@ -220,7 +222,7 @@ jobs:
             type=raw,value=${{ steps.extract_flink_version.outputs.FLINK_VERSION }}
 
       - name: Build and push flink-runtime image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: k8s/flink-sql-runner
           push: true
