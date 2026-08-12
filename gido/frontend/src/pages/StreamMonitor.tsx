@@ -824,9 +824,6 @@ export default function StreamMonitorPage() {
     const hasPendingApprovedRelease = hasNewerApprovedRelease(row, releaseMap[row.id] || [])
     const starting = lifecycle === 'DEPLOYING' || lifecycle === 'RESTORING'
       || /DEPLOY|START|INITIALIZING|CREATED|PENDING|RESTARTING/i.test(flink)
-    const runningHint = hasPendingApprovedRelease ? '运行中 · 有新版本可部署' : '运行中'
-    const stoppedHint = hasPendingApprovedRelease ? '已停止 · 有待部署版本' : '已停止'
-    const cleanedHint = hasPendingApprovedRelease ? '已停止（已清理）· 有待部署版本' : '已停止（已清理）'
 
     const transitions: Record<string, { key: string; label: string; color: string }> = {
       SAVING_STATE: { key: 'active', label: '正在保存状态', color: 'processing' },
@@ -835,7 +832,7 @@ export default function StreamMonitorPage() {
       RESTORING: { key: 'active', label: '正在恢复', color: 'processing' },
       SUSPENDED: {
         key: 'stopped',
-        label: stoppedHint,
+        label: '已停止',
         color: 'warning',
       },
       RESTORE_FAILED: { key: 'needs_attention', label: '恢复失败', color: 'error' },
@@ -845,7 +842,7 @@ export default function StreamMonitorPage() {
       FORCE_STOP_FAILED: { key: 'needs_attention', label: '清理未完成', color: 'error' },
       FORCE_STOPPED: {
         key: 'stopped',
-        label: cleanedHint,
+        label: '已停止（已清理）',
         color: 'warning',
       },
     }
@@ -869,7 +866,7 @@ export default function StreamMonitorPage() {
         }
         return {
           key: 'active',
-          label: runningHint,
+          label: '运行中',
           color: 'processing',
         }
       }
@@ -882,7 +879,7 @@ export default function StreamMonitorPage() {
     if (stoppedByCluster) {
       return {
         key: 'stopped',
-        label: stoppedHint,
+        label: '已停止',
         color: 'warning',
       }
     }
@@ -901,7 +898,7 @@ export default function StreamMonitorPage() {
     if (platform === 'running' || lifecycle === 'RUNNING' || /RUNNING|STABLE/i.test(flink)) {
       return {
         key: 'active',
-        label: runningHint,
+        label: '运行中',
         color: 'processing',
       }
     }
@@ -1074,16 +1071,28 @@ export default function StreamMonitorPage() {
     {
       title: '发布版本',
       key: 'release',
-      width: 130,
+      width: 160,
       render: (_: unknown, row: any) => {
         const releases = releaseMap[row.id] || []
         const latest = releases[0] || row.latest_release
         if (!latest) return <Text type="secondary">—</Text>
+        const pending = hasNewerApprovedRelease(row, releases)
+        const runningRelease = row.current_running_release_id != null
+          ? releases.find((r: any) => Number(r.id) === Number(row.current_running_release_id))
+          : null
+        const tip = pending
+          ? (runningRelease?.version != null
+            ? `当前运行 v${runningRelease.version}，批准版尚未部署`
+            : '有已批准版本尚未部署到集群')
+          : undefined
         return (
-          <Space size={4} wrap>
-            <Text code>{latest.version != null ? `v${latest.version}` : `#${latest.id || '—'}`}</Text>
-            <Tag color={isApprovedNotDeployed(latest, row) ? 'cyan' : undefined}>{releaseStatus(latest) || '未知'}</Tag>
-          </Space>
+          <Tooltip title={tip}>
+            <Space size={4} wrap>
+              <Text code>{latest.version != null ? `v${latest.version}` : `#${latest.id || '—'}`}</Text>
+              <Tag color={pending ? 'cyan' : undefined}>{releaseStatus(latest) || '未知'}</Tag>
+              {pending ? <Tag color="blue">待部署</Tag> : null}
+            </Space>
+          </Tooltip>
         )
       },
     },
