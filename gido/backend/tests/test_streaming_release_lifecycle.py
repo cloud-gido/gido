@@ -354,22 +354,6 @@ def test_deploy_uses_immutable_release_without_overwriting_draft(monkeypatch):
 
     monkeypatch.setattr(streaming_api, "require_streaming_job", lambda *a, **k: job)
     monkeypatch.setattr(streaming_api, "_execute_approved_release_deployment", _deploy)
-    monkeypatch.setattr(streaming_api, "_operator_deployment_name_for_job", lambda j: "gido-sql-1-1")
-    monkeypatch.setattr(
-        "app.services.flink_operator_submit._operator_namespace",
-        lambda: "flink",
-    )
-    monkeypatch.setattr(
-        "app.services.flink_operator_submit.wait_for_flink_deployment_running",
-        lambda *a, **k: {
-            "spec": {"job": {"state": "running"}},
-            "status": {
-                "lifecycleState": "STABLE",
-                "jobStatus": {"state": "RUNNING", "jobId": "jid-release"},
-                "taskManager": {"replicas": 1},
-            },
-        },
-    )
 
     out = deploy_streaming_job_release(
         job.id,
@@ -379,16 +363,18 @@ def test_deploy_uses_immutable_release_without_overwriting_draft(monkeypatch):
     )
 
     assert out["release_id"] == release.id
+    assert out.get("accepted") is True
+    assert out.get("lifecycle_state") == "DEPLOYING"
     assert job.script_content == "SELECT draft_changed_after_approval"
     assert job.current_running_release_id == release.id
     assert job.current_approved_release_id == release.id
     assert job.flink_job_id == "jid-release"
-    assert job.lifecycle_state == "RUNNING"
+    assert job.lifecycle_state == "DEPLOYING"
     assert db.query(StreamingJobHistory).filter_by(job_id=job.id).count() == 0
 
 
-def test_deploy_timeout_keeps_deploying_not_failed(monkeypatch):
-    """就绪超时：部署已提交则保持 DEPLOYING，勿闪 DEPLOY_FAILED。"""
+def test_deploy_returns_immediately_as_deploying(monkeypatch):
+    """部署提交 CR 后立即返回 DEPLOYING，不阻塞等待集群 RUNNING。"""
     from app.api import streaming as streaming_api
 
     db = _session()
@@ -404,15 +390,6 @@ def test_deploy_timeout_keeps_deploying_not_failed(monkeypatch):
 
     monkeypatch.setattr(streaming_api, "require_streaming_job", lambda *a, **k: job)
     monkeypatch.setattr(streaming_api, "_execute_approved_release_deployment", _deploy)
-    monkeypatch.setattr(streaming_api, "_operator_deployment_name_for_job", lambda j: "gido-sql-1-1")
-    monkeypatch.setattr(
-        "app.services.flink_operator_submit._operator_namespace",
-        lambda: "flink",
-    )
-    monkeypatch.setattr(
-        "app.services.flink_operator_submit.wait_for_flink_deployment_running",
-        lambda *a, **k: (_ for _ in ()).throw(TimeoutError("Timed out waiting for RUNNING")),
-    )
 
     out = deploy_streaming_job_release(
         job.id,

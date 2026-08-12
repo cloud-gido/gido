@@ -624,13 +624,17 @@ export default function StreamMonitorPage() {
         }
     setActionLoading(true)
     const loadingKey = actionKind === 'deploy' ? 'stream-deploy' : 'stream-restart'
-    message.loading({
-      content: actionKind === 'deploy'
-        ? '正在部署，等待作业 RUNNING（最长约 3 分钟）…'
-        : '正在恢复，等待作业 RUNNING（最长约 3 分钟）…',
-      key: loadingKey,
-      duration: 0,
-    })
+    // 部署：提交即关弹窗，只靠行状态「正在部署」反馈；重启仍可能等集群就绪
+    if (actionKind === 'deploy') {
+      setActionOpen(false)
+      message.loading({ content: '正在提交部署…', key: loadingKey, duration: 0 })
+    } else {
+      message.loading({
+        content: '正在恢复，等待作业 RUNNING（最长约 3 分钟）…',
+        key: loadingKey,
+        duration: 0,
+      })
+    }
     // 立刻反映到列表，避免弹窗长时间无反馈像「没点上」
     if (actionKind === 'restart') {
       setJobs(prev => prev.map(j => (
@@ -650,10 +654,10 @@ export default function StreamMonitorPage() {
         ? await streamingApi.deployJob(actionRow.id, payload)
         : await streamingApi.restartJob(actionRow.id, payload)
       message.success({
-        content: res?.message || (actionKind === 'deploy' ? '已提交部署' : '已提交重启/恢复'),
+        content: res?.message || (actionKind === 'deploy' ? '已提交部署，状态将自动更新' : '已提交重启/恢复'),
         key: loadingKey,
       })
-      setActionOpen(false)
+      if (actionKind !== 'deploy') setActionOpen(false)
       await loadJobs()
     } catch (e: any) {
       const detail = e?.response?.data?.detail || e?.message

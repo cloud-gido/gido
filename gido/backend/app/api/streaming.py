@@ -3989,12 +3989,6 @@ def deploy_streaming_job_release(
     db.commit()
     result: dict = {}
     try:
-        from app.services.flink_operator_submit import (
-            _operator_namespace,
-            inspect_flink_deployment_job_fields,
-            wait_for_flink_deployment_running,
-        )
-
         runtime_job, result = _execute_approved_release_deployment(
             db,
             job,
@@ -4003,7 +3997,7 @@ def deploy_streaming_job_release(
             parallelism=body.parallelism,
             streaming_properties=body.streaming_properties,
         )
-        # 提交成功后保持 DEPLOYING，等到集群真正 RUNNING 再抬状态，避免闪「部署失败 / 假运行中」
+        # 提交 CR 成功即返回：保持 DEPLOYING，由状态同步升到 RUNNING，避免前端弹窗卡 3 分钟
         _copy_runtime_submit_result(
             runtime_job,
             job,
@@ -4012,60 +4006,30 @@ def deploy_streaming_job_release(
         )
         job.current_approved_release_id = release.id
         job.last_submit_error = None
-        db.commit()
-
-        dep = _operator_deployment_name_for_job(job)
-        if dep:
-            live = wait_for_flink_deployment_running(
-                dep,
-                _operator_namespace(),
-                timeout_seconds=180.0,
-                require_tm_replicas=True,
-            )
-            info = inspect_flink_deployment_job_fields(live)
-            if info.get("job_id"):
-                job.flink_job_id = str(info["job_id"])
-        job.status = "running"
-        job.lifecycle_state = "RUNNING"
-        job.last_submit_error = None
+        if str(job.status or "").lower() not in ("running", "deploying"):
+            job.status = "running"
         operation.flink_job_id = job.flink_job_id
         operation.flink_deployment_name = job.flink_operator_deployment_name
         finish_streaming_operation(
             operation,
             status="succeeded",
-            result_payload=result,
+            result_payload={
+                **result,
+                "accepted": True,
+                "lifecycle_state": "DEPLOYING",
+            },
         )
         db.commit()
         return {
-            "message": f"发布版本 v{release.version} 已部署并进入 RUNNING",
+            "message": f"发布版本 v{release.version} 已提交部署，集群启动中",
             "release_id": release.id,
             "operation_id": operation.id,
+            "lifecycle_state": "DEPLOYING",
+            "accepted": True,
             **result,
         }
     except Exception as exc:
         detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
-        # 超时：CR 可能已在拉起，保持 DEPLOYING 让同步接管，勿立刻标 DEPLOY_FAILED 吓人
-        if isinstance(exc, TimeoutError) or "Timed out" in str(detail):
-            job.lifecycle_state = "DEPLOYING"
-            job.last_submit_error = None
-            finish_streaming_operation(
-                operation,
-                status="succeeded",
-                result_payload={
-                    **result,
-                    "accepted": True,
-                    "message": "部署已提交，集群仍在启动，请稍后刷新状态",
-                },
-            )
-            db.commit()
-            return {
-                "message": "部署已提交，正在等待作业 RUNNING（可稍后刷新）",
-                "release_id": release.id,
-                "operation_id": operation.id,
-                "lifecycle_state": "DEPLOYING",
-                "accepted": True,
-                **result,
-            }
         job.lifecycle_state = "DEPLOY_FAILED"
         job.last_submit_error = str(detail)
         finish_streaming_operation(
