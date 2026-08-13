@@ -7,7 +7,7 @@ import { FileOutlined } from '@ant-design/icons'
 import { resolveLeafTypeBadge } from '../utils/leafTypeBadge'
 
 /**
- * 侧栏叶子：统一白底文档图标 + 淡类型字（对齐 DataWorks 低调提示）。
+ * 侧栏叶子：统一白底文档图标 + 淡类型字，避免彩色底块抢视觉。
  * Studio / Probe / Stream 共用，勿再做彩色底块。
  */
 export default function LeafTypeBadge({ type }: { type?: string | null }) {
