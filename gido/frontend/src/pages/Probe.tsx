@@ -187,6 +187,7 @@ export default function ProbePage() {
       id: s.id,
       name: s.name,
       folder_id: s.folderId,
+      leaf_type: 'SQL',
       sort_order: s.sort_order ?? 0,
     })),
     [probeState.scripts],

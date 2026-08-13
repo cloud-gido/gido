@@ -37,6 +37,7 @@ description: >-
 | 能力 | 位置 |
 |------|------|
 | 树 UI、拖拽迁入/移出、行内重命名、展开定位 | `gido/frontend/src/components/WorkspaceFolderTree.tsx` |
+| 叶子类型小标识（sql/jar/py…） | `LeafTypeBadge` + `utils/leafTypeBadge.ts`（读 `job_type` / `node_type` / `leaf_type`） |
 | 拖放迁移动机 | `gido/frontend/src/utils/treeDropOrder.ts` |
 | 名称字典序 + 递归建树 | `gido/frontend/src/utils/treeSort.ts`（`buildSortedWorkspaceTree`） |
 

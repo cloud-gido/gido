@@ -5,7 +5,9 @@
 import React, { useMemo, useRef, useState } from 'react'
 import { Button, Dropdown, Input, Tree, message } from 'antd'
 import type { DataNode, TreeProps } from 'antd/es/tree'
-import { FileOutlined, FolderOutlined, MoreOutlined } from '@ant-design/icons'
+import { FolderOutlined, MoreOutlined } from '@ant-design/icons'
+import LeafTypeBadge from './LeafTypeBadge'
+import { leafTypeFromRow } from '../utils/leafTypeBadge'
 import { buildSortedWorkspaceTree, sortByName } from '../utils/treeSort'
 import {
   ancestorFolderKeys,
@@ -28,7 +30,12 @@ export type LeafRow<T extends TreeId = TreeId> = {
   id: T
   name: string
   folder_id?: T | null
+  /** Stream 作业类型：SQL / JAR */
   job_type?: string | null
+  /** Studio 节点类型：SQL / PYTHON / SHELL / SYNC / … */
+  node_type?: string | null
+  /** 显式覆盖（Probe 等无 job/node 字段时） */
+  leaf_type?: string | null
   sort_order?: number | null
 }
 
@@ -279,9 +286,9 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
             style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}
             onDoubleClick={readOnly ? undefined : () => beginRenameLeaf(n.id, n.name)}
           >
-            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              <FileOutlined style={{ marginRight: 6, color: n.job_type === 'JAR' ? '#fa8c16' : '#1677ff' }} />
-              {n.name}
+            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
+              <LeafTypeBadge type={leafTypeFromRow(n)} />
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n.name}</span>
             </span>
             {!readOnly && <Dropdown
               menu={{
