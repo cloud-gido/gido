@@ -3,9 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import React from 'react'
+import { FileOutlined } from '@ant-design/icons'
 import { resolveLeafTypeBadge } from '../utils/leafTypeBadge'
 
-/** 侧栏树叶子类型小标识（Studio / Probe / Stream 共用） */
+/**
+ * 侧栏叶子：统一白底文档图标 + 淡类型字（对齐 DataWorks 低调提示）。
+ * Studio / Probe / Stream 共用，勿再做彩色底块。
+ */
 export default function LeafTypeBadge({ type }: { type?: string | null }) {
   const meta = resolveLeafTypeBadge(type)
   return (
@@ -15,25 +19,25 @@ export default function LeafTypeBadge({ type }: { type?: string | null }) {
       style={{
         display: 'inline-flex',
         alignItems: 'center',
-        justifyContent: 'center',
         flexShrink: 0,
-        minWidth: 22,
-        height: 14,
         marginRight: 6,
-        padding: '0 3px',
-        borderRadius: 3,
-        fontSize: 9,
-        fontWeight: 650,
-        lineHeight: 1,
-        letterSpacing: 0.15,
-        color: meta.fg,
-        background: meta.bg,
-        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-        textTransform: 'lowercase',
+        gap: 3,
         verticalAlign: 'middle',
       }}
     >
-      {meta.label}
+      <FileOutlined style={{ color: '#bfbfbf', fontSize: 14 }} />
+      <span
+        style={{
+          fontSize: 10,
+          lineHeight: 1,
+          fontWeight: 400,
+          color: '#bfbfbf',
+          letterSpacing: 0.2,
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        }}
+      >
+        {meta.label}
+      </span>
     </span>
   )
 }
