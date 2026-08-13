@@ -513,6 +513,20 @@ def _dump_version_id_list(ids) -> Optional[str]:
     return json.dumps(parsed, separators=(",", ":"))
 
 
+def _streaming_release_versions_by_id(
+    db: Session, release_ids: List[Optional[int]]
+) -> Dict[int, int]:
+    ids = sorted({int(x) for x in release_ids if x is not None})
+    if not ids:
+        return {}
+    rows = (
+        db.query(StreamingJobRelease.id, StreamingJobRelease.version)
+        .filter(StreamingJobRelease.id.in_(ids))
+        .all()
+    )
+    return {int(rid): int(ver) for rid, ver in rows}
+
+
 def _streaming_job_public_dict(
     db: Session,
     job: StreamingJob,
@@ -520,6 +534,7 @@ def _streaming_job_public_dict(
     username_by_id: Optional[dict] = None,
     runtime_cfg: Optional[FlinkRuntimeConfig] = None,
     profile_name: Optional[str] = None,
+    release_versions: Optional[Dict[int, int]] = None,
 ) -> dict:
     fjid = job.flink_job_id or None
     oid = getattr(job, "owner_id", None) or job.created_by
@@ -538,6 +553,13 @@ def _streaming_job_public_dict(
         else:
             u2 = db.query(User).filter(User.id == lsub).first()
             lsub_name = u2.username if u2 else None
+    approved_rid = getattr(job, "current_approved_release_id", None)
+    running_rid = getattr(job, "current_running_release_id", None)
+    ver_map = release_versions
+    if ver_map is None:
+        ver_map = _streaming_release_versions_by_id(db, [approved_rid, running_rid])
+    approved_ver = ver_map.get(int(approved_rid)) if approved_rid is not None else None
+    running_ver = ver_map.get(int(running_rid)) if running_rid is not None else None
     cfg = runtime_cfg if runtime_cfg is not None else _flink_runtime_cfg_for_job(db, job)
     pid = getattr(job, "flink_session_profile_id", None)
     op_dep = _operator_deployment_name_for_job(job)
@@ -613,8 +635,10 @@ def _streaming_job_public_dict(
         "last_submitted_at": getattr(job, "last_submitted_at", None),
         "last_submitted_by": getattr(job, "last_submitted_by", None),
         "last_submitted_by_username": lsub_name,
-        "current_approved_release_id": getattr(job, "current_approved_release_id", None),
-        "current_running_release_id": getattr(job, "current_running_release_id", None),
+        "current_approved_release_id": approved_rid,
+        "current_running_release_id": running_rid,
+        "current_approved_release_version": approved_ver,
+        "current_running_release_version": running_ver,
         "lifecycle_state": getattr(job, "lifecycle_state", None) or "draft",
         "parallelism": job.parallelism,
         "streaming_properties": getattr(job, "streaming_properties", None),
@@ -690,6 +714,7 @@ class StreamingJob(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_by = Column(Integer, ForeignKey("dw_users.id"))
     owner_id = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    # 兼容历史「提交后锁定」；新链路（release + 运维部署）不再写入。草稿默认可改。
     is_locked = Column(Boolean, default=False, nullable=False)
     # 发布/运行指针与旧 status 并存；status 继续服务现有 Flink 状态同步。
     current_approved_release_id = Column(
@@ -2868,9 +2893,20 @@ def list_jobs(workspace_id: int, db: Session = Depends(get_db), current_user: Us
         pr = prof_by_id.get(int(x))
         return pr.name if pr and int(pr.workspace_id) == int(jj.workspace_id) else None
 
+    release_ids: List[Optional[int]] = []
+    for j in jobs:
+        release_ids.append(getattr(j, "current_approved_release_id", None))
+        release_ids.append(getattr(j, "current_running_release_id", None))
+    release_versions = _streaming_release_versions_by_id(db, release_ids)
+
     return [
         _streaming_job_public_dict(
-            db, j, username_by_id=umap, runtime_cfg=cfg_by_job[j.id], profile_name=_pname(j)
+            db,
+            j,
+            username_by_id=umap,
+            runtime_cfg=cfg_by_job[j.id],
+            profile_name=_pname(j),
+            release_versions=release_versions,
         )
         for j in jobs
     ]
@@ -4861,7 +4897,7 @@ def rollback_streaming_job_history(
 
 @router.post("/jobs/{job_id}/unlock")
 def unlock_streaming_job(job_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """负责人或空间管理员解锁后可继续编辑并提交。"""
+    """解除历史发布硬锁（新链路不再上锁）。负责人或空间管理员可操作。"""
     job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_WRITE)
     oid = getattr(job, "owner_id", None) or job.created_by
     if current_user.id != oid and not workspace_data_full_control(db, current_user, job.workspace_id):
@@ -4870,7 +4906,7 @@ def unlock_streaming_job(job_id: int, db: Session = Depends(get_db), current_use
     job.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(job)
-    return {"message": "已解锁", "job": _streaming_job_public_dict(db, job)}
+    return {"message": "已解除历史锁定，草稿可继续编辑", "job": _streaming_job_public_dict(db, job)}
 
 
 @router.post("/jobs/{job_id}/submit", deprecated=True)
@@ -5118,8 +5154,8 @@ def execute_streaming_job_submit(
         job.last_submitted_at = datetime.utcnow()
         job.last_submitted_by = current_user.id
         job.updated_at = datetime.utcnow()
-        if settings.STUDIO_LOCK_ON_PUBLISH:
-            job.is_locked = True
+        # 实时对齐阿里 Draft/Deployment：提交/部署不锁草稿；线上靠 release 隔离。
+        # is_locked 仅兼容历史已锁作业，须显式解锁后才能再改。
         db.commit()
         rt_cfg = _flink_runtime_cfg_for_job(db, job)
         op_dep_submit = _operator_deployment_name_for_job(job)

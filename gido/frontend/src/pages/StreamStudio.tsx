@@ -72,6 +72,52 @@ const JOB_TYPES = [
 
 type SqlSubmitMode = 'session' | 'kubernetes_application' | 'flink_operator'
 
+/** 开发页发布态：草稿可改；线上靠 release 隔离（对齐阿里 Draft/Deployment） */
+function streamJobLifecycleTags(job: any, draftDirty: boolean): { color?: string; text: string; title?: string }[] {
+  const tags: { color?: string; text: string; title?: string }[] = []
+  const approvedVer = job?.current_approved_release_version
+  const runningVer = job?.current_running_release_version
+  const approvedId = job?.current_approved_release_id
+  const runningId = job?.current_running_release_id
+  const approvedLabel = approvedVer != null ? `v${approvedVer}` : (approvedId != null ? `#${approvedId}` : null)
+  const runningLabel = runningVer != null ? `v${runningVer}` : (runningId != null ? `#${runningId}` : null)
+  const status = String(job?.status || '').toLowerCase()
+  const lifecycle = String(job?.lifecycle_state || '').toLowerCase()
+
+  if (draftDirty) {
+    tags.push({ color: 'gold', text: '草稿有未发布修改', title: '编辑器改动尚未提交为发布版本' })
+  } else if (!approvedId) {
+    tags.push({ text: '草稿', title: '尚未提交发布版本' })
+  } else {
+    tags.push({ color: 'blue', text: `已批准 ${approvedLabel}`, title: '最新已批准发布版本；改草稿不影响线上' })
+  }
+
+  if (runningId != null) {
+    const pending =
+      approvedId != null
+      && Number(approvedId) !== Number(runningId)
+    tags.push({
+      color: status === 'running' || lifecycle === 'deploying' ? 'green' : 'default',
+      text: `运行 ${runningLabel}${status ? ` · ${status}` : ''}`,
+      title: pending ? '运行版与已批准版不一致，可在作业运维部署新版本' : '当前集群运行中的发布版本',
+    })
+    if (pending) {
+      tags.push({ color: 'cyan', text: '待部署', title: '已批准版本新于运行版本，请到作业运维部署' })
+    }
+  } else if (approvedId != null) {
+    tags.push({ color: 'cyan', text: '待部署', title: '已有批准版本，请到作业运维部署' })
+  }
+
+  if (job?.is_locked) {
+    tags.push({
+      color: 'orange',
+      text: '历史锁定',
+      title: '旧提交路径遗留的发布硬锁；新链路不再上锁。点解锁后可继续改草稿。',
+    })
+  }
+  return tags
+}
+
 function cdcPaimonSqlTemplate(warehouse: string) {
   const wh = warehouse || 's3://gido-paimon-warehouse'
   return `-- MySQL CDC → Paimon（GIDO 统一运行时 · Flink Operator · EKS 生产）
@@ -447,8 +493,8 @@ export default function StreamStudioPage() {
   const handleUnlock = async () => {
     if (!selected) return
     try {
-      await streamingApi.unlockJob(selected.id)
-      message.success('已解锁，可继续编辑与提交')
+      const res: any = await streamingApi.unlockJob(selected.id)
+      message.success(res?.message || '已解除历史锁定，草稿可继续编辑')
       await load(true)
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '解锁失败')
@@ -458,7 +504,7 @@ export default function StreamStudioPage() {
   const handleSave = async (): Promise<boolean> => {
     if (!selected) return false
     if (selected.is_locked) {
-      message.warning('作业已锁定，请先解锁后再保存')
+      message.warning('作业仍有历史锁定，请先「解除历史锁定」后再保存')
       return false
     }
     let streaming_properties: string | undefined
@@ -628,7 +674,7 @@ export default function StreamStudioPage() {
   const openSubmitDrawer = () => {
     if (!selected) return
     if (selected.is_locked) {
-      message.warning('作业已锁定，请先解锁后再提交')
+      message.warning('作业仍有历史锁定，请先「解除历史锁定」后再提交')
       return
     }
     setSubmitDrawerOpen(true)
@@ -641,7 +687,7 @@ export default function StreamStudioPage() {
       return
     }
     if (selected.is_locked) {
-      message.warning('作业已锁定，请先解锁后再提交')
+      message.warning('作业仍有历史锁定，请先「解除历史锁定」后再提交')
       return
     }
     setSubmitDrawerOpen(false)
@@ -914,7 +960,7 @@ export default function StreamStudioPage() {
               onRenameLeaf={async (id, name) => {
                 const job = jobs.find(j => j.id === id)
                 if (job?.is_locked) {
-                  message.warning('作业已锁定，请先解锁后再重命名')
+                  message.warning('作业仍有历史锁定，请先「解除历史锁定」后再重命名')
                   return
                 }
                 if ((job?.status || '').toLowerCase() === 'running') {
@@ -1003,7 +1049,9 @@ export default function StreamStudioPage() {
                   </Tooltip>
                 )}
                 {selected.is_locked && (
-                  <Button icon={<UnlockOutlined />} size="small" onClick={handleUnlock}>解锁</Button>
+                  <Tooltip title="旧提交路径遗留的发布硬锁；新「提交发布」不再锁定草稿">
+                    <Button icon={<UnlockOutlined />} size="small" onClick={handleUnlock}>解除历史锁定</Button>
+                  </Tooltip>
                 )}
                 <Button
                   icon={<SaveOutlined />}
@@ -1057,7 +1105,11 @@ export default function StreamStudioPage() {
                   <EditorAppearanceToolbar value={editorAppearance} onChange={setEditorAppearance} />
                 )}
                 {selected.owner_username && <Tag style={{ margin: 0 }}>负责人 {selected.owner_username}</Tag>}
-                {selected.is_locked && <Tag color="orange" style={{ margin: 0 }}>已锁定</Tag>}
+                {streamJobLifecycleTags(selected, selected.job_type === 'SQL' ? scriptDirty || scriptAutosave.versionDirty : false).map((t) => (
+                  <Tooltip key={t.text} title={t.title}>
+                    <Tag color={t.color} style={{ margin: 0 }}>{t.text}</Tag>
+                  </Tooltip>
+                ))}
                 {selected.flink_console_url ? (
                   <Button type="link" size="small" style={{ padding: 0 }} onClick={() => openFlinkConsoleUrl(selected.flink_console_url, selected.id)}>
                     Flink UI
@@ -1374,11 +1426,12 @@ export default function StreamStudioPage() {
               type="info"
               showIcon
               message={selected.job_type === 'SQL'
-                ? 'FlinkDeployment Application + SQL Runner'
-                : 'FlinkDeployment Application + JAR'}
+                ? '提交发布 = 打不可变版本（草稿仍可改）'
+                : '提交发布 = 打不可变版本（配置仍可改）'}
               description={(
                 <div style={{ fontSize: 13 }}>
-                  <div>Flink {flinkRuntime?.flink_version || '2.0.1'} · 命名空间 {flinkRuntime?.operator_namespace || 'flink'}</div>
+                  <div>对齐阿里 Draft / Deployment：改草稿不影响线上；须到「作业运维」部署新版本才会替换运行实例。</div>
+                  <div style={{ marginTop: 4 }}>Flink {flinkRuntime?.flink_version || '2.0.1'} · 命名空间 {flinkRuntime?.operator_namespace || 'flink'}</div>
                   {selected.job_type === 'SQL' && flinkRuntime?.paimon_warehouse_default && (
                     <div>默认 Paimon warehouse：<code>{flinkRuntime.paimon_warehouse_default}</code></div>
                   )}

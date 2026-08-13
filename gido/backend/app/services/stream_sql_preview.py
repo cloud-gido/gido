@@ -146,6 +146,20 @@ def _preview_shell(script: str, limit: int) -> str:
     java_opts = _preview_java_sys_props(script)
     java_cmd = f"java {java_opts}" if java_opts else "java"
     hadoop_props = _preview_hadoop_fs_props(script)
+    # IRSA 时即便 SQL 未写 SET fs.*，也要把 provider/region 写入 core-site，
+    # 供 Hadoop/Paimon 与 JVM -D 一并生效。
+    if _preview_uses_irsa(script):
+        provider = (settings.FLINK_OPERATOR_S3_CREDENTIALS_PROVIDER or "").strip()
+        if provider and "fs.s3a.aws.credentials.provider" not in hadoop_props:
+            hadoop_props["fs.s3a.aws.credentials.provider"] = provider
+        region = (settings.GIDO_ARTIFACT_S3_REGION or "").strip()
+        if not region:
+            for key in ("fs.s3a.endpoint.region", "fs.s3a.region"):
+                if hadoop_props.get(key):
+                    region = hadoop_props[key].strip()
+                    break
+        if region and "fs.s3a.endpoint.region" not in hadoop_props:
+            hadoop_props["fs.s3a.endpoint.region"] = region
     hadoop_conf_bootstrap = ""
     classpath = "/opt/flink/usrlib/sql-runner.jar:/opt/flink/lib/*"
     if hadoop_props:
@@ -200,12 +214,14 @@ def _strip_sql_set_keys(script: str, keys: frozenset[str]) -> str:
 
 
 def _sql_has_static_s3_keys(script: str) -> bool:
+    """仅当 SQL 同时给出非占位的 access.key + secret.key 时视为本地静态凭证。"""
+    values: Dict[str, str] = {}
     for match in _SQL_SET_PATTERN.finditer(script or ""):
         key = match.group(1).strip()
         val = (match.group(2) or "").strip()
-        if key == "fs.s3a.access.key" and val and not val.startswith("${"):
-            return True
-    return False
+        if val and not val.startswith("${"):
+            values[key] = val
+    return bool(values.get("fs.s3a.access.key") and values.get("fs.s3a.secret.key"))
 
 
 def _prepare_preview_script(sql: str) -> str:

@@ -370,6 +370,7 @@ def test_deploy_uses_immutable_release_without_overwriting_draft(monkeypatch):
     assert job.current_approved_release_id == release.id
     assert job.flink_job_id == "jid-release"
     assert job.lifecycle_state == "DEPLOYING"
+    assert job.is_locked is False
     assert db.query(StreamingJobHistory).filter_by(job_id=job.id).count() == 0
 
 
