@@ -3,12 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import React from 'react'
-import { FileOutlined } from '@ant-design/icons'
 import { resolveLeafTypeBadge } from '../utils/leafTypeBadge'
 
 /**
- * 侧栏叶子：统一白底文档图标 + 淡类型字，避免彩色底块抢视觉。
- * Studio / Probe / Stream 共用，勿再做彩色底块。
+ * 侧栏叶子类型方标：统一尺寸白底空心描边 + 短缩写，Studio / Probe / Stream 共用。
  */
 export default function LeafTypeBadge({ type }: { type?: string | null }) {
   const meta = resolveLeafTypeBadge(type)
@@ -19,25 +17,26 @@ export default function LeafTypeBadge({ type }: { type?: string | null }) {
       style={{
         display: 'inline-flex',
         alignItems: 'center',
+        justifyContent: 'center',
         flexShrink: 0,
+        boxSizing: 'border-box',
+        width: 18,
+        height: 18,
         marginRight: 6,
-        gap: 3,
+        borderRadius: 3,
+        border: `1px solid ${meta.color}`,
+        background: '#fff',
+        color: meta.color,
+        fontSize: 9,
+        fontWeight: 600,
+        lineHeight: 1,
+        letterSpacing: 0,
+        fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif',
         verticalAlign: 'middle',
+        userSelect: 'none',
       }}
     >
-      <FileOutlined style={{ color: '#bfbfbf', fontSize: 14 }} />
-      <span
-        style={{
-          fontSize: 10,
-          lineHeight: 1,
-          fontWeight: 400,
-          color: '#bfbfbf',
-          letterSpacing: 0.2,
-          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-        }}
-      >
-        {meta.label}
-      </span>
+      {meta.label}
     </span>
   )
 }

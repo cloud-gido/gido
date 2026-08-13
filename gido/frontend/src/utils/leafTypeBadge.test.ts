@@ -14,9 +14,10 @@ describe('leafTypeBadge', () => {
   })
 
   it('resolves short labels', () => {
-    expect(resolveLeafTypeBadge('SQL').label).toBe('SQL')
-    expect(resolveLeafTypeBadge('JAR').label).toBe('JAR')
+    expect(resolveLeafTypeBadge('SQL').label).toBe('Sq')
+    expect(resolveLeafTypeBadge('JAR').label).toBe('Jr')
     expect(resolveLeafTypeBadge('PYTHON').label).toBe('Py')
     expect(resolveLeafTypeBadge('SHELL').label).toBe('Sh')
+    expect(resolveLeafTypeBadge('SQL').color).toBe('#52c41a')
   })
 })
