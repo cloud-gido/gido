@@ -3,7 +3,6 @@
 """工作空间全局变量：Batch / Stream / Serve 共用 ${key} 与 $[...] 时间宏替换。"""
 from __future__ import annotations
 
-import re
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
@@ -45,7 +44,13 @@ def substitute_script_variables(
     bizdate: Optional[str] = None,
     extra_vars: Optional[Dict[str, str]] = None,
 ) -> str:
-    """将工作空间变量、节点/作业级 extra_vars、时间宏写入脚本（不修改库中原文）。"""
+    """产品层脚本展开：空间变量 ``${key}`` + 时间宏 ``$[yyyy-MM-dd-1/24]``。
+
+    批 / 流 / 服跑 SQL（或同类脚本）必须走这里，体验一致：
+    - batch：Studio SQL/PYTHON/SHELL、Probe、工作流节点试跑、Copilot 只读查询
+    - stream：Stream SQL 预览、提交前 SQL
+    - serve：数据服务 API 执行 / 测试
+    """
     if not script:
         return script
 
@@ -72,22 +77,13 @@ def substitute_script_variables(
         for k, v in extra_vars.items():
             merged[str(k)] = "" if v is None else str(v)
 
-    from app.api.studio import _resolve_date_expr
+    from app.services.date_macros import expand_date_macros_in_text
 
     for key, raw in merged.items():
-        val = re.sub(
-            r"\$\[([^\]]+)\]([+-]\d+)?",
-            lambda m: _resolve_date_expr(f"$[{m.group(1)}{m.group(2) or ''}]", biz, tz_name),
-            str(raw),
-        )
+        val = expand_date_macros_in_text(str(raw), bizdate=biz, tz_name=tz_name)
         text = text.replace(f"${{{key}}}", val)
 
-    text = re.sub(
-        r"\$\[([^\]]+)\]([+-]\d+)?",
-        lambda m: _resolve_date_expr(f"$[{m.group(1)}{m.group(2) or ''}]", biz, tz_name),
-        text,
-    )
-    return text
+    return expand_date_macros_in_text(text, bizdate=biz, tz_name=tz_name)
 
 
 def mask_secret_value(value: Optional[str]) -> str:

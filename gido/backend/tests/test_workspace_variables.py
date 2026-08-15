@@ -36,5 +36,10 @@ def test_substitute_workspace_variables(monkeypatch):
     assert "kafka:9092" in out
     assert "${kafka.bootstrap}" not in out
 
+    hour = wv.substitute_script_variables(
+        db, 1, "SELECT '$[yyyy-MM-dd-1/24]'", "batch", bizdate="2026-08-15"
+    )
+    assert hour == "SELECT '2026-08-14'"
+
     out_stream = wv.substitute_script_variables(db, 1, "${stream.only}", "stream")
     assert out_stream == "yes"

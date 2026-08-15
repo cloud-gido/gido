@@ -3,19 +3,21 @@
 # @author felixzhu
 # @date 2026-06-05
 """数据探查：临时只读 SQL（SELECT / WITH），支持多条语句。"""
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.core import perm_codes as PC
-from app.models.workspace import DataSource, User
+from app.models.workspace import DataSource, ProbeQueryTree, User
 from app.services.rbac import assert_workspace_data_capability, require_datasource_row
 from app.services.datasource_mysql_user import mysql_protocol_connect_user
 from app.services.sql_readonly import apply_readonly_row_limit, parse_readonly_statements, result_set_from_cursor
+from app.services.probe_tree_store import sanitize_probe_tree_state
 
 router = APIRouter(prefix="/probe", tags=["数据探查"])
 
@@ -25,6 +27,68 @@ class ProbeQueryIn(BaseModel):
     datasource_id: int
     sql: str
     limit: int = Field(default=500, ge=1, le=10000)
+
+
+class ProbeTreeIn(BaseModel):
+    workspace_id: int
+    folders: List[dict] = Field(default_factory=list)
+    scripts: List[dict] = Field(default_factory=list)
+    activeScriptId: Optional[str] = None
+
+
+@router.get("/tree")
+def get_probe_tree(
+    workspace_id: int = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """当前用户在该空间的探查目录树。"""
+    assert_workspace_data_capability(db, current_user, workspace_id, "viewer", PC.GIDO_BATCH_PROBE_READ)
+    row = (
+        db.query(ProbeQueryTree)
+        .filter(
+            ProbeQueryTree.workspace_id == workspace_id,
+            ProbeQueryTree.user_id == current_user.id,
+        )
+        .first()
+    )
+    if not row or not row.state:
+        return {"folders": [], "scripts": [], "activeScriptId": None}
+    return row.state
+
+
+@router.put("/tree")
+def put_probe_tree(
+    body: ProbeTreeIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    assert_workspace_data_capability(db, current_user, body.workspace_id, "viewer", PC.GIDO_BATCH_PROBE_READ)
+    try:
+        state = sanitize_probe_tree_state(body.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    row = (
+        db.query(ProbeQueryTree)
+        .filter(
+            ProbeQueryTree.workspace_id == body.workspace_id,
+            ProbeQueryTree.user_id == current_user.id,
+        )
+        .first()
+    )
+    if row:
+        row.state = state
+        row.updated_at = datetime.utcnow()
+    else:
+        row = ProbeQueryTree(
+            workspace_id=body.workspace_id,
+            user_id=current_user.id,
+            state=state,
+            updated_at=datetime.utcnow(),
+        )
+        db.add(row)
+    db.commit()
+    return state
 
 
 def _execute_one(ds: DataSource, stmt: str, lim: int) -> Dict[str, Any]:
@@ -87,7 +151,10 @@ def probe_query(
     ds = require_datasource_row(db, current_user, body.datasource_id)
     if ds.workspace_id != body.workspace_id:
         raise HTTPException(status_code=400, detail="数据源不属于该工作空间")
-    statements = parse_readonly_statements(body.sql)
+    from app.services.workspace_variables import substitute_script_variables
+
+    sql = substitute_script_variables(db, body.workspace_id, body.sql or "", "batch")
+    statements = parse_readonly_statements(sql)
     lim = min(max(body.limit, 1), 10000)
 
     from datetime import datetime

@@ -188,11 +188,12 @@ def detach_user_references(db: Session, user_id: int, *, reassign_to: int) -> No
         pass
 
     try:
-        from app.models.workspace import AdhocRun
+        from app.models.workspace import AdhocRun, ProbeQueryTree
 
         col = getattr(AdhocRun, "triggered_by", None)
         if col is not None:
             _null(db, AdhocRun, col, user_id)
+        db.query(ProbeQueryTree).filter(ProbeQueryTree.user_id == user_id).delete(synchronize_session=False)
     except Exception:
         pass
 

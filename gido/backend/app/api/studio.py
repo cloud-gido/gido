@@ -696,75 +696,9 @@ def run_node(
 
 
 def _resolve_date_expr(expr: str, bizdate: str = None, tz_name: str = "Asia/Shanghai") -> str:
-    """
-    解析动态日期表达式，对齐 DolphinScheduler 时间占位符
-    支持格式:
-      $[yyyy-MM-dd]        业务日期
-      $[yyyy-MM-dd-1]      业务日期前 1 天
-      $[yyyy-MM-dd+7]      业务日期后 7 天
-      $[yyyy-MM-dd-1/24]   前 1 小时（常用于时区换算）
-      $[yyyy-MM-dd-1/24/60]  前 1 分钟
-      $[yyyy-MM-dd-1/24/60/60]  前 1 秒
-      $[yyyyMMdd-1]        无分隔符格式
-      $[yyyy-MM-dd HH:mm:ss]  包含时间
-      $[HH:mm:ss]          当前时间
-    如果不是 $[...] 格式，直接返回原字符串
-    """
-    import re, datetime as dt
-    try:
-        import pytz
-        tz = pytz.timezone(tz_name)
-        now = dt.datetime.now(tz)
-    except Exception:
-        now = dt.datetime.now()
+    from app.services.date_macros import resolve_date_expr
 
-    m = re.fullmatch(r'\$\[(.+)\]', expr.strip())
-    if not m:
-        return expr
-
-    inner = m.group(1).strip()
-    offset_re = re.compile(
-        r"^(?P<fmt>.+?)\s*(?P<sign>[+-])(?P<n>\d+)(?P<denoms>(?:/\d+)*)\s*$"
-    )
-    units = {
-        "": "days",
-        "/24": "hours",
-        "/24/60": "minutes",
-        "/24/60/60": "seconds",
-    }
-    delta = dt.timedelta(0)
-    om = offset_re.match(inner)
-    if om and (om.group("denoms") or "") in units:
-        n = int(om.group("n"))
-        if om.group("sign") == "-":
-            n = -n
-        inner = om.group("fmt").rstrip()
-        delta = dt.timedelta(**{units[om.group("denoms") or ""]: n})
-
-    if bizdate:
-        from app.services.business_date import normalize_business_date
-
-        bd = normalize_business_date(bizdate)
-        try:
-            base_date = dt.datetime.strptime(bd or "", "%Y-%m-%d")
-        except ValueError:
-            base_date = now.replace(tzinfo=None)
-    else:
-        base_date = now.replace(tzinfo=None)
-
-    has_time = any(c in inner for c in ('H', 'm', 's'))
-    if has_time:
-        base_date = base_date.replace(hour=now.hour, minute=now.minute, second=now.second)
-    target = base_date + delta
-
-    fmt = inner
-    fmt = fmt.replace('yyyy', '%Y').replace('MM', '%m').replace('dd', '%d')
-    fmt = fmt.replace('HH', '%H').replace('mm', '%M').replace('ss', '%S')
-
-    try:
-        return target.strftime(fmt)
-    except Exception:
-        return expr
+    return resolve_date_expr(expr, bizdate, tz_name)
 
 
 def _run_sql(node: TaskNode, db: Session, bizdate: str = None) -> list:

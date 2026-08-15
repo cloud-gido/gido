@@ -27,7 +27,7 @@ description: >-
 
 - Studio / DAG 节点脚本 → 服务端 `TaskNode.script_content`（`create_history=false` 草稿）
 - Stream 作业 → 服务端 streaming job（`create_history=false` 草稿）
-- Probe → 本机 `probeLocalStore`（local-first），UX 仍走共用 Hook
+- Probe → 服务端 `GET/PUT /probe/tree`（按空间+用户）；本机 `probeLocalStore` 仅作缓存与离线回退
 
 ## 共享实现（改行为时先改这里）
 

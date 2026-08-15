@@ -99,19 +99,15 @@ def run_sql_with_result(
     script = script.replace("${bizdate}", biz).replace("${yesterday}", yesterday_str)
 
     if node.params and isinstance(node.params, dict):
+        from app.services.date_macros import expand_date_macros_in_text
+
         for k, v in node.params.items():
-            val = re.sub(
-                r"\$\[([^\]]+)\]([+-]\d+)?",
-                lambda m: resolve_date_expr(f"$[{m.group(1)}{m.group(2) or ''}]", biz, tz_name),
-                str(v),
-            )
+            val = expand_date_macros_in_text(str(v), bizdate=biz, tz_name=tz_name)
             script = script.replace(f"${{{k}}}", val)
 
-    script = re.sub(
-        r"\$\[([^\]]+)\]([+-]\d+)?",
-        lambda m: resolve_date_expr(f"$[{m.group(1)}{m.group(2) or ''}]", biz, tz_name),
-        script,
-    )
+    from app.services.date_macros import expand_date_macros_in_text
+
+    script = expand_date_macros_in_text(script, bizdate=biz, tz_name=tz_name)
 
     raw_parts = split_sql_statements(script, max_parts=64)
     if not raw_parts:

@@ -170,6 +170,14 @@ export const workflowApi = {
 export const probeApi = {
   query: (data: { workspace_id: number; datasource_id: number; sql: string; limit?: number }) =>
     request.post('/probe/query', data),
+  getTree: (workspaceId: number) =>
+    request.get('/probe/tree', { params: { workspace_id: workspaceId } }),
+  saveTree: (data: {
+    workspace_id: number
+    folders: unknown[]
+    scripts: unknown[]
+    activeScriptId: string | null
+  }) => request.put('/probe/tree', data),
 }
 
 // 数据集成

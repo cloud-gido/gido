@@ -134,6 +134,9 @@ def _run_readonly_sql(
     ds = require_datasource_row(db, user, datasource_id)
     if ds.workspace_id != workspace_id:
         raise HTTPException(status_code=400, detail="数据源不属于该工作空间")
+    from app.services.workspace_variables import substitute_script_variables
+
+    sql = substitute_script_variables(db, workspace_id, sql or "", "batch")
     lt = (ds.ds_type or "").lower()
     if lt not in _PROBE_DS_TYPES:
         raise HTTPException(status_code=400, detail=f"暂不支持该数据源类型的探查: {ds.ds_type}")

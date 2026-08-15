@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # @author felixzhu
 # @date 2026-06-05
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, Enum, JSON, Float
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, Enum, JSON, Float, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.core.database import Base
@@ -371,6 +371,17 @@ class AdhocRun(Base):
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class ProbeQueryTree(Base):
+    """数据探查侧栏目录树（按空间+用户持久化，换浏览器仍在）。"""
+    __tablename__ = "dw_probe_query_trees"
+    __table_args__ = (UniqueConstraint("workspace_id", "user_id", name="uq_probe_tree_ws_user"),)
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("dw_workspaces.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("dw_users.id"), nullable=False, index=True)
+    state = Column(JSON, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 # ==================== 数据地图 ====================

@@ -78,6 +78,7 @@ export default function ProbePage() {
   const wsId = currentWorkspace?.id
   const [datasources, setDatasources] = useState<any[]>([])
   const [probeState, setProbeState] = useState<ProbeWorkspaceState>(() => defaultProbeState())
+  const [treeReady, setTreeReady] = useState(false)
   const [loading, setLoading] = useState(false)
   type StmtResult = {
     index: number
@@ -124,15 +125,45 @@ export default function ProbePage() {
 
   useEffect(() => {
     if (!wsId) return
-    datasourceApi.list(wsId).then((d: any) => {
-      setDatasources(Array.isArray(d) ? d : [])
-    })
-    const loaded = loadProbeState(wsId)
-    if (loaded) setProbeState(loaded)
-    else {
-      const init = defaultProbeState()
-      setProbeState(init)
-      saveProbeState(wsId, init)
+    let cancelled = false
+    setTreeReady(false)
+    const local = loadProbeState(wsId)
+    ;(async () => {
+      let next: ProbeWorkspaceState | null = null
+      try {
+        const remote: any = await probeApi.getTree(wsId)
+        if (cancelled) return
+        if (remote && Array.isArray(remote.scripts) && remote.scripts.length) {
+          next = {
+            folders: Array.isArray(remote.folders) ? remote.folders : [],
+            scripts: remote.scripts,
+            activeScriptId: remote.activeScriptId || remote.scripts[0].id,
+          }
+        } else if (local) {
+          next = local
+          await probeApi.saveTree({
+            workspace_id: wsId,
+            folders: local.folders,
+            scripts: local.scripts,
+            activeScriptId: local.activeScriptId,
+          }).catch(() => undefined)
+        }
+      } catch {
+        next = local
+      }
+      if (cancelled) return
+      if (next) {
+        setProbeState(next)
+        saveProbeState(wsId, next)
+      } else {
+        const init = defaultProbeState()
+        setProbeState(init)
+        saveProbeState(wsId, init)
+      }
+      setTreeReady(true)
+    })()
+    return () => {
+      cancelled = true
     }
   }, [wsId])
 
@@ -144,6 +175,13 @@ export default function ProbePage() {
       /* ignore */
     }
   }
+
+  useEffect(() => {
+    if (!wsId) return
+    datasourceApi.list(wsId).then((d: any) => {
+      setDatasources(Array.isArray(d) ? d : [])
+    })
+  }, [wsId])
 
   useEffect(() => {
     const pending = sessionStorage.getItem('gido_copilot_sql')
@@ -162,10 +200,18 @@ export default function ProbePage() {
   }, [wsId])
 
   useEffect(() => {
-    if (!wsId) return
-    const t = window.setTimeout(() => saveProbeState(wsId, probeState), 280)
+    if (!wsId || !treeReady) return
+    const t = window.setTimeout(() => {
+      saveProbeState(wsId, probeState)
+      void probeApi.saveTree({
+        workspace_id: wsId,
+        folders: probeState.folders,
+        scripts: probeState.scripts,
+        activeScriptId: probeState.activeScriptId,
+      }).catch(() => undefined)
+    }, 400)
     return () => window.clearTimeout(t)
-  }, [wsId, probeState])
+  }, [wsId, probeState, treeReady])
 
   const activeScript = useMemo(
     () => probeState.scripts.find(s => s.id === probeState.activeScriptId) ?? null,
@@ -288,6 +334,12 @@ export default function ProbePage() {
       if (!wsId) throw new Error('no workspace')
       // 权威在整棵探查状态树；sql 已在 onChange 写入 scripts[]
       saveProbeState(wsId, probeStateRef.current)
+      void probeApi.saveTree({
+        workspace_id: wsId,
+        folders: probeStateRef.current.folders,
+        scripts: probeStateRef.current.scripts,
+        activeScriptId: probeStateRef.current.activeScriptId,
+      }).catch(() => undefined)
     },
     onSynced: (script, entityId) => {
       if (entityId == null) return

@@ -27,7 +27,7 @@ from app.api import admin_rbac, admin_integration
 from app.api import data_service, data_service_open
 from app.api import alert, approval
 from app.models import rbac_models  # noqa: F401  — 注册 RBAC 表
-from app.models.workspace import PlatformIntegration, FlinkSessionProfile, WorkspacePlatformIntegration, PublishApproval, WorkspaceVariable, AdhocRun  # noqa: F401
+from app.models.workspace import PlatformIntegration, FlinkSessionProfile, WorkspacePlatformIntegration, PublishApproval, WorkspaceVariable, AdhocRun, ProbeQueryTree  # noqa: F401
 from app.models import data_service as data_service_models  # noqa: F401
 
 _log = logging.getLogger(__name__)
