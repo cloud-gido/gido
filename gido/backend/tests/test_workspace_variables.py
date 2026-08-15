@@ -41,5 +41,10 @@ def test_substitute_workspace_variables(monkeypatch):
     )
     assert hour == "SELECT '2026-08-14'"
 
+    curly = wv.substitute_script_variables(
+        db, 1, "SELECT '${yyyy-MM-dd-1/24}'", "batch", bizdate="2026-08-15"
+    )
+    assert curly == "SELECT '2026-08-14'"
+
     out_stream = wv.substitute_script_variables(db, 1, "${stream.only}", "stream")
     assert out_stream == "yes"

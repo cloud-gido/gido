@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 _DATE_MACRO_RE = re.compile(r"\$\[([^\]]+)\]([+-]\d+)?")
+# 常见误写：把时间格式塞进 ${}。仅当花括号内容以日期格式 token 开头时才当时间宏，避免吃掉 ${bizdate}。
+_CURLY_DATE_MACRO_RE = re.compile(r"\$\{((?:yyyy|MM|dd|HH|mm|ss)[^}]*)\}")
 _DOLPHIN_OFFSET_RE = re.compile(
     r"^(?P<fmt>.+?)\s*(?P<sign>[+-])(?P<n>\d+)(?P<denoms>(?:/\d+)*)\s*$"
 )
@@ -32,10 +34,15 @@ def expand_date_macros_in_text(
     """替换文本中所有 ``$[yyyy-MM-dd-1/24]`` 类占位符。"""
     if not text:
         return text
-    return _DATE_MACRO_RE.sub(
-        lambda m: resolve_date_expr(f"$[{m.group(1)}{m.group(2) or ''}]", bizdate, tz_name),
-        text,
-    )
+
+    def _sq(m: re.Match[str]) -> str:
+        return resolve_date_expr(f"$[{m.group(1)}{m.group(2) or ''}]", bizdate, tz_name)
+
+    def _curly(m: re.Match[str]) -> str:
+        return resolve_date_expr(f"$[{m.group(1)}]", bizdate, tz_name)
+
+    out = _DATE_MACRO_RE.sub(_sq, text)
+    return _CURLY_DATE_MACRO_RE.sub(_curly, out)
 
 
 def resolve_date_expr(

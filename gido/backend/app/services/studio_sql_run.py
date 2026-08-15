@@ -94,20 +94,19 @@ def run_sql_with_result(
         now=now_local.replace(tzinfo=None),
     )
     script = substitute_script_variables(
-        db, int(node.workspace_id), node.script_content or "", "batch", bizdate=biz
+        db, int(node.workspace_id), node.script_content or "", "batch", bizdate=bizdate
     )
     script = script.replace("${bizdate}", biz).replace("${yesterday}", yesterday_str)
 
-    if node.params and isinstance(node.params, dict):
-        from app.services.date_macros import expand_date_macros_in_text
-
-        for k, v in node.params.items():
-            val = expand_date_macros_in_text(str(v), bizdate=biz, tz_name=tz_name)
-            script = script.replace(f"${{{k}}}", val)
-
     from app.services.date_macros import expand_date_macros_in_text
 
-    script = expand_date_macros_in_text(script, bizdate=biz, tz_name=tz_name)
+    macro_biz = normalize_business_date(bizdate)
+    if node.params and isinstance(node.params, dict):
+        for k, v in node.params.items():
+            val = expand_date_macros_in_text(str(v), bizdate=macro_biz, tz_name=tz_name)
+            script = script.replace(f"${{{k}}}", val)
+
+    script = expand_date_macros_in_text(script, bizdate=macro_biz, tz_name=tz_name)
 
     raw_parts = split_sql_statements(script, max_parts=64)
     if not raw_parts:

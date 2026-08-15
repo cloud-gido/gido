@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Mapping, Optional
 
 _DATE_MACRO_RE = re.compile(r"\$\[([^\]]+)\]([+-]\d+)?")
+_CURLY_DATE_MACRO_RE = re.compile(r"\$\{((?:yyyy|MM|dd|HH|mm|ss)[^}]*)\}")
 # Dolphin：格式后可接 ±N（天）±N/24（时）±N/24/60（分）±N/24/60/60（秒）
 _DOLPHIN_OFFSET_RE = re.compile(
     r"^(?P<fmt>.+?)\s*(?P<sign>[+-])(?P<n>\d+)(?P<denoms>(?:/\d+)*)\s*$"
@@ -108,22 +109,25 @@ def substitute_sql_macros(
             biz = base.strftime("%Y-%m-%d")
         yesterday_str = (base - timedelta(days=1)).strftime("%Y-%m-%d")
         text = sql.replace("${bizdate}", biz).replace("${yesterday}", yesterday_str)
+        macro_biz = raw_biz or None
+
+        def _expand(s: str) -> str:
+            out = _DATE_MACRO_RE.sub(
+                lambda m: resolve_date_expr(f"$[{m.group(1)}{m.group(2) or ''}]", macro_biz, tz_name),
+                s,
+            )
+            return _CURLY_DATE_MACRO_RE.sub(
+                lambda m: resolve_date_expr(f"$[{m.group(1)}]", macro_biz, tz_name),
+                out,
+            )
 
         for key, raw in (variables or {}).items():
             k = str(key).strip()
             if not k:
                 continue
-            val = _DATE_MACRO_RE.sub(
-                lambda m: resolve_date_expr(f"$[{m.group(1)}{m.group(2) or ''}]", biz, tz_name),
-                "" if raw is None else str(raw),
-            )
-            text = text.replace(f"${{{k}}}", val)
+            text = text.replace(f"${{{k}}}", _expand("" if raw is None else str(raw)))
 
-        text = _DATE_MACRO_RE.sub(
-            lambda m: resolve_date_expr(f"$[{m.group(1)}{m.group(2) or ''}]", biz, tz_name),
-            text,
-        )
-        return text
+        return _expand(text)
     except Exception:
         # 任何异常都不阻断 execute：退回原文
         return sql

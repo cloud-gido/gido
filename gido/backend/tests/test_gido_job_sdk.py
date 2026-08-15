@@ -156,6 +156,12 @@ def test_resolve_date_expr_dolphin_hour_minute_second():
         tz_name="Asia/Shanghai",
     )
     assert out == "d='2026-08-14'"
+    curly = substitute_sql_macros(
+        "d='${yyyy-MM-dd-1/24}'",
+        bizdate="2026-08-15",
+        tz_name="Asia/Shanghai",
+    )
+    assert curly == "d='2026-08-14'"
 
 
 def test_substitute_sql_macros_bizdate_and_bracket():

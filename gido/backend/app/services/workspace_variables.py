@@ -66,8 +66,9 @@ def substitute_script_variables(
 
     from app.services.business_date import bizdate_and_yesterday, normalize_business_date
 
+    explicit_biz = normalize_business_date(bizdate)
     biz, yesterday_str = bizdate_and_yesterday(
-        normalize_business_date(bizdate),
+        explicit_biz,
         now=now_local.replace(tzinfo=None),
     )
     text = script.replace("${bizdate}", biz).replace("${yesterday}", yesterday_str)
@@ -79,11 +80,13 @@ def substitute_script_variables(
 
     from app.services.date_macros import expand_date_macros_in_text
 
+    # 调度传入业务日：按该日 00:00 偏移。试跑未传业务日：按当前时刻偏移（下午减 1 小时仍是当天）。
+    macro_biz = explicit_biz
     for key, raw in merged.items():
-        val = expand_date_macros_in_text(str(raw), bizdate=biz, tz_name=tz_name)
+        val = expand_date_macros_in_text(str(raw), bizdate=macro_biz, tz_name=tz_name)
         text = text.replace(f"${{{key}}}", val)
 
-    return expand_date_macros_in_text(text, bizdate=biz, tz_name=tz_name)
+    return expand_date_macros_in_text(text, bizdate=macro_biz, tz_name=tz_name)
 
 
 def mask_secret_value(value: Optional[str]) -> str:

@@ -160,7 +160,7 @@ def run_python_node(
             int(node.workspace_id),
             node.script_content or "",
             "batch",
-            bizdate=biz or ctx.get("bizdate"),
+            bizdate=bizdate,
             extra_vars=ctx.get("variables") if isinstance(ctx.get("variables"), dict) else None,
         )
     except Exception as e:
