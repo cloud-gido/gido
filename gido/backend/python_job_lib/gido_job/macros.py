@@ -11,6 +11,31 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Mapping, Optional
 
 _DATE_MACRO_RE = re.compile(r"\$\[([^\]]+)\]([+-]\d+)?")
+# Dolphin：格式后可接 ±N（天）±N/24（时）±N/24/60（分）±N/24/60/60（秒）
+_DOLPHIN_OFFSET_RE = re.compile(
+    r"^(?P<fmt>.+?)\s*(?P<sign>[+-])(?P<n>\d+)(?P<denoms>(?:/\d+)*)\s*$"
+)
+_DOLPHIN_OFFSET_UNITS = {
+    "": "days",
+    "/24": "hours",
+    "/24/60": "minutes",
+    "/24/60/60": "seconds",
+}
+
+
+def split_dolphin_time_offset(inner: str) -> tuple[str, timedelta]:
+    """拆出日期格式与 Dolphin 风格偏移；无法识别则偏移为 0、格式保持原文。"""
+    raw = (inner or "").strip()
+    m = _DOLPHIN_OFFSET_RE.match(raw)
+    if not m:
+        return raw, timedelta(0)
+    unit = _DOLPHIN_OFFSET_UNITS.get(m.group("denoms") or "")
+    if not unit:
+        return raw, timedelta(0)
+    n = int(m.group("n"))
+    if m.group("sign") == "-":
+        n = -n
+    return m.group("fmt").rstrip(), timedelta(**{unit: n})
 
 
 def resolve_date_expr(
@@ -31,16 +56,7 @@ def resolve_date_expr(
     if not m:
         return expr
 
-    inner = m.group(1).strip()
-    offset_days = 0
-    offset_match = re.search(r"([+-]\d+)$", inner)
-    if offset_match:
-        try:
-            offset_days = int(offset_match.group(1))
-        except ValueError:
-            return expr
-        # 兼容 $[yyyy-MM-dd -3]（offset 前有空格）
-        inner = inner[: offset_match.start()].rstrip()
+    inner, delta = split_dolphin_time_offset(m.group(1).strip())
 
     if bizdate:
         try:
@@ -50,10 +66,10 @@ def resolve_date_expr(
     else:
         base_date = now.replace(tzinfo=None)
 
-    target = base_date + timedelta(days=offset_days)
     has_time = any(c in inner for c in ("H", "m", "s"))
     if has_time:
-        target = target.replace(hour=now.hour, minute=now.minute, second=now.second)
+        base_date = base_date.replace(hour=now.hour, minute=now.minute, second=now.second)
+    target = base_date + delta
 
     fmt = inner
     fmt = fmt.replace("yyyy", "%Y").replace("MM", "%m").replace("dd", "%d")

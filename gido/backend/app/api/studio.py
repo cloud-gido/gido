@@ -697,11 +697,14 @@ def run_node(
 
 def _resolve_date_expr(expr: str, bizdate: str = None, tz_name: str = "Asia/Shanghai") -> str:
     """
-    解析动态日期表达式，对齐 GIDO/DolphinScheduler 规范
+    解析动态日期表达式，对齐 DolphinScheduler 时间占位符
     支持格式:
       $[yyyy-MM-dd]        业务日期
-      $[yyyy-MM-dd-1]      业务日期前1天
-      $[yyyy-MM-dd+7]      业务日期后7天
+      $[yyyy-MM-dd-1]      业务日期前 1 天
+      $[yyyy-MM-dd+7]      业务日期后 7 天
+      $[yyyy-MM-dd-1/24]   前 1 小时（常用于时区换算）
+      $[yyyy-MM-dd-1/24/60]  前 1 分钟
+      $[yyyy-MM-dd-1/24/60/60]  前 1 秒
       $[yyyyMMdd-1]        无分隔符格式
       $[yyyy-MM-dd HH:mm:ss]  包含时间
       $[HH:mm:ss]          当前时间
@@ -720,12 +723,23 @@ def _resolve_date_expr(expr: str, bizdate: str = None, tz_name: str = "Asia/Shan
         return expr
 
     inner = m.group(1).strip()
-
-    offset_days = 0
-    offset_match = re.search(r'([+-]\d+)$', inner)
-    if offset_match:
-        offset_days = int(offset_match.group(1))
-        inner = inner[:offset_match.start()]
+    offset_re = re.compile(
+        r"^(?P<fmt>.+?)\s*(?P<sign>[+-])(?P<n>\d+)(?P<denoms>(?:/\d+)*)\s*$"
+    )
+    units = {
+        "": "days",
+        "/24": "hours",
+        "/24/60": "minutes",
+        "/24/60/60": "seconds",
+    }
+    delta = dt.timedelta(0)
+    om = offset_re.match(inner)
+    if om and (om.group("denoms") or "") in units:
+        n = int(om.group("n"))
+        if om.group("sign") == "-":
+            n = -n
+        inner = om.group("fmt").rstrip()
+        delta = dt.timedelta(**{units[om.group("denoms") or ""]: n})
 
     if bizdate:
         from app.services.business_date import normalize_business_date
@@ -738,11 +752,10 @@ def _resolve_date_expr(expr: str, bizdate: str = None, tz_name: str = "Asia/Shan
     else:
         base_date = now.replace(tzinfo=None)
 
-    target = base_date + dt.timedelta(days=offset_days)
-
     has_time = any(c in inner for c in ('H', 'm', 's'))
     if has_time:
-        target = target.replace(hour=now.hour, minute=now.minute, second=now.second)
+        base_date = base_date.replace(hour=now.hour, minute=now.minute, second=now.second)
+    target = base_date + delta
 
     fmt = inner
     fmt = fmt.replace('yyyy', '%Y').replace('MM', '%m').replace('dd', '%d')

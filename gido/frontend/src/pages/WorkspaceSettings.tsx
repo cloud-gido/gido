@@ -370,7 +370,7 @@ export default function WorkspaceSettingsPage() {
                   type="info"
                   showIcon
                   style={{ marginBottom: 16 }}
-                  message="在 Batch SQL / PYTHON / SHELL，以及 Stream / Serve 脚本中用 ${var_key} 引用；支持 ${bizdate}、$[yyyy-MM-dd-1] 时间宏。PYTHON 也可用 job.var('var_key')。密钥类请勾选「敏感」。"
+                  message="在 Batch SQL / PYTHON / SHELL，以及 Stream / Serve 脚本中用 ${var_key} 引用；支持 ${bizdate}、$[yyyy-MM-dd-1]、$[yyyy-MM-dd-1/24] 时间宏。PYTHON 也可用 job.var('var_key')。密钥类请勾选「敏感」。"
                 />
                 <Button type="primary" icon={<PlusOutlined />} style={{ marginBottom: 12 }} onClick={() => openVarModal()}>
                   新建变量

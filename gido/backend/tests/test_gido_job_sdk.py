@@ -142,6 +142,22 @@ def test_resolve_date_expr_offset_with_space():
     assert resolve_date_expr("$[yyyy-MM-dd-3]", "2026-07-17") == "2026-07-14"
 
 
+def test_resolve_date_expr_dolphin_hour_minute_second():
+    """Dolphin ±N/24 时、±N/24/60 分、±N/24/60/60 秒。"""
+    assert resolve_date_expr("$[yyyy-MM-dd-1/24]", "2026-08-15") == "2026-08-14"
+    assert resolve_date_expr("$[yyyy-MM-dd-8/24]", "2026-08-15") == "2026-08-14"
+    assert resolve_date_expr("$[yyyy-MM-dd+1/24]", "2026-08-15") == "2026-08-15"
+    assert resolve_date_expr("$[yyyy-MM-dd -1/24]", "2026-08-15") == "2026-08-14"
+    assert resolve_date_expr("$[yyyy-MM-dd-1/24/60]", "2026-08-15") == "2026-08-14"
+    assert resolve_date_expr("$[yyyyMMdd-1/24]", "2026-08-15") == "20260814"
+    out = substitute_sql_macros(
+        "d='$[yyyy-MM-dd-1/24]'",
+        bizdate="2026-08-15",
+        tz_name="Asia/Shanghai",
+    )
+    assert out == "d='2026-08-14'"
+
+
 def test_substitute_sql_macros_bizdate_and_bracket():
     sql = (
         "select count(distinct if(first_login_date='$[yyyy-MM-dd -3]',did,null)) "
