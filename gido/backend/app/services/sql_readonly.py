@@ -17,6 +17,10 @@ from fastapi import HTTPException
 def _strip_sql_comments(s: str) -> str:
     s = re.sub(r"/\*.*?\*/", " ", s, flags=re.DOTALL)
     s = re.sub(r"--[^\n]*", " ", s)
+    # 兼容 MySQL 风格行注释
+    s = re.sub(r"#[^\n]*", " ", s)
+    # 兼容脚本/IDE 常见的双斜杠注释
+    s = re.sub(r"//[^\n]*", " ", s)
     return s
 
 
@@ -56,6 +60,17 @@ def split_sql_statements(sql: str, *, max_parts: int = 32) -> List[str]:
 
         if not in_sq and not in_dq:
             if ch == "-" and nxt == "-":
+                in_line_comment = True
+                buf.append(ch)
+                buf.append(nxt)
+                i += 2
+                continue
+            if ch == "#":
+                in_line_comment = True
+                buf.append(ch)
+                i += 1
+                continue
+            if ch == "/" and nxt == "/":
                 in_line_comment = True
                 buf.append(ch)
                 buf.append(nxt)
@@ -201,7 +216,16 @@ def parse_readonly_statements(sql: str) -> List[str]:
     parts = split_sql_statements(sql)
     if not parts:
         raise HTTPException(status_code=400, detail="SQL 不能为空")
-    return [assert_readonly_statement(p) for p in parts]
+    # 允许用户用「注释包掉一整条 SQL」但仍留下分号等符号；
+    # 清理注释后如果语句为空，则跳过而不是报仅允许 SELECT/WITH。
+    valid_parts: List[str] = []
+    for p in parts:
+        cleaned = _strip_sql_comments(p).strip()
+        if cleaned:
+            valid_parts.append(p)
+    if not valid_parts:
+        raise HTTPException(status_code=400, detail="SQL 不能为空")
+    return [assert_readonly_statement(p) for p in valid_parts]
 
 
 def apply_readonly_row_limit(stmt: str, lim: int) -> str:

@@ -891,6 +891,7 @@ export default function StreamStudioPage() {
               <QueryResultPanel
                 dataSource={previewTable.dataSource}
                 columns={previewTable.tableColumns}
+                showViewModeToggle
                 toolbar={(
                   <div style={{ padding: '8px 12px', fontSize: 12, color: '#666' }}>
                     共 <strong>{previewResult.total ?? 0}</strong> 行

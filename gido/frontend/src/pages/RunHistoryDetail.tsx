@@ -165,6 +165,7 @@ export default function RunHistoryDetailPage() {
             <QueryResultPanel
               dataSource={tableBundle.dataSource}
               columns={tableBundle.tableColumns}
+              showViewModeToggle
               toolbar={(
                 <div style={{ padding: '8px 12px', fontSize: 12, color: '#666' }}>
                   共 <strong>{tableBundle.dataSource.length}</strong> 行

@@ -6,7 +6,7 @@
  */
 import { useState, useEffect, useCallback, useMemo, useRef, type Key } from 'react'
 import {
-  Button, Select, InputNumber, Alert, Space, message, Input, Modal, Form, Tooltip, Tabs, Tag,
+  Button, Select, InputNumber, Alert, Space, message, Input, Modal, Form, Tooltip, Tabs, Tag, Spin,
 } from 'antd'
 import {
   PlayCircleOutlined, DownloadOutlined, PlusOutlined, FolderAddOutlined,
@@ -667,7 +667,12 @@ export default function ProbePage() {
         <EditorAppearanceToolbar value={editorAppearance} onChange={setEditorAppearance} />
       </StudioWorkbenchToolbar>
       <StudioWorkbenchStage>
-        {resultPanelOpen ? (
+        {!treeReady ? (
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999', fontSize: 13 }}>
+            <Spin />
+            <span style={{ marginLeft: 10 }}>加载探查目录与脚本…</span>
+          </div>
+        ) : resultPanelOpen ? (
           <ResizableVerticalSplit
             storageKey="gido.probe.editorResultSplitRatio"
             defaultTopRatio={0.42}
@@ -732,11 +737,12 @@ export default function ProbePage() {
                             <QueryResultPanel
                               dataSource={dataSource}
                               columns={tableColumns}
+                              showViewModeToggle
                               toolbar={(
                                 <div style={{ padding: '8px 12px', fontSize: 12, color: '#666' }}>
                                   共 <strong>{activeStmt?.total ?? 0}</strong> 行
                                   {activeStmt?.truncated ? `（已按上限 ${limit} 截断）` : ''}
-                                  ；表头右上角为类型徽章；支持多条语句（分号分隔）
+                                  ；支持多条语句（分号分隔）
                                 </div>
                               )}
                             />

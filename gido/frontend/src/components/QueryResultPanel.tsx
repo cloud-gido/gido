@@ -5,7 +5,7 @@
  * @date 2026-06-05
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, isValidElement, startTransition } from 'react'
-import { Pagination, Table, message } from 'antd'
+import { Pagination, Table, message, Descriptions, Select } from 'antd'
 import type { ColumnType, ColumnsType, SorterResult } from 'antd/es/table/interface'
 import type { TableProps } from 'antd'
 import type { QueryRowRec } from './QueryResultTable'
@@ -51,6 +51,21 @@ type Props = {
     pageSize?: number
     pageSizeOptions?: string[]
   }
+  /**
+   * 展示模式：
+   * - `table`：原来的表格视图（默认）
+   * - `kv`：行转列（类似 DBeaver），仅展示指定行（默认首行）
+   */
+  viewMode?: 'table' | 'kv'
+  kvRowIndex?: number
+  /**
+   * 是否在结果面板内显示“表格/行转列”切换。
+   * - 若外部传入 `viewMode`：此开关仅用于视觉展示，不会改变 mode（可继续传入看起来统一）
+   * - 若未传入 `viewMode`：面板内使用内部状态切换
+   */
+  showViewModeToggle?: boolean
+  /** 视图模式持久化（sessionStorage）；不传则仅当前会话生效 */
+  viewModeStorageKey?: string
 }
 
 /**
@@ -64,7 +79,82 @@ export default function QueryResultPanel({
   toolbar,
   empty,
   pagination,
+  viewMode,
+  kvRowIndex = 0,
+  showViewModeToggle = false,
+  viewModeStorageKey,
 }: Props) {
+  const [internalViewMode, setInternalViewMode] = useState<'table' | 'kv'>('table')
+
+  useEffect(() => {
+    if (!viewModeStorageKey) return
+    try {
+      const raw = sessionStorage.getItem(viewModeStorageKey)
+      if (raw === 'table' || raw === 'kv') setInternalViewMode(raw)
+    } catch {
+      /* ignore */
+    }
+  }, [viewModeStorageKey])
+
+  const currentViewMode: 'table' | 'kv' = viewMode ?? internalViewMode
+
+  const viewModeToggle = showViewModeToggle ? (
+    <Select
+      size="small"
+      style={{ width: 180 }}
+      value={currentViewMode}
+      options={[
+        { value: 'table', label: '表格' },
+        { value: 'kv', label: '行转列（首行）' },
+      ]}
+      onChange={v => {
+        const next = v as 'table' | 'kv'
+        if (viewMode == null) setInternalViewMode(next)
+        if (viewModeStorageKey) {
+          try {
+            sessionStorage.setItem(viewModeStorageKey, next)
+          } catch {
+            /* ignore */
+          }
+        }
+      }}
+    />
+  ) : null
+
+  if (currentViewMode === 'kv') {
+    const row = dataSource[kvRowIndex] ?? dataSource[0]
+    const leafKeys = columns
+      .filter(c => !('children' in (c as any)))
+      .map(c => String((c as any).dataIndex ?? (c as any).key ?? ''))
+      .filter(Boolean)
+
+    return (
+      <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+        {toolbar || viewModeToggle ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 12px' }}>
+            {toolbar}
+            {viewModeToggle}
+          </div>
+        ) : null}
+        <div style={{ padding: 12 }}>
+          {row && leafKeys.length ? (
+            <Descriptions size="small" bordered column={1}>
+              {leafKeys.map((k, idx) => (
+                <Descriptions.Item key={`${k}:${idx}`} label={k}>
+                  <span style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                    {formatQueryCellValue((row as any)[k])}
+                  </span>
+                </Descriptions.Item>
+              ))}
+            </Descriptions>
+          ) : (
+            <div style={{ color: '#999', fontSize: 13 }}>{empty ?? '无数据'}</div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   const mainRef = useRef<HTMLDivElement>(null)
   const hTrackRef = useRef<HTMLDivElement>(null)
   const hInnerRef = useRef<HTMLDivElement>(null)
@@ -290,7 +380,12 @@ export default function QueryResultPanel({
 
   return (
     <div className="dw-query-result">
-      {toolbar ? <div className="dw-query-result__toolbar">{toolbar}</div> : null}
+      {(toolbar || viewModeToggle) ? (
+        <div className="dw-query-result__toolbar" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          {toolbar}
+          {viewModeToggle}
+        </div>
+      ) : null}
       <div className="dw-query-result__viewport">
         <div ref={mainRef} className="dw-query-result__main" title="滚轮滚动；表头随横向滚动对齐">
           <Table

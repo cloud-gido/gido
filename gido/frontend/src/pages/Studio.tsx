@@ -1396,6 +1396,7 @@ export default function StudioPage() {
                                     <QueryResultPanel
                                       dataSource={dataSource}
                                       columns={tableColumns}
+                                      showViewModeToggle
                                       toolbar={(
                                         <div style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                                           <span style={{ color: '#666', fontSize: 12 }}>
