@@ -130,11 +130,21 @@ def assert_readonly_statement(sql: str) -> str:
     return core
 
 
+# 浏览器 JSON.parse 只能安全表示到 2^53-1；雪花 BIGINT 超出后必须改成字符串。
+_JS_MAX_SAFE_INTEGER = 2**53 - 1
+
+
 def json_cell_value(v: Any) -> Any:
     """将数据库单元格转为可 JSON 序列化的值。"""
     if v is None:
         return None
-    if isinstance(v, (str, int, float, bool)):
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, int):
+        if v > _JS_MAX_SAFE_INTEGER or v < -_JS_MAX_SAFE_INTEGER:
+            return str(v)
+        return v
+    if isinstance(v, (str, float)):
         return v
     if isinstance(v, (datetime, date, time)):
         return v.isoformat(sep=" ", timespec="seconds") if isinstance(v, datetime) else v.isoformat()
