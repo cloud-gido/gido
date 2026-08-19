@@ -13,13 +13,29 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.core import perm_codes as PC
-from app.models.workspace import DataSource, ProbeQueryTree, User
+from app.models.workspace import DataSource, ProbeQueryTree, User, Workspace
 from app.services.rbac import assert_workspace_data_capability, require_datasource_row
 from app.services.datasource_mysql_user import mysql_protocol_connect_user
 from app.services.sql_readonly import apply_readonly_row_limit, parse_readonly_statements, result_set_from_cursor
 from app.services.probe_tree_store import sanitize_probe_tree_state
 
 router = APIRouter(prefix="/probe", tags=["数据探查"])
+
+
+def shared_probe_tree_user_id(db: Session, workspace_id: int, current_user: User) -> int:
+    """
+    让 Probe 侧目录树在同一 workspace 内对所有人可见/可保存。
+
+    由于历史表结构 `uq_probe_tree_ws_user` 以 (workspace_id, user_id) 唯一，
+    这里复用 workspace.owner_id 作为“共享 owner”。
+    """
+    try:
+        ws = db.query(Workspace).filter(Workspace.id == int(workspace_id)).first()
+        if ws and getattr(ws, "owner_id", None):
+            return int(ws.owner_id)
+    except Exception:
+        pass
+    return int(current_user.id)
 
 
 class ProbeQueryIn(BaseModel):
@@ -44,11 +60,12 @@ def get_probe_tree(
 ):
     """当前用户在该空间的探查目录树。"""
     assert_workspace_data_capability(db, current_user, workspace_id, "viewer", PC.GIDO_BATCH_PROBE_READ)
+    share_uid = shared_probe_tree_user_id(db, workspace_id, current_user)
     row = (
         db.query(ProbeQueryTree)
         .filter(
             ProbeQueryTree.workspace_id == workspace_id,
-            ProbeQueryTree.user_id == current_user.id,
+            ProbeQueryTree.user_id == share_uid,
         )
         .first()
     )
@@ -68,11 +85,12 @@ def put_probe_tree(
         state = sanitize_probe_tree_state(body.model_dump())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    share_uid = shared_probe_tree_user_id(db, body.workspace_id, current_user)
     row = (
         db.query(ProbeQueryTree)
         .filter(
             ProbeQueryTree.workspace_id == body.workspace_id,
-            ProbeQueryTree.user_id == current_user.id,
+            ProbeQueryTree.user_id == share_uid,
         )
         .first()
     )
@@ -82,7 +100,7 @@ def put_probe_tree(
     else:
         row = ProbeQueryTree(
             workspace_id=body.workspace_id,
-            user_id=current_user.id,
+            user_id=share_uid,
             state=state,
             updated_at=datetime.utcnow(),
         )
