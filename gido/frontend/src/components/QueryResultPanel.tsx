@@ -5,7 +5,8 @@
  * @date 2026-06-05
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, isValidElement, startTransition } from 'react'
-import { Pagination, Table, message, Descriptions, Select } from 'antd'
+import { Pagination, Table, message, Descriptions } from 'antd'
+import { TableOutlined } from '@ant-design/icons'
 import type { ColumnType, ColumnsType, SorterResult } from 'antd/es/table/interface'
 import type { TableProps } from 'antd'
 import type { QueryRowRec } from './QueryResultTable'
@@ -51,27 +52,20 @@ type Props = {
     pageSize?: number
     pageSizeOptions?: string[]
   }
-  /**
-   * 展示模式：
-   * - `table`：原来的表格视图（默认）
-   * - `kv`：行转列（类似 DBeaver），仅展示指定行（默认首行）
-   */
+  /** 保留向后兼容，不再影响渲染逻辑。 @deprecated */
   viewMode?: 'table' | 'kv'
+  /** 保留向后兼容。 @deprecated */
   kvRowIndex?: number
-  /**
-   * 是否在结果面板内显示“表格/行转列”切换。
-   * - 若外部传入 `viewMode`：此开关仅用于视觉展示，不会改变 mode（可继续传入看起来统一）
-   * - 若未传入 `viewMode`：面板内使用内部状态切换
-   */
+  /** 保留向后兼容。 @deprecated */
   showViewModeToggle?: boolean
-  /** 视图模式持久化（sessionStorage）；不传则仅当前会话生效 */
+  /** 保留向后兼容。 @deprecated */
   viewModeStorageKey?: string
 }
 
 /**
- * GIDO Batch 风格结果表：
- * - 单滚动视口（表头 sticky，横向与数据始终对齐）
- * - 底部固定横滚条、右侧固定纵滚条（与主区双向同步）
+ * GIDO 查询结果面板（DBeaver 风格）：
+ * - 主表格左侧有行号列（#），点击行号 → 底部展开该行的列-值详情，两区域同时可见
+ * - 单滚动视口，表头 sticky，底横滚 / 右纵滚固定
  */
 export default function QueryResultPanel({
   columns,
@@ -79,81 +73,13 @@ export default function QueryResultPanel({
   toolbar,
   empty,
   pagination,
-  viewMode,
-  kvRowIndex = 0,
-  showViewModeToggle = false,
-  viewModeStorageKey,
 }: Props) {
-  const [internalViewMode, setInternalViewMode] = useState<'table' | 'kv'>('table')
+  /** 当前展开行的 _key；null = 未选中，不显示 KV 面板 */
+  const [kvKey, setKvKey] = useState<number | null>(null)
 
   useEffect(() => {
-    if (!viewModeStorageKey) return
-    try {
-      const raw = sessionStorage.getItem(viewModeStorageKey)
-      if (raw === 'table' || raw === 'kv') setInternalViewMode(raw)
-    } catch {
-      /* ignore */
-    }
-  }, [viewModeStorageKey])
-
-  const currentViewMode: 'table' | 'kv' = viewMode ?? internalViewMode
-
-  const viewModeToggle = showViewModeToggle ? (
-    <Select
-      size="small"
-      style={{ width: 180 }}
-      value={currentViewMode}
-      options={[
-        { value: 'table', label: '表格' },
-        { value: 'kv', label: '行转列（首行）' },
-      ]}
-      onChange={v => {
-        const next = v as 'table' | 'kv'
-        if (viewMode == null) setInternalViewMode(next)
-        if (viewModeStorageKey) {
-          try {
-            sessionStorage.setItem(viewModeStorageKey, next)
-          } catch {
-            /* ignore */
-          }
-        }
-      }}
-    />
-  ) : null
-
-  if (currentViewMode === 'kv') {
-    const row = dataSource[kvRowIndex] ?? dataSource[0]
-    const leafKeys = columns
-      .filter(c => !('children' in (c as any)))
-      .map(c => String((c as any).dataIndex ?? (c as any).key ?? ''))
-      .filter(Boolean)
-
-    return (
-      <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-        {toolbar || viewModeToggle ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 12px' }}>
-            {toolbar}
-            {viewModeToggle}
-          </div>
-        ) : null}
-        <div style={{ padding: 12 }}>
-          {row && leafKeys.length ? (
-            <Descriptions size="small" bordered column={1}>
-              {leafKeys.map((k, idx) => (
-                <Descriptions.Item key={`${k}:${idx}`} label={k}>
-                  <span style={{ fontFamily: 'monospace', fontSize: 12 }}>
-                    {formatQueryCellValue((row as any)[k])}
-                  </span>
-                </Descriptions.Item>
-              ))}
-            </Descriptions>
-          ) : (
-            <div style={{ color: '#999', fontSize: 13 }}>{empty ?? '无数据'}</div>
-          )}
-        </div>
-      </div>
-    )
-  }
+    setKvKey(null)
+  }, [dataSource])
 
   const mainRef = useRef<HTMLDivElement>(null)
   const hTrackRef = useRef<HTMLDivElement>(null)
@@ -164,10 +90,8 @@ export default function QueryResultPanel({
   const [ctx, setCtx] = useState<CtxMenu | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(pagination === false ? 100 : (pagination?.pageSize ?? 100))
-  /** 全量结果排序后再分页（升序 → 降序 → 取消） */
   const [sort, setSort] = useState<{ field: string; order: QuerySortOrder } | null>(null)
 
-  /** 同列升序结果缓存：切降序时 O(n) reverse，避免再排一遍 */
   const ascendCacheRef = useRef<{ field: string; rows: QueryRowRec[]; fp: string } | null>(null)
   const dataFingerprint = useMemo(() => queryResultDataFingerprint(dataSource), [dataSource])
 
@@ -193,7 +117,6 @@ export default function QueryResultPanel({
       ascendCacheRef.current = { field: sort.field, rows: ascendRows, fp: dataFingerprint }
     }
     if (sort.order === 'ascend') return ascendRows
-    // 降序 = 升序结果倒序（同列二次点击几乎零成本）
     const desc = new Array<QueryRowRec>(ascendRows.length)
     for (let i = 0, j = ascendRows.length - 1; j >= 0; i++, j--) desc[i] = ascendRows[j]
     return desc
@@ -206,7 +129,7 @@ export default function QueryResultPanel({
   }, [sortedData, pagingEnabled, page, pageSize])
 
   const tableMinWidth = useMemo(() => {
-    let w = 40
+    let w = 40 + 44 // 行号列 44px
     for (const c of columns) {
       w += typeof c.width === 'number' ? c.width : 148
     }
@@ -313,7 +236,6 @@ export default function QueryResultPanel({
       const origRender = leaf.render
       return {
         ...leaf,
-        // 排序在面板内对全量数据完成；compare 恒为 0，避免再对当前页二次排序打乱结果
         sorter: field ? { compare: () => 0 } : undefined,
         sortOrder: sort && field && sort.field === field ? sort.order : null,
         sortDirections: ['ascend', 'descend'] as const,
@@ -359,11 +281,49 @@ export default function QueryResultPanel({
     })
   }, [columns, copiedKey, doCopy, sort])
 
+  /** 行号列：点击切换 KV 展开；再次点击同一行关闭 */
+  const rowNumColumn: ColumnType<QueryRowRec> = useMemo(() => ({
+    key: '__rownum__',
+    dataIndex: '__rownum__',
+    title: (
+      <span
+        className="dw-rownum-header"
+        title="点击行号展开该行详情（类似 DBeaver）"
+      >
+        <TableOutlined style={{ fontSize: 11 }} />
+      </span>
+    ),
+    width: 44,
+    fixed: 'left' as const,
+    render: (_: unknown, record: QueryRowRec, index: number) => {
+      const k = (record as any)._key as number
+      const active = kvKey === k
+      const displayNum = (page - 1) * pageSize + index + 1
+      return (
+        <button
+          type="button"
+          className={`dw-rownum-btn${active ? ' dw-rownum-btn--active' : ''}`}
+          title={active ? '点击收起详情' : '点击展开该行详情'}
+          onClick={e => {
+            e.stopPropagation()
+            setKvKey(prev => (prev === k ? null : k))
+          }}
+        >
+          {displayNum}
+        </button>
+      )
+    },
+  }), [kvKey, page, pageSize])
+
+  const allColumns = useMemo(
+    () => [rowNumColumn, ...columnsWithCopy],
+    [rowNumColumn, columnsWithCopy],
+  )
+
   const onTableChange: TableProps<QueryRowRec>['onChange'] = useCallback((_pag, _filters, sorter) => {
     const s = (Array.isArray(sorter) ? sorter[0] : sorter) as SorterResult<QueryRowRec>
     const field = s?.field != null ? String(s.field) : (s?.columnKey != null ? String(s.columnKey) : '')
     const order = s?.order
-    // startTransition：大结果排序不阻塞点击反馈，降低「点一下卡死」感
     startTransition(() => {
       if (field && (order === 'ascend' || order === 'descend')) {
         setSort({ field, order })
@@ -374,16 +334,29 @@ export default function QueryResultPanel({
     })
   }, [])
 
+  /** 当前选中行的数据 */
+  const kvRowData = useMemo(
+    () => kvKey != null ? dataSource.find(r => (r as any)._key === kvKey) ?? null : null,
+    [dataSource, kvKey],
+  )
+
+  const leafKeys = useMemo(
+    () => columns
+      .filter(c => !('children' in (c as any)))
+      .map(c => String((c as any).dataIndex ?? (c as any).key ?? ''))
+      .filter(Boolean),
+    [columns],
+  )
+
   if (!dataSource.length && empty) {
     return <div className="dw-query-result">{empty}</div>
   }
 
   return (
     <div className="dw-query-result">
-      {(toolbar || viewModeToggle) ? (
+      {toolbar ? (
         <div className="dw-query-result__toolbar" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           {toolbar}
-          {viewModeToggle}
         </div>
       ) : null}
       <div className="dw-query-result__viewport">
@@ -391,13 +364,17 @@ export default function QueryResultPanel({
           <Table
             size="small"
             rowKey="_key"
-            columns={columnsWithCopy}
+            columns={allColumns}
             dataSource={pagedData}
             pagination={false}
             tableLayout="fixed"
             style={{ minWidth: tableMinWidth }}
             components={queryResultTableComponents}
             onChange={onTableChange}
+            rowClassName={record => {
+              const k = (record as any)._key as number
+              return k === kvKey ? 'dw-row--selected' : ''
+            }}
             showSorterTooltip={{ title: '点击升序 · 再点降序 · 再点取消' }}
           />
         </div>
@@ -409,6 +386,39 @@ export default function QueryResultPanel({
         </div>
         <div className="dw-query-result__corner" aria-hidden />
       </div>
+      {/* KV 详情面板：点击行号后在底部展开，两区域同时可见（DBeaver 风格） */}
+      {kvRowData && (
+        <div className="dw-query-result__kv">
+          <div className="dw-query-result__kv-header">
+            <span>行详情</span>
+            <button
+              type="button"
+              className="dw-query-result__kv-close"
+              onClick={() => setKvKey(null)}
+              title="关闭详情"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="dw-query-result__kv-body">
+            <Descriptions size="small" bordered column={2}>
+              {leafKeys.map((k, idx) => (
+                <Descriptions.Item key={`${k}:${idx}`} label={k}>
+                  <span
+                    style={{ fontFamily: 'monospace', fontSize: 12, cursor: 'text', userSelect: 'text' }}
+                    title="可拖选复制"
+                  >
+                    {kvRowData[k] === null || kvRowData[k] === undefined
+                      ? <span style={{ color: '#bfbfbf' }}>NULL</span>
+                      : formatQueryCellValue(kvRowData[k])
+                    }
+                  </span>
+                </Descriptions.Item>
+              ))}
+            </Descriptions>
+          </div>
+        </div>
+      )}
       {pagingEnabled && dataSource.length > 0 && (
         <div className="dw-query-result__pager">
           <Pagination

@@ -333,3 +333,96 @@
 .dw-query-result__ctx button:hover {
   background: #f5f5f5;
 }
+
+/* ── 行号列 ── */
+.dw-rownum-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  color: #8c8c8c;
+}
+
+.dw-rownum-btn {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 0 4px;
+  font-size: 11px;
+  color: #8c8c8c;
+  text-align: right;
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  line-height: 20px;
+  border-radius: 3px;
+  transition: background 0.12s, color 0.12s;
+  user-select: none;
+}
+
+.dw-rownum-btn:hover {
+  background: #e6f4ff;
+  color: #1677ff;
+}
+
+.dw-rownum-btn--active {
+  background: #1677ff;
+  color: #fff !important;
+}
+
+/* 选中行高亮 */
+.dw-row--selected > td {
+  background: #f0f7ff !important;
+}
+
+/* ── KV 行详情面板 ── */
+.dw-query-result__kv {
+  flex-shrink: 0;
+  border-top: 2px solid #1677ff;
+  background: #fff;
+  max-height: 260px;
+  display: flex;
+  flex-direction: column;
+}
+
+.dw-query-result__kv-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px;
+  background: #f0f7ff;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1677ff;
+  flex-shrink: 0;
+}
+
+.dw-query-result__kv-close {
+  border: none;
+  background: transparent;
+  color: #8c8c8c;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 4px;
+  line-height: 1;
+  border-radius: 3px;
+}
+
+.dw-query-result__kv-close:hover {
+  background: #ffa39e;
+  color: #a8071a;
+}
+
+.dw-query-result__kv-body {
+  overflow: auto;
+  flex: 1;
+  padding: 8px 12px;
+}
+
+.dw-query-result__kv-body .ant-descriptions-item-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+  width: 160px;
+  max-width: 200px;
+}
