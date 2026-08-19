@@ -76,10 +76,41 @@ export default function QueryResultPanel({
 }: Props) {
   /** 当前展开行的 _key；null = 未选中，不显示 KV 面板 */
   const [kvKey, setKvKey] = useState<number | null>(null)
+  const [kvHeight, setKvHeight] = useState<number>(240)
+  const kvHeightClamp = useMemo(() => ({ min: 120, max: 420 }), [])
+  const resizingKvRef = useRef(false)
 
   useEffect(() => {
     setKvKey(null)
   }, [dataSource])
+
+  const startKvResize = useCallback(
+    (e: any) => {
+      if (e.button !== 0) return
+      e.preventDefault()
+      e.stopPropagation()
+      const startY = e.clientY
+      const startH = kvHeight
+      resizingKvRef.current = true
+
+      const onMove = (ev: MouseEvent) => {
+        if (!resizingKvRef.current) return
+        const dy = ev.clientY - startY
+        const next = Math.max(kvHeightClamp.min, Math.min(kvHeightClamp.max, startH + dy))
+        setKvHeight(next)
+      }
+
+      const onUp = () => {
+        resizingKvRef.current = false
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+      }
+
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
+    },
+    [kvHeight, kvHeightClamp],
+  )
 
   const mainRef = useRef<HTMLDivElement>(null)
   const hTrackRef = useRef<HTMLDivElement>(null)
@@ -388,7 +419,7 @@ export default function QueryResultPanel({
       </div>
       {/* KV 详情面板：点击行号后在底部展开，两区域同时可见（DBeaver 风格） */}
       {kvRowData && (
-        <div className="dw-query-result__kv">
+        <div className="dw-query-result__kv" style={{ height: kvHeight }}>
           <div className="dw-query-result__kv-header">
             <span>行详情</span>
             <button
@@ -400,12 +431,13 @@ export default function QueryResultPanel({
               ✕
             </button>
           </div>
+          <div className="dw-query-result__kv-resize-handle" onMouseDown={startKvResize} title="拖拽调整详情面板高度" />
           <div className="dw-query-result__kv-body">
-            <Descriptions size="small" bordered column={2}>
+            <Descriptions size="small" bordered column={1}>
               {leafKeys.map((k, idx) => (
                 <Descriptions.Item key={`${k}:${idx}`} label={k}>
                   <span
-                    style={{ fontFamily: 'monospace', fontSize: 12, cursor: 'text', userSelect: 'text' }}
+                    style={{ fontFamily: 'monospace', fontSize: 12, cursor: 'text', userSelect: 'text', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}
                     title="可拖选复制"
                   >
                     {kvRowData[k] === null || kvRowData[k] === undefined

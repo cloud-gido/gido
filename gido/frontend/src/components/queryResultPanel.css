@@ -378,11 +378,14 @@
 /* ── KV 行详情面板 ── */
 .dw-query-result__kv {
   flex-shrink: 0;
-  border-top: 2px solid #1677ff;
   background: #fff;
-  max-height: 260px;
   display: flex;
   flex-direction: column;
+  min-height: 120px;
+  overflow: hidden;
+  border: 1px solid #f0f0f0;
+  border-top: none;
+  border-radius: 0 0 4px 4px;
 }
 
 .dw-query-result__kv-header {
@@ -390,11 +393,12 @@
   align-items: center;
   justify-content: space-between;
   padding: 4px 12px;
-  background: #f0f7ff;
+  background: #fafafa;
   font-size: 12px;
   font-weight: 600;
-  color: #1677ff;
+  color: #666;
   flex-shrink: 0;
+  border-bottom: 1px solid #f0f0f0;
 }
 
 .dw-query-result__kv-close {
@@ -409,8 +413,8 @@
 }
 
 .dw-query-result__kv-close:hover {
-  background: #ffa39e;
-  color: #a8071a;
+  background: #f5f5f5;
+  color: #666;
 }
 
 .dw-query-result__kv-body {
@@ -422,7 +426,28 @@
 .dw-query-result__kv-body .ant-descriptions-item-label {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
-  white-space: nowrap;
-  width: 160px;
-  max-width: 200px;
+  white-space: normal;
+  width: auto;
+  max-width: 280px;
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+.dw-query-result__kv-body .ant-descriptions-item-content {
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+/* KV 面板可拖拽分隔线 */
+.dw-query-result__kv-resize-handle {
+  height: 6px;
+  cursor: row-resize;
+  background: rgba(22, 119, 255, 0.05);
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.dw-query-result__kv-resize-handle:hover {
+  background: rgba(22, 119, 255, 0.12);
 }
