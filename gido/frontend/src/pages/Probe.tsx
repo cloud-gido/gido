@@ -50,6 +50,7 @@ import {
   saveProbeState,
   defaultProbeState,
   newProbeId,
+  mergeLocalIntoRemote,
 } from '../utils/probeLocalStore'
 import WorkspaceFolderTree, { locateLeafInFolderTree, type FolderRow, type LeafRow } from '../components/WorkspaceFolderTree'
 import AutosaveStatusHint from '../components/AutosaveStatusHint'
@@ -134,10 +135,24 @@ export default function ProbePage() {
         const remote: any = await probeApi.getTree(wsId)
         if (cancelled) return
         if (remote && Array.isArray(remote.scripts) && remote.scripts.length) {
-          next = {
+          const remoteState: ProbeWorkspaceState = {
             folders: Array.isArray(remote.folders) ? remote.folders : [],
             scripts: remote.scripts,
             activeScriptId: remote.activeScriptId || remote.scripts[0].id,
+          }
+          if (local) {
+            const { merged, changed } = mergeLocalIntoRemote(remoteState, local)
+            next = merged
+            if (changed) {
+              await probeApi.saveTree({
+                workspace_id: wsId,
+                folders: merged.folders,
+                scripts: merged.scripts,
+                activeScriptId: merged.activeScriptId,
+              }).catch(() => undefined)
+            }
+          } else {
+            next = remoteState
           }
         } else if (local) {
           next = local

@@ -80,3 +80,59 @@ export function saveProbeState(wsId: number, state: ProbeWorkspaceState) {
     /* ignore */
   }
 }
+
+/**
+ * 将本地私有树中不存在于远端共享树的脚本/文件夹合并进去。
+ * 用于首次切换到共享树时，避免丢失各用户已有的本地脚本。
+ *
+ * 合并规则：
+ *   - 以 id 去重，远端已有的脚本/文件夹不覆盖；
+ *   - 本地独有的脚本放到根目录（folderId=null），sort_order 排在末尾；
+ *   - 本地独有的文件夹同样追加（但其子脚本的 folderId 引用仍有效）；
+ *   - activeScriptId 保持远端的不变；
+ *   - 若本地无新增，直接返回 remote 引用（无副作用）。
+ */
+export function mergeLocalIntoRemote(
+  remote: ProbeWorkspaceState,
+  local: ProbeWorkspaceState,
+): { merged: ProbeWorkspaceState; changed: boolean } {
+  const remoteScriptIds = new Set(remote.scripts.map(s => s.id))
+  const remoteFolderIds = new Set(remote.folders.map(f => f.id))
+
+  const newFolders = local.folders.filter(f => !remoteFolderIds.has(f.id))
+  const newScripts = local.scripts.filter(s => !remoteScriptIds.has(s.id))
+
+  if (!newFolders.length && !newScripts.length) {
+    return { merged: remote, changed: false }
+  }
+
+  const maxScriptOrder = remote.scripts.reduce((m, s) => Math.max(m, s.sort_order ?? 0), 0)
+  const maxFolderOrder = remote.folders.reduce((m, f) => Math.max(m, f.sort_order ?? 0), 0)
+
+  const mergedFolders: ProbeFolder[] = [
+    ...remote.folders,
+    ...newFolders.map((f, i) => ({ ...f, sort_order: maxFolderOrder + (i + 1) * 10 })),
+  ]
+
+  const mergedScripts: ProbeScript[] = [
+    ...remote.scripts,
+    ...newScripts.map((s, i) => ({
+      ...s,
+      // 只有当本地脚本的 folderId 在合并后的树里不存在时才归到根
+      folderId:
+        s.folderId && mergedFolders.some(f => f.id === s.folderId)
+          ? s.folderId
+          : null,
+      sort_order: maxScriptOrder + (i + 1) * 10,
+    })),
+  ]
+
+  return {
+    merged: {
+      folders: mergedFolders,
+      scripts: mergedScripts,
+      activeScriptId: remote.activeScriptId,
+    },
+    changed: true,
+  }
+}
