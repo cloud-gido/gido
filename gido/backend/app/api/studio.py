@@ -3,7 +3,7 @@
 # @author felixzhu
 # @date 2026-06-05
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 from pydantic import BaseModel, field_validator
 from typing import Optional, Any, Dict, List
 from datetime import datetime
@@ -28,6 +28,28 @@ from app.services.python_job_runner import run_python_node
 # 协作编辑锁过期时间（秒），过期后他人可直接占用或抢锁
 EDIT_LOCK_TTL_SECONDS = 30 * 60
 
+# 列表接口默认不带 script_content（侧栏/工作流选节点不需要全文）；打开编辑再用 GET /nodes/{id}
+_TASK_NODE_LIST_LOAD_COLS = (
+    TaskNode.id,
+    TaskNode.workspace_id,
+    TaskNode.name,
+    TaskNode.node_type,
+    TaskNode.datasource_id,
+    TaskNode.params,
+    TaskNode.folder_id,
+    TaskNode.sort_order,
+    TaskNode.timeout_seconds,
+    TaskNode.retry_times,
+    TaskNode.is_published,
+    TaskNode.owner_id,
+    TaskNode.is_locked,
+    TaskNode.edit_lock_user_id,
+    TaskNode.edit_lock_at,
+    TaskNode.created_at,
+    TaskNode.updated_at,
+    TaskNode.created_by,
+)
+
 router = APIRouter(prefix="/studio", tags=["数据开发"])
 
 
@@ -36,6 +58,14 @@ def _username_by_id(db: Session, user_id: Optional[int]) -> Optional[str]:
         return None
     u = db.query(User).filter(User.id == user_id).first()
     return u.username if u else None
+
+
+def _username_map(db: Session, user_ids: List[Optional[int]]) -> Dict[int, str]:
+    """批量解析用户名，避免列表接口 N+1。"""
+    clean = {int(i) for i in user_ids if i is not None}
+    if not clean:
+        return {}
+    return {u.id: u.username for u in db.query(User).filter(User.id.in_(list(clean))).all()}
 
 
 def _edit_lock_expired(node: TaskNode) -> bool:
@@ -47,7 +77,12 @@ def _edit_lock_expired(node: TaskNode) -> bool:
     return (datetime.utcnow() - at).total_seconds() > EDIT_LOCK_TTL_SECONDS
 
 
-def _effective_edit_lock_for_api(db: Session, node: TaskNode):
+def _effective_edit_lock_for_api(
+    db: Session,
+    node: TaskNode,
+    *,
+    username_by_id: Optional[Dict[int, str]] = None,
+):
     """返回当前有效的编辑锁（过期则视为无锁，仅展示用；持久清理在 acquire/update）。"""
     uid = getattr(node, "edit_lock_user_id", None)
     at = getattr(node, "edit_lock_at", None)
@@ -55,7 +90,11 @@ def _effective_edit_lock_for_api(db: Session, node: TaskNode):
         return None, None, None
     if _edit_lock_expired(node):
         return None, None, None
-    return uid, _username_by_id(db, uid), at.isoformat() if hasattr(at, "isoformat") else None
+    if username_by_id is not None:
+        uname = username_by_id.get(int(uid))
+    else:
+        uname = _username_by_id(db, uid)
+    return uid, uname, at.isoformat() if hasattr(at, "isoformat") else None
 
 
 def _persist_clear_expired_edit_lock(db: Session, node: TaskNode) -> None:
@@ -64,18 +103,29 @@ def _persist_clear_expired_edit_lock(db: Session, node: TaskNode) -> None:
         node.edit_lock_at = None
 
 
-def _serialize_task_node(db: Session, node: TaskNode) -> dict:
-    lock_uid, lock_uname, lock_at_s = _effective_edit_lock_for_api(db, node)
+def _serialize_task_node(
+    db: Session,
+    node: TaskNode,
+    *,
+    include_script: bool = True,
+    username_by_id: Optional[Dict[int, str]] = None,
+) -> dict:
+    lock_uid, lock_uname, lock_at_s = _effective_edit_lock_for_api(
+        db, node, username_by_id=username_by_id
+    )
     owner_id = node.owner_id
     creator_id = node.created_by
-    owner_uname = _username_by_id(db, owner_id)
-    creator_uname = _username_by_id(db, creator_id)
-    return {
+    if username_by_id is not None:
+        owner_uname = username_by_id.get(int(owner_id)) if owner_id else None
+        creator_uname = username_by_id.get(int(creator_id)) if creator_id else None
+    else:
+        owner_uname = _username_by_id(db, owner_id)
+        creator_uname = _username_by_id(db, creator_id)
+    out = {
         "id": node.id,
         "workspace_id": node.workspace_id,
         "name": node.name,
         "node_type": node.node_type,
-        "script_content": node.script_content,
         "datasource_id": node.datasource_id,
         "folder_id": node.folder_id,
         "sort_order": getattr(node, "sort_order", 0) or 0,
@@ -94,6 +144,12 @@ def _serialize_task_node(db: Session, node: TaskNode) -> dict:
         "created_at": node.created_at,
         "updated_at": node.updated_at,
     }
+    if include_script:
+        out["script_content"] = node.script_content
+    else:
+        # 明示缺省，避免前端把 undefined 当「空脚本」误覆盖本地草稿
+        out["script_content"] = None
+    return out
 
 
 # ==================== 文件夹 ====================
@@ -307,13 +363,34 @@ def _next_sort_order(db: Session, workspace_id: int, folder_id: Optional[int]) -
 
 
 @router.get("/nodes")
-def list_nodes(workspace_id: int, folder_id: Optional[int] = None, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def list_nodes(
+    workspace_id: int,
+    folder_id: Optional[int] = None,
+    include_script: bool = Query(
+        False,
+        description="是否返回 script_content；侧栏列表默认 false，打开脚本请用 GET /nodes/{id}",
+    ),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_BATCH_STUDIO_READ)
     q = db.query(TaskNode).filter(TaskNode.workspace_id == workspace_id)
     if folder_id is not None:
         q = q.filter(TaskNode.folder_id == folder_id)
+    if not include_script:
+        q = q.options(load_only(*_TASK_NODE_LIST_LOAD_COLS))
     nodes = q.order_by(TaskNode.sort_order.asc(), TaskNode.name.asc(), TaskNode.id.asc()).all()
-    return [_serialize_task_node(db, n) for n in nodes]
+    uids: List[Optional[int]] = []
+    for n in nodes:
+        uids.append(n.owner_id)
+        uids.append(n.created_by)
+        if not _edit_lock_expired(n):
+            uids.append(getattr(n, "edit_lock_user_id", None))
+    umap = _username_map(db, uids)
+    return [
+        _serialize_task_node(db, n, include_script=include_script, username_by_id=umap)
+        for n in nodes
+    ]
 
 
 @router.post("/nodes")

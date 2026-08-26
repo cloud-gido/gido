@@ -4,7 +4,7 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useEffect, useRef, useCallback, useState, forwardRef, useImperativeHandle, type CSSProperties } from 'react'
+import { useEffect, useRef, useCallback, useState, useMemo, forwardRef, useImperativeHandle, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { Select, Button, Tag, Tooltip, message } from 'antd'
 import {
@@ -104,14 +104,21 @@ function computeLayeredLayout(
   return pos
 }
 
+function truncateLabel(name: string, max = 12) {
+  const s = name || ''
+  return s.length > max ? `${s.slice(0, max)}…` : s
+}
+
 function makeNode(id: number, info: any, x: number, y: number) {
+  const fullName = info?.name || String(id)
   return {
     id: String(id),
     x, y, width: NODE_W, height: NODE_H,
     shape: 'rect',
+    data: { name: fullName, node_type: info?.node_type || '' },
     attrs: {
       body: { rx: 6, ry: 6, fill: '#fff', stroke: TYPE_COLOR[info.node_type] || '#999', strokeWidth: 2 },
-      label: { text: info.name.length > 12 ? info.name.slice(0, 12) + '…' : info.name, fill: '#333', fontSize: 13 },
+      label: { text: truncateLabel(fullName), fill: '#333', fontSize: 13 },
     },
     ports: {
       groups: {
@@ -156,6 +163,15 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
   const graphRef = useRef<Graph | null>(null)
   const [selectedCell, setSelectedCell] = useState<string | null>(null)
   const [fullscreen, setFullscreen] = useState(false)
+  /** 画布节点 / 全屏与小窗统一：hover 或点击显示全名 */
+  const [nodeTip, setNodeTip] = useState<{
+    name: string
+    node_type: string
+    x: number
+    y: number
+  } | null>(null)
+  const setNodeTipRef = useRef(setNodeTip)
+  setNodeTipRef.current = setNodeTip
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const onChangeRef = useRef(onChange)
   onChangeRef.current = onChange
@@ -165,6 +181,12 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
   nodesRef.current = nodes
   /** 全屏切换 Portal 会重挂载画布，用快照恢复 */
   const dagSnapRef = useRef<DagGraph | null>(value ? { nodes: value.nodes || [], edges: value.edges || [] } : null)
+
+  /** 编排只能添加「数据开发里已提交」的脚本；画布上已有节点仍用全量 nodes 解析展示 */
+  const publishedNodes = useMemo(
+    () => nodes.filter(n => Boolean(n.is_published)),
+    [nodes],
+  )
 
   const _readDAG = useCallback((): DagGraph => {
     const graph = graphRef.current
@@ -272,10 +294,35 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
       panning: { enabled: true, modifiers: 'shift' },
     } as any)
 
-    graph.on('node:click', ({ node }: any) => setSelectedCell(node.id))
+    const showNodeTip = (node: any, clientX: number, clientY: number) => {
+      const info = nodesRef.current.find(n => n.id === Number(node.id))
+      const data = typeof node.getData === 'function' ? node.getData() : null
+      setNodeTipRef.current({
+        name: info?.name || data?.name || String(node.id),
+        node_type: info?.node_type || data?.node_type || '',
+        x: clientX,
+        y: clientY,
+      })
+    }
+
+    graph.on('node:click', ({ e, node }: any) => {
+      setSelectedCell(node.id)
+      showNodeTip(node, e.clientX, e.clientY)
+    })
+    graph.on('node:mouseenter', ({ e, node }: any) => showNodeTip(node, e.clientX, e.clientY))
+    graph.on('node:mousemove', ({ e }: any) => {
+      setNodeTipRef.current(prev => (prev ? { ...prev, x: e.clientX, y: e.clientY } : null))
+    })
+    graph.on('node:mouseleave', () => setNodeTipRef.current(null))
     graph.on('node:dblclick', ({ node }: any) => onNodeDoubleClickRef.current?.(Number(node.id)))
-    graph.on('edge:click', ({ edge }: any) => setSelectedCell(edge.id))
-    graph.on('blank:click', () => setSelectedCell(null))
+    graph.on('edge:click', ({ edge }: any) => {
+      setSelectedCell(edge.id)
+      setNodeTipRef.current(null)
+    })
+    graph.on('blank:click', () => {
+      setSelectedCell(null)
+      setNodeTipRef.current(null)
+    })
     graph.on('node:change:position', scheduleSync)
     graph.on('edge:connected', scheduleSync)
     graph.on('edge:removed', scheduleSync)
@@ -320,9 +367,10 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
     for (const n of nodes) {
       const cell = graph.getCellById(String(n.id))
       if (!cell || !cell.isNode()) continue
-      const label = n.name.length > 12 ? `${n.name.slice(0, 12)}…` : n.name
+      const label = truncateLabel(n.name || '')
       cell.attr('label/text', label)
       cell.attr('body/stroke', TYPE_COLOR[n.node_type] || '#999')
+      cell.setData({ name: n.name, node_type: n.node_type })
     }
   }, [nodesMetaKey])
 
@@ -363,6 +411,10 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
     if (graph.getCellById(String(id))) return
     const info = nodesRef.current.find(n => n.id === id)
     if (!info) return
+    if (!info.is_published) {
+      message.warning('只能添加已提交的脚本，请先在数据开发中提交')
+      return
+    }
     const n = graph.getNodes().length
     graph.addNode(makeNode(id, info, 80 + (n % 4) * 180, 60 + Math.floor(n / 4) * 110))
     scheduleSync()
@@ -374,6 +426,7 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
     const cell = graph.getCellById(selectedCell)
     if (cell) graph.removeCell(cell)
     setSelectedCell(null)
+    setNodeTip(null)
     scheduleSync()
   }
 
@@ -408,6 +461,7 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
   const toggleFullscreen = () => {
     dagSnapRef.current = _readDAG()
     onChangeRef.current?.(dagSnapRef.current)
+    setNodeTip(null)
     setFullscreen(v => !v)
   }
 
@@ -438,19 +492,36 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
     <div ref={wrapRef} style={shellStyle}>
       <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flexShrink: 0 }}>
         <Select
-          placeholder="添加节点到画布"
-          options={nodes.map(n => ({
-            label: <span><Tag color={TYPE_COLOR[n.node_type]} style={{ fontSize: 11 }}>{n.node_type}</Tag>{n.name}</span>,
+          placeholder={publishedNodes.length ? '添加已提交脚本到画布' : '暂无已提交脚本可添加'}
+          options={publishedNodes.map(n => ({
             value: n.id,
+            // antd Option 原生 title：下拉项 hover 显示全名（小窗/全屏一致）
+            title: n.name,
+            label: (
+              <span title={n.name} style={{ display: 'inline-flex', alignItems: 'center', maxWidth: '100%' }}>
+                <Tag color={TYPE_COLOR[n.node_type]} style={{ fontSize: 11, flexShrink: 0 }}>{n.node_type}</Tag>
+                <span
+                  style={{
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {n.name}
+                </span>
+              </span>
+            ),
           }))}
-          style={{ width: 220 }}
+          style={{ width: 280 }}
           onChange={handleAddNode}
           value={null}
           showSearch
+          disabled={!publishedNodes.length}
           getPopupContainer={() => (fullscreen ? document.body : wrapRef.current || document.body)}
           filterOption={(input: string, opt: any) =>
-            nodes.find(n => n.id === opt?.value)?.name?.toLowerCase().includes(input.toLowerCase())
+            publishedNodes.find(n => n.id === opt?.value)?.name?.toLowerCase().includes(input.toLowerCase()) ?? false
           }
+          notFoundContent={publishedNodes.length ? '无匹配脚本' : '请先在数据开发中提交脚本'}
         />
         <Button
           danger
@@ -477,7 +548,7 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
           {fullscreen ? '退出全屏' : '全屏'}
         </Button>
         <span style={{ color: '#94a3b8', fontSize: 12, lineHeight: 1.5 }}>
-          从右侧圆点拖到目标节点表示依赖 · 双击打开配置弹窗 · 可扇入扇出
+          仅可添加已提交脚本 · 从右侧圆点拖到目标节点表示依赖 · 悬停/单击节点可看全名 · 双击打开配置
           {fullscreen ? ' · Esc 退出全屏' : ''}
           <Tooltip title="Shift 拖动画布 · Ctrl 滚轮缩放；「整理布局」按依赖分层；配置与数据开发共用同一节点与编辑锁">
             <QuestionCircleOutlined style={{ marginLeft: 6, color: '#cbd5e1' }} />
@@ -518,7 +589,7 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
               fontSize: 13,
             }}
           >
-            从上方选择节点加入画布，再拖拽与连线
+            从上方选择已提交脚本加入画布，再拖拽与连线
           </div>
         )}
       </div>
@@ -529,6 +600,38 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
           </span>
         ))}
       </div>
+      {nodeTip && createPortal(
+        <div
+          role="tooltip"
+          style={{
+            position: 'fixed',
+            left: Math.min(nodeTip.x + 12, window.innerWidth - 320),
+            top: Math.min(nodeTip.y + 14, window.innerHeight - 64),
+            zIndex: 2300,
+            maxWidth: 360,
+            padding: '6px 10px',
+            background: 'rgba(0,0,0,0.85)',
+            color: '#fff',
+            borderRadius: 6,
+            fontSize: 12,
+            lineHeight: 1.45,
+            pointerEvents: 'none',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.18)',
+            wordBreak: 'break-all',
+          }}
+        >
+          {nodeTip.node_type ? (
+            <Tag
+              color={TYPE_COLOR[nodeTip.node_type] || 'default'}
+              style={{ fontSize: 11, marginInlineEnd: 6, lineHeight: '18px' }}
+            >
+              {nodeTip.node_type}
+            </Tag>
+          ) : null}
+          {nodeTip.name}
+        </div>,
+        document.body,
+      )}
     </div>
   )
 

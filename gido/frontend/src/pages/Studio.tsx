@@ -235,20 +235,39 @@ export default function StudioPage() {
     })
   }
 
-  const openNode = useCallback((node: any) => {
-    setOpenTabs(prev => (prev.find(t => t.id === node.id) ? prev : [...prev, node]))
-    setActiveTabId(node.id)
+  const openNode = useCallback(async (node: any) => {
+    if (!node?.id) return
+    if (openTabs.some(t => t.id === node.id)) {
+      setActiveTabId(node.id)
+      setLogPanelOpen(false)
+      return
+    }
+
+    let full = node
+    // 列表接口默认不带 script_content，打开时再拉详情
+    if (node.script_content == null) {
+      try {
+        full = await studioApi.getNode(node.id) as any
+      } catch (e: any) {
+        message.error(e?.response?.data?.detail || e?.message || '加载脚本失败')
+        return
+      }
+      setNodes(prev => prev.map(n => (n.id === full.id ? { ...n, ...full } : n)))
+    }
+
+    setOpenTabs(prev => (prev.find(t => t.id === full.id) ? prev : [...prev, full]))
+    setActiveTabId(full.id)
     setLogPanelOpen(false)
     // 只读角色不恢复本地草稿，避免无写权限时反复提示「持有编辑锁后将自动保存」
-    if (wsId != null && canWrite && !node.is_locked) {
-      const key = scriptDraftStorageKey(`studio.${wsId}`, node.id)
-      const restored = restoreScriptLocalDraft(key, node.script_content ?? '')
+    if (wsId != null && canWrite && !full.is_locked) {
+      const key = scriptDraftStorageKey(`studio.${wsId}`, full.id)
+      const restored = restoreScriptLocalDraft(key, full.script_content ?? '')
       if (restored != null) {
-        setDirtyMap(prev => (prev[node.id] !== undefined ? prev : { ...prev, [node.id]: restored }))
+        setDirtyMap(prev => (prev[full.id] !== undefined ? prev : { ...prev, [full.id]: restored }))
         message.info('已恢复本地未同步草稿，持有编辑锁后将自动保存到服务端')
       }
     }
-  }, [wsId, canWrite])
+  }, [wsId, canWrite, openTabs])
 
   const prevWsIdRef = useRef<number | undefined>(undefined)
   const studioRestoreDoneRef = useRef(false)

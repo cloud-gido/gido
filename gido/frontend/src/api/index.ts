@@ -77,7 +77,11 @@ export const datasourceApi = {
 
 // 数据开发
 export const studioApi = {
-  listNodes: (workspaceId: number, folderId?: number) => request.get('/studio/nodes', { params: { workspace_id: workspaceId, folder_id: folderId } }),
+  /** 列表默认不含脚本正文（加速进入数据开发）；打开编辑用 getNode */
+  listNodes: (workspaceId: number, folderId?: number) =>
+    request.get('/studio/nodes', {
+      params: { workspace_id: workspaceId, folder_id: folderId },
+    }),
   createNode: (data: any) => request.post('/studio/nodes', data),
   getNode: (id: number) => request.get(`/studio/nodes/${id}`),
   /** createHistory=false：静默草稿保存，不写版本历史（编辑器自动保存） */

@@ -692,7 +692,7 @@ export default function WorkflowPage() {
                   message={
                     detailLoading || nodesLoading
                       ? '正在加载工作流详情与可编排节点…'
-                      : '添加节点后拖拽排版，从端口可连多个上下游；双击节点可在弹窗中改配置（与数据开发同步）。DEPENDENT 可等待其他工作流成功。'
+                      : '仅可添加数据开发中「已提交」的脚本；悬停或单击节点可查看全名；双击打开配置（与数据开发同步）。DEPENDENT 可等待其他工作流成功。'
                   }
                 />
                 <DAGEditor
