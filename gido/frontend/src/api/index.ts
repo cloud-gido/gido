@@ -460,7 +460,9 @@ export const streamingApi = {
   operatorOverview: (workspaceId: number) =>
     request.get('/streaming/operator-overview', { params: { workspace_id: workspaceId } }),
   flinkRuntime: () => request.get('/streaming/flink-runtime'),
+  /** 列表默认不含 script_content / generated_artifact；打开编辑用 getJob */
   listJobs: (workspaceId: number) => request.get('/streaming/jobs', { params: { workspace_id: workspaceId } }),
+  getJob: (id: number) => request.get(`/streaming/jobs/${id}`),
   createJob: (data: any) => request.post('/streaming/jobs', data),
   copyJob: (id: number, data?: { name?: string }) => request.post(`/streaming/jobs/${id}/copy`, data || {}),
   /** createHistory=false：静默草稿，不写 streaming job history */

@@ -14,7 +14,12 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.workspace import DataSource, TaskNode, Workspace
 from app.services.integration_runtime import normalize_ds_type, open_connection
-from app.services.sql_readonly import column_types_from_description, json_cell_value, split_sql_statements
+from app.services.sql_readonly import (
+    apply_readonly_row_limit,
+    column_types_from_description,
+    json_cell_value,
+    split_sql_statements,
+)
 from app.services.workspace_datasource_policy import load_datasource_for_run
 
 
@@ -54,6 +59,12 @@ def _adapt_statement(stmt: str, ds_type: str) -> str:
             "ORDER BY ordinal_position"
         )
     return s
+
+
+def _looks_like_result_query(stmt: str) -> bool:
+    """判断是否可能返回结果集，以便追加 LIMIT / fetchmany 封顶。"""
+    core = (stmt or "").strip().lstrip("(").strip()
+    return bool(re.match(r"(?is)^(with|select|show|desc|describe|explain)\b", core))
 
 
 def run_sql_with_result(
@@ -126,19 +137,32 @@ def run_sql_with_result(
                     stmt = _adapt_statement(raw_stmt, lt)
                     if stmt != raw_stmt.strip().rstrip(";").strip():
                         logs.append(f"[INFO] 已转换为 PostgreSQL 语法: {stmt[:120]}...")
-                    logs.append(f"[SQL] {stmt[:200]}")
-                    cur.execute(stmt)
+                    exec_stmt = stmt
+                    if _looks_like_result_query(stmt):
+                        capped = apply_readonly_row_limit(stmt, _cap)
+                        if capped != stmt:
+                            logs.append(f"[INFO] 已追加 LIMIT {_cap} 避免全表拉取")
+                            exec_stmt = capped
+                    logs.append(f"[SQL] {exec_stmt[:200]}")
+                    cur.execute(exec_stmt)
                     if cur.description:
-                        rows = cur.fetchall()
+                        # fetchmany 封顶，避免已有大 LIMIT 时仍把结果全量载入内存
+                        rows = cur.fetchmany(_cap + 1)
+                        truncated = len(rows) > _cap
+                        rows = rows[:_cap]
                         columns = [d[0] for d in cur.description]
                         col_types = column_types_from_description(ds.ds_type, cur.description)
                         last_select_result = {
                             "columns": columns,
                             "column_types": col_types,
-                            "rows": [[json_cell_value(v) for v in row] for row in rows[:_cap]],
+                            "rows": [[json_cell_value(v) for v in row] for row in rows],
                             "total": len(rows),
+                            "truncated": truncated,
                         }
-                        logs.append(f"[INFO] 返回 {len(rows)} 行")
+                        logs.append(
+                            f"[INFO] 返回 {len(rows)} 行"
+                            + ("（已截断）" if truncated else "")
+                        )
                     else:
                         if kind == "mysql":
                             conn.commit()

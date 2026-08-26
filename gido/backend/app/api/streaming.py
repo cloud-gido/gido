@@ -11,7 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Body, Request
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from app.core import perm_codes as PC
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 from sqlalchemy import (
     Column,
     Integer,
@@ -535,6 +535,7 @@ def _streaming_job_public_dict(
     runtime_cfg: Optional[FlinkRuntimeConfig] = None,
     profile_name: Optional[str] = None,
     release_versions: Optional[Dict[int, int]] = None,
+    include_heavy: bool = True,
 ) -> dict:
     fjid = job.flink_job_id or None
     oid = getattr(job, "owner_id", None) or job.created_by
@@ -609,7 +610,7 @@ def _streaming_job_public_dict(
             else "session"
         )
     )
-    return {
+    out = {
         "id": job.id,
         "name": job.name,
         "job_type": job.job_type,
@@ -651,9 +652,7 @@ def _streaming_job_public_dict(
         "definition_kind": getattr(job, "definition_kind", None) or ("jar" if job.job_type == "JAR" else "sql"),
         "pipeline_spec": getattr(job, "pipeline_spec", None),
         "compiler_version": getattr(job, "compiler_version", None),
-        "generated_artifact": getattr(job, "generated_artifact", None),
         "spec_hash": getattr(job, "spec_hash", None),
-        "script_content": job.script_content,
         "main_class": job.main_class,
         "program_args": job.program_args,
         "jar_path": job.jar_path,
@@ -664,7 +663,16 @@ def _streaming_job_public_dict(
         "owner_username": uname,
         "is_locked": bool(getattr(job, "is_locked", False)),
         "flink_operational": _compute_flink_operational(job, runtime_cfg=cfg),
+        # 列表省略大字段；前端用 content_loaded=false 触发 GET /jobs/{id}
+        "content_loaded": bool(include_heavy),
     }
+    if include_heavy:
+        out["generated_artifact"] = getattr(job, "generated_artifact", None)
+        out["script_content"] = job.script_content
+    else:
+        out["generated_artifact"] = None
+        out["script_content"] = None
+    return out
 
 
 # ==================== 模型 ====================
@@ -724,6 +732,49 @@ class StreamingJob(Base):
         Integer, ForeignKey("dw_streaming_job_releases.id"), nullable=True
     )
     lifecycle_state = Column(String(32), default="draft", nullable=False)
+
+
+# 列表查询不加载 SQL/编译产物等大字段（对齐批处理 list_nodes）
+_STREAMING_JOB_LIST_LOAD_COLS = (
+    StreamingJob.id,
+    StreamingJob.workspace_id,
+    StreamingJob.name,
+    StreamingJob.job_type,
+    StreamingJob.jar_path,
+    StreamingJob.main_class,
+    StreamingJob.program_args,
+    StreamingJob.parallelism,
+    StreamingJob.streaming_properties,
+    StreamingJob.flink_sql_submit_mode,
+    StreamingJob.flink_jar_submit_mode,
+    StreamingJob.flink_operator_deployment_name,
+    StreamingJob.flink_application_cluster_id,
+    StreamingJob.flink_application_jm_rest,
+    StreamingJob.flink_session_profile_id,
+    StreamingJob.flink_job_id,
+    StreamingJob.last_submit_error,
+    StreamingJob.last_submitted_at,
+    StreamingJob.last_submitted_by,
+    StreamingJob.status,
+    StreamingJob.folder_id,
+    StreamingJob.sort_order,
+    StreamingJob.jar_artifact_id,
+    StreamingJob.jar_version_id,
+    StreamingJob.connector_version_ids,
+    StreamingJob.dependency_file_version_ids,
+    StreamingJob.definition_kind,
+    StreamingJob.pipeline_spec,
+    StreamingJob.compiler_version,
+    StreamingJob.spec_hash,
+    StreamingJob.created_at,
+    StreamingJob.updated_at,
+    StreamingJob.created_by,
+    StreamingJob.owner_id,
+    StreamingJob.is_locked,
+    StreamingJob.current_approved_release_id,
+    StreamingJob.current_running_release_id,
+    StreamingJob.lifecycle_state,
+)
 
 
 class StreamingJobHistory(Base):
@@ -2854,10 +2905,11 @@ def reorder_stream_jobs(
 
 @router.get("/jobs")
 def list_jobs(workspace_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """列出工作空间下的实时任务"""
+    """列出工作空间下的实时任务（默认不含 script_content / generated_artifact）"""
     assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_STREAM_READ)
     jobs = (
         db.query(StreamingJob)
+        .options(load_only(*_STREAMING_JOB_LIST_LOAD_COLS))
         .filter(StreamingJob.workspace_id == workspace_id)
         .order_by(StreamingJob.sort_order.asc(), StreamingJob.name.asc(), StreamingJob.id.asc())
         .all()
@@ -2907,9 +2959,17 @@ def list_jobs(workspace_id: int, db: Session = Depends(get_db), current_user: Us
             runtime_cfg=cfg_by_job[j.id],
             profile_name=_pname(j),
             release_versions=release_versions,
+            include_heavy=False,
         )
         for j in jobs
     ]
+
+
+@router.get("/jobs/{job_id}")
+def get_job(job_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """作业详情（含 script_content / pipeline 编译产物）。"""
+    job = require_streaming_job(db, current_user, job_id, "viewer", PC.GIDO_STREAM_READ)
+    return _streaming_job_public_dict(db, job)
 
 
 @router.post("/jobs")

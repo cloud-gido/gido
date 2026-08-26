@@ -210,9 +210,14 @@ def test_stream_folder_reparent_reorder_and_job_move_preserve_script(client: Tes
     body = next(x for x in got_list.json() if x["id"] == jid)
     assert body["id"] == jid
     assert body["folder_id"] == fb
-    assert body["script_content"] == script
+    assert body["content_loaded"] is False
+    assert body["script_content"] is None
     assert body["job_type"] == "SQL"
     assert body["name"] == "job-sql-a"
+    detail = client.get(f"/api/streaming/jobs/{jid}", headers=h)
+    assert detail.status_code == 200
+    assert detail.json()["script_content"] == script
+    assert detail.json()["content_loaded"] is True
 
     so = {x["id"]: x.get("sort_order", 0) for x in got_list.json() if x["id"] in (jid, jid2)}
     assert so[jid2] < so[jid]
@@ -300,4 +305,9 @@ def test_stream_delete_folder_moves_jobs_to_root(client: TestClient):
     assert listed.status_code == 200
     body = next(x for x in listed.json() if x["id"] == jid)
     assert body["folder_id"] is None
-    assert body["script_content"] == "select 1"
+    assert body["content_loaded"] is False
+    assert body["script_content"] is None
+    detail = client.get(f"/api/streaming/jobs/{jid}", headers=h).json()
+    assert detail["script_content"] == "select 1"
+    assert detail["folder_id"] is None
+    assert detail["content_loaded"] is True

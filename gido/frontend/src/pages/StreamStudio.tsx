@@ -272,12 +272,40 @@ export default function StreamStudioPage() {
       setSelected((prev) => {
         if (!prev) return prev
         const fresh = list.find((j: any) => j.id === prev.id)
-        return fresh ?? prev
+        if (!fresh) return prev
+        // 列表不含大字段时，保留当前已加载的脚本/编译产物，避免刷新冲掉编辑器
+        if (prev.content_loaded && fresh.content_loaded === false) {
+          return {
+            ...fresh,
+            script_content: prev.script_content,
+            generated_artifact: prev.generated_artifact,
+            content_loaded: true,
+          }
+        }
+        return fresh
       })
     } finally {
       if (showSpinner) setLoading(false)
     }
   }, [wsId])
+
+  const openJob = useCallback(async (job: any | null) => {
+    if (!job?.id) {
+      setSelected(null)
+      return
+    }
+    let full = job
+    if (job.content_loaded === false || (job.content_loaded == null && job.script_content == null && job.job_type === 'SQL')) {
+      try {
+        full = await streamingApi.getJob(job.id) as any
+      } catch (e: any) {
+        message.error(e?.response?.data?.detail || e?.message || '加载作业失败')
+        return
+      }
+      setJobs(prev => prev.map(j => (j.id === full.id ? { ...j, ...full } : j)))
+    }
+    setSelected(full)
+  }, [])
 
   useEffect(() => { load(true) }, [load])
 
@@ -944,7 +972,7 @@ export default function StreamStudioPage() {
               readOnly={!canWrite}
               expandedKeys={treeExpandedKeys}
               onExpandedKeysChange={setTreeExpandedKeys}
-              onSelectLeaf={setSelected}
+              onSelectLeaf={openJob}
               onCreateFolder={parentId => {
                 setFolderParentId(parentId)
                 setFolderName('')
