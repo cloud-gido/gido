@@ -6,7 +6,7 @@
  */
 import { useEffect, useRef, useCallback, useState, useMemo, forwardRef, useImperativeHandle, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
-import { Select, Button, Tag, Tooltip, message } from 'antd'
+import { Select, Button, Tag, Tooltip, message, ConfigProvider } from 'antd'
 import {
   DeleteOutlined,
   QuestionCircleOutlined,
@@ -15,6 +15,14 @@ import {
   PartitionOutlined,
 } from '@ant-design/icons'
 import { Graph, Shape } from '@antv/x6'
+import {
+  Z_FULLSCREEN,
+  Z_NODE_TIP,
+  computeLayeredLayout,
+  dagPopupBase,
+  dagPopupZIndex,
+  filterPublishedScriptOption,
+} from './dagEditorOverlay'
 
 interface DAGEditorProps {
   nodes: any[]
@@ -40,69 +48,6 @@ const TYPE_COLOR: Record<string, string> = {
 
 const NODE_W = 150
 const NODE_H = 44
-const GAP_X = 200
-const GAP_Y = 100
-const ORIGIN_X = 80
-const ORIGIN_Y = 60
-
-/** 按依赖分层从左到右排布（拓扑层），同层纵向排列 */
-function computeLayeredLayout(
-  nodeIds: number[],
-  edges: { source: number, target: number }[],
-): Map<number, { x: number, y: number }> {
-  const idSet = new Set(nodeIds)
-  const indeg = new Map<number, number>()
-  const outs = new Map<number, number[]>()
-  for (const id of nodeIds) {
-    indeg.set(id, 0)
-    outs.set(id, [])
-  }
-  for (const e of edges) {
-    if (!idSet.has(e.source) || !idSet.has(e.target) || e.source === e.target) continue
-    outs.get(e.source)!.push(e.target)
-    indeg.set(e.target, (indeg.get(e.target) || 0) + 1)
-  }
-
-  const layerOf = new Map<number, number>()
-  const queue = nodeIds.filter(id => (indeg.get(id) || 0) === 0)
-  for (const id of queue) layerOf.set(id, 0)
-
-  const q = [...queue]
-  while (q.length) {
-    const u = q.shift()!
-    const lu = layerOf.get(u) || 0
-    for (const v of outs.get(u) || []) {
-      const next = lu + 1
-      if (!layerOf.has(v) || (layerOf.get(v) || 0) < next) {
-        layerOf.set(v, next)
-      }
-      const d = (indeg.get(v) || 0) - 1
-      indeg.set(v, d)
-      if (d === 0) q.push(v)
-    }
-  }
-  for (const id of nodeIds) {
-    if (!layerOf.has(id)) layerOf.set(id, 0)
-  }
-
-  const layers = new Map<number, number[]>()
-  for (const id of nodeIds) {
-    const L = layerOf.get(id) || 0
-    if (!layers.has(L)) layers.set(L, [])
-    layers.get(L)!.push(id)
-  }
-  for (const ids of layers.values()) ids.sort((a, b) => a - b)
-
-  const pos = new Map<number, { x: number, y: number }>()
-  const sortedLayers = [...layers.keys()].sort((a, b) => a - b)
-  for (const L of sortedLayers) {
-    const ids = layers.get(L) || []
-    ids.forEach((id, i) => {
-      pos.set(id, { x: ORIGIN_X + L * GAP_X, y: ORIGIN_Y + i * GAP_Y })
-    })
-  }
-  return pos
-}
 
 function truncateLabel(name: string, max = 12) {
   const s = name || ''
@@ -383,6 +328,16 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
   }, [fullscreen])
 
   useEffect(() => {
+    if (!fullscreen) return
+    // 静态 message 默认 z≈1010，全屏下会被挡住；临时抬高，退出时还原
+    const style = document.createElement('style')
+    style.setAttribute('data-gido-dag-fs', '1')
+    style.textContent = `.ant-message{z-index:${Z_NODE_TIP + 50} !important;}`
+    document.head.appendChild(style)
+    return () => { style.remove() }
+  }, [fullscreen])
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && fullscreen) {
         dagSnapRef.current = _readDAG()
@@ -475,7 +430,7 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
         height: '100vh',
         maxWidth: '100vw',
         maxHeight: '100vh',
-        zIndex: 2100,
+        zIndex: Z_FULLSCREEN,
         background: '#fff',
         display: 'flex',
         flexDirection: 'column',
@@ -486,9 +441,22 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
         display: 'flex',
         flexDirection: 'column',
         width: '100%',
+        position: 'relative',
       }
 
+  const popupContainer = () => document.body
+  const popupZ = dagPopupZIndex(fullscreen)
+  const popupBase = dagPopupBase(fullscreen)
+
   const editor = (
+    <ConfigProvider
+      theme={{
+        token: {
+          // 全屏时抬高 Select/Tooltip 等浮层基线，避免落到全屏壳之下
+          ...(popupBase != null ? { zIndexPopupBase: popupBase } : null),
+        },
+      }}
+    >
     <div ref={wrapRef} style={shellStyle}>
       <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flexShrink: 0 }}>
         <Select
@@ -516,11 +484,16 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
           onChange={handleAddNode}
           value={null}
           showSearch
+          optionFilterProp="title"
           disabled={!publishedNodes.length}
-          getPopupContainer={() => (fullscreen ? document.body : wrapRef.current || document.body)}
-          filterOption={(input: string, opt: any) =>
-            publishedNodes.find(n => n.id === opt?.value)?.name?.toLowerCase().includes(input.toLowerCase()) ?? false
-          }
+          // 挂 body：小窗不被 Modal overflow 裁切；全屏靠抬高 zIndex 盖过壳
+          getPopupContainer={popupContainer}
+          styles={popupZ != null ? { popup: { root: { zIndex: popupZ } } } : undefined}
+          listHeight={360}
+          filterOption={(input: string, opt: any) => {
+            const name = String(opt?.title || publishedNodes.find(n => n.id === opt?.value)?.name || '')
+            return filterPublishedScriptOption(input, name)
+          }}
           notFoundContent={publishedNodes.length ? '无匹配脚本' : '请先在数据开发中提交脚本'}
         />
         <Button
@@ -550,7 +523,11 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
         <span style={{ color: '#94a3b8', fontSize: 12, lineHeight: 1.5 }}>
           仅可添加已提交脚本 · 从右侧圆点拖到目标节点表示依赖 · 悬停/单击节点可看全名 · 双击打开配置
           {fullscreen ? ' · Esc 退出全屏' : ''}
-          <Tooltip title="Shift 拖动画布 · Ctrl 滚轮缩放；「整理布局」按依赖分层；配置与数据开发共用同一节点与编辑锁">
+          <Tooltip
+            title="Shift 拖动画布 · Ctrl 滚轮缩放；「整理布局」按依赖分层；配置与数据开发共用同一节点与编辑锁"
+            getPopupContainer={popupContainer}
+            styles={popupZ != null ? { root: { zIndex: popupZ } } : undefined}
+          >
             <QuestionCircleOutlined style={{ marginLeft: 6, color: '#cbd5e1' }} />
           </Tooltip>
         </span>
@@ -607,7 +584,7 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
             position: 'fixed',
             left: Math.min(nodeTip.x + 12, window.innerWidth - 320),
             top: Math.min(nodeTip.y + 14, window.innerHeight - 64),
-            zIndex: 2300,
+            zIndex: Z_NODE_TIP,
             maxWidth: 360,
             padding: '6px 10px',
             background: 'rgba(0,0,0,0.85)',
@@ -633,6 +610,7 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
         document.body,
       )}
     </div>
+    </ConfigProvider>
   )
 
   return (

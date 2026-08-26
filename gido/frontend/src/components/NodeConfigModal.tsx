@@ -29,6 +29,7 @@ import {
   restoreScriptLocalDraft,
   scriptDraftStorageKey,
 } from '../utils/scriptLocalDraft'
+import { Z_NODE_CONFIG, Z_NODE_CONFIG_CONFIRM } from './dagEditorOverlay'
 
 export type StudioNode = Record<string, any>
 
@@ -297,6 +298,7 @@ export default function NodeConfigModal({
       title: '抢锁编辑',
       content: `当前编辑锁由「${node?.edit_lock_username || '其他用户'}」持有，确定抢占？`,
       okText: '抢锁',
+      zIndex: Z_NODE_CONFIG_CONFIRM,
       onOk: async () => {
         const ok = await tryAcquire(true, false)
         if (ok) message.success('已抢占编辑锁')
@@ -429,7 +431,7 @@ export default function NodeConfigModal({
       width={920}
       styles={{ body: { maxHeight: 'min(78vh, 820px)', overflowY: 'auto' } }}
       destroyOnClose
-      zIndex={2200}
+      zIndex={Z_NODE_CONFIG}
       footer={(_, { OkBtn, CancelBtn }) => (
         <Space style={{ width: '100%', justifyContent: 'space-between' }}>
           <Space>
