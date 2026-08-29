@@ -1,38 +1,54 @@
-/* 选中 SQL 行号旁运行箭头：克制、对齐 Ant Design / 工具栏「运行」色相 */
+/* 选中 SQL 行号旁运行按钮：overlay，对齐工具栏「运行」主色 */
 
-.monaco-editor .margin-view-overlays .gido-sql-run-glyph {
-  cursor: pointer !important;
-}
-
-.monaco-editor .margin-view-overlays .gido-sql-run-glyph::before {
-  content: '';
-  display: block;
+.monaco-editor .gido-sql-run-btn {
+  position: absolute;
+  z-index: 12;
   box-sizing: border-box;
-  width: 0;
-  height: 0;
-  margin: 5px 0 0 4px;
-  border-style: solid;
-  border-width: 5px 0 5px 8px;
-  /* 接近工具栏主色，略压饱和，避免抢戏 */
-  border-color: transparent transparent transparent #1677ff;
-  opacity: 0.78;
-  transition: opacity 0.12s ease, border-color 0.12s ease;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: #1677ff;
+  opacity: 0.88;
+  cursor: pointer;
+  line-height: 1;
+  pointer-events: auto;
+  transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
 }
 
-.monaco-editor .margin-view-overlays .gido-sql-run-glyph:hover::before {
+.monaco-editor .gido-sql-run-btn:hover {
   opacity: 1;
-  border-color: transparent transparent transparent #0958d9;
+  background: rgba(22, 119, 255, 0.12);
+  color: #0958d9;
 }
 
-/* 深色主题：略提亮，仍保持蓝系与浅色一致 */
-.monaco-editor.vs-dark .margin-view-overlays .gido-sql-run-glyph::before,
-.monaco-editor.hc-black .margin-view-overlays .gido-sql-run-glyph::before {
-  border-color: transparent transparent transparent #69b1ff;
-  opacity: 0.9;
+.monaco-editor .gido-sql-run-btn:active {
+  background: rgba(22, 119, 255, 0.2);
 }
 
-.monaco-editor.vs-dark .margin-view-overlays .gido-sql-run-glyph:hover::before,
-.monaco-editor.hc-black .margin-view-overlays .gido-sql-run-glyph:hover::before {
-  border-color: transparent transparent transparent #91caff;
-  opacity: 1;
+.monaco-editor .gido-sql-run-btn[hidden] {
+  display: none !important;
+}
+
+.monaco-editor .gido-sql-run-btn svg {
+  display: block;
+  pointer-events: none;
+}
+
+/* 深色主题 */
+.monaco-editor.vs-dark .gido-sql-run-btn,
+.monaco-editor.hc-black .gido-sql-run-btn {
+  color: #69b1ff;
+}
+
+.monaco-editor.vs-dark .gido-sql-run-btn:hover,
+.monaco-editor.hc-black .gido-sql-run-btn:hover {
+  background: rgba(105, 177, 255, 0.16);
+  color: #91caff;
 }

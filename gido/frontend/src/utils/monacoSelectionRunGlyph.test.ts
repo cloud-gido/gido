@@ -1,10 +1,10 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
+ * @vitest-environment jsdom
  */
 import { describe, expect, it, vi } from 'vitest'
-import { isRunnableSelection } from './monacoSelectionRunGlyph'
-import { bindMonacoSelectionRunGlyph } from './monacoSelectionRunGlyph'
+import { isRunnableSelection, bindMonacoSelectionRunGlyph } from './monacoSelectionRunGlyph'
 
 describe('isRunnableSelection', () => {
   it('识别完整 SELECT / WITH', () => {
@@ -33,31 +33,37 @@ SELECT 1`),
 })
 
 describe('bindMonacoSelectionRunGlyph', () => {
-  it('选中可跑 SQL 时写入 glyph 装饰；清空选区时移除', () => {
+  it('选中可跑 SQL 时显示 overlay 按钮；清空选区时隐藏', () => {
     let selection: any = {
       isEmpty: () => false,
-      startLineNumber: 51,
-      endLineNumber: 54,
+      startLineNumber: 73,
+      endLineNumber: 76,
     }
-    const decorations: any[] = []
+    const host = document.createElement('div')
+    host.className = 'monaco-editor'
+    document.body.appendChild(host)
+
     const ed = {
       updateOptions: vi.fn(),
+      getDomNode: () => host,
       getSelection: () => selection,
       getModel: () => ({
-        getValueInRange: () => 'SELECT 1 FROM t',
+        getValueInRange: () => 'SELECT DISTINCT company_id\nFROM t\nWHERE 1=1\nORDER BY 1;',
       }),
       getValue: () => '',
-      deltaDecorations: (_old: string[], next: any[]) => {
-        decorations.length = 0
-        decorations.push(...next)
-        return next.map((_, i) => `d${i}`)
-      },
+      getScrolledVisiblePosition: () => ({ top: 40, left: 0, height: 18 }),
+      getLayoutInfo: () => ({
+        decorationsLeft: 48,
+        decorationsWidth: 18,
+        contentLeft: 66,
+      }),
       onDidChangeCursorSelection: (fn: () => void) => {
         ;(ed as any)._sel = fn
         return { dispose: () => {} }
       },
       onDidChangeModelContent: () => ({ dispose: () => {} }),
-      onMouseDown: () => ({ dispose: () => {} }),
+      onDidScrollChange: () => ({ dispose: () => {} }),
+      onDidLayoutChange: () => ({ dispose: () => {} }),
     } as any
 
     const monaco = {
@@ -72,15 +78,18 @@ describe('bindMonacoSelectionRunGlyph', () => {
       editor: { MouseTargetType: { GUTTER_GLYPH_MARGIN: 2 } },
     }
 
-    bindMonacoSelectionRunGlyph(ed, monaco, {
-      onRun: vi.fn(),
-    })
-    expect(ed.updateOptions).toHaveBeenCalledWith({ glyphMargin: true })
-    expect(decorations[0]?.options?.glyphMarginClassName).toBe('gido-sql-run-glyph')
-    expect(decorations[0]?.range.startLineNumber).toBe(51)
+    const disposables = bindMonacoSelectionRunGlyph(ed, monaco, { onRun: vi.fn() })
+    expect(ed.updateOptions).toHaveBeenCalled()
+    const btn = host.querySelector('.gido-sql-run-btn') as HTMLButtonElement
+    expect(btn).toBeTruthy()
+    expect(btn.hidden).toBe(false)
+    expect(btn.style.top).toBeTruthy()
 
     selection = { isEmpty: () => true, startLineNumber: 1, endLineNumber: 1 }
     ;(ed as any)._sel()
-    expect(decorations).toHaveLength(0)
+    expect(btn.hidden).toBe(true)
+
+    disposables.forEach(d => d.dispose())
+    host.remove()
   })
 })

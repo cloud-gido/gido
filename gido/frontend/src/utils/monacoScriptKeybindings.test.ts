@@ -29,10 +29,13 @@ function mockEditor(opts: {
       },
       trigger: vi.fn(),
       updateOptions: vi.fn(),
+      getDomNode: () => null,
       deltaDecorations: () => [],
       onDidChangeCursorSelection: () => ({ dispose: () => {} }),
       onDidChangeModelContent: () => ({ dispose: () => {} }),
       onMouseDown: () => ({ dispose: () => {} }),
+      onDidScrollChange: () => ({ dispose: () => {} }),
+      onDidLayoutChange: () => ({ dispose: () => {} }),
     } as any,
     commands,
   }

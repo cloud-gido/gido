@@ -4,6 +4,9 @@
  *
  * 选中可执行脚本时在行号旁显示 ▶（对标常见 SQL IDE 的选区运行），
  * 与 bindMonacoScriptKeybindings 共用 onRun。
+ *
+ * 使用 Monaco overlay DOM（不用 glyphMarginClassName），避免装饰 CSS
+ * 因主题/布局差异不可见。
  */
 import type { editor, IDisposable, IRange } from 'monaco-editor'
 import { selectionText } from './monacoCustomFind'
@@ -22,7 +25,11 @@ export type MonacoGlyphApi = {
     endColumn: number,
   ) => IRange
   editor: {
-    MouseTargetType: { GUTTER_GLYPH_MARGIN: number }
+    MouseTargetType: {
+      GUTTER_GLYPH_MARGIN: number
+      GUTTER_LINE_DECORATIONS?: number
+      GUTTER_LINE_NUMBERS?: number
+    }
   }
 }
 
@@ -53,67 +60,102 @@ export function isRunnableSelection(text: string): boolean {
 }
 
 /**
- * 监听选区：完整可跑语句时在选区起始行 glyph margin 显示运行箭头。
+ * 监听选区：完整可跑语句时在选区起始行旁显示运行按钮。
  */
 export function bindMonacoSelectionRunGlyph(
   ed: editor.IStandaloneCodeEditor,
-  monaco: MonacoGlyphApi,
+  _monaco: MonacoGlyphApi,
   opts: SelectionRunGlyphOptions,
 ): IDisposable[] {
   if (!opts.onRun) return []
 
-  ed.updateOptions({ glyphMargin: true })
-  let decoIds: string[] = []
+  // 给行装饰留位，按钮叠在行号与正文之间
+  ed.updateOptions({ glyphMargin: true, lineDecorationsWidth: 18 })
+
+  const host = ed.getDomNode()
+  if (!host) return []
+
+  const btn = document.createElement('button')
+  btn.type = 'button'
+  btn.className = 'gido-sql-run-btn'
+  btn.title = '运行选中片段（⌘/Ctrl+Enter）'
+  btn.setAttribute('aria-label', '运行选中片段')
+  btn.tabIndex = -1
+  btn.hidden = true
+  btn.innerHTML =
+    '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">'
+    + '<path fill="currentColor" d="M4.5 2.5v11l9-5.5-9-5.5z"/>'
+    + '</svg>'
+  host.appendChild(btn)
+
   let glyphLine: number | null = null
 
-  const clear = () => {
-    decoIds = ed.deltaDecorations(decoIds, [])
+  const hide = () => {
     glyphLine = null
+    btn.hidden = true
+  }
+
+  const place = () => {
+    if (glyphLine == null) {
+      hide()
+      return
+    }
+    const vis = ed.getScrolledVisiblePosition({ lineNumber: glyphLine, column: 1 })
+    if (!vis) {
+      hide()
+      return
+    }
+    const layout = ed.getLayoutInfo()
+    // 行号右侧装饰槽；没有则贴在正文左侧
+    const left = layout.decorationsLeft > 0
+      ? layout.decorationsLeft + Math.max(0, (layout.decorationsWidth - 14) / 2)
+      : Math.max(2, layout.contentLeft - 16)
+    btn.style.top = `${vis.top + Math.max(0, (vis.height - 16) / 2)}px`
+    btn.style.left = `${left}px`
+    btn.hidden = false
   }
 
   const refresh = () => {
     if (!runEnabled(opts)) {
-      clear()
+      hide()
       return
     }
     const sel = ed.getSelection()
     if (!sel || sel.isEmpty()) {
-      clear()
+      hide()
       return
     }
     const text = selectionText(ed)
     if (!isRunnableSelection(text)) {
-      clear()
+      hide()
       return
     }
-    const line = Math.min(sel.startLineNumber, sel.endLineNumber)
-    glyphLine = line
-    decoIds = ed.deltaDecorations(decoIds, [
-      {
-        range: new monaco.Range(line, 1, line, 1),
-        options: {
-          glyphMarginClassName: 'gido-sql-run-glyph',
-          glyphMarginHoverMessage: { value: '运行选中片段（⌘/Ctrl+Enter）' },
-        },
-      },
-    ])
+    glyphLine = Math.min(sel.startLineNumber, sel.endLineNumber)
+    place()
   }
+
+  const onClick = (ev: MouseEvent) => {
+    ev.preventDefault()
+    ev.stopPropagation()
+    if (!runEnabled(opts) || glyphLine == null) return
+    const text = selectionText(ed).trim()
+    if (!text || !isRunnableSelection(text)) return
+    opts.onRun!(text, { fromSelection: true })
+  }
+  btn.addEventListener('mousedown', onClick)
 
   const d1 = ed.onDidChangeCursorSelection(() => refresh())
   const d2 = ed.onDidChangeModelContent(() => refresh())
-  const d3 = ed.onMouseDown((e) => {
-    if (e.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) return
-    if (glyphLine == null) return
-    const line = e.target.position?.lineNumber
-    if (line !== glyphLine) return
-    if (!runEnabled(opts)) return
-    const text = selectionText(ed).trim()
-    if (!text) return
-    e.event.preventDefault?.()
-    e.event.stopPropagation?.()
-    opts.onRun!(text, { fromSelection: true })
-  })
+  const d3 = ed.onDidScrollChange(() => place())
+  const d4 = ed.onDidLayoutChange(() => place())
+
+  const disposeAll = {
+    dispose: () => {
+      btn.removeEventListener('mousedown', onClick)
+      btn.remove()
+    },
+  }
 
   refresh()
-  return [d1, d2, d3]
+  return [d1, d2, d3, d4, disposeAll]
 }
