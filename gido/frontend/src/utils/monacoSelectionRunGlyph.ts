@@ -2,7 +2,7 @@
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * 选中可执行脚本时在行号旁显示 ▶（对齐 DataWorks / DBeaver），
+ * 选中可执行脚本时在行号旁显示 ▶（对标常见 SQL IDE 的选区运行），
  * 与 bindMonacoScriptKeybindings 共用 onRun。
  */
 import type { editor, IDisposable, IRange } from 'monaco-editor'

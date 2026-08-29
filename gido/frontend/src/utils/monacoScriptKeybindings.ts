@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * 共享 Monaco 脚本快捷键：Cmd/Ctrl+Enter 试跑、Cmd/Ctrl+/ 注释。
- * 选中可执行语句时行号旁 ▶（DataWorks / DBeaver 式）。
+ * 选中可执行语句时行号旁 ▶（常见 SQL IDE 选区运行）。
  * Studio / Probe / Stream / NodeConfigModal 须同一套绑定。
  */
 import type { editor } from 'monaco-editor'
