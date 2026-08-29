@@ -1,0 +1,38 @@
+/* 选中 SQL 行号旁运行箭头：克制、对齐 Ant Design / 工具栏「运行」色相 */
+
+.monaco-editor .margin-view-overlays .gido-sql-run-glyph {
+  cursor: pointer !important;
+}
+
+.monaco-editor .margin-view-overlays .gido-sql-run-glyph::before {
+  content: '';
+  display: block;
+  box-sizing: border-box;
+  width: 0;
+  height: 0;
+  margin: 5px 0 0 4px;
+  border-style: solid;
+  border-width: 5px 0 5px 8px;
+  /* 接近工具栏主色，略压饱和，避免抢戏 */
+  border-color: transparent transparent transparent #1677ff;
+  opacity: 0.78;
+  transition: opacity 0.12s ease, border-color 0.12s ease;
+}
+
+.monaco-editor .margin-view-overlays .gido-sql-run-glyph:hover::before {
+  opacity: 1;
+  border-color: transparent transparent transparent #0958d9;
+}
+
+/* 深色主题：略提亮，仍保持蓝系与浅色一致 */
+.monaco-editor.vs-dark .margin-view-overlays .gido-sql-run-glyph::before,
+.monaco-editor.hc-black .margin-view-overlays .gido-sql-run-glyph::before {
+  border-color: transparent transparent transparent #69b1ff;
+  opacity: 0.9;
+}
+
+.monaco-editor.vs-dark .margin-view-overlays .gido-sql-run-glyph:hover::before,
+.monaco-editor.hc-black .margin-view-overlays .gido-sql-run-glyph:hover::before {
+  border-color: transparent transparent transparent #91caff;
+  opacity: 1;
+}

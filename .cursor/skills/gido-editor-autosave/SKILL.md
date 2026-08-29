@@ -37,8 +37,8 @@ description: >-
 - API：`studioApi.saveDraft` / `streamingApi.saveDraft`（`create_history=false`）
 - 关 Tab / 切 Tab：flush 失败须保留 dirty 与编辑锁，并提示；禁止失败后强行 `releaseEditLock`
 - 工作台壳（布局，非草稿逻辑）：`gido/frontend/src/components/StudioWorkbenchShell.tsx` — Studio / Stream Studio / Probe 共用 bleed + 左树 + 顶栏/工具栏/舞台；改壳层样式须三处一起走该组件
-- **脚本快捷键**：`gido/frontend/src/utils/monacoScriptKeybindings.ts`（`bindMonacoScriptKeybindings`：Cmd/Ctrl+/ 注释、Cmd/Ctrl+Enter 选中或全文试跑）。四处 Monaco `onMount` 须在 `bindMonacoFindKeybindings` 之后同步接入；禁止只改一页。
-- **编辑器会话恢复（本机）**：`gido/frontend/src/utils/editorSessionStore.ts`（只存 `tabIds` / `activeId`，不存正文）。Studio 多 Tab；Stream 仅 `activeId`（上次作业）。Probe / NodeConfigModal **不**叠一套 Tab session。首屏仍 slim list → active 优先 hydrate，其余后台串行。
+- **脚本快捷键**：`gido/frontend/src/utils/monacoScriptKeybindings.ts`（`bindMonacoScriptKeybindings`：Cmd/Ctrl+/ 注释、Cmd/Ctrl+Enter 选中或全文试跑；选中可执行语句时行号旁 ▶ 见 `monacoSelectionRunGlyph.ts`）。四处 Monaco `onMount` 须在 `bindMonacoFindKeybindings` 之后同步接入；禁止只改一页。
+- **编辑器会话恢复（本机）**：`gido/frontend/src/utils/editorSessionStore.ts`（只存 `tabIds` / `activeId`，不存正文）。Studio 多 Tab；Stream 仅 `activeId`（上次作业）。Probe / NodeConfigModal **不**叠一套 Tab session。首屏仍 slim list → active 优先 hydrate，其余后台串行。**恢复完成前禁止 persist**（`canPersistEditorSession` / `*SessionHydratedRef`），离开页面时同步 `writeEditorSession`，避免切探查再回来把多 Tab 冲成空。
 
 ## 必须同步触达的入口
 

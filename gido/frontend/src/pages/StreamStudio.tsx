@@ -46,8 +46,11 @@ import {
 import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from '../components/MonacoFindBar'
 import { bindMonacoScriptKeybindings } from '../utils/monacoScriptKeybindings'
 import {
+  cancelScheduledEditorSessionWrite,
+  canPersistEditorSession,
   readEditorSession,
   scheduleWriteEditorSession,
+  writeEditorSession,
 } from '../utils/editorSessionStore'
 import { formatInTimeZone } from '../utils/datetime'
 import { openFlinkConsoleUrl } from '../utils/flinkConsole'
@@ -317,11 +320,21 @@ export default function StreamStudioPage() {
   useEffect(() => { load(true) }, [load])
 
   const streamRestoreDoneRef = useRef(false)
+  const streamSessionHydratedRef = useRef(false)
   const prevStreamWsRef = useRef<number | undefined>(undefined)
   useEffect(() => {
     if (prevStreamWsRef.current !== undefined && prevStreamWsRef.current !== wsId) {
+      if (prevStreamWsRef.current != null && streamSessionHydratedRef.current) {
+        cancelScheduledEditorSessionWrite('stream', prevStreamWsRef.current)
+        writeEditorSession('stream', prevStreamWsRef.current, {
+          tabIds: selectedRef.current?.id != null ? [selectedRef.current.id] : [],
+          activeId: selectedRef.current?.id ?? null,
+        })
+      }
       setSelected(null)
       streamRestoreDoneRef.current = false
+      streamSessionHydratedRef.current = false
+      if (wsId != null) cancelScheduledEditorSessionWrite('stream', wsId)
     }
     prevStreamWsRef.current = wsId
   }, [wsId])
@@ -330,20 +343,36 @@ export default function StreamStudioPage() {
   useEffect(() => {
     if (!wsId || loading || jobs.length === 0) return
     if (streamRestoreDoneRef.current) return
+    cancelScheduledEditorSessionWrite('stream', wsId)
+    streamRestoreDoneRef.current = true
     if (selected) {
-      streamRestoreDoneRef.current = true
+      streamSessionHydratedRef.current = true
       return
     }
-    streamRestoreDoneRef.current = true
     const stored = readEditorSession('stream', wsId)
     const activeId = stored?.activeId
-    if (activeId == null) return
+    if (activeId == null) {
+      streamSessionHydratedRef.current = true
+      return
+    }
     const job = jobs.find(j => j.id === activeId)
-    if (job) void openJob(job)
+    if (!job) {
+      streamSessionHydratedRef.current = true
+      return
+    }
+    void (async () => {
+      await openJob(job)
+      streamSessionHydratedRef.current = true
+      scheduleWriteEditorSession('stream', wsId, {
+        tabIds: [job.id],
+        activeId: job.id,
+      })
+    })()
   }, [wsId, loading, jobs, selected, openJob])
 
   useEffect(() => {
     if (wsId == null) return
+    if (!canPersistEditorSession({ hydrated: streamSessionHydratedRef.current })) return
     // 切空间瞬间 selected 可能仍是旧作业，勿写入新空间 session
     if (selected?.id != null && jobs.length > 0 && !jobs.some(j => j.id === selected.id)) {
       return
@@ -353,6 +382,19 @@ export default function StreamStudioPage() {
       activeId: selected?.id ?? null,
     })
   }, [wsId, selected?.id, jobs])
+
+  useEffect(() => {
+    if (wsId == null) return
+    return () => {
+      cancelScheduledEditorSessionWrite('stream', wsId)
+      if (!streamSessionHydratedRef.current) return
+      const id = selectedRef.current?.id ?? null
+      writeEditorSession('stream', wsId, {
+        tabIds: id != null ? [id] : [],
+        activeId: id,
+      })
+    }
+  }, [wsId])
 
   useEffect(() => {
     if (!wsId) {

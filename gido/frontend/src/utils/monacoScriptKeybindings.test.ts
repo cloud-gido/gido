@@ -15,7 +15,11 @@ function mockEditor(opts: {
   const commands: Array<{ key: number; fn: () => void }> = []
   return {
     ed: {
-      getSelection: () => (opts.selection ? { isEmpty: () => false } : { isEmpty: () => true }),
+      getSelection: () => (
+        opts.selection
+          ? { isEmpty: () => false, startLineNumber: 1, endLineNumber: 1 }
+          : { isEmpty: () => true, startLineNumber: 1, endLineNumber: 1 }
+      ),
       getModel: () => ({
         getValueInRange: () => opts.selection ?? '',
       }),
@@ -24,6 +28,11 @@ function mockEditor(opts: {
         commands.push({ key, fn })
       },
       trigger: vi.fn(),
+      updateOptions: vi.fn(),
+      deltaDecorations: () => [],
+      onDidChangeCursorSelection: () => ({ dispose: () => {} }),
+      onDidChangeModelContent: () => ({ dispose: () => {} }),
+      onMouseDown: () => ({ dispose: () => {} }),
     } as any,
     commands,
   }
@@ -32,7 +41,17 @@ function mockEditor(opts: {
 const monaco = {
   KeyMod: { CtrlCmd: 2048 },
   KeyCode: { Enter: 3, Slash: 85 },
-}
+  Range: class {
+    constructor(
+      public startLineNumber: number,
+      public startColumn: number,
+      public endLineNumber: number,
+      public endColumn: number,
+    ) {}
+  },
+  editor: { MouseTargetType: { GUTTER_GLYPH_MARGIN: 2 } },
+} as any
+
 
 describe('scriptForRun', () => {
   it('有选中时用选中片段', () => {

@@ -128,6 +128,19 @@ export function readLegacyStudioLastNodeId(workspaceId: number): number | null {
 
 const writeTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
+/** 取消尚未落地的防抖写入（恢复前避免空 session 冲掉已有会话） */
+export function cancelScheduledEditorSessionWrite(
+  scope: EditorSessionScope,
+  workspaceId: number,
+): void {
+  const key = storageKey(scope, workspaceId)
+  const prev = writeTimers.get(key)
+  if (prev) {
+    clearTimeout(prev)
+    writeTimers.delete(key)
+  }
+}
+
 /** 防抖写入，避免切 Tab 时刷爆 localStorage */
 export function scheduleWriteEditorSession(
   scope: EditorSessionScope,
@@ -145,4 +158,12 @@ export function scheduleWriteEditorSession(
       writeEditorSession(scope, workspaceId, session)
     }, debounceMs),
   )
+}
+
+/**
+ * 是否允许把当前编辑器状态写回 session。
+ * 恢复完成前禁止写入，否则路由切回会把 IDEA 式多 Tab 冲成空。
+ */
+export function canPersistEditorSession(opts: { hydrated: boolean }): boolean {
+  return opts.hydrated
 }

@@ -122,6 +122,7 @@ export function monacoEditorOptionsFromAppearance(a: EditorAppearance) {
     fontLigatures: a.fontId === 'fira' || a.fontId === 'jetbrains',
     minimap: { enabled: false },
     lineNumbers: 'on' as const,
+    glyphMargin: true,
     scrollBeyondLastLine: false,
     automaticLayout: true,
     tabSize: 2,

@@ -3,18 +3,23 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * 共享 Monaco 脚本快捷键：Cmd/Ctrl+Enter 试跑、Cmd/Ctrl+/ 注释。
+ * 选中可执行语句时行号旁 ▶（DataWorks / DBeaver 式）。
  * Studio / Probe / Stream / NodeConfigModal 须同一套绑定。
  */
 import type { editor } from 'monaco-editor'
 import { selectionText } from './monacoCustomFind'
+import {
+  bindMonacoSelectionRunGlyph,
+  type MonacoGlyphApi,
+} from './monacoSelectionRunGlyph'
 
-export type MonacoLike = {
+export type MonacoLike = MonacoGlyphApi & {
   KeyMod: { CtrlCmd: number }
   KeyCode: { Enter: number; Slash: number }
 }
 
 export type ScriptKeybindingOptions = {
-  /** 试跑回调；未提供则不绑定 Cmd+Enter */
+  /** 试跑回调；未提供则不绑定 Cmd+Enter / 选区 ▶ */
   onRun?: (script: string, meta: { fromSelection: boolean }) => void
   /** 动态开关试跑（只读 / 非 SQL 等） */
   enableRun?: boolean | (() => boolean)
@@ -54,5 +59,6 @@ export function bindMonacoScriptKeybindings(
       if (!script.trim()) return
       opts.onRun!(script, { fromSelection })
     })
+    bindMonacoSelectionRunGlyph(ed, monaco, opts)
   }
 }

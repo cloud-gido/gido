@@ -41,10 +41,13 @@ import {
 import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from '../components/MonacoFindBar'
 import { bindMonacoScriptKeybindings } from '../utils/monacoScriptKeybindings'
 import {
+  cancelScheduledEditorSessionWrite,
+  canPersistEditorSession,
   normalizeEditorSession,
   readEditorSession,
   readLegacyStudioLastNodeId,
   scheduleWriteEditorSession,
+  writeEditorSession,
 } from '../utils/editorSessionStore'
 import { useSearchParams } from 'react-router-dom'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
@@ -219,6 +222,8 @@ export default function StudioPage() {
 
   const openTabsRef = useRef(openTabs)
   openTabsRef.current = openTabs
+  const activeTabIdRef = useRef(activeTabId)
+  activeTabIdRef.current = activeTabId
 
   const openNode = useCallback(async (node: any, opts?: { activate?: boolean }) => {
     if (!node?.id) return
@@ -265,8 +270,17 @@ export default function StudioPage() {
 
   const prevWsIdRef = useRef<number | undefined>(undefined)
   const studioRestoreDoneRef = useRef(false)
+  /** 会话恢复（含后台 Tab hydrate）完成前禁止 persist，避免空 tabs 冲掉 localStorage */
+  const studioSessionHydratedRef = useRef(false)
   useEffect(() => {
     if (prevWsIdRef.current !== undefined && prevWsIdRef.current !== wsId) {
+      if (prevWsIdRef.current != null && studioSessionHydratedRef.current) {
+        cancelScheduledEditorSessionWrite('studio', prevWsIdRef.current)
+        writeEditorSession('studio', prevWsIdRef.current, {
+          tabIds: openTabsRef.current.map(t => t.id),
+          activeId: activeTabIdRef.current,
+        })
+      }
       setOpenTabs([])
       setActiveTabId(null)
       setDirtyMap({})
@@ -274,6 +288,8 @@ export default function StudioPage() {
       setLogPanelOpen(false)
       setRunningId(null)
       studioRestoreDoneRef.current = false
+      studioSessionHydratedRef.current = false
+      if (wsId != null) cancelScheduledEditorSessionWrite('studio', wsId)
     }
     prevWsIdRef.current = wsId
   }, [wsId])
@@ -282,6 +298,8 @@ export default function StudioPage() {
   useEffect(() => {
     if (!wsId || nodes.length === 0) return
     if (studioRestoreDoneRef.current) return
+
+    cancelScheduledEditorSessionWrite('studio', wsId)
 
     const existing = new Set(nodes.map((n: any) => n.id as number))
     const urlNodeRaw = searchParams.get('node_id')
@@ -295,52 +313,66 @@ export default function StudioPage() {
       }
     }
 
-    if (pendingOpenNodeId != null || (urlNodeId != null && Number.isFinite(urlNodeId))) {
-      const preferId = pendingOpenNodeId ?? urlNodeId!
-      setPendingOpenNodeId(null)
-      finishUrlParam()
-      const node = nodes.find(n => n.id === preferId)
-      if (node) {
-        void openNode(node)
-        studioRestoreDoneRef.current = true
-        return
-      }
-      // 节点不存在：继续走会话恢复
+    const finishPersistReady = () => {
+      studioSessionHydratedRef.current = true
+      scheduleWriteEditorSession('studio', wsId, {
+        tabIds: openTabsRef.current.map(t => t.id),
+        activeId: activeTabIdRef.current,
+      })
     }
 
-    if (openTabs.length > 0) {
-      studioRestoreDoneRef.current = true
-      return
-    }
-
-    studioRestoreDoneRef.current = true
-    const stored = readEditorSession('studio', wsId)
-    let tabIds = stored?.tabIds ?? []
-    let activeId = stored?.activeId ?? null
-    if (!tabIds.length) {
-      const legacy = readLegacyStudioLastNodeId(wsId)
-      if (legacy != null) {
-        tabIds = [legacy]
-        activeId = legacy
-      }
-    }
-    const normalized = normalizeEditorSession(tabIds, activeId, { existingIds: existing })
-    if (!normalized.tabIds.length) return
-
-    const active = normalized.activeId != null
-      ? nodes.find(n => n.id === normalized.activeId)
-      : null
-    const rest = normalized.tabIds.filter(id => id !== normalized.activeId)
-
-    void (async () => {
+    const hydrateTabs = async (tabIds: number[], activeId: number | null) => {
+      const normalized = normalizeEditorSession(tabIds, activeId, { existingIds: existing })
+      if (!normalized.tabIds.length) return
+      const active = normalized.activeId != null
+        ? nodes.find(n => n.id === normalized.activeId)
+        : null
+      const rest = normalized.tabIds.filter(id => id !== normalized.activeId)
       if (active) await openNode(active, { activate: true })
-      // 串行后台打开其余 Tab（不抢焦点），避免 N 路详情拖慢首开
       for (const id of rest) {
         const node = nodes.find(n => n.id === id)
         if (!node) continue
         await openNode(node, { activate: false })
         await new Promise(r => window.setTimeout(r, 40))
       }
+    }
+
+    const stored = readEditorSession('studio', wsId)
+    let sessionTabIds = stored?.tabIds ?? []
+    let sessionActiveId = stored?.activeId ?? null
+    if (!sessionTabIds.length) {
+      const legacy = readLegacyStudioLastNodeId(wsId)
+      if (legacy != null) {
+        sessionTabIds = [legacy]
+        sessionActiveId = legacy
+      }
+    }
+
+    if (pendingOpenNodeId != null || (urlNodeId != null && Number.isFinite(urlNodeId))) {
+      const preferId = pendingOpenNodeId ?? urlNodeId!
+      setPendingOpenNodeId(null)
+      finishUrlParam()
+      const prefer = nodes.find(n => n.id === preferId)
+      studioRestoreDoneRef.current = true
+      void (async () => {
+        if (prefer) await openNode(prefer, { activate: true })
+        const restIds = sessionTabIds.filter(id => id !== preferId)
+        if (restIds.length) await hydrateTabs(restIds, preferId)
+        finishPersistReady()
+      })()
+      return
+    }
+
+    if (openTabs.length > 0) {
+      studioRestoreDoneRef.current = true
+      finishPersistReady()
+      return
+    }
+
+    studioRestoreDoneRef.current = true
+    void (async () => {
+      await hydrateTabs(sessionTabIds, sessionActiveId)
+      finishPersistReady()
     })()
   }, [
     wsId,
@@ -355,17 +387,29 @@ export default function StudioPage() {
 
   useEffect(() => {
     if (wsId == null) return
+    if (!canPersistEditorSession({ hydrated: studioSessionHydratedRef.current })) return
     scheduleWriteEditorSession('studio', wsId, {
       tabIds: openTabs.map(t => t.id),
       activeId: activeTabId,
     })
   }, [wsId, openTabs, activeTabId])
 
+  // 离开数据开发页时同步落盘，避免仅防抖未触发就丢多 Tab
+  useEffect(() => {
+    if (wsId == null) return
+    return () => {
+      cancelScheduledEditorSessionWrite('studio', wsId)
+      if (!studioSessionHydratedRef.current) return
+      writeEditorSession('studio', wsId, {
+        tabIds: openTabsRef.current.map(t => t.id),
+        activeId: activeTabIdRef.current,
+      })
+    }
+  }, [wsId])
+
   /** 与 editLockHeld 同步，供 effect / 事件里读取最新占锁状态 */
   const editLockHeldRef = useRef(editLockHeld)
   editLockHeldRef.current = editLockHeld
-  const activeTabIdRef = useRef(activeTabId)
-  activeTabIdRef.current = activeTabId
   const dirtyMapRef = useRef(dirtyMap)
   dirtyMapRef.current = dirtyMap
   const flushingRef = useRef<Set<number>>(new Set())

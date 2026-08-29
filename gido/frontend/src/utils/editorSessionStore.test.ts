@@ -5,6 +5,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   EDITOR_SESSION_MAX_TABS,
+  canPersistEditorSession,
+  cancelScheduledEditorSessionWrite,
   clearEditorSession,
   normalizeEditorSession,
   readEditorSession,
@@ -103,6 +105,36 @@ describe('scheduleWriteEditorSession', () => {
     expect(readEditorSession('studio', 1)).toMatchObject({
       tabIds: [1, 2],
       activeId: 2,
+    })
+  })
+})
+
+describe('canPersistEditorSession', () => {
+  it('恢复完成前禁止写入，避免空 tabs 冲掉会话', () => {
+    expect(canPersistEditorSession({ hydrated: false })).toBe(false)
+    expect(canPersistEditorSession({ hydrated: true })).toBe(true)
+  })
+})
+
+describe('cancelScheduledEditorSessionWrite', () => {
+  beforeEach(() => {
+    installMemoryStorage()
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    localStorage.clear()
+  })
+
+  it('取消防抖后空写入不会落地', async () => {
+    const { scheduleWriteEditorSession } = await import('./editorSessionStore')
+    writeEditorSession('studio', 1, { tabIds: [10, 20], activeId: 20 })
+    scheduleWriteEditorSession('studio', 1, { tabIds: [], activeId: null }, 200)
+    cancelScheduledEditorSessionWrite('studio', 1)
+    vi.advanceTimersByTime(200)
+    expect(readEditorSession('studio', 1)).toMatchObject({
+      tabIds: [10, 20],
+      activeId: 20,
     })
   })
 })
