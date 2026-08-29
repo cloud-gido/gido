@@ -23,6 +23,7 @@ import {
   registerDwMonacoThemes,
 } from '../utils/editorAppearance'
 import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from './MonacoFindBar'
+import { bindMonacoScriptKeybindings } from '../utils/monacoScriptKeybindings'
 import AutosaveStatusHint from './AutosaveStatusHint'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
 import {
@@ -30,6 +31,7 @@ import {
   scriptDraftStorageKey,
 } from '../utils/scriptLocalDraft'
 import { Z_NODE_CONFIG, Z_NODE_CONFIG_CONFIRM } from './dagEditorOverlay'
+import { can, P } from '../perm'
 
 export type StudioNode = Record<string, any>
 
@@ -96,6 +98,10 @@ export default function NodeConfigModal({
   ensureEditLock,
 }: NodeConfigModalProps) {
   const currentWorkspace = useAppStore(s => s.currentWorkspace)
+  const user = useAppStore(s => s.user)
+  const canRun = can(user, P.GIDO_BATCH_STUDIO_RUN, currentWorkspace)
+  const canRunRef = useRef(canRun)
+  canRunRef.current = canRun
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -405,6 +411,33 @@ export default function NodeConfigModal({
   const formDisabled = !canWrite || Boolean(node?.is_locked)
   const scriptReadOnly = !canWrite || Boolean(node?.is_locked) || !holdsLock
 
+  const handleTryRun = useCallback(async (overrideScript?: string, meta?: { fromSelection?: boolean }) => {
+    if (!nodeId || !node) return
+    if (!canRun) return
+    if (node.node_type !== 'SQL' && node.node_type !== 'PYTHON') return
+    const script = overrideScript ?? (form.getFieldValue('script_content') ?? '')
+    if (!String(script).trim()) {
+      message.warning('请先编写脚本')
+      return
+    }
+    if (meta?.fromSelection) {
+      message.info('已执行选中片段')
+    }
+    try {
+      const res: any = await studioApi.runNode(nodeId, script)
+      if (res?.status === 'failed') {
+        message.error(res?.log?.slice?.(-200) || '试跑失败')
+      } else {
+        message.success('试跑完成')
+      }
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || e?.message || '试跑失败')
+    }
+  }, [nodeId, node, canRun, form])
+
+  const handleTryRunRef = useRef(handleTryRun)
+  handleTryRunRef.current = handleTryRun
+
   return (
     <Modal
       title={
@@ -512,6 +545,19 @@ export default function NodeConfigModal({
                             onMount={(ed, monaco) => {
                               editorRef.current = ed
                               bindMonacoFindKeybindings(ed, monaco, () => findApiRef.current)
+                              bindMonacoScriptKeybindings(ed, monaco, {
+                                enableRun: () => {
+                                  const n = nodeRef.current
+                                  return Boolean(
+                                    canRunRef.current
+                                    && n
+                                    && (n.node_type === 'SQL' || n.node_type === 'PYTHON'),
+                                  )
+                                },
+                                onRun: (script, meta) => {
+                                  void handleTryRunRef.current(script, meta)
+                                },
+                              })
                             }}
                             value={scriptContent}
                             onChange={(v) => {

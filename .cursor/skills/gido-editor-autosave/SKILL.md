@@ -37,6 +37,8 @@ description: >-
 - API：`studioApi.saveDraft` / `streamingApi.saveDraft`（`create_history=false`）
 - 关 Tab / 切 Tab：flush 失败须保留 dirty 与编辑锁，并提示；禁止失败后强行 `releaseEditLock`
 - 工作台壳（布局，非草稿逻辑）：`gido/frontend/src/components/StudioWorkbenchShell.tsx` — Studio / Stream Studio / Probe 共用 bleed + 左树 + 顶栏/工具栏/舞台；改壳层样式须三处一起走该组件
+- **脚本快捷键**：`gido/frontend/src/utils/monacoScriptKeybindings.ts`（`bindMonacoScriptKeybindings`：Cmd/Ctrl+/ 注释、Cmd/Ctrl+Enter 选中或全文试跑）。四处 Monaco `onMount` 须在 `bindMonacoFindKeybindings` 之后同步接入；禁止只改一页。
+- **编辑器会话恢复（本机）**：`gido/frontend/src/utils/editorSessionStore.ts`（只存 `tabIds` / `activeId`，不存正文）。Studio 多 Tab；Stream 仅 `activeId`（上次作业）。Probe / NodeConfigModal **不**叠一套 Tab session。首屏仍 slim list → active 优先 hydrate，其余后台串行。
 
 ## 必须同步触达的入口
 
@@ -50,6 +52,7 @@ description: >-
 - 协作锁 / 发布锁：仅持有编辑锁且未发布锁定时可写服务端草稿
 - 后端静默草稿不得刷爆 `NodeHistory` / Stream 历史表
 - 显式保存可用 `message.success('已保存并记入版本历史')`；禁止用「已自动保存 / 正在自动保存」占用工具栏
+- 试跑覆盖脚本（`script_content` body）为请求级，**不得**静默写库；恢复会话时**不得**自动占编辑锁
 
 ## Agent 检查清单
 
@@ -59,3 +62,5 @@ description: >-
 - [ ] DAG `NodeConfigModal` 是否同步？
 - [ ] 成功路径是否无状态文案跳动？失败是否仍可感知？
 - [ ] 「保存版本 *」是否用 `versionDirty` 而非草稿 dirty？
+- [ ] Cmd+/ / Cmd+Enter 是否走 `monacoScriptKeybindings` 且四端同步？
+- [ ] Studio/Stream 会话恢复是否只经 `editorSessionStore`（不存正文）？

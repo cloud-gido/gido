@@ -39,6 +39,14 @@ import {
   type EditorAppearance,
 } from '../utils/editorAppearance'
 import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from '../components/MonacoFindBar'
+import { bindMonacoScriptKeybindings } from '../utils/monacoScriptKeybindings'
+import {
+  normalizeEditorSession,
+  readEditorSession,
+  readLegacyStudioLastNodeId,
+  scheduleWriteEditorSession,
+} from '../utils/editorSessionStore'
+import { useSearchParams } from 'react-router-dom'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
 import { normalizeQueryColumns } from '../utils/queryColumns'
 import { buildDefaultSqlPublishScript } from '../utils/sqlPublishTemplate'
@@ -65,33 +73,6 @@ const NODE_TYPES = ['SQL', 'PYTHON', 'SHELL', 'SYNC', 'VIRTUAL', 'DEPENDENT']
 const LANG_MAP: Record<string, string> = { SQL: 'sql', PYTHON: 'python', SHELL: 'shell', SYNC: 'json', DEPENDENT: 'plaintext' }
 const TYPE_COLOR: Record<string, string> = {
   SQL: 'blue', PYTHON: 'green', SHELL: 'orange', SYNC: 'purple', VIRTUAL: 'default', DEPENDENT: 'magenta',
-}
-
-/** 按工作区记住上次打开的脚本，下次进入数据开发自动打开（避免默认黑屏空编辑器） */
-const LAST_STUDIO_NODE_KEY = 'gido.studio.lastNodeByWorkspace'
-
-function readLastStudioNodeId(workspaceId: number | undefined): number | null {
-  if (workspaceId == null) return null
-  try {
-    const raw = localStorage.getItem(LAST_STUDIO_NODE_KEY)
-    if (!raw) return null
-    const map = JSON.parse(raw) as Record<string, number>
-    const id = map[String(workspaceId)]
-    return typeof id === 'number' && Number.isFinite(id) ? id : null
-  } catch {
-    return null
-  }
-}
-
-function writeLastStudioNodeId(workspaceId: number, nodeId: number) {
-  try {
-    const raw = localStorage.getItem(LAST_STUDIO_NODE_KEY)
-    const map: Record<string, number> = raw ? JSON.parse(raw) : {}
-    map[String(workspaceId)] = nodeId
-    localStorage.setItem(LAST_STUDIO_NODE_KEY, JSON.stringify(map))
-  } catch {
-    /* ignore quota / private mode */
-  }
 }
 
 const STUDIO_RESULT_COL_META = 'gido.studio.resultTableMeta.v1'
@@ -131,6 +112,7 @@ function sortNodesList(list: any[]): any[] {
 export default function StudioPage() {
   const { currentWorkspace, pendingOpenNodeId, setPendingOpenNodeId, user } = useAppStore()
   const wsId = currentWorkspace?.id
+  const [searchParams, setSearchParams] = useSearchParams()
   const canPublishDirect = isWorkspaceAdmin(user, currentWorkspace)
   const canWrite = can(user, P.GIDO_BATCH_STUDIO_WRITE, currentWorkspace)
   const canRun = can(user, P.GIDO_BATCH_STUDIO_RUN, currentWorkspace)
@@ -235,11 +217,17 @@ export default function StudioPage() {
     })
   }
 
-  const openNode = useCallback(async (node: any) => {
+  const openTabsRef = useRef(openTabs)
+  openTabsRef.current = openTabs
+
+  const openNode = useCallback(async (node: any, opts?: { activate?: boolean }) => {
     if (!node?.id) return
-    if (openTabs.some(t => t.id === node.id)) {
-      setActiveTabId(node.id)
-      setLogPanelOpen(false)
+    const activate = opts?.activate !== false
+    if (openTabsRef.current.some(t => t.id === node.id)) {
+      if (activate) {
+        setActiveTabId(node.id)
+        setLogPanelOpen(false)
+      }
       return
     }
 
@@ -249,25 +237,31 @@ export default function StudioPage() {
       try {
         full = await studioApi.getNode(node.id) as any
       } catch (e: any) {
-        message.error(e?.response?.data?.detail || e?.message || '加载脚本失败')
+        if (activate) {
+          message.error(e?.response?.data?.detail || e?.message || '加载脚本失败')
+        }
         return
       }
       setNodes(prev => prev.map(n => (n.id === full.id ? { ...n, ...full } : n)))
     }
 
     setOpenTabs(prev => (prev.find(t => t.id === full.id) ? prev : [...prev, full]))
-    setActiveTabId(full.id)
-    setLogPanelOpen(false)
+    if (activate) {
+      setActiveTabId(full.id)
+      setLogPanelOpen(false)
+    }
     // 只读角色不恢复本地草稿，避免无写权限时反复提示「持有编辑锁后将自动保存」
     if (wsId != null && canWrite && !full.is_locked) {
       const key = scriptDraftStorageKey(`studio.${wsId}`, full.id)
       const restored = restoreScriptLocalDraft(key, full.script_content ?? '')
       if (restored != null) {
         setDirtyMap(prev => (prev[full.id] !== undefined ? prev : { ...prev, [full.id]: restored }))
-        message.info('已恢复本地未同步草稿，持有编辑锁后将自动保存到服务端')
+        if (activate) {
+          message.info('已恢复本地未同步草稿，持有编辑锁后将自动保存到服务端')
+        }
       }
     }
-  }, [wsId, canWrite, openTabs])
+  }, [wsId, canWrite])
 
   const prevWsIdRef = useRef<number | undefined>(undefined)
   const studioRestoreDoneRef = useRef(false)
@@ -284,20 +278,34 @@ export default function StudioPage() {
     prevWsIdRef.current = wsId
   }, [wsId])
 
-  // 工作流跳转优先；否则进入页面只尝试一次「恢复上次打开的脚本」（与 pending 同一轮逻辑，避免 openTabs 尚未提交时的竞态）
+  // URL ?node_id= / pendingOpen / 多 Tab 会话恢复（active 优先，其余后台 hydrate）
   useEffect(() => {
     if (!wsId || nodes.length === 0) return
     if (studioRestoreDoneRef.current) return
 
-    if (pendingOpenNodeId != null) {
-      const node = nodes.find(n => n.id === pendingOpenNodeId)
+    const existing = new Set(nodes.map((n: any) => n.id as number))
+    const urlNodeRaw = searchParams.get('node_id')
+    const urlNodeId = urlNodeRaw != null ? Number(urlNodeRaw) : null
+
+    const finishUrlParam = () => {
+      if (urlNodeRaw != null) {
+        const next = new URLSearchParams(searchParams)
+        next.delete('node_id')
+        setSearchParams(next, { replace: true })
+      }
+    }
+
+    if (pendingOpenNodeId != null || (urlNodeId != null && Number.isFinite(urlNodeId))) {
+      const preferId = pendingOpenNodeId ?? urlNodeId!
       setPendingOpenNodeId(null)
+      finishUrlParam()
+      const node = nodes.find(n => n.id === preferId)
       if (node) {
-        openNode(node)
+        void openNode(node)
         studioRestoreDoneRef.current = true
         return
       }
-      // 节点已删或不存在：继续走下方「上次脚本」恢复
+      // 节点不存在：继续走会话恢复
     }
 
     if (openTabs.length > 0) {
@@ -306,17 +314,52 @@ export default function StudioPage() {
     }
 
     studioRestoreDoneRef.current = true
-    const lastId = readLastStudioNodeId(wsId)
-    if (lastId == null) return
-    const node = nodes.find(n => n.id === lastId)
-    if (node) openNode(node)
-  }, [wsId, nodes, pendingOpenNodeId, openTabs.length, setPendingOpenNodeId, openNode])
+    const stored = readEditorSession('studio', wsId)
+    let tabIds = stored?.tabIds ?? []
+    let activeId = stored?.activeId ?? null
+    if (!tabIds.length) {
+      const legacy = readLegacyStudioLastNodeId(wsId)
+      if (legacy != null) {
+        tabIds = [legacy]
+        activeId = legacy
+      }
+    }
+    const normalized = normalizeEditorSession(tabIds, activeId, { existingIds: existing })
+    if (!normalized.tabIds.length) return
+
+    const active = normalized.activeId != null
+      ? nodes.find(n => n.id === normalized.activeId)
+      : null
+    const rest = normalized.tabIds.filter(id => id !== normalized.activeId)
+
+    void (async () => {
+      if (active) await openNode(active, { activate: true })
+      // 串行后台打开其余 Tab（不抢焦点），避免 N 路详情拖慢首开
+      for (const id of rest) {
+        const node = nodes.find(n => n.id === id)
+        if (!node) continue
+        await openNode(node, { activate: false })
+        await new Promise(r => window.setTimeout(r, 40))
+      }
+    })()
+  }, [
+    wsId,
+    nodes,
+    pendingOpenNodeId,
+    openTabs.length,
+    setPendingOpenNodeId,
+    openNode,
+    searchParams,
+    setSearchParams,
+  ])
 
   useEffect(() => {
-    if (wsId != null && activeTabId != null) {
-      writeLastStudioNodeId(wsId, activeTabId)
-    }
-  }, [wsId, activeTabId])
+    if (wsId == null) return
+    scheduleWriteEditorSession('studio', wsId, {
+      tabIds: openTabs.map(t => t.id),
+      activeId: activeTabId,
+    })
+  }, [wsId, openTabs, activeTabId])
 
   /** 与 editLockHeld 同步，供 effect / 事件里读取最新占锁状态 */
   const editLockHeldRef = useRef(editLockHeld)
@@ -325,8 +368,6 @@ export default function StudioPage() {
   activeTabIdRef.current = activeTabId
   const dirtyMapRef = useRef(dirtyMap)
   dirtyMapRef.current = dirtyMap
-  const openTabsRef = useRef(openTabs)
-  openTabsRef.current = openTabs
   const flushingRef = useRef<Set<number>>(new Set())
 
   /** 多 Tab：将指定节点脏内容静默写库（共用 saveDraft API） */
@@ -785,7 +826,7 @@ export default function StudioPage() {
     )
   }, [activeNode, currentWorkspace, datasources])
 
-  const handleRun = async () => {
+  const handleRun = async (overrideScript?: string, meta?: { fromSelection?: boolean }) => {
     if (!activeNode) return
     if (activeNode.node_type === 'SQL' && !dsResolve?.effectiveId) {
       message.warning('请先在「空间设置」配置默认数据源，或在节点「配置」中单独指定')
@@ -794,7 +835,11 @@ export default function StudioPage() {
     if (activeNode.node_type === 'PYTHON' && !dsResolve?.effectiveId) {
       message.warning('未配置数据源时 job.execute 将失败；请绑定节点数据源或设置空间默认（仅 writelog 可继续）')
     }
-    const latestScript = dirtyMap[activeTabId!] ?? activeNode.script_content ?? ''
+    const latestScript = overrideScript
+      ?? (dirtyMap[activeTabId!] ?? activeNode.script_content ?? '')
+    if (meta?.fromSelection) {
+      message.info('已执行选中片段')
+    }
     setRunningId(activeNode.id)
     setLogMap(prev => ({ ...prev, [activeNode.id]: '' }))
     setResultMap(prev => ({ ...prev, [activeNode.id]: null }))
@@ -810,6 +855,9 @@ export default function StudioPage() {
     }
     setRunningId(null)
   }
+
+  const handleRunRef = useRef(handleRun)
+  handleRunRef.current = handleRun
 
   // 发布
   const handlePublish = async () => {
@@ -1102,6 +1150,19 @@ export default function StudioPage() {
           onMount={(editor, monaco) => {
             editorRef.current = editor
             bindMonacoFindKeybindings(editor, monaco, () => findApiRef.current)
+            bindMonacoScriptKeybindings(editor, monaco, {
+              enableRun: () => {
+                const n = openTabsRef.current.find(t => t.id === activeTabIdRef.current)
+                return Boolean(
+                  canRun
+                  && n
+                  && (n.node_type === 'SQL' || n.node_type === 'PYTHON'),
+                )
+              },
+              onRun: (script, meta) => {
+                void handleRunRef.current(script, meta)
+              },
+            })
           }}
           theme={editorAppearance.theme}
           options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: Boolean(!canEdit) }}
@@ -1257,7 +1318,7 @@ export default function StudioPage() {
               <Button
                 type="primary"
                 icon={isRunning ? <LoadingOutlined /> : <PlayCircleOutlined />}
-                onClick={handleRun}
+                onClick={() => { void handleRun() }}
                 disabled={isRunning || !canRun}
                 size="small"
                 title={canRun ? undefined : '无运行权限'}

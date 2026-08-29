@@ -699,10 +699,27 @@ def run_node(
         raise HTTPException(status_code=404, detail="节点不存在")
     assert_workspace_data_capability(db, current_user, node.workspace_id, "developer", PC.GIDO_BATCH_STUDIO_RUN)
 
-    # 用传入的最新内容覆盖，不需要先保存（调度器可不传 body，沿用库内脚本）
-    if body.script_content is not None:
-        node.script_content = body.script_content
+    # 试跑可临时覆盖脚本；勿写回库（避免选中片段 Cmd+Enter 污染草稿）
+    run_script_override = body.script_content
     bizdate = normalize_business_date(body.bizdate)
+
+    class _ScriptOverrideNode:
+        """代理 TaskNode，仅覆盖 script_content，不脏写 ORM。"""
+
+        __slots__ = ("_node", "script_content")
+
+        def __init__(self, base: TaskNode, script: str):
+            self._node = base
+            self.script_content = script
+
+        def __getattr__(self, name: str):
+            return getattr(self._node, name)
+
+    run_target = (
+        _ScriptOverrideNode(node, run_script_override)
+        if run_script_override is not None
+        else node
+    )
 
     instance = NodeInstance(node_id=node_id, status="running", started_at=datetime.utcnow())
     db.add(instance)
@@ -715,12 +732,12 @@ def run_node(
             from app.services.studio_sql_run import run_sql_with_result
 
             log_lines, result_data = run_sql_with_result(
-                node, db, bizdate, resolve_date_expr=_resolve_date_expr
+                run_target, db, bizdate, resolve_date_expr=_resolve_date_expr
             )
         elif node.node_type == "PYTHON":
-            log_lines = _run_python(node, db, bizdate=bizdate)
+            log_lines = _run_python(run_target, db, bizdate=bizdate)
         elif node.node_type == "SHELL":
-            log_lines = _run_shell(node, db, bizdate=bizdate)
+            log_lines = _run_shell(run_target, db, bizdate=bizdate)
         elif node.node_type == "SYNC":
             from app.services.integration_node import run_sync_for_node_blocking
             log_lines, status, _meta = run_sync_for_node_blocking(
@@ -755,7 +772,7 @@ def run_node(
             source="studio",
             triggered_by=current_user.id,
             status=status,
-            sql_text=node.script_content,
+            sql_text=run_script_override if run_script_override is not None else (node.script_content or ""),
             datasource_id=node.datasource_id,
             object_name=node.name,
             node_id=node.id,

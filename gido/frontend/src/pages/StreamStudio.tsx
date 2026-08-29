@@ -44,6 +44,11 @@ import {
   type EditorAppearance,
 } from '../utils/editorAppearance'
 import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from '../components/MonacoFindBar'
+import { bindMonacoScriptKeybindings } from '../utils/monacoScriptKeybindings'
+import {
+  readEditorSession,
+  scheduleWriteEditorSession,
+} from '../utils/editorSessionStore'
 import { formatInTimeZone } from '../utils/datetime'
 import { openFlinkConsoleUrl } from '../utils/flinkConsole'
 import AutosaveStatusHint from '../components/AutosaveStatusHint'
@@ -182,6 +187,8 @@ export default function StreamStudioPage() {
   const [folderName, setFolderName] = useState('')
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<any | null>(null)
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
   const [scriptDraft, setScriptDraft] = useState('')
   const [scriptDirty, setScriptDirty] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
@@ -308,6 +315,44 @@ export default function StreamStudioPage() {
   }, [])
 
   useEffect(() => { load(true) }, [load])
+
+  const streamRestoreDoneRef = useRef(false)
+  const prevStreamWsRef = useRef<number | undefined>(undefined)
+  useEffect(() => {
+    if (prevStreamWsRef.current !== undefined && prevStreamWsRef.current !== wsId) {
+      setSelected(null)
+      streamRestoreDoneRef.current = false
+    }
+    prevStreamWsRef.current = wsId
+  }, [wsId])
+
+  // 恢复上次打开的作业（单选，仅 activeId）
+  useEffect(() => {
+    if (!wsId || loading || jobs.length === 0) return
+    if (streamRestoreDoneRef.current) return
+    if (selected) {
+      streamRestoreDoneRef.current = true
+      return
+    }
+    streamRestoreDoneRef.current = true
+    const stored = readEditorSession('stream', wsId)
+    const activeId = stored?.activeId
+    if (activeId == null) return
+    const job = jobs.find(j => j.id === activeId)
+    if (job) void openJob(job)
+  }, [wsId, loading, jobs, selected, openJob])
+
+  useEffect(() => {
+    if (wsId == null) return
+    // 切空间瞬间 selected 可能仍是旧作业，勿写入新空间 session
+    if (selected?.id != null && jobs.length > 0 && !jobs.some(j => j.id === selected.id)) {
+      return
+    }
+    scheduleWriteEditorSession('stream', wsId, {
+      tabIds: selected?.id != null ? [selected.id] : [],
+      activeId: selected?.id ?? null,
+    })
+  }, [wsId, selected?.id, jobs])
 
   useEffect(() => {
     if (!wsId) {
@@ -673,16 +718,19 @@ export default function StreamStudioPage() {
     }
   }, [previewResult])
 
-  const handlePreviewSql = async () => {
+  const handlePreviewSql = async (overrideSql?: string, meta?: { fromSelection?: boolean }) => {
     if (!wsId || !selected || selected.job_type !== 'SQL') return
-    const sql = (scriptDraft || '').trim()
+    const sql = (overrideSql ?? scriptDraft ?? '').trim()
     if (!sql) {
       message.warning('请先编写 SQL')
       return
     }
-    if (!canPreviewSql) {
+    if (!/\bSELECT\b/i.test(sql)) {
       message.warning('预览须包含 SELECT 或 WITH…SELECT')
       return
+    }
+    if (meta?.fromSelection) {
+      message.info('已预览选中片段')
     }
     setPreviewLoading(true)
     setPreviewResult(null)
@@ -698,6 +746,9 @@ export default function StreamStudioPage() {
     }
     setPreviewLoading(false)
   }
+
+  const handlePreviewSqlRef = useRef(handlePreviewSql)
+  handlePreviewSqlRef.current = handlePreviewSql
 
   const openSubmitDrawer = () => {
     if (!selected) return
@@ -871,6 +922,15 @@ export default function StreamStudioPage() {
         onMount={(ed, monaco) => {
           editorRef.current = ed
           bindMonacoFindKeybindings(ed, monaco, () => findApiRef.current)
+          bindMonacoScriptKeybindings(ed, monaco, {
+            enableRun: () => {
+              const j = selectedRef.current
+              return Boolean(j?.job_type === 'SQL' && !j.is_locked)
+            },
+            onRun: (sql, meta) => {
+              void handlePreviewSqlRef.current(sql, meta)
+            },
+          })
         }}
         options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: !canWrite || Boolean(selected.is_locked), minimap: { enabled: false } }}
       />
@@ -893,7 +953,7 @@ export default function StreamStudioPage() {
         icon={<SearchOutlined />}
         loading={previewLoading}
         disabled={!canPreviewSql || selected.is_locked}
-        onClick={handlePreviewSql}
+        onClick={() => { void handlePreviewSql() }}
       >
         预览查询
       </Button>

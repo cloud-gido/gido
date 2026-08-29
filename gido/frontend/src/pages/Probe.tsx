@@ -31,6 +31,7 @@ import {
   type EditorAppearance,
 } from '../utils/editorAppearance'
 import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from '../components/MonacoFindBar'
+import { bindMonacoScriptKeybindings } from '../utils/monacoScriptKeybindings'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
 import QueryResultPanel from '../components/QueryResultPanel'
 import EditorResultDock, { EditorResultRowBadge } from '../components/EditorResultDock'
@@ -379,7 +380,7 @@ export default function ProbePage() {
     }
   }, [datasources, activeScript?.id, activeScript?.datasource_id, patchActiveScript])
 
-  const run = async () => {
+  const run = async (overrideSql?: string, meta?: { fromSelection?: boolean }) => {
     if (!wsId || !activeScript) {
       message.warning('请选择或新建一条探查查询')
       return
@@ -389,6 +390,10 @@ export default function ProbePage() {
       message.warning('请先在「空间设置」配置默认数据源，或在本查询上单独选择数据源')
       return
     }
+    const sqlToRun = overrideSql ?? activeScript.sql
+    if (meta?.fromSelection) {
+      message.info('已执行选中片段')
+    }
     setLoading(true)
     setResult(null)
     setResultPanelOpen(true)
@@ -396,7 +401,7 @@ export default function ProbePage() {
       const res: any = await probeApi.query({
         workspace_id: wsId,
         datasource_id: runDs,
-        sql: activeScript.sql,
+        sql: sqlToRun,
         limit: activeScript.limit,
       })
       const runRes = res as ProbeRunResult
@@ -434,6 +439,19 @@ export default function ProbePage() {
       message.error(e?.response?.data?.detail || '执行失败')
     }
     setLoading(false)
+  }
+
+  const runRef = useRef(run)
+  runRef.current = run
+
+  const bindProbeScriptKeys = (ed: any, monaco: any) => {
+    bindMonacoFindKeybindings(ed, monaco, () => findApiRef.current)
+    bindMonacoScriptKeybindings(ed, monaco, {
+      enableRun: () => Boolean(activeScriptIdRef.current),
+      onRun: (sql, meta) => {
+        void runRef.current(sql, meta)
+      },
+    })
   }
 
   const formatSql = () => {
@@ -662,7 +680,7 @@ export default function ProbePage() {
           hint={scriptAutosave.hint}
           localAuthority
         />
-        <Button type="primary" icon={<PlayCircleOutlined />} loading={loading} onClick={run}>
+        <Button type="primary" icon={<PlayCircleOutlined />} loading={loading} onClick={() => { void run() }}>
           运行
         </Button>
         <Button
@@ -708,7 +726,7 @@ export default function ProbePage() {
                   beforeMount={registerDwMonacoThemes}
                   onMount={(ed, monaco) => {
                     editorRef.current = ed
-                    bindMonacoFindKeybindings(ed, monaco, () => findApiRef.current)
+                    bindProbeScriptKeys(ed, monaco)
                   }}
                   theme={editorAppearance.theme}
                   options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), minimap: { enabled: false } }}
@@ -789,7 +807,7 @@ export default function ProbePage() {
               beforeMount={registerDwMonacoThemes}
               onMount={(ed, monaco) => {
                 editorRef.current = ed
-                bindMonacoFindKeybindings(ed, monaco, () => findApiRef.current)
+                bindProbeScriptKeys(ed, monaco)
               }}
               theme={editorAppearance.theme}
               options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), minimap: { enabled: false } }}
