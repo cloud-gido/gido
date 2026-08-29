@@ -5,7 +5,7 @@
  * 选中可执行脚本时在行号旁显示 ▶（对齐 DataWorks / DBeaver），
  * 与 bindMonacoScriptKeybindings 共用 onRun。
  */
-import type { editor, IDisposable } from 'monaco-editor'
+import type { editor, IDisposable, IRange } from 'monaco-editor'
 import { selectionText } from './monacoCustomFind'
 import './monacoSelectionRunGlyph.css'
 
@@ -20,7 +20,7 @@ export type MonacoGlyphApi = {
     startColumn: number,
     endLineNumber: number,
     endColumn: number,
-  ) => unknown
+  ) => IRange
   editor: {
     MouseTargetType: { GUTTER_GLYPH_MARGIN: number }
   }
@@ -90,7 +90,7 @@ export function bindMonacoSelectionRunGlyph(
     glyphLine = line
     decoIds = ed.deltaDecorations(decoIds, [
       {
-        range: new monaco.Range(line, 1, line, 1) as editor.IRange,
+        range: new monaco.Range(line, 1, line, 1),
         options: {
           glyphMarginClassName: 'gido-sql-run-glyph',
           glyphMarginHoverMessage: { value: '运行选中片段（⌘/Ctrl+Enter）' },
