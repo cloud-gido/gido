@@ -305,6 +305,7 @@ export const approvalApi = {
   reject: (id: number, review_note?: string) =>
     request.post(`/approvals/${id}/reject`, { review_note }),
   cancel: (id: number) => request.post(`/approvals/${id}/cancel`),
+  preview: (id: number) => request.get(`/approvals/${id}/preview`),
 }
 
 // 审计日志

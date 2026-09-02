@@ -36,7 +36,7 @@ import EditorResultDock, { EditorResultRowBadge } from '../components/EditorResu
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
 import { normalizeQueryColumns } from '../utils/queryColumns'
 import { R } from '../routes'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   registerDwMonacoThemes,
   loadEditorAppearance,
@@ -177,6 +177,7 @@ SELECT order_id, user_id, amount, updated_at FROM default_catalog.default_databa
 
 export default function StreamStudioPage() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { currentWorkspace, user } = useAppStore()
   const wsId = currentWorkspace?.id
   const canPublishDirect = isWorkspaceAdmin(user, currentWorkspace)
@@ -339,12 +340,29 @@ export default function StreamStudioPage() {
     prevStreamWsRef.current = wsId
   }, [wsId])
 
-  // 恢复上次打开的作业（单选，仅 activeId）
+  // 恢复上次打开的作业（单选，仅 activeId）；?job_id= 优先于 session
   useEffect(() => {
     if (!wsId || loading || jobs.length === 0) return
     if (streamRestoreDoneRef.current) return
     cancelScheduledEditorSessionWrite('stream', wsId)
     streamRestoreDoneRef.current = true
+
+    const urlJobRaw = searchParams.get('job_id')
+    const urlJobId = urlJobRaw != null ? Number(urlJobRaw) : null
+    if (urlJobRaw != null) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('job_id')
+      setSearchParams(next, { replace: true })
+    }
+    if (urlJobId != null && Number.isFinite(urlJobId)) {
+      const job = jobs.find(j => j.id === urlJobId)
+      void (async () => {
+        if (job) await openJob(job)
+        streamSessionHydratedRef.current = true
+      })()
+      return
+    }
+
     if (selected) {
       streamSessionHydratedRef.current = true
       return
@@ -368,7 +386,7 @@ export default function StreamStudioPage() {
         activeId: job.id,
       })
     })()
-  }, [wsId, loading, jobs, selected, openJob])
+  }, [wsId, loading, jobs, selected, openJob, searchParams, setSearchParams])
 
   useEffect(() => {
     if (wsId == null) return

@@ -4,7 +4,8 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useEffect, useMemo, useState, type Key } from 'react'
+import { useEffect, useMemo, useRef, useState, type Key } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   Alert, Button, Divider, Drawer, Form, Input, InputNumber, Modal, Popconfirm,
   Select, Space, Switch, Table, Tag, Typography, Upload, message,
@@ -58,6 +59,7 @@ function parseWizardConfig(raw: any): WizardConfig | null {
 
 export default function ServiceApisPage() {
   const wsId = useWorkspaceId()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { user, currentWorkspace } = useAppStore()
   const { apis, datasources, loading, reload } = useServiceData()
   const canWrite = can(user, P.GIDO_SERVICE_WRITE, currentWorkspace)
@@ -106,6 +108,11 @@ export default function ServiceApisPage() {
   const [importOpen, setImportOpen] = useState(false)
   const [importBundle, setImportBundle] = useState<any>(null)
   const [importing, setImporting] = useState(false)
+  const apiDeepLinkDoneRef = useRef(false)
+
+  useEffect(() => {
+    apiDeepLinkDoneRef.current = false
+  }, [wsId])
 
   const copyText = (t: string) => {
     navigator.clipboard.writeText(t).then(() => message.success('已复制'))
@@ -223,6 +230,19 @@ export default function ServiceApisPage() {
     })
     setApiModal(true)
   }
+
+  useEffect(() => {
+    const raw = searchParams.get('api_id')
+    const apiId = raw != null ? Number(raw) : null
+    if (!wsId || apiDeepLinkDoneRef.current || !Number.isFinite(apiId)) return
+    apiDeepLinkDoneRef.current = true
+    const next = new URLSearchParams(searchParams)
+    next.delete('api_id')
+    setSearchParams(next, { replace: true })
+    void dataServiceApi.getApi(apiId!)
+      .then((detail: any) => openEditApi(detail))
+      .catch((e: any) => message.error(e?.response?.data?.detail || '打开 API 失败'))
+  }, [wsId, searchParams, setSearchParams])
 
   const handleWizardChange = (cfg: WizardConfig, params: WizardParam[], sqlPreview: string) => {
     setWizardConfig(cfg)

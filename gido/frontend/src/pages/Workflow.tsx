@@ -22,6 +22,7 @@ import DAGEditor, { DAGEditorRef } from '../components/DAGEditor'
 import NodeConfigModal from '../components/NodeConfigModal'
 import CronBuilder from '../components/CronBuilder'
 import { useResizableTableColumns } from '../hooks/useResizableTableColumns'
+import { useSearchParams } from 'react-router-dom'
 
 const STATUS_COLOR: Record<string, string> = {
   success: 'green', failed: 'red', running: 'blue', pending: 'orange', killed: 'default'
@@ -45,6 +46,7 @@ function effectiveWorkflowStatus(row: any): string {
 
 export default function WorkflowPage() {
   const { currentWorkspace, user } = useAppStore()
+  const [searchParams, setSearchParams] = useSearchParams()
   const wsId = currentWorkspace?.id
   const canPublishDirect = isWorkspaceAdmin(user, currentWorkspace)
   /** 节点脚本/配置属 Studio 写权限；运维可看 DAG、双击只读打开，不抢锁 */
@@ -82,6 +84,7 @@ export default function WorkflowPage() {
   const [listLoading, setListLoading] = useState(false)
   const [nodesLoading, setNodesLoading] = useState(false)
   const nodesLoadedForWs = useRef<number | null>(null)
+  const workflowDeepLinkDoneRef = useRef(false)
 
   const load = async (
     opts?: Partial<{ page: number; pageSize: number; keyword: string; createdBy?: number; status: string }>,
@@ -200,6 +203,29 @@ export default function WorkflowPage() {
       setDetailLoading(false)
     }
   }
+
+  // 审批/外链：?workflow_id= 直达编辑抽屉（只读或编辑取决于权限）
+  useEffect(() => {
+    if (!wsId) {
+      workflowDeepLinkDoneRef.current = false
+      return
+    }
+    const raw = searchParams.get('workflow_id')
+    const wfId = raw != null ? Number(raw) : null
+    if (!Number.isFinite(wfId) || workflowDeepLinkDoneRef.current) return
+    workflowDeepLinkDoneRef.current = true
+    const next = new URLSearchParams(searchParams)
+    next.delete('workflow_id')
+    setSearchParams(next, { replace: true })
+    void (async () => {
+      try {
+        const detail: any = await workflowApi.get(wfId!)
+        await openEdit(detail)
+      } catch (e: any) {
+        message.error(e?.response?.data?.detail || '打开工作流失败')
+      }
+    })()
+  }, [wsId, searchParams, setSearchParams])
 
   const handleSave = async () => {
     try {

@@ -14,6 +14,7 @@ from app.models.workspace import User
 from app.services.publish_approval import (
     approve_publish_approval,
     cancel_publish_approval,
+    get_publish_approval_preview,
     list_publish_approvals,
     pending_approval_count,
     reject_publish_approval,
@@ -73,6 +74,15 @@ def get_pending_count(
 ):
     data = list_publish_approvals(db, current_user, workspace_id, status="pending", page=1, page_size=1)
     return {"count": pending_approval_count(db, workspace_id), "can_review": data["can_review"]}
+
+
+@router.get("/{approval_id}/preview")
+def approval_preview(
+    approval_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return get_publish_approval_preview(db, current_user, approval_id)
 
 
 @router.post("/{approval_id}/approve")

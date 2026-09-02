@@ -14,6 +14,7 @@ import { useAppStore } from '../store'
 import { formatInTimeZone } from '../utils/datetime'
 import { isWorkspaceAdmin } from '../perm'
 import { APPROVAL_ACTION_LABEL, APPROVAL_RESOURCE_LABEL } from '../approvalLabels'
+import ApprovalResourcePreviewDrawer from '../components/ApprovalResourcePreviewDrawer'
 
 const STATUS_COLOR: Record<string, string> = {
   pending: 'orange',
@@ -42,6 +43,7 @@ export default function ApprovalPage() {
   const [canReviewFlag, setCanReviewFlag] = useState(canReview)
   const [reviewModal, setReviewModal] = useState<{ id: number; action: 'approve' | 'reject' } | null>(null)
   const [reviewNote, setReviewNote] = useState('')
+  const [previewId, setPreviewId] = useState<number | null>(null)
 
   const load = async () => {
     if (!wsId) return
@@ -110,7 +112,11 @@ export default function ApprovalPage() {
       width: 100,
       render: (v: string) => APPROVAL_RESOURCE_LABEL[v] || v,
     },
-    { title: '资源', dataIndex: 'resource_name', ellipsis: true },
+    { title: '资源', dataIndex: 'resource_name', ellipsis: true, render: (name: string, row: any) => (
+      <Button type="link" style={{ padding: 0, height: 'auto' }} onClick={() => setPreviewId(row.id)}>
+        {name}
+      </Button>
+    ) },
     {
       title: '发布动作',
       dataIndex: 'action',
@@ -225,6 +231,13 @@ export default function ApprovalPage() {
           onChange={e => setReviewNote(e.target.value)}
         />
       </Modal>
+
+      <ApprovalResourcePreviewDrawer
+        approvalId={previewId}
+        open={previewId != null}
+        onClose={() => setPreviewId(null)}
+        displayTz={displayTz}
+      />
     </div>
   )
 }

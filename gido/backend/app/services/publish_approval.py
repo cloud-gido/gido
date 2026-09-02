@@ -453,3 +453,195 @@ def pending_resource_keys(db: Session, workspace_id: int) -> List[str]:
         .all()
     )
     return [f"{r.resource_type}:{r.resource_id}:{r.action}" for r in rows]
+
+
+def _dag_summary(dag_config: Any) -> Dict[str, Any]:
+    if not dag_config or not isinstance(dag_config, dict):
+        return {"node_count": 0, "edge_count": 0, "nodes": []}
+    nodes_raw = dag_config.get("nodes") or []
+    edges = dag_config.get("edges") or []
+    nodes: List[Dict[str, Any]] = []
+    for n in nodes_raw[:64]:
+        if not isinstance(n, dict):
+            continue
+        nodes.append(
+            {
+                "node_id": n.get("node_id"),
+                "name": n.get("name") or f"#{n.get('node_id')}",
+                "node_type": n.get("node_type"),
+            }
+        )
+    return {"node_count": len(nodes_raw), "edge_count": len(edges), "nodes": nodes}
+
+
+def _api_fields(api: DataApi) -> Dict[str, Any]:
+    return {
+        "name": api.name,
+        "api_code": api.api_code,
+        "mode": api.mode,
+        "http_method": api.http_method,
+        "status": api.status,
+        "datasource_id": api.datasource_id,
+        "sql_template": api.sql_template or "",
+        "wizard_config": api.wizard_config,
+        "pagination_enabled": bool(api.pagination_enabled),
+        "page_size_default": api.page_size_default,
+        "page_size_max": api.page_size_max,
+        "timeout_seconds": api.timeout_seconds,
+        "max_rows": api.max_rows,
+    }
+
+
+def get_publish_approval_preview(db: Session, user, approval_id: int) -> Dict[str, Any]:
+    """审批资源只读预览：待发布内容 + 可选生产/历史基准（供 Drawer diff）。"""
+    row = db.query(PublishApproval).filter(PublishApproval.id == approval_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="审批单不存在")
+    _assert_approval_workspace_access(db, user, row.workspace_id, row.resource_type)
+
+    _, resource = _resolve_resource(db, row.workspace_id, row.resource_type, row.resource_id)
+    preview: Dict[str, Any] = {
+        "kind": row.resource_type,
+        "action": row.action,
+        "summary": {},
+        "pending": {},
+        "baseline": None,
+        "baseline_label": None,
+        "has_diff": False,
+    }
+
+    if row.resource_type == "studio_node":
+        node: TaskNode = resource
+        preview["summary"] = {
+            "name": node.name,
+            "node_type": node.node_type,
+            "datasource_id": node.datasource_id,
+            "is_published": bool(node.is_published),
+            "is_locked": bool(node.is_locked),
+        }
+        pending_script = node.script_content or ""
+        preview["pending"] = {"script_content": pending_script}
+        from app.models.workspace import NodeHistory
+
+        hist = (
+            db.query(NodeHistory)
+            .filter(NodeHistory.node_id == node.id)
+            .order_by(NodeHistory.id.desc())
+            .first()
+        )
+        if hist and (hist.script_content or "") != pending_script:
+            preview["baseline"] = {"script_content": hist.script_content or ""}
+            preview["baseline_label"] = "最近保存版本"
+            preview["has_diff"] = True
+
+    elif row.resource_type == "workflow":
+        wf: Workflow = resource
+        preview["summary"] = {
+            "name": wf.name,
+            "description": wf.description or "",
+            "status": wf.status,
+            "schedule_type": wf.schedule_type,
+            "cron_expression": wf.cron_expression,
+            "scheduler_definition_id": wf.scheduler_definition_id,
+        }
+        pending = {
+            "dag": _dag_summary(wf.dag_config),
+            "schedule_type": wf.schedule_type,
+            "cron_expression": wf.cron_expression,
+        }
+        preview["pending"] = pending
+        from app.models.workspace import JobVersion
+
+        base_ver = None
+        if wf.active_version_id:
+            base_ver = db.query(JobVersion).filter(JobVersion.id == wf.active_version_id).first()
+        if not base_ver:
+            base_ver = (
+                db.query(JobVersion)
+                .filter(JobVersion.workflow_id == wf.id, JobVersion.status == "active")
+                .order_by(JobVersion.version_no.desc())
+                .first()
+            )
+        if base_ver:
+            baseline = {
+                "dag": _dag_summary(base_ver.dag_snapshot),
+                "schedule_type": base_ver.schedule_type_snapshot,
+                "cron_expression": base_ver.cron_snapshot,
+            }
+            preview["baseline"] = baseline
+            preview["baseline_label"] = f"生产版本 v{base_ver.version_no}"
+            preview["has_diff"] = pending != baseline
+
+    elif row.resource_type == "stream_job":
+        from app.api.streaming import StreamingJobRelease
+
+        job = resource
+        preview["summary"] = {
+            "name": job.name,
+            "job_type": job.job_type,
+            "lifecycle_state": getattr(job, "lifecycle_state", None),
+        }
+        release = None
+        if getattr(row, "release_id", None):
+            release = (
+                db.query(StreamingJobRelease)
+                .filter(
+                    StreamingJobRelease.id == row.release_id,
+                    StreamingJobRelease.job_id == job.id,
+                )
+                .first()
+            )
+        if release:
+            pending_script = release.script_content or ""
+            preview["pending"] = {
+                "release_version": release.version,
+                "release_note": release.release_note,
+                "script_content": pending_script,
+                "job_type": release.job_type,
+                "parallelism": release.parallelism,
+            }
+            prev = (
+                db.query(StreamingJobRelease)
+                .filter(
+                    StreamingJobRelease.job_id == job.id,
+                    StreamingJobRelease.approval_status == "approved",
+                    StreamingJobRelease.id != release.id,
+                )
+                .order_by(StreamingJobRelease.version.desc())
+                .first()
+            )
+            if prev:
+                base_script = prev.script_content or ""
+                preview["baseline"] = {
+                    "release_version": prev.version,
+                    "script_content": base_script,
+                }
+                preview["baseline_label"] = f"已批准版本 v{prev.version}"
+                preview["has_diff"] = base_script != pending_script
+        else:
+            preview["pending"] = {"script_content": job.script_content or ""}
+
+    elif row.resource_type == "data_service_api":
+        api: DataApi = resource
+        preview["summary"] = {
+            "name": api.name,
+            "api_code": api.api_code,
+            "status": api.status,
+            "mode": api.mode,
+            "version": api.version,
+        }
+        if row.action == "offline_api":
+            preview["pending"] = {"action": "offline", **_api_fields(api)}
+        else:
+            pending_def = api.pending_definition if isinstance(api.pending_definition, dict) else {}
+            merged = _api_fields(api)
+            for k, v in pending_def.items():
+                if v is not None:
+                    merged[k] = v
+            preview["pending"] = merged
+            if api.status == "online" and api.pending_definition:
+                preview["baseline"] = _api_fields(api)
+                preview["baseline_label"] = "当前线上版本"
+                preview["has_diff"] = preview["baseline"] != merged
+
+    return {"approval": serialize_approval(db, row), "preview": preview}
