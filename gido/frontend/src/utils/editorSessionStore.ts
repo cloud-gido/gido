@@ -3,8 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * IDEA 式编辑器会话：只持久化 tab id / activeId，不存脚本正文。
- * 首屏仍走 slim list + 按需 getNode/getJob hydrate。
+ * Studio：会话恢复时一次挂上全部 Tab 壳（slim list），仅 active 拉详情；
+ * 其余 Tab 点击后再 getNode hydrate。Stream：仅恢复上次作业 activeId。
  */
+
+/** 列表壳 / 未拉详情的 Tab：script_content 为 null/undefined */
+export function isEditorTabContentPending(tab: { script_content?: string | null } | null | undefined): boolean {
+  return tab == null || tab.script_content == null
+}
 export type EditorSessionScope = 'studio' | 'stream'
 
 export type EditorSession = {

@@ -55,9 +55,9 @@ def sanitize_probe_tree_state(raw: Any) -> Dict[str, Any]:
         except (TypeError, ValueError):
             ds_id = None
         try:
-            lim = int(s.get("limit") or 500)
+            lim = int(s.get("limit") or 10000)
         except (TypeError, ValueError):
-            lim = 500
+            lim = 10000
         lim = min(max(lim, 1), 10000)
         scripts.append({
             "id": sid,

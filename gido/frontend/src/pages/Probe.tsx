@@ -37,6 +37,7 @@ import QueryResultPanel from '../components/QueryResultPanel'
 import EditorResultDock, { EditorResultRowBadge } from '../components/EditorResultDock'
 import { normalizeQueryColumns } from '../utils/queryColumns'
 import { exportRowsToCsv } from '../utils/csvExport'
+import { PROBE_DEFAULT_ROW_LIMIT, SQL_RESULT_ROW_CAP, clampSqlResultRowLimit } from '../utils/sqlResultRowLimit'
 import { pruneWidths, resolveResultColumnOrder } from '../utils/resultTableMeta'
 import {
   datasourceTagText,
@@ -329,7 +330,7 @@ export default function ProbePage() {
   )
 
   const sql = activeScript?.sql ?? ''
-  const limit = activeScript?.limit ?? 500
+  const limit = activeScript?.limit ?? PROBE_DEFAULT_ROW_LIMIT
 
   const activeScriptIdRef = useRef<string | null>(null)
   activeScriptIdRef.current = probeState.activeScriptId
@@ -538,7 +539,7 @@ export default function ProbePage() {
           name: `新建查询_${n}`,
           folderId,
           sql: 'SELECT 1',
-          limit: 500,
+          limit: PROBE_DEFAULT_ROW_LIMIT,
           sort_order: sortOrderForNewScript(prev.scripts, folderId),
           // 新建查询不写入 datasource_id，运行期继承空间默认
         },
@@ -667,9 +668,9 @@ export default function ProbePage() {
         <span>最大行数</span>
         <InputNumber
           min={1}
-          max={10000}
+          max={SQL_RESULT_ROW_CAP}
           value={limit}
-          onChange={v => patchActiveScript({ limit: Number(v) || 500 })}
+          onChange={v => patchActiveScript({ limit: clampSqlResultRowLimit(v, PROBE_DEFAULT_ROW_LIMIT) })}
         />
         <Button icon={<FormatPainterOutlined />} onClick={formatSql} disabled={!sql.trim()}>
           格式化
@@ -692,8 +693,8 @@ export default function ProbePage() {
           定位
         </Button>
         {activeStmt && !activeStmt.error && (
-          <Button icon={<DownloadOutlined />} onClick={exportCsv}>
-            导出 CSV（最多 {activeStmt.rows.length} 行）
+          <Button icon={<DownloadOutlined />} onClick={exportCsv} title={`导出当前结果（至多 ${SQL_RESULT_ROW_CAP} 行）`}>
+            导出 CSV
           </Button>
         )}
         <div style={{ flex: 1 }} />
@@ -773,8 +774,9 @@ export default function ProbePage() {
                               showViewModeToggle
                               toolbar={(
                                 <div style={{ padding: '8px 12px', fontSize: 12, color: '#666' }}>
-                                  共 <strong>{activeStmt?.total ?? 0}</strong> 行
-                                  {activeStmt?.truncated ? `（已按上限 ${limit} 截断）` : ''}
+                                  共 <strong>{activeStmt?.total ?? 0}</strong> 行；已返回{' '}
+                                  <strong>{activeStmt?.rows?.length ?? 0}</strong> 行（上限 {SQL_RESULT_ROW_CAP}）
+                                  {activeStmt?.truncated ? `；已按上限 ${limit} 截断` : ''}
                                   ；支持多条语句（分号分隔）
                                 </div>
                               )}

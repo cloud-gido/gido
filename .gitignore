@@ -27,6 +27,10 @@ k8s/gido-deploy.env
 # Node / frontend
 node_modules/
 gido/frontend/dist/
+gido/frontend/test-results/
+gido/frontend/playwright-report/
+gido/frontend/blob-report/
+gido/frontend/playwright/.cache/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

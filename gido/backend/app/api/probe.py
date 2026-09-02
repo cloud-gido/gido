@@ -42,7 +42,7 @@ class ProbeQueryIn(BaseModel):
     workspace_id: int
     datasource_id: int
     sql: str
-    limit: int = Field(default=500, ge=1, le=10000)
+    limit: int = Field(default=10000, ge=1, le=10000)
 
 
 class ProbeTreeIn(BaseModel):

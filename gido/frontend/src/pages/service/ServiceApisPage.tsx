@@ -22,6 +22,7 @@ import { approvalPendingKey } from '../../approvalLabels'
 import { useServiceData, useWorkspaceId } from './ServiceContext'
 import { STATUS_COLOR, formatApiError } from './shared'
 import ApiWizardBuilder, { type WizardConfig, type WizardParam } from './ApiWizardBuilder'
+import ExpandableCodeArea from '../../components/ExpandableCodeArea'
 
 const { TextArea } = Input
 const { Text, Paragraph } = Typography
@@ -604,8 +605,15 @@ export default function ServiceApisPage() {
               />
             </>
           ) : (
-            <Form.Item name="sql_template" label="SQL 模板（参数用 :param_name）" rules={[{ required: true }]}>
-              <TextArea rows={6} placeholder="SELECT * FROM db.table WHERE id = :id" />
+            <Form.Item
+              name="sql_template"
+              rules={[{ required: true, message: '请填写 SQL 模板' }]}
+            >
+              <ExpandableCodeArea
+                rows={8}
+                title="SQL 模板（参数用 :param_name）"
+                placeholder="SELECT * FROM db.table WHERE id = :id"
+              />
             </Form.Item>
           )}
 

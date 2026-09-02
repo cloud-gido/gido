@@ -8,6 +8,7 @@ import {
   canPersistEditorSession,
   cancelScheduledEditorSessionWrite,
   clearEditorSession,
+  isEditorTabContentPending,
   normalizeEditorSession,
   readEditorSession,
   readLegacyStudioLastNodeId,
@@ -113,6 +114,16 @@ describe('canPersistEditorSession', () => {
   it('恢复完成前禁止写入，避免空 tabs 冲掉会话', () => {
     expect(canPersistEditorSession({ hydrated: false })).toBe(false)
     expect(canPersistEditorSession({ hydrated: true })).toBe(true)
+  })
+})
+
+describe('isEditorTabContentPending', () => {
+  it('detects pending tab content from slim list shells', () => {
+    expect(isEditorTabContentPending(null)).toBe(true)
+    expect(isEditorTabContentPending({ script_content: null })).toBe(true)
+    expect(isEditorTabContentPending({ script_content: undefined })).toBe(true)
+    expect(isEditorTabContentPending({ script_content: '' })).toBe(false)
+    expect(isEditorTabContentPending({ script_content: 'SELECT 1' })).toBe(false)
   })
 })
 

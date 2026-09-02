@@ -4,6 +4,8 @@
  * @author felixzhu
  * @date 2026-06-05
  */
+import { PROBE_DEFAULT_ROW_LIMIT } from './sqlResultRowLimit'
+
 export const probeStorageKey = (wsId: number) => `gido.probe.tree.v1.w${wsId}`
 
 export type ProbeFolder = {
@@ -47,7 +49,7 @@ export function defaultProbeState(): ProbeWorkspaceState {
   const id = newProbeId('s')
   return {
     folders: [],
-    scripts: [{ id, name: '示例查询', folderId: null, sql: 'SELECT 1 AS probe', limit: 500 }],
+    scripts: [{ id, name: '示例查询', folderId: null, sql: 'SELECT 1 AS probe', limit: PROBE_DEFAULT_ROW_LIMIT }],
     activeScriptId: id,
   }
 }

@@ -7,14 +7,15 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type Key, type PointerEvent } from 'react'
 import {
   Button, Input, Select, Tag, message, Spin, Tooltip,
-  Modal, Form, Dropdown, Tabs, Space, Badge, Table
+  Modal, Form, Tabs, Space, Badge, Table
 } from 'antd'
 import {
   PlayCircleOutlined, SaveOutlined, CloudUploadOutlined, PlusOutlined,
   DeleteOutlined, FileOutlined, FolderAddOutlined,
-  LoadingOutlined, CheckCircleOutlined, CloseCircleOutlined,
+  LoadingOutlined, CheckCircleOutlined,
   ReloadOutlined, SettingOutlined, FormatPainterOutlined, UnlockOutlined,
   LockOutlined, DownloadOutlined, MenuFoldOutlined, AimOutlined,
+  ExclamationCircleOutlined,
 } from '@ant-design/icons'
 import Editor from '@monaco-editor/react'
 import { format as sqlFormat } from 'sql-formatter'
@@ -43,12 +44,15 @@ import { bindMonacoScriptKeybindings } from '../utils/monacoScriptKeybindings'
 import {
   cancelScheduledEditorSessionWrite,
   canPersistEditorSession,
+  isEditorTabContentPending,
   normalizeEditorSession,
   readEditorSession,
   readLegacyStudioLastNodeId,
   scheduleWriteEditorSession,
   writeEditorSession,
 } from '../utils/editorSessionStore'
+import { planStudioSessionTabOrder } from '../utils/studioTabChrome'
+import StudioEditorTabStrip from '../components/StudioEditorTabStrip'
 import { useSearchParams } from 'react-router-dom'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
 import { normalizeQueryColumns } from '../utils/queryColumns'
@@ -60,6 +64,7 @@ import {
 import QueryResultPanel from '../components/QueryResultPanel'
 import EditorResultDock, { EditorResultRowBadge } from '../components/EditorResultDock'
 import { exportRowsToCsv } from '../utils/csvExport'
+import { SQL_RESULT_ROW_CAP } from '../utils/sqlResultRowLimit'
 import { pruneWidths, resolveResultColumnOrder } from '../utils/resultTableMeta'
 import NodeConfigModal from '../components/NodeConfigModal'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
@@ -224,21 +229,85 @@ export default function StudioPage() {
   openTabsRef.current = openTabs
   const activeTabIdRef = useRef(activeTabId)
   activeTabIdRef.current = activeTabId
+  const tabHydrateInflightRef = useRef(new Set<number>())
+  const [tabContentLoading, setTabContentLoading] = useState<Record<number, boolean>>({})
+  const [tabContentError, setTabContentError] = useState<Record<number, string>>({})
+  const tabContentErrorRef = useRef(tabContentError)
+  tabContentErrorRef.current = tabContentError
+
+  const applyLocalDraftIfAny = useCallback((full: any, activate: boolean) => {
+    if (wsId == null || !canWrite || full.is_locked) return
+    const key = scriptDraftStorageKey(`studio.${wsId}`, full.id)
+    const restored = restoreScriptLocalDraft(key, full.script_content ?? '')
+    if (restored != null) {
+      setDirtyMap(prev => (prev[full.id] !== undefined ? prev : { ...prev, [full.id]: restored }))
+      if (activate) {
+        message.info('已恢复本地未同步草稿，持有编辑锁后将自动保存到服务端')
+      }
+    }
+  }, [wsId, canWrite])
+
+  /** 按需拉脚本正文；失败可 force 重试（再点 Tab / 右键「重新加载」） */
+  const ensureTabContent = useCallback(async (nodeId: number, opts?: { activate?: boolean; force?: boolean }) => {
+    const activate = opts?.activate === true
+    const force = opts?.force === true
+    const tab = openTabsRef.current.find(t => t.id === nodeId)
+    if (!tab) return
+    const pending = isEditorTabContentPending(tab)
+    if (!pending && !force) return
+    if (tabHydrateInflightRef.current.has(nodeId)) return
+    tabHydrateInflightRef.current.add(nodeId)
+    setTabContentLoading(prev => ({ ...prev, [nodeId]: true }))
+    setTabContentError(prev => {
+      if (prev[nodeId] === undefined) return prev
+      const next = { ...prev }
+      delete next[nodeId]
+      return next
+    })
+    try {
+      const full: any = await studioApi.getNode(nodeId)
+      setNodes(prev => prev.map(n => (n.id === full.id ? { ...n, ...full } : n)))
+      setOpenTabs(prev => prev.map(t => (t.id === full.id ? { ...t, ...full } : t)))
+      applyLocalDraftIfAny(full, activate || activeTabIdRef.current === nodeId)
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail || e?.message || '加载脚本失败'
+      setTabContentError(prev => ({ ...prev, [nodeId]: String(detail) }))
+      if (activate || activeTabIdRef.current === nodeId) {
+        message.error(detail)
+      }
+    } finally {
+      tabHydrateInflightRef.current.delete(nodeId)
+      setTabContentLoading(prev => {
+        if (!prev[nodeId]) return prev
+        const next = { ...prev }
+        delete next[nodeId]
+        return next
+      })
+    }
+  }, [applyLocalDraftIfAny])
+
+  const activateTab = useCallback((nodeId: number) => {
+    setActiveTabId(nodeId)
+    setLogPanelOpen(false)
+    const tab = openTabsRef.current.find(t => t.id === nodeId)
+    const hadError = tabContentErrorRef.current[nodeId] != null
+    // 同 Tab 再点：失败或未加载时拉取/重试（effect 不会因同 id 再触发）
+    if (tab && (isEditorTabContentPending(tab) || hadError)) {
+      void ensureTabContent(nodeId, { activate: true, force: hadError })
+    }
+  }, [ensureTabContent])
 
   const openNode = useCallback(async (node: any, opts?: { activate?: boolean }) => {
     if (!node?.id) return
     const activate = opts?.activate !== false
     if (openTabsRef.current.some(t => t.id === node.id)) {
-      if (activate) {
-        setActiveTabId(node.id)
-        setLogPanelOpen(false)
-      }
+      if (activate) activateTab(node.id)
       return
     }
 
     let full = node
     // 列表接口默认不带 script_content，打开时再拉详情
-    if (node.script_content == null) {
+    if (isEditorTabContentPending(node)) {
       try {
         full = await studioApi.getNode(node.id) as any
       } catch (e: any) {
@@ -255,22 +324,12 @@ export default function StudioPage() {
       setActiveTabId(full.id)
       setLogPanelOpen(false)
     }
-    // 只读角色不恢复本地草稿，避免无写权限时反复提示「持有编辑锁后将自动保存」
-    if (wsId != null && canWrite && !full.is_locked) {
-      const key = scriptDraftStorageKey(`studio.${wsId}`, full.id)
-      const restored = restoreScriptLocalDraft(key, full.script_content ?? '')
-      if (restored != null) {
-        setDirtyMap(prev => (prev[full.id] !== undefined ? prev : { ...prev, [full.id]: restored }))
-        if (activate) {
-          message.info('已恢复本地未同步草稿，持有编辑锁后将自动保存到服务端')
-        }
-      }
-    }
-  }, [wsId, canWrite])
+    applyLocalDraftIfAny(full, activate)
+  }, [applyLocalDraftIfAny, activateTab])
 
   const prevWsIdRef = useRef<number | undefined>(undefined)
   const studioRestoreDoneRef = useRef(false)
-  /** 会话恢复（含后台 Tab hydrate）完成前禁止 persist，避免空 tabs 冲掉 localStorage */
+  /** 会话 Tab 壳挂载完成前禁止 persist，避免空 tabs 冲掉 localStorage */
   const studioSessionHydratedRef = useRef(false)
   useEffect(() => {
     if (prevWsIdRef.current !== undefined && prevWsIdRef.current !== wsId) {
@@ -287,6 +346,9 @@ export default function StudioPage() {
       setEditLockHeld({})
       setLogPanelOpen(false)
       setRunningId(null)
+      setTabContentLoading({})
+      setTabContentError({})
+      tabHydrateInflightRef.current.clear()
       studioRestoreDoneRef.current = false
       studioSessionHydratedRef.current = false
       if (wsId != null) cancelScheduledEditorSessionWrite('studio', wsId)
@@ -294,7 +356,7 @@ export default function StudioPage() {
     prevWsIdRef.current = wsId
   }, [wsId])
 
-  // URL ?node_id= / pendingOpen / 多 Tab 会话恢复（active 优先，其余后台 hydrate）
+  // URL ?node_id= / pendingOpen / 多 Tab 会话：一次挂上全部 Tab 壳，仅 active 拉正文
   useEffect(() => {
     if (!wsId || nodes.length === 0) return
     if (studioRestoreDoneRef.current) return
@@ -321,20 +383,21 @@ export default function StudioPage() {
       })
     }
 
-    const hydrateTabs = async (tabIds: number[], activeId: number | null) => {
+    /** 视觉一次对齐：用 slim list 挂 Tab；正文交给 ensureTabContent */
+    const seedSessionTabs = (tabIds: number[], activeId: number | null) => {
       const normalized = normalizeEditorSession(tabIds, activeId, { existingIds: existing })
       if (!normalized.tabIds.length) return
-      const active = normalized.activeId != null
-        ? nodes.find(n => n.id === normalized.activeId)
-        : null
-      const rest = normalized.tabIds.filter(id => id !== normalized.activeId)
-      if (active) await openNode(active, { activate: true })
-      for (const id of rest) {
-        const node = nodes.find(n => n.id === id)
-        if (!node) continue
-        await openNode(node, { activate: false })
-        await new Promise(r => window.setTimeout(r, 40))
-      }
+      const byId = new Map(nodes.map((n: any) => [n.id as number, n]))
+      const stubs = normalized.tabIds
+        .map(id => byId.get(id))
+        .filter((n): n is any => Boolean(n))
+      if (!stubs.length) return
+      // 同 tick 内 finishPersistReady 会读 ref；先同步再 setState
+      openTabsRef.current = stubs
+      activeTabIdRef.current = normalized.activeId
+      setOpenTabs(stubs)
+      setActiveTabId(normalized.activeId)
+      setLogPanelOpen(false)
     }
 
     const stored = readEditorSession('studio', wsId)
@@ -352,14 +415,10 @@ export default function StudioPage() {
       const preferId = pendingOpenNodeId ?? urlNodeId!
       setPendingOpenNodeId(null)
       finishUrlParam()
-      const prefer = nodes.find(n => n.id === preferId)
       studioRestoreDoneRef.current = true
-      void (async () => {
-        if (prefer) await openNode(prefer, { activate: true })
-        const restIds = sessionTabIds.filter(id => id !== preferId)
-        if (restIds.length) await hydrateTabs(restIds, preferId)
-        finishPersistReady()
-      })()
+      const planned = planStudioSessionTabOrder(sessionTabIds, preferId)
+      seedSessionTabs(planned.tabIds, planned.activeId)
+      finishPersistReady()
       return
     }
 
@@ -370,20 +429,23 @@ export default function StudioPage() {
     }
 
     studioRestoreDoneRef.current = true
-    void (async () => {
-      await hydrateTabs(sessionTabIds, sessionActiveId)
-      finishPersistReady()
-    })()
+    seedSessionTabs(sessionTabIds, sessionActiveId)
+    finishPersistReady()
   }, [
     wsId,
     nodes,
     pendingOpenNodeId,
     openTabs.length,
     setPendingOpenNodeId,
-    openNode,
     searchParams,
     setSearchParams,
   ])
+
+  // 激活 Tab 时再拉脚本（会话后台 Tab / 切 Tab）
+  useEffect(() => {
+    if (activeTabId == null) return
+    void ensureTabContent(activeTabId, { activate: true })
+  }, [activeTabId, ensureTabContent])
 
   useEffect(() => {
     if (wsId == null) return
@@ -595,58 +657,47 @@ export default function StudioPage() {
       ids.forEach(id => { delete n[id] })
       return n
     })
+    setTabContentLoading(prev => {
+      let changed = false
+      const n = { ...prev }
+      ids.forEach(id => {
+        if (n[id] !== undefined) {
+          delete n[id]
+          changed = true
+        }
+      })
+      return changed ? n : prev
+    })
+    setTabContentError(prev => {
+      let changed = false
+      const n = { ...prev }
+      ids.forEach(id => {
+        if (n[id] !== undefined) {
+          delete n[id]
+          changed = true
+        }
+      })
+      return changed ? n : prev
+    })
   }
 
   const closeTab = (nodeId: number) => closeTabsBulk([nodeId])
 
-  const tabContextMenu = (tabId: number) => {
-    const idx = openTabs.findIndex(t => t.id === tabId)
-    const hasLeft = idx > 0
-    const hasRight = idx >= 0 && idx < openTabs.length - 1
-    const hasOthers = openTabs.length > 1
-    return {
-      items: [
-        {
-          key: 'close',
-          label: '关闭',
-          onClick: () => closeTab(tabId),
-        },
-        {
-          key: 'close-others',
-          label: '关闭其他',
-          disabled: !hasOthers,
-          onClick: () => closeTabsBulk(openTabs.filter(t => t.id !== tabId).map(t => t.id)),
-        },
-        {
-          key: 'close-left',
-          label: '关闭左侧',
-          disabled: !hasLeft,
-          onClick: () => closeTabsBulk(openTabs.slice(0, idx).map(t => t.id)),
-        },
-        {
-          key: 'close-right',
-          label: '关闭右侧',
-          disabled: !hasRight,
-          onClick: () => closeTabsBulk(openTabs.slice(idx + 1).map(t => t.id)),
-        },
-        { type: 'divider' as const },
-        {
-          key: 'close-all',
-          label: '全部关闭',
-          disabled: openTabs.length === 0,
-          onClick: () => closeTabsBulk(openTabs.map(t => t.id)),
-        },
-      ],
-    }
-  }
-
   // 当前激活节点
   const activeNode = openTabs.find(t => t.id === activeTabId)
+  const activeContentError = activeTabId != null ? tabContentError[activeTabId] : undefined
+  const activeContentPending = Boolean(
+    activeNode
+    && !activeContentError
+    && (tabContentLoading[activeNode.id] || isEditorTabContentPending(activeNode)),
+  )
   const activeScript = activeTabId !== null
     ? (dirtyMap[activeTabId] ?? activeNode?.script_content ?? '')
     : ''
   const holdsEditLock = activeTabId !== null && editLockHeld[activeTabId] === true
-  const canEdit = Boolean(canWrite && activeNode && !activeNode.is_locked && holdsEditLock)
+  const canEdit = Boolean(
+    canWrite && activeNode && !activeNode.is_locked && holdsEditLock && !activeContentPending,
+  )
   const isDirty = activeTabId !== null && dirtyMap[activeTabId] !== undefined
   const studioDraftKey =
     wsId != null && activeTabId != null ? scriptDraftStorageKey(`studio.${wsId}`, activeTabId) : null
@@ -1178,6 +1229,40 @@ export default function StudioPage() {
     }
     return (
       <div style={{ position: 'relative', height: '100%' }}>
+        {activeContentError ? (
+          <div style={{
+            position: 'absolute', inset: 0, zIndex: 2,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+            gap: 12, background: 'rgba(255,255,255,0.88)', padding: 24,
+          }}
+          >
+            <ExclamationCircleOutlined style={{ fontSize: 28, color: '#faad14' }} />
+            <div style={{ color: '#595959', maxWidth: 420, textAlign: 'center', fontSize: 13 }}>
+              {activeContentError}
+            </div>
+            <Button
+              type="primary"
+              icon={<ReloadOutlined />}
+              data-testid="studio-tab-content-retry"
+              onClick={() => {
+                if (activeTabId != null) {
+                  void ensureTabContent(activeTabId, { activate: true, force: true })
+                }
+              }}
+            >
+              重新加载
+            </Button>
+          </div>
+        ) : activeContentPending ? (
+          <div style={{
+            position: 'absolute', inset: 0, zIndex: 2,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'rgba(255,255,255,0.72)',
+          }}
+          >
+            <Spin tip="加载脚本…" />
+          </div>
+        ) : null}
         <MonacoFindBar
           getEditor={() => editorRef.current}
           apiRef={findApiRef}
@@ -1188,7 +1273,7 @@ export default function StudioPage() {
           key={activeTabId ?? 0}
           height="100%"
           language={LANG_MAP[activeNode!.node_type] || 'plaintext'}
-          value={activeScript}
+          value={activeContentPending ? '' : activeScript}
           onChange={!canEdit ? undefined : onEditorChange}
           beforeMount={registerDwMonacoThemes}
           onMount={(editor, monaco) => {
@@ -1209,7 +1294,7 @@ export default function StudioPage() {
             })
           }}
           theme={editorAppearance.theme}
-          options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: Boolean(!canEdit) }}
+          options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: Boolean(!canEdit || activeContentPending) }}
         />
       </div>
     )
@@ -1310,45 +1395,31 @@ export default function StudioPage() {
           onExpand={() => setSidebarCollapsedPersist(false)}
           tooltip="显示节点列表"
         />
-          {openTabs.map(tab => {
-            const dirty = dirtyMap[tab.id] !== undefined
-            const isActive = tab.id === activeTabId
-            return (
-              <Dropdown key={tab.id} trigger={['contextMenu']} menu={tabContextMenu(tab.id)}>
-                <div
-                  onClick={() => setActiveTabId(tab.id)}
-                  onAuxClick={e => {
-                    // 中键关闭（类似浏览器 / IDEA）
-                    if (e.button === 1) {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      closeTab(tab.id)
-                    }
-                  }}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 6,
-                    padding: '0 14px', height: 40, cursor: 'pointer', whiteSpace: 'nowrap',
-                    borderRight: '1px solid #f0f0f0',
-                    borderBottom: isActive ? '2px solid #1677ff' : '2px solid transparent',
-                    background: isActive ? '#fff' : '#fafafa',
-                    color: isActive ? '#1677ff' : '#666',
-                    fontSize: 13,
-                  }}
-                >
-                  <Tag color={TYPE_COLOR[tab.node_type]} style={{ margin: 0, fontSize: 11 }}>{tab.node_type}</Tag>
-                  <span>{tab.name}</span>
-                  {dirty && <span style={{ color: '#faad14', fontSize: 10 }}>●</span>}
-                  <CloseCircleOutlined
-                    style={{ fontSize: 12, color: '#999', marginLeft: 2 }}
-                    onClick={e => { e.stopPropagation(); closeTab(tab.id) }}
-                  />
-                </div>
-              </Dropdown>
-            )
-          })}
-          {openTabs.length === 0 && (
-            <span style={{ padding: '0 16px', color: '#bbb', fontSize: 13 }}>双击左侧节点打开编辑</span>
-          )}
+          <StudioEditorTabStrip
+            tabs={openTabs}
+            activeTabId={activeTabId}
+            dirtyMap={dirtyMap}
+            tabContentLoading={tabContentLoading}
+            tabContentError={tabContentError}
+            onActivate={activateTab}
+            onClose={closeTab}
+            onReload={(tabId) => {
+              setActiveTabId(tabId)
+              void ensureTabContent(tabId, { activate: true, force: true })
+            }}
+            onCloseOthers={(tabId) => closeTabsBulk(openTabs.filter(t => t.id !== tabId).map(t => t.id))}
+            onCloseLeft={(tabId) => {
+              const idx = openTabs.findIndex(t => t.id === tabId)
+              if (idx > 0) closeTabsBulk(openTabs.slice(0, idx).map(t => t.id))
+            }}
+            onCloseRight={(tabId) => {
+              const idx = openTabs.findIndex(t => t.id === tabId)
+              if (idx >= 0 && idx < openTabs.length - 1) {
+                closeTabsBulk(openTabs.slice(idx + 1).map(t => t.id))
+              }
+            }}
+            onCloseAll={() => closeTabsBulk(openTabs.map(t => t.id))}
+          />
       </StudioWorkbenchTopStrip>
 
         {activeNode ? (
@@ -1363,7 +1434,7 @@ export default function StudioPage() {
                 type="primary"
                 icon={isRunning ? <LoadingOutlined /> : <PlayCircleOutlined />}
                 onClick={() => { void handleRun() }}
-                disabled={isRunning || !canRun}
+                disabled={isRunning || !canRun || activeContentPending || Boolean(activeContentError)}
                 size="small"
                 title={canRun ? undefined : '无运行权限'}
               >
@@ -1524,7 +1595,7 @@ export default function StudioPage() {
                                       toolbar={(
                                         <div style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                                           <span style={{ color: '#666', fontSize: 12 }}>
-                                            共 <strong>{total}</strong> 行；已返回 <strong>{rows.length}</strong> 行（上限 10000）；结果区分页展示，表头右上角为类型徽章
+                                            共 <strong>{total}</strong> 行；已返回 <strong>{rows.length}</strong> 行（上限 {SQL_RESULT_ROW_CAP}）；结果区分页展示，表头右上角为类型徽章
                                           </span>
                                           <div style={{ flex: 1 }} />
                                           <Button

@@ -38,7 +38,14 @@ jobs:
           cache: npm
           cache-dependency-path: gido/frontend/package-lock.json
       - run: npm ci
+      - run: npm test
       - run: npm run build
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Playwright studio session E2E
+        run: npm run test:e2e
+        env:
+          CI: true
 
 #  backend:
 #    name: Backend tests
