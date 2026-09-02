@@ -40,6 +40,8 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - name: Production bundle smoke (StudioWorkbench markers)
+        run: npm run test:smoke
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
       - name: Playwright studio session E2E
