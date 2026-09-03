@@ -171,6 +171,78 @@ def test_doris_stream_load_mocked(tmp_path):
     assert put.call_args.kwargs["allow_redirects"] is False
     assert put.call_args.kwargs["auth"] == ("u", "p")
     assert "/api/demo/t1/_stream_load" in put.call_args.args[0]
+    assert "skip_header" not in put.call_args.kwargs["headers"]
+
+
+def test_doris_stream_load_skip_header_is_integer(tmp_path):
+    """Doris skip_header 必须是跳过行数，不能传 true。"""
+    from app.services.file_import_exec import _doris_stream_load
+
+    p = tmp_path / "data.csv"
+    p.write_text("id,name\n1,a\n", encoding="utf-8")
+    cols = [{"name": "id", "type": "bigint"}, {"name": "name", "type": "string"}]
+    ds = _Ds("doris", database="demo", port=9030)
+    fake = MagicMock()
+    fake.status_code = 200
+    fake.json.return_value = {
+        "Status": "Success",
+        "NumberLoadedRows": 1,
+        "NumberTotalRows": 1,
+        "NumberFilteredRows": 0,
+    }
+    with patch("app.services.file_import_exec.requests.put", return_value=fake) as put:
+        _doris_stream_load(ds, "t1", cols, p, skip_header=True)
+    assert put.call_args.kwargs["headers"]["skip_header"] == "1"
+
+
+def test_csv_to_stream_load_temp_strips_header(tmp_path):
+    from app.services.file_import_exec import _csv_to_stream_load_temp
+
+    p = tmp_path / "auth.csv"
+    p.write_text("id,name,created_at\n1,alice,2024-01-01 00:00:00\n2,bob,2024-01-02 00:00:00\n", encoding="utf-8")
+    cols = [
+        {"name": "id", "type": "bigint"},
+        {"name": "name", "type": "string"},
+        {"name": "created_at", "type": "datetime"},
+    ]
+    out, n = _csv_to_stream_load_temp(
+        p, encoding="utf-8", delimiter=",", has_header=True, cols=cols, max_rows=1000
+    )
+    try:
+        text = out.read_text(encoding="utf-8")
+        assert n == 2
+        assert "id,name" not in text
+        assert text.startswith("1,alice,")
+        assert "2024-01-01 00:00:00" in text
+    finally:
+        out.unlink(missing_ok=True)
+
+
+def test_doris_stream_load_data_quality_error_message(tmp_path):
+    from app.services.file_import_exec import _doris_stream_load
+    import pytest
+
+    p = tmp_path / "data.csv"
+    p.write_text("1,a\n", encoding="utf-8")
+    cols = [{"name": "id", "type": "bigint"}, {"name": "name", "type": "string"}]
+    ds = _Ds("doris", database="demo", port=9030)
+    fake = MagicMock()
+    fake.status_code = 200
+    fake.json.return_value = {
+        "Status": "Fail",
+        "Message": "[DATA_QUALITY_ERROR]too many filtered rows",
+        "NumberLoadedRows": 0,
+        "NumberTotalRows": 100,
+        "NumberFilteredRows": 90,
+        "ErrorURL": "http://be:8040/api/_load_error_log?id=1",
+    }
+    with patch("app.services.file_import_exec.requests.put", return_value=fake):
+        with pytest.raises(ValueError) as ei:
+            _doris_stream_load(ds, "t1", cols, p)
+    msg = str(ei.value)
+    assert "too many filtered" in msg
+    assert "filtered=90/100" in msg
+    assert "ErrorURL=" in msg
 
 
 def test_doris_stream_load_follows_307_with_auth(tmp_path):

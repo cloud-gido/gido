@@ -256,6 +256,51 @@ def _load_mysql_batched(
     return rows_read, rows_written
 
 
+def _rows_to_csv_temp(row_iter, cols: List[Dict[str, Any]]) -> Tuple[Path, int]:
+    """把数据行流式写成 UTF-8 CSV（无表头），供 Doris Stream Load。返回 (csv_path, rows)。"""
+    tmp = tempfile.NamedTemporaryFile(prefix="gido_import_", suffix=".csv", delete=False)
+    tmp_path = Path(tmp.name)
+    rows = 0
+    skipped = 0
+    width = len(cols)
+    sample_errors: List[str] = []
+    try:
+        with tmp_path.open("w", encoding="utf-8", newline="") as out:
+            writer = csv.writer(out)
+            for row in row_iter:
+                try:
+                    cells = []
+                    for i, c in enumerate(cols):
+                        raw_cell = row[i] if i < len(row) else None
+                        v = coerce_cell(raw_cell, c["type"])
+                        cells.append("" if v is None else v)
+                    if len(cells) < width:
+                        cells.extend([""] * (width - len(cells)))
+                    writer.writerow(cells[:width])
+                    rows += 1
+                except Exception as e:
+                    skipped += 1
+                    if len(sample_errors) < 5:
+                        sample_errors.append(f"第 {rows + skipped} 行: {e}")
+                    continue
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+    finally:
+        tmp.close()
+    if rows == 0:
+        detail = "; ".join(sample_errors) if sample_errors else "文件无有效数据行"
+        raise ValueError(f"装数失败: {detail}")
+    if sample_errors:
+        logger.warning(
+            "file import coerce skipped rows=%s samples=%s", skipped, sample_errors
+        )
+    return tmp_path, rows
+
+
 def _xlsx_to_csv_temp(
     path: Path,
     *,
@@ -265,35 +310,38 @@ def _xlsx_to_csv_temp(
     max_rows: int,
 ) -> Tuple[Path, int]:
     """把 Excel 流式写成 UTF-8 CSV，供 Doris Stream Load。返回 (csv_path, rows)。"""
-    tmp = tempfile.NamedTemporaryFile(prefix="gido_import_", suffix=".csv", delete=False)
-    tmp_path = Path(tmp.name)
-    rows = 0
-    width = len(cols)
-    try:
-        with tmp_path.open("w", encoding="utf-8", newline="") as out:
-            writer = csv.writer(out)
-            # Stream Load 用 columns 映射，不写表头
-            for row in iter_xlsx_rows_from_path(
-                path, has_header=has_header, sheet_name=sheet_name, max_rows=max_rows
-            ):
-                cells = []
-                for i, c in enumerate(cols):
-                    raw_cell = row[i] if i < len(row) else None
-                    v = coerce_cell(raw_cell, c["type"])
-                    cells.append("" if v is None else v)
-                if len(cells) < width:
-                    cells.extend([""] * (width - len(cells)))
-                writer.writerow(cells[:width])
-                rows += 1
-    except Exception:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        raise
-    finally:
-        tmp.close()
-    return tmp_path, rows
+    return _rows_to_csv_temp(
+        iter_xlsx_rows_from_path(
+            path, has_header=has_header, sheet_name=sheet_name, max_rows=max_rows
+        ),
+        cols,
+    )
+
+
+def _csv_to_stream_load_temp(
+    path: Path,
+    *,
+    encoding: Optional[str],
+    delimiter: Optional[str],
+    has_header: bool,
+    cols: List[Dict[str, Any]],
+    max_rows: int,
+) -> Tuple[Path, int]:
+    """
+    CSV → 无表头 UTF-8 CSV（并按列类型 coerce）。
+    Doris skip_header 是整数行数，传 true 会被忽略，表头当数据导致 DATA_QUALITY_ERROR。
+    """
+    delim = delimiter if delimiter is not None and delimiter != "" else ","
+    return _rows_to_csv_temp(
+        iter_csv_rows_from_path(
+            path,
+            encoding=encoding,
+            delimiter=delim,
+            has_header=has_header,
+            max_rows=max_rows,
+        ),
+        cols,
+    )
 
 
 def _doris_stream_load_put(
@@ -364,9 +412,9 @@ def _doris_stream_load(
         "strict_mode": "false",
         "timeout": "3600",
     }
-    # Doris 版本差异：优先 skip_header，失败再试
+    # Doris skip_header 是「跳过行数」(整数)，不是布尔；调用方应先去掉表头再传 False
     if skip_header:
-        headers["skip_header"] = "true"
+        headers["skip_header"] = "1"
 
     enc = (charset or "UTF-8").upper()
     if enc not in ("UTF-8", "UTF8"):
@@ -395,62 +443,36 @@ def _doris_stream_load(
     loaded = int(body.get("NumberLoadedRows") or body.get("numberLoadedRows") or 0)
     read = int(body.get("NumberTotalRows") or body.get("numberTotalRows") or loaded)
     filtered = int(body.get("NumberFilteredRows") or body.get("numberFilteredRows") or 0)
+    error_url = str(
+        body.get("ErrorURL") or body.get("ErrorUrl") or body.get("errorURL") or ""
+    ).strip()
     ok = status in ("success", "publish timeout") or (resp.status_code < 400 and loaded > 0)
     if not ok:
         msg = str(body.get("Message") or body.get("msg") or body)
+        detail_parts = [f"Doris Stream Load 失败 HTTP {resp.status_code}: {msg}"]
+        if read or filtered:
+            detail_parts.append(f"filtered={filtered}/{read or '?'}")
+        if error_url:
+            detail_parts.append(f"ErrorURL={error_url}")
         hint = ""
         if "NOT_AUTHORIZED" in msg.upper() or "no valid Basic authorization" in msg:
             hint = (
                 "（Stream Load 鉴权失败：请在数据源填写 Doris 用户名/密码；"
                 "空账号会按 root 空密码尝试。若仍失败，核对 FE HTTP 端口与账号权限。）"
             )
-        raise ValueError(
-            f"Doris Stream Load 失败 HTTP {resp.status_code}: {msg}{hint}"
-        )
+        elif "too many filtered" in msg.lower() or "DATA_QUALITY_ERROR" in msg.upper():
+            hint = (
+                "（大量行被过滤：常见原因是表头被当数据、分隔符不匹配或类型转换失败。"
+                "请核对列类型；ErrorURL 可查看被拒样例。）"
+            )
+        raise ValueError("; ".join(detail_parts) + hint)
     if filtered and loaded == 0:
-        raise ValueError(f"Doris Stream Load 全部被过滤: {body}")
+        raise ValueError(
+            f"Doris Stream Load 全部被过滤: filtered={filtered}/{read}"
+            + (f"; ErrorURL={error_url}" if error_url else f"; body={body}")
+        )
     logger.info("doris stream load done loaded=%s read=%s filtered=%s", loaded, read, filtered)
     return read or loaded, loaded
-
-
-def _prepare_csv_for_stream_load(
-    path: Path,
-    *,
-    encoding: Optional[str],
-    delimiter: Optional[str],
-    has_header: bool,
-) -> Tuple[Path, str, bool, Optional[Path]]:
-    """
-    返回 (csv_path, delimiter, skip_header, temp_to_delete)。
-    若编码非 UTF-8，转码到临时 UTF-8 文件。
-    """
-    used_enc = (encoding or "utf-8").lower()
-    delim = delimiter if delimiter is not None and delimiter != "" else ","
-    cleanup: Optional[Path] = None
-
-    if used_enc in ("utf-8", "utf8", "utf-8-sig"):
-        return path, delim, has_header, None
-
-    # GBK 等：流式转 UTF-8
-    tmp = tempfile.NamedTemporaryFile(prefix="gido_import_utf8_", suffix=".csv", delete=False)
-    cleanup = Path(tmp.name)
-    try:
-        with path.open("r", encoding=used_enc, errors="replace", newline="") as src, \
-                cleanup.open("w", encoding="utf-8", newline="") as dst:
-            while True:
-                chunk = src.read(1024 * 1024)
-                if not chunk:
-                    break
-                dst.write(chunk)
-    except Exception:
-        try:
-            cleanup.unlink(missing_ok=True)
-        except Exception:
-            pass
-        raise
-    finally:
-        tmp.close()
-    return cleanup, delim, has_header, cleanup
 
 
 def execute_file_import(
@@ -497,22 +519,18 @@ def execute_file_import(
     cleanup_paths: List[Path] = []
     try:
         if lt == "doris":
+            # 统一：先写成无表头 UTF-8 CSV（含类型 coerce），再 Stream Load。
+            # 避免 Doris skip_header 语义差异（须传整数行数，不能传 true）。
             if fmt == "csv":
-                csv_path, delim, skip_hdr, tmp = _prepare_csv_for_stream_load(
-                    path, encoding=encoding, delimiter=delimiter, has_header=has_header
-                )
-                if tmp:
-                    cleanup_paths.append(tmp)
-                rows_read, rows_written = _doris_stream_load(
-                    ds,
-                    table_name,
-                    cols,
-                    csv_path,
-                    column_separator=delim,
-                    skip_header=skip_hdr,
+                tmp_csv, converted = _csv_to_stream_load_temp(
+                    path,
+                    encoding=encoding,
+                    delimiter=delimiter,
+                    has_header=has_header,
+                    cols=cols,
+                    max_rows=max_rows,
                 )
             else:
-                # xlsx → 临时 CSV → Stream Load
                 tmp_csv, converted = _xlsx_to_csv_temp(
                     path,
                     has_header=has_header,
@@ -520,17 +538,17 @@ def execute_file_import(
                     cols=cols,
                     max_rows=max_rows,
                 )
-                cleanup_paths.append(tmp_csv)
-                rows_read, rows_written = _doris_stream_load(
-                    ds,
-                    table_name,
-                    cols,
-                    tmp_csv,
-                    column_separator=",",
-                    skip_header=False,
-                )
-                if converted and rows_read == 0:
-                    rows_read = converted
+            cleanup_paths.append(tmp_csv)
+            rows_read, rows_written = _doris_stream_load(
+                ds,
+                table_name,
+                cols,
+                tmp_csv,
+                column_separator=",",
+                skip_header=False,
+            )
+            if converted and rows_read == 0:
+                rows_read = converted
         else:
             # MySQL：流式批量 INSERT
             if fmt == "csv":
