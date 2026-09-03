@@ -516,17 +516,29 @@ def _reconcile_received_s3(workspace_id: int, file_id: str, total: int) -> List[
 
 
 def _reconcile_received(workspace_id: int, file_id: str, meta: Dict[str, Any]) -> List[int]:
+    """合并 Redis / S3 / 本地已收分片。禁止只信 Redis（易漏片导致 complete 误报缺失）。"""
     total = int(meta.get("total_chunks") or 0)
+    found: set[int] = set()
+
     redis_parts = _list_parts_redis(workspace_id, file_id, total)
     if redis_parts is not None:
-        return redis_parts
+        found.update(redis_parts)
 
     folder = _folder(workspace_id, file_id)
-    local = _reconcile_received_local(folder, meta)
+    found.update(_reconcile_received_local(folder, meta))
+
     if meta.get("storage") == "s3" or file_import_shared_enabled():
-        s3_parts = _reconcile_received_s3(workspace_id, file_id, total)
-        return sorted(set(local) | set(s3_parts))
-    return local
+        try:
+            found.update(_reconcile_received_s3(workspace_id, file_id, total))
+        except Exception as ex:
+            logger.warning(
+                "列举 S3 file-import 分片失败 ws=%s file_id=%s: %s",
+                workspace_id,
+                file_id,
+                ex,
+            )
+
+    return sorted(i for i in found if 0 <= i < total)
 
 
 def _find_resumable_session(

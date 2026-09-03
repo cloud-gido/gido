@@ -9,6 +9,7 @@ import request from '../api/request'
 export const FILE_IMPORT_CHUNK_BYTES = 8 * 1024 * 1024
 const CONCURRENCY = 3
 const MAX_ATTEMPTS = 5
+const COMPLETE_GAP_ROUNDS = 3
 const SESSION_PREFIX = 'gido.fileImport.session.v1:'
 
 export type FileImportUploadPhase = 'uploading' | 'parsing'
@@ -97,6 +98,11 @@ function isSessionGoneError(e: any): boolean {
   return status === 404 && /不存在或已过期|不属于该工作空间/.test(detail)
 }
 
+function isIncompleteChunksError(e: any): boolean {
+  const detail = String(e?.response?.data?.detail || e?.message || '')
+  return e?.response?.status === 400 && /分片不完整|缺失.*片/.test(detail)
+}
+
 async function mapPool<T>(items: T[], limit: number, worker: (item: T) => Promise<void>) {
   const queue = [...items]
   const runners = Array.from({ length: Math.min(limit, Math.max(1, queue.length)) }, async () => {
@@ -107,6 +113,12 @@ async function mapPool<T>(items: T[], limit: number, worker: (item: T) => Promis
     }
   })
   await Promise.all(runners)
+}
+
+async function fetchUploadStatus(workspaceId: number, fileId: string) {
+  return request.get('/integration/file-import/upload-status', {
+    params: { workspace_id: workspaceId, file_id: fileId },
+  })
 }
 
 async function runChunkedUpload(
@@ -145,15 +157,13 @@ async function runChunkedUpload(
 
   let status: any = init
   try {
-    status = await request.get('/integration/file-import/upload-status', {
-      params: { workspace_id: workspaceId, file_id: fileId },
-    })
+    status = await fetchUploadStatus(workspaceId, fileId)
   } catch (e: any) {
     if (isSessionGoneError(e)) throw e
     /* use init */
   }
 
-  const missing: number[] = Array.isArray(status.missing_chunks)
+  let missing: number[] = Array.isArray(status.missing_chunks)
     ? status.missing_chunks
     : Array.from({ length: totalChunks }, (_, i) => i)
   const already = totalChunks - missing.length
@@ -193,20 +203,44 @@ async function runChunkedUpload(
     }
   }
 
-  await mapPool(missing, CONCURRENCY, async (idx) => {
-    await uploadOne(idx)
-    bump()
-    saveFileImportSession({
-      workspaceId,
-      fileId,
-      clientKey,
-      filename: file.name,
-      sizeBytes: file.size,
-      totalChunks,
-      chunkBytes,
-      updatedAt: Date.now(),
+  const uploadMissing = async (indices: number[]) => {
+    if (!indices.length) return
+    await mapPool(indices, CONCURRENCY, async (idx) => {
+      await uploadOne(idx)
+      bump()
+      saveFileImportSession({
+        workspaceId,
+        fileId,
+        clientKey,
+        filename: file.name,
+        sizeBytes: file.size,
+        totalChunks,
+        chunkBytes,
+        updatedAt: Date.now(),
+      })
     })
-  })
+  }
+
+  await uploadMissing(missing)
+
+  // complete 前以服务端 status 为准补齐漏片（并发 / 多副本对账延迟）
+  for (let round = 0; round < COMPLETE_GAP_ROUNDS; round += 1) {
+    assertNotAborted(opts.signal)
+    let latest: any
+    try {
+      latest = await fetchUploadStatus(workspaceId, fileId)
+    } catch (e: any) {
+      if (isSessionGoneError(e)) throw e
+      break
+    }
+    const stillMissing: number[] = Array.isArray(latest.missing_chunks) ? latest.missing_chunks : []
+    if (!stillMissing.length) break
+    opts.onPhase?.('uploading')
+    doneCount = Math.max(0, totalChunks - stillMissing.length)
+    opts.onStatus?.({ received: doneCount, total: totalChunks, resumed: true, fileId })
+    opts.onProgress?.(Math.min(99, Math.round((doneCount / totalChunks) * 100)))
+    await uploadMissing(stillMissing)
+  }
 
   assertNotAborted(opts.signal)
   opts.onPhase?.('parsing')
@@ -220,17 +254,35 @@ async function runChunkedUpload(
   if (opts.has_header != null) completeFd.append('has_header', String(opts.has_header))
   if (opts.sheet_name) completeFd.append('sheet_name', opts.sheet_name)
 
+  const postComplete = () => request.post('/integration/file-import/upload-complete', completeFd, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 0,
+    signal: opts.signal,
+  })
+
   try {
-    const result = await request.post('/integration/file-import/upload-complete', completeFd, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 0,
-      signal: opts.signal,
-    })
+    const result = await postComplete()
     clearFileImportSession(clientKey)
     return result
-  } catch (e) {
-    // 解析失败仍保留会话，便于仅重试 complete；分片已齐
-    throw e
+  } catch (e: any) {
+    if (!isIncompleteChunksError(e)) throw e
+    // complete 仍报缺片：再补一轮后重试一次合并
+    opts.onPhase?.('uploading')
+    try {
+      const latest: any = await fetchUploadStatus(workspaceId, fileId)
+      const stillMissing: number[] = Array.isArray(latest.missing_chunks) ? latest.missing_chunks : []
+      if (stillMissing.length) {
+        doneCount = Math.max(0, totalChunks - stillMissing.length)
+        await uploadMissing(stillMissing)
+      }
+    } catch (inner: any) {
+      if (isSessionGoneError(inner)) throw inner
+      throw e
+    }
+    opts.onPhase?.('parsing')
+    const result = await postComplete()
+    clearFileImportSession(clientKey)
+    return result
   }
 }
 
@@ -269,6 +321,9 @@ export function describeUploadNetworkError(e: any): string {
   if (typeof detail === 'string' && detail.trim()) {
     if (/不存在或已过期/.test(detail)) {
       return '上传会话已失效（多副本或过期）。请再次选择同一文件重新开始上传。'
+    }
+    if (/分片不完整|缺失.*片/.test(detail)) {
+      return `${detail} 请再次选择同一文件继续补传缺失分片。`
     }
     return detail
   }

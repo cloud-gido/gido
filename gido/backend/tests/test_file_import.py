@@ -359,3 +359,18 @@ def test_shared_chunk_path_uses_s3(tmp_path, monkeypatch):
     assert pub["load_mode"] == "internal_table"
     assert pub["s3_uri"] == meta["s3_uri"]
     assert "S3(" in (pub.get("advanced_s3_tvf_hint") or "")
+
+
+def test_reconcile_unions_redis_and_s3(tmp_path, monkeypatch):
+    """Redis 漏记时仍以 S3 为准，避免 complete 误报缺片。"""
+    from app.services import file_import_store as store
+
+    monkeypatch.setattr("app.core.config.settings.FILE_IMPORT_UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(store, "file_import_shared_enabled", lambda: True)
+    monkeypatch.setattr(store, "_list_parts_redis", lambda ws, fid, total: [0])  # 漏了 1
+    monkeypatch.setattr(store, "_reconcile_received_s3", lambda ws, fid, total: [0, 1])
+    monkeypatch.setattr(store, "_reconcile_received_local", lambda folder, meta: [])
+
+    meta = {"total_chunks": 2, "storage": "s3", "received_chunks": []}
+    got = store._reconcile_received(9, "a" * 32, meta)
+    assert got == [0, 1]
