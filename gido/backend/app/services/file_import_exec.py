@@ -118,15 +118,20 @@ def build_create_table_ddl(
     return f"CREATE TABLE IF NOT EXISTS {quote_ident(lt, table_name)} (\n{body}\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
 
 
-def table_exists(ds: DataSource, table_name: str) -> bool:
+def table_exists(
+    ds: DataSource,
+    table_name: str,
+    *,
+    database_override: Optional[str] = None,
+) -> bool:
     table_name = validate_table_name(table_name)
     lt = assert_supported_ds(ds, "目标")
     if lt == "postgresql":
         raise ValueError("本地文件导入暂仅支持 MySQL / Doris 目标")
-    with open_connection(ds) as opened:
+    with open_connection(ds, database=database_override) as opened:
         _, conn = opened
         cur = conn.cursor()
-        schema = (ds.database or "").strip()
+        schema = (database_override or ds.database or "").strip()
         cur.execute(
             "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s LIMIT 1",
             (schema, table_name),
@@ -141,6 +146,7 @@ def _register_datamap(
     ds: DataSource,
     table_name: str,
     owner: Optional[str] = None,
+    database_override: Optional[str] = None,
 ) -> Optional[int]:
     existing = (
         db.query(MetaTable)
@@ -156,7 +162,7 @@ def _register_datamap(
     table = MetaTable(
         workspace_id=workspace_id,
         datasource_id=ds.id,
-        db_name=(ds.database or "").strip() or None,
+        db_name=(database_override or ds.database or "").strip() or None,
         table_name=table_name,
         table_comment="本地文件导入",
         table_type="table",
@@ -188,10 +194,17 @@ def doris_http_port(ds: DataSource) -> int:
     return int(settings.FILE_IMPORT_DORIS_HTTP_PORT or 8030)
 
 
-def _ensure_table(ds: DataSource, table_name: str, ddl: str, exists: bool) -> None:
+def _ensure_table(
+    ds: DataSource,
+    table_name: str,
+    ddl: str,
+    exists: bool,
+    *,
+    database_override: Optional[str] = None,
+) -> None:
     if exists:
         return
-    with open_connection(ds) as opened:
+    with open_connection(ds, database=database_override) as opened:
         _, conn = opened
         cur = conn.cursor()
         cur.execute(ddl)
@@ -307,6 +320,31 @@ def _doris_column_separator_header_candidates(separator: str) -> List[str]:
         if c2 not in out:
             out.append(c2)
     return out
+
+
+def _doris_effective_database(ds: DataSource) -> str:
+    """
+    Doris 文件导入的“目标库”：
+    - 默认把 `*_ads` 映射到 `*_ods`
+    - 也允许在 ds.extra_config 里显式覆盖
+    """
+    ex = ds.extra_config if isinstance(ds.extra_config, dict) else {}
+    explicit = (
+        ex.get("doris_target_database")
+        or ex.get("ods_database")
+        or ex.get("target_database")
+    )
+    if explicit is not None and str(explicit).strip():
+        return str(explicit).strip()
+
+    base = (ds.database or "").strip()
+    if not base:
+        return base
+    if base.endswith("_ads"):
+        return base[: -len("_ads")] + "_ods"
+    if base.endswith("ads"):
+        return base[: -len("ads")] + "ods"
+    return base
 
 
 def _rows_to_csv_temp(
@@ -475,8 +513,9 @@ def _doris_stream_load(
     column_separator: str = ",",
     skip_header: bool = False,
     charset: str = "UTF-8",
+    target_db_name: Optional[str] = None,
 ) -> Tuple[int, int]:
-    db_name = (ds.database or "").strip()
+    db_name = (target_db_name or _doris_effective_database(ds)).strip()
     if not db_name:
         raise ValueError("Doris 数据源未配置 database")
     host = (ds.host or "").strip() or "127.0.0.1"
@@ -635,7 +674,8 @@ def execute_file_import(
     if mode not in ("fail", "append"):
         raise ValueError("if_exists 仅支持 fail / append")
 
-    exists = table_exists(ds, table_name)
+    doris_target_db: Optional[str] = _doris_effective_database(ds) if lt == "doris" else None
+    exists = table_exists(ds, table_name, database_override=doris_target_db)
     if exists and mode == "fail":
         raise ValueError(f"目标表已存在: {table_name}（请更换表名，或选择追加写入）")
 
@@ -646,7 +686,7 @@ def execute_file_import(
     batch = int(batch_size or settings.FILE_IMPORT_MYSQL_BATCH or 5000)
     batch = max(500, min(batch, 20000))
 
-    _ensure_table(ds, table_name, ddl, exists)
+    _ensure_table(ds, table_name, ddl, exists, database_override=doris_target_db)
 
     cleanup_paths: List[Path] = []
     try:
@@ -678,6 +718,7 @@ def execute_file_import(
                 tmp_csv,
                 column_separator=_DORIS_CSV_SEPARATOR,
                 skip_header=False,
+                target_db_name=doris_target_db,
             )
             if converted and rows_read == 0:
                 rows_read = converted
@@ -716,6 +757,7 @@ def execute_file_import(
             ds=ds,
             table_name=table_name,
             owner=owner,
+            database_override=doris_target_db,
         )
 
     return rows_read, rows_written, ddl

@@ -255,6 +255,30 @@ def test_doris_stream_load_retries_on_http_400_empty_message(tmp_path):
     )
 
 
+def test_doris_stream_load_ads_database_defaults_to_ods(tmp_path):
+    """ds.database=*_ads 时：默认 stream load URL 应落到 *_ods。"""
+    from app.services.file_import_exec import _doris_stream_load
+
+    p = tmp_path / "data.csv"
+    p.write_text("1,a\n", encoding="utf-8")
+    cols = [{"name": "id", "type": "bigint"}, {"name": "name", "type": "string"}]
+    ds = _Ds("doris", database="bigdata_ads", port=9030)
+
+    fake = MagicMock()
+    fake.status_code = 200
+    fake.json.return_value = {
+        "Status": "Success",
+        "NumberLoadedRows": 1,
+        "NumberTotalRows": 1,
+        "NumberFilteredRows": 0,
+    }
+
+    with patch("app.services.file_import_exec.requests.put", return_value=fake) as put:
+        _doris_stream_load(ds, "t1", cols, p)
+
+    assert "/api/bigdata_ods/t1/_stream_load" in put.call_args.args[0]
+
+
 def test_csv_to_stream_load_temp_strips_header(tmp_path):
     from app.services.file_import_exec import _DORIS_CSV_SEPARATOR, _csv_to_stream_load_temp
 
