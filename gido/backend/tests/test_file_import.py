@@ -171,7 +171,10 @@ def test_doris_stream_load_mocked(tmp_path):
     assert put.call_args.kwargs["allow_redirects"] is False
     assert put.call_args.kwargs["auth"] == ("u", "p")
     assert "/api/demo/t1/_stream_load" in put.call_args.args[0]
-    assert "skip_header" not in put.call_args.kwargs["headers"]
+    hdrs = put.call_args.kwargs["headers"]
+    assert "skip_header" not in hdrs
+    assert hdrs["enclose"] == '"'
+    assert hdrs["escape"] == '"'
 
 
 def test_doris_stream_load_skip_header_is_integer(tmp_path):
@@ -196,7 +199,7 @@ def test_doris_stream_load_skip_header_is_integer(tmp_path):
 
 
 def test_csv_to_stream_load_temp_strips_header(tmp_path):
-    from app.services.file_import_exec import _csv_to_stream_load_temp
+    from app.services.file_import_exec import _DORIS_CSV_SEPARATOR, _csv_to_stream_load_temp
 
     p = tmp_path / "auth.csv"
     p.write_text("id,name,created_at\n1,alice,2024-01-01 00:00:00\n2,bob,2024-01-02 00:00:00\n", encoding="utf-8")
@@ -212,7 +215,7 @@ def test_csv_to_stream_load_temp_strips_header(tmp_path):
         text = out.read_text(encoding="utf-8")
         assert n == 2
         assert "id,name" not in text
-        assert text.startswith("1,alice,")
+        assert text.startswith(f"1{_DORIS_CSV_SEPARATOR}alice{_DORIS_CSV_SEPARATOR}")
         assert "2024-01-01 00:00:00" in text
     finally:
         out.unlink(missing_ok=True)
@@ -220,7 +223,7 @@ def test_csv_to_stream_load_temp_strips_header(tmp_path):
 
 def test_csv_to_stream_load_temp_null_as_backslash_n(tmp_path):
     """Doris CSV 空值须为 \\N，空字符串会导致数值列整行过滤。"""
-    from app.services.file_import_exec import _csv_to_stream_load_temp
+    from app.services.file_import_exec import _DORIS_CSV_SEPARATOR, _csv_to_stream_load_temp
 
     p = tmp_path / "nulls.csv"
     p.write_text("id,score,note\n1,,hello\n2,3.5,\n", encoding="utf-8")
@@ -233,10 +236,42 @@ def test_csv_to_stream_load_temp_null_as_backslash_n(tmp_path):
         p, encoding="utf-8", delimiter=",", has_header=True, cols=cols, max_rows=1000
     )
     try:
-        text = out.read_text(encoding="utf-8")
+        text = out.read_text(encoding="utf-8").replace("\r\n", "\n")
         assert n == 2
-        assert "1,\\N,hello" in text.replace("\r\n", "\n")
-        assert "2,3.5,\\N" in text.replace("\r\n", "\n")
+        assert f"1{_DORIS_CSV_SEPARATOR}\\N{_DORIS_CSV_SEPARATOR}hello" in text
+        assert f"2{_DORIS_CSV_SEPARATOR}3.5{_DORIS_CSV_SEPARATOR}\\N" in text
+    finally:
+        out.unlink(missing_ok=True)
+
+
+def test_csv_to_stream_load_temp_keeps_json_commas_as_one_field(tmp_path):
+    """JSON 内逗号不能被拆成多余列（ErrorURL: actual 19 vs schema 14）。"""
+    from app.services.file_import_exec import _DORIS_CSV_SEPARATOR, _csv_to_stream_load_temp
+
+    json_blob = '{"request": {"token": "abc", "currency": "USD"}, "response": {"status": "ACTIVE"}}'
+    p = tmp_path / "auth.jsonish.csv"
+    # 源文件仍是逗号 CSV，字段用 RFC4180 引号包裹
+    p.write_text(
+        'id,payload,flag\n1,"' + json_blob.replace('"', '""') + '",1\n',
+        encoding="utf-8",
+    )
+    cols = [
+        {"name": "id", "type": "bigint"},
+        {"name": "payload", "type": "string"},
+        {"name": "flag", "type": "bigint"},
+    ]
+    out, n = _csv_to_stream_load_temp(
+        p, encoding="utf-8", delimiter=",", has_header=True, cols=cols, max_rows=1000
+    )
+    try:
+        line = out.read_text(encoding="utf-8").strip().splitlines()[0]
+        parts = line.split(_DORIS_CSV_SEPARATOR)
+        assert n == 1
+        assert len(parts) == 3
+        assert parts[0] == "1"
+        # SOH 分隔下整段 JSON 仍是一列；含 " 时 writer 会包一层引号并 "" 转义
+        assert "currency" in parts[1] and "USD" in parts[1]
+        assert parts[2] == "1"
     finally:
         out.unlink(missing_ok=True)
 

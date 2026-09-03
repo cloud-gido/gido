@@ -258,14 +258,21 @@ def _load_mysql_batched(
 
 # Doris Stream Load CSV：NULL 必须写成 \N；空字段 "" 对 BIGINT/DATETIME 会整行被过滤
 _DORIS_CSV_NULL = "\\N"
+# 默认逗号会被 JSON 字段内逗号拆列（ErrorURL: actual 19 vs schema 14）。用 SOH 作分隔符。
+_DORIS_CSV_SEPARATOR = "\x01"
 
 
 def _cell_for_doris_csv(value: Any) -> Any:
     return _DORIS_CSV_NULL if value is None else value
 
 
-def _rows_to_csv_temp(row_iter, cols: List[Dict[str, Any]]) -> Tuple[Path, int]:
-    """把数据行流式写成 UTF-8 CSV（无表头），供 Doris Stream Load。返回 (csv_path, rows)。"""
+def _rows_to_csv_temp(
+    row_iter,
+    cols: List[Dict[str, Any]],
+    *,
+    separator: str = _DORIS_CSV_SEPARATOR,
+) -> Tuple[Path, int]:
+    """把数据行流式写成 UTF-8 分隔文本（无表头），供 Doris Stream Load。返回 (csv_path, rows)。"""
     tmp = tempfile.NamedTemporaryFile(prefix="gido_import_", suffix=".csv", delete=False)
     tmp_path = Path(tmp.name)
     rows = 0
@@ -274,7 +281,15 @@ def _rows_to_csv_temp(row_iter, cols: List[Dict[str, Any]]) -> Tuple[Path, int]:
     sample_errors: List[str] = []
     try:
         with tmp_path.open("w", encoding="utf-8", newline="") as out:
-            writer = csv.writer(out)
+            # 用 SOH 分隔，避免 JSON 内逗号拆列；勿设 escapechar，否则 \N 会被写成 \\N
+            writer = csv.writer(
+                out,
+                delimiter=separator,
+                quotechar='"',
+                doublequote=True,
+                lineterminator="\n",
+                quoting=csv.QUOTE_MINIMAL,
+            )
             for row in row_iter:
                 try:
                     cells = []
@@ -317,12 +332,13 @@ def _xlsx_to_csv_temp(
     cols: List[Dict[str, Any]],
     max_rows: int,
 ) -> Tuple[Path, int]:
-    """把 Excel 流式写成 UTF-8 CSV，供 Doris Stream Load。返回 (csv_path, rows)。"""
+    """把 Excel 流式写成 UTF-8 分隔文本，供 Doris Stream Load。返回 (csv_path, rows)。"""
     return _rows_to_csv_temp(
         iter_xlsx_rows_from_path(
             path, has_header=has_header, sheet_name=sheet_name, max_rows=max_rows
         ),
         cols,
+        separator=_DORIS_CSV_SEPARATOR,
     )
 
 
@@ -336,8 +352,8 @@ def _csv_to_stream_load_temp(
     max_rows: int,
 ) -> Tuple[Path, int]:
     """
-    CSV → 无表头 UTF-8 CSV（并按列类型 coerce）。
-    Doris skip_header 是整数行数，传 true 会被忽略，表头当数据导致 DATA_QUALITY_ERROR。
+    CSV → 无表头、SOH 分隔文本（并按列类型 coerce）。
+    Doris 默认不按 RFC4180 识别引号，JSON 内逗号会被拆成多余列。
     """
     delim = delimiter if delimiter is not None and delimiter != "" else ","
     return _rows_to_csv_temp(
@@ -349,6 +365,7 @@ def _csv_to_stream_load_temp(
             max_rows=max_rows,
         ),
         cols,
+        separator=_DORIS_CSV_SEPARATOR,
     )
 
 
@@ -431,6 +448,9 @@ def _doris_stream_load(
         "label": label,
         "format": "csv",
         "column_separator": column_separator,
+        # 字段含 SOH/换行时 writer 会用 "..." 且 "" 转义；与 Excel CSV 一致
+        "enclose": '"',
+        "escape": '"',
         "columns": col_names,
         "max_filter_ratio": "0.1",
         "strict_mode": "false",
@@ -489,8 +509,8 @@ def _doris_stream_load(
             )
         elif "too many filtered" in msg.lower() or "DATA_QUALITY_ERROR" in msg.upper():
             hint = (
-                "（大量行被过滤：常见原因是空值未写成 \\N、表头被当数据、分隔符不匹配或类型转换失败。"
-                "请核对列类型；错误样例见上方。）"
+                "（大量行被过滤：常见原因是 JSON/文本内逗号被拆列、空值未写成 \\N、"
+                "表头被当数据或类型转换失败。请核对列类型；错误样例见上方。）"
             )
         raise ValueError("; ".join(detail_parts) + hint)
     if filtered and loaded == 0:
@@ -573,7 +593,7 @@ def execute_file_import(
                 table_name,
                 cols,
                 tmp_csv,
-                column_separator=",",
+                column_separator=_DORIS_CSV_SEPARATOR,
                 skip_header=False,
             )
             if converted and rows_read == 0:
