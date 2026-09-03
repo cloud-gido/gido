@@ -2,39 +2,43 @@
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * 可全屏的代码/SQL 文本域（Form.Item 兼容 value/onChange）。
- * 交互对齐工作流 DAG：Portal 盖住 Modal、Esc 退出。
+ * 可全屏的 SQL/代码编辑（Form.Item 兼容 value/onChange）。
+ * 编辑器视觉与快捷键走共享 DwMonacoEditor；全屏交互对齐工作流 DAG（Portal + Esc）。
  */
 import { useEffect, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
-import { Button, Input, Space, Typography } from 'antd'
+import { Button, Space, Typography } from 'antd'
 import { FullscreenExitOutlined, FullscreenOutlined } from '@ant-design/icons'
 import { Z_FULLSCREEN } from './dagEditorOverlay'
+import DwMonacoEditor from './DwMonacoEditor'
 
-const { TextArea } = Input
 const { Text } = Typography
 
 type Props = {
   value?: string
   onChange?: (value: string) => void
   rows?: number
+  /** 保留以兼容调用方；Monaco 无原生 placeholder，由 title 提示 */
   placeholder?: string
   /** 全屏顶栏标题 */
   title?: string
   disabled?: boolean
   style?: CSSProperties
+  language?: string
 }
 
 export default function ExpandableCodeArea({
   value,
   onChange,
   rows = 6,
-  placeholder,
+  placeholder: _placeholder,
   title = 'SQL 模板',
   disabled,
   style,
+  language = 'sql',
 }: Props) {
   const [fullscreen, setFullscreen] = useState(false)
+  const inlineHeight = Math.max(160, rows * 22)
 
   useEffect(() => {
     if (!fullscreen) return
@@ -53,10 +57,6 @@ export default function ExpandableCodeArea({
       document.body.style.overflow = prev
     }
   }, [fullscreen])
-
-  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    onChange?.(e.target.value)
-  }
 
   const toolbar = (inFs: boolean) => (
     <div style={{
@@ -85,24 +85,21 @@ export default function ExpandableCodeArea({
     </div>
   )
 
-  const areaStyle: CSSProperties = {
-    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-    fontSize: 13,
-    lineHeight: 1.5,
-    ...style,
-  }
+  const editor = (height: string | number, fill?: boolean) => (
+    <DwMonacoEditor
+      value={value}
+      onChange={onChange}
+      height={height}
+      language={language}
+      readOnly={Boolean(disabled)}
+      style={fill ? { height: '100%', ...style } : style}
+    />
+  )
 
   const inline = (
     <div data-testid="expandable-code-area">
       {toolbar(false)}
-      <TextArea
-        value={value}
-        onChange={handleChange}
-        rows={rows}
-        placeholder={placeholder}
-        disabled={disabled}
-        style={areaStyle}
-      />
+      {editor(inlineHeight)}
     </div>
   )
 
@@ -123,28 +120,18 @@ export default function ExpandableCodeArea({
       }}
     >
       {toolbar(true)}
-      <TextArea
-        value={value}
-        onChange={handleChange}
-        placeholder={placeholder}
-        disabled={disabled}
-        style={{
-          ...areaStyle,
-          flex: 1,
-          height: '100%',
-          resize: 'none',
-        }}
-        autoFocus
-      />
+      <div style={{ flex: 1, minHeight: 0 }}>
+        {editor('100%', true)}
+      </div>
     </div>
   )
 
   return (
     <>
       {/* 占位，避免 Modal 表单高度塌缩 */}
-      <div style={{ minHeight: rows * 22 + 48 }} aria-hidden>
+      <div style={{ minHeight: inlineHeight + 48 }} aria-hidden>
         {toolbar(false)}
-        <TextArea rows={rows} value={value} disabled style={{ ...areaStyle, visibility: 'hidden' }} />
+        <div style={{ height: inlineHeight, visibility: 'hidden' }} />
       </div>
       {createPortal(shell, document.body)}
     </>

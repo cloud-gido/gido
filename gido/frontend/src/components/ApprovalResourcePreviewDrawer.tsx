@@ -9,7 +9,6 @@ import {
   Alert, Button, Descriptions, Drawer, Space, Spin, Table, Tabs, Tag, Typography, message,
 } from 'antd'
 import { ExportOutlined } from '@ant-design/icons'
-import Editor from '@monaco-editor/react'
 import { Link } from 'react-router-dom'
 import { approvalApi } from '../api'
 import { APPROVAL_ACTION_LABEL, APPROVAL_RESOURCE_LABEL } from '../approvalLabels'
@@ -18,7 +17,7 @@ import {
   approvalResourceOpenPath,
 } from '../utils/approvalOpenTarget'
 import { formatInTimeZone } from '../utils/datetime'
-import { loadEditorAppearance, monacoEditorOptionsFromAppearance } from '../utils/editorAppearance'
+import DwMonacoEditor from './DwMonacoEditor'
 
 const { Text, Paragraph } = Typography
 
@@ -32,23 +31,15 @@ type Props = {
 }
 
 function ScriptPane({ value, height = 320 }: { value: string; height?: number }) {
-  const appearance = useMemo(() => loadEditorAppearance(), [])
   return (
-    <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, overflow: 'hidden', height }}>
-      <Editor
-        height="100%"
-        language="sql"
-        theme={appearance.theme}
-        value={value || '-- 空脚本'}
-        options={{
-          ...monacoEditorOptionsFromAppearance(appearance),
-          readOnly: true,
-          minimap: { enabled: false },
-          scrollBeyondLastLine: false,
-          wordWrap: 'on',
-        }}
-      />
-    </div>
+    <DwMonacoEditor
+      height={height}
+      language="sql"
+      value={value || '-- 空脚本'}
+      readOnly
+      findBar={false}
+      style={{ borderColor: '#f0f0f0' }}
+    />
   )
 }
 

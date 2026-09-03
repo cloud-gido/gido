@@ -2,9 +2,16 @@
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+
+vi.mock('@monaco-editor/react', () => ({
+  default: ({ value }: { value?: string }) => (
+    <div data-testid="dw-monaco-stub">{value ?? ''}</div>
+  ),
+}))
+
 import ExpandableCodeArea from './ExpandableCodeArea'
 
 afterEach(() => {
@@ -17,6 +24,7 @@ describe('ExpandableCodeArea', () => {
     render(<ExpandableCodeArea value="SELECT 1" title="SQL 模板" />)
 
     expect(screen.getByTestId('expandable-code-area')).toBeInTheDocument()
+    expect(screen.getByTestId('dw-monaco-stub')).toHaveTextContent('SELECT 1')
     expect(screen.queryByTestId('expandable-code-area-fullscreen')).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: '全屏' }))
