@@ -23,13 +23,21 @@ from app.services.file_import_store import max_bytes_for_format, save_upload_str
 
 
 class _Ds:
-    def __init__(self, ds_type: str, database: str = "test", port: int = 9030, extra=None):
+    def __init__(
+        self,
+        ds_type: str,
+        database: str = "test",
+        port: int = 9030,
+        extra=None,
+        username: str = "u",
+        password: str = "p",
+    ):
         self.ds_type = ds_type
         self.database = database
         self.host = "127.0.0.1"
         self.port = port
-        self.username = "u"
-        self.password = "p"
+        self.username = username
+        self.password = password
         self.extra_config = extra or {}
 
 
@@ -160,7 +168,40 @@ def test_doris_stream_load_mocked(tmp_path):
         )
     assert read == 2 and written == 2
     assert put.call_args.kwargs["timeout"] == 3600
+    assert put.call_args.kwargs["allow_redirects"] is False
+    assert put.call_args.kwargs["auth"] == ("u", "p")
     assert "/api/demo/t1/_stream_load" in put.call_args.args[0]
+
+
+def test_doris_stream_load_follows_307_with_auth(tmp_path):
+    from app.services.file_import_exec import _doris_stream_load
+
+    p = tmp_path / "data.csv"
+    p.write_text("1,a\n", encoding="utf-8")
+    cols = [{"name": "id", "type": "bigint"}, {"name": "name", "type": "string"}]
+    ds = _Ds("doris", database="demo", port=9030, username="u1", password="p1")
+
+    redirect = MagicMock()
+    redirect.status_code = 307
+    redirect.headers = {"Location": "http://be:8040/api/demo/t1/_stream_load"}
+
+    ok = MagicMock()
+    ok.status_code = 200
+    ok.json.return_value = {
+        "Status": "Success",
+        "NumberLoadedRows": 1,
+        "NumberTotalRows": 1,
+        "NumberFilteredRows": 0,
+    }
+
+    with patch("app.services.file_import_exec.requests.put", side_effect=[redirect, ok]) as put:
+        read, written = _doris_stream_load(ds, "t1", cols, p)
+    assert read == 1 and written == 1
+    assert put.call_count == 2
+    assert put.call_args_list[0].kwargs["auth"] == ("u1", "p1")
+    assert put.call_args_list[1].args[0] == "http://be:8040/api/demo/t1/_stream_load"
+    assert put.call_args_list[1].kwargs["auth"] == ("u1", "p1")
+    assert put.call_args_list[1].kwargs["allow_redirects"] is False
 
 
 def test_chunked_upload_assemble(tmp_path, monkeypatch):

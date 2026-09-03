@@ -296,6 +296,44 @@ def _xlsx_to_csv_temp(
     return tmp_path, rows
 
 
+def _doris_stream_load_put(
+    url: str,
+    *,
+    headers: Dict[str, str],
+    auth: Tuple[str, str],
+    csv_path: Path,
+) -> requests.Response:
+    """
+    Doris FE Stream Load 常 307 到 BE。requests 自动跟跳时会丢掉 Authorization，
+    于是 BE 返回 [NOT_AUTHORIZED]no valid Basic authorization。
+    这里手动跟随一次重定向并重新带上 Basic Auth。
+    """
+    with csv_path.open("rb") as f:
+        resp = requests.put(
+            url,
+            data=f,
+            headers=headers,
+            auth=auth,
+            timeout=3600,
+            allow_redirects=False,
+        )
+    if resp.status_code not in (301, 302, 303, 307, 308):
+        return resp
+    location = (resp.headers.get("Location") or resp.headers.get("location") or "").strip()
+    if not location:
+        return resp
+    logger.info("doris stream load redirect %s -> %s", resp.status_code, location)
+    with csv_path.open("rb") as f:
+        return requests.put(
+            location,
+            data=f,
+            headers=headers,
+            auth=auth,
+            timeout=3600,
+            allow_redirects=False,
+        )
+
+
 def _doris_stream_load(
     ds: DataSource,
     table_name: str,
@@ -336,20 +374,18 @@ def _doris_stream_load(
 
     size = csv_path.stat().st_size
     logger.info(
-        "doris stream load start url=%s size=%s label=%s",
+        "doris stream load start url=%s size=%s label=%s user=%s",
         url,
         size,
         label,
+        user,
     )
-    with csv_path.open("rb") as f:
-        resp = requests.put(
-            url,
-            data=f,
-            headers=headers,
-            auth=(user, password),
-            timeout=3600,
-            allow_redirects=True,
-        )
+    resp = _doris_stream_load_put(
+        url,
+        headers=headers,
+        auth=(user, password),
+        csv_path=csv_path,
+    )
     try:
         body = resp.json()
     except Exception:
@@ -361,9 +397,15 @@ def _doris_stream_load(
     filtered = int(body.get("NumberFilteredRows") or body.get("numberFilteredRows") or 0)
     ok = status in ("success", "publish timeout") or (resp.status_code < 400 and loaded > 0)
     if not ok:
+        msg = str(body.get("Message") or body.get("msg") or body)
+        hint = ""
+        if "NOT_AUTHORIZED" in msg.upper() or "no valid Basic authorization" in msg:
+            hint = (
+                "（Stream Load 鉴权失败：请在数据源填写 Doris 用户名/密码；"
+                "空账号会按 root 空密码尝试。若仍失败，核对 FE HTTP 端口与账号权限。）"
+            )
         raise ValueError(
-            f"Doris Stream Load 失败 HTTP {resp.status_code}: "
-            f"{body.get('Message') or body.get('msg') or body}"
+            f"Doris Stream Load 失败 HTTP {resp.status_code}: {msg}{hint}"
         )
     if filtered and loaded == 0:
         raise ValueError(f"Doris Stream Load 全部被过滤: {body}")
