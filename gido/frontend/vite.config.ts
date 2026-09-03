@@ -12,7 +12,13 @@ export default defineConfig({
     port: 3003,
     // 浏览器访问 /api/* → 转发到本机后端；须与 uvicorn 端口一致
     proxy: {
-      '/api': { target: 'http://127.0.0.1:8001', changeOrigin: true },
+      '/api': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        // 本地开发上传 GB 级 CSV 时拉长超时
+        timeout: 3_600_000,
+        proxyTimeout: 3_600_000,
+      },
     },
   },
 })

@@ -5,16 +5,19 @@
  * @date 2026-06-05
  */
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Table, Input, Button, Modal, Form, Select, Tag, Space, message, Descriptions, Tabs, Alert, Spin } from 'antd'
-import { SearchOutlined, PlusOutlined, SyncOutlined, ApartmentOutlined, TableOutlined } from '@ant-design/icons'
+import { SearchOutlined, PlusOutlined, SyncOutlined, ApartmentOutlined, TableOutlined, UploadOutlined } from '@ant-design/icons'
 import { datamapApi, datasourceApi } from '../api'
 import { useAppStore } from '../store'
 import { formatCellDisplay } from '../utils/cellDisplay'
 import LineageGraph from '../components/LineageGraph'
+import { R } from '../routes'
 
 export default function DataMapPage() {
   const { currentWorkspace } = useAppStore()
   const wsId = currentWorkspace?.id
+  const navigate = useNavigate()
   const [tables, setTables] = useState<any[]>([])
   const [datasources, setDatasources] = useState<any[]>([])
   const [keyword, setKeyword] = useState('')
@@ -231,6 +234,12 @@ export default function DataMapPage() {
             style={{ width: 260 }}
           />
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setRegisterModal(true)}>手动注册表</Button>
+          <Button
+            icon={<UploadOutlined />}
+            onClick={() => navigate(`${R.batch.integration}?action=file-import`)}
+          >
+            从本地文件建表
+          </Button>
           <Button icon={<SearchOutlined />} onClick={load}>刷新目录</Button>
         </Space>
       </div>

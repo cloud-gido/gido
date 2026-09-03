@@ -207,6 +207,28 @@ export const integrationApi = {
   cdcStart: (id: number) => request.post(`/integration/tasks/${id}/cdc/start`),
   cdcStop: (id: number) => request.post(`/integration/tasks/${id}/cdc/stop`),
   cdcStatus: (id: number) => request.get(`/integration/tasks/${id}/cdc/status`),
+  uploadFileImport: (workspaceId: number, file: File, opts?: {
+    encoding?: string
+    delimiter?: string
+    has_header?: boolean
+    sheet_name?: string
+  }) => {
+    const fd = new FormData()
+    fd.append('workspace_id', String(workspaceId))
+    fd.append('file', file)
+    if (opts?.encoding) fd.append('encoding', opts.encoding)
+    if (opts?.delimiter != null) fd.append('delimiter', opts.delimiter)
+    if (opts?.has_header != null) fd.append('has_header', String(opts.has_header))
+    if (opts?.sheet_name) fd.append('sheet_name', opts.sheet_name)
+    return request.post('/integration/file-import/upload', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      // 2GB 级上传：关闭 axios 默认 330s 超时
+      timeout: 0,
+    })
+  },
+  previewFileImport: (data: any) => request.post('/integration/file-import/preview', data),
+  previewFileImportDdl: (data: any) => request.post('/integration/file-import/preview-ddl', data),
+  createFileImportTask: (data: any) => request.post('/integration/file-import/tasks', data),
 }
 
 // 数据地图

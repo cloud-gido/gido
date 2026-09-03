@@ -5,7 +5,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Query
+from fastapi import APIRouter, Depends, HTTPException, Header, Query, UploadFile, File, Form
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -206,6 +206,8 @@ def list_sync_tasks(workspace_id: int, db: Session = Depends(get_db), current_us
 @router.post("/tasks", response_model=SyncTaskOut)
 def create_sync_task(task_in: SyncTaskCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     assert_workspace_data_capability(db, current_user, task_in.workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_WRITE)
+    if task_in.sync_mode == "file_import":
+        raise HTTPException(status_code=400, detail="请使用「本地文件导入」接口创建任务")
     if task_in.sync_mode not in SYNC_MODES:
         raise HTTPException(status_code=400, detail="sync_mode 仅支持 full / incremental / cdc")
     if task_in.sync_mode == "cdc":
@@ -316,6 +318,22 @@ def validate_task(
     current_user: User = Depends(get_current_user),
 ):
     task = require_sync_task(db, current_user, task_id)
+    if task.sync_mode == "file_import":
+        dst_ds = db.query(DataSource).filter(DataSource.id == task.dst_datasource_id).first()
+        if not dst_ds:
+            raise HTTPException(status_code=400, detail="目标数据源不存在")
+        ok_dst, msg_dst = test_connection(dst_ds)
+        cfg = task.sync_config if isinstance(task.sync_config, dict) else {}
+        warnings = []
+        if not cfg.get("file_id"):
+            warnings.append("缺少 file_id")
+        if not task.dst_table:
+            warnings.append("缺少目标表")
+        return {
+            "warnings": warnings,
+            "src_connection": {"ok": True, "message": "本地文件源，无需连接"},
+            "dst_connection": {"ok": ok_dst, "message": msg_dst},
+        }
     src_ds = db.query(DataSource).filter(DataSource.id == task.src_datasource_id).first()
     dst_ds = db.query(DataSource).filter(DataSource.id == task.dst_datasource_id).first()
     if not src_ds or not dst_ds:
@@ -443,3 +461,255 @@ def get_sync_record(
     if not record:
         raise HTTPException(status_code=404, detail="运行记录不存在")
     return record
+
+
+# ==================== 本地文件导入 ====================
+
+class FileImportColumnIn(BaseModel):
+    name: str
+    type: str = "string"
+    nullable: bool = True
+    is_primary_key: bool = False
+
+
+class FileImportPreviewIn(BaseModel):
+    workspace_id: int
+    file_id: str
+    encoding: Optional[str] = None
+    delimiter: Optional[str] = None
+    has_header: bool = True
+    sheet_name: Optional[str] = None
+
+
+class FileImportDdlIn(BaseModel):
+    datasource_id: int
+    table_name: str
+    columns: List[FileImportColumnIn]
+
+
+class FileImportTaskCreate(BaseModel):
+    workspace_id: int
+    name: str
+    description: Optional[str] = None
+    dst_datasource_id: int
+    dst_table: str
+    file_id: str
+    columns: List[FileImportColumnIn]
+    encoding: Optional[str] = None
+    delimiter: Optional[str] = None
+    has_header: bool = True
+    sheet_name: Optional[str] = None
+    register_datamap: bool = True
+    if_exists: str = "fail"  # fail | append
+    run_now: bool = True
+
+
+def _public_parse_result(parsed: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "file_id": meta.get("file_id"),
+        "original_filename": meta.get("original_filename"),
+        "format": parsed.get("format") or meta.get("format"),
+        "size_bytes": meta.get("size_bytes") or parsed.get("size_bytes"),
+        "encoding": parsed.get("encoding"),
+        "delimiter": parsed.get("delimiter"),
+        "has_header": parsed.get("has_header"),
+        "sheet_name": parsed.get("sheet_name"),
+        "sheet_names": parsed.get("sheet_names") or [],
+        "columns": parsed.get("columns") or [],
+        "preview_rows": parsed.get("preview_rows") or [],
+        "row_count": parsed.get("row_count") or 0,
+        "row_count_estimated": bool(parsed.get("row_count_estimated")),
+        "max_bytes": settings.FILE_IMPORT_MAX_BYTES,
+        "max_rows": settings.FILE_IMPORT_MAX_ROWS,
+        "xlsx_max_bytes": settings.FILE_IMPORT_XLSX_MAX_BYTES,
+    }
+
+
+@router.post("/file-import/upload")
+async def file_import_upload(
+    workspace_id: int = Form(...),
+    file: UploadFile = File(...),
+    encoding: Optional[str] = Form(None),
+    delimiter: Optional[str] = Form(None),
+    has_header: bool = Form(True),
+    sheet_name: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    assert_workspace_data_capability(
+        db, current_user, workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_WRITE
+    )
+    try:
+        from app.services.file_import_store import save_upload_stream, resolve_data_path
+        from app.services.file_import_parse import parse_file_path
+
+        async def _chunks():
+            while True:
+                chunk = await file.read(8 * 1024 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+
+        meta = await save_upload_stream(
+            workspace_id=workspace_id,
+            user_id=current_user.id,
+            filename=file.filename or "upload.csv",
+            chunks=_chunks(),
+        )
+        path = resolve_data_path(meta)
+        parsed = parse_file_path(
+            path,
+            str(meta["format"]),
+            encoding=encoding,
+            delimiter=delimiter,
+            has_header=has_header,
+            sheet_name=sheet_name,
+            max_rows=int(settings.FILE_IMPORT_MAX_ROWS),
+            preview_rows=int(settings.FILE_IMPORT_PREVIEW_ROWS),
+            infer_rows=int(settings.FILE_IMPORT_INFER_ROWS),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"解析失败: {e}")
+    return _public_parse_result(parsed, meta)
+
+
+@router.post("/file-import/preview")
+def file_import_preview(
+    body: FileImportPreviewIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    assert_workspace_data_capability(
+        db, current_user, body.workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_WRITE
+    )
+    try:
+        from app.services.file_import_store import load_meta, resolve_data_path
+        from app.services.file_import_parse import parse_file_path
+
+        meta = load_meta(body.workspace_id, body.file_id)
+        path = resolve_data_path(meta)
+        parsed = parse_file_path(
+            path,
+            str(meta.get("format") or "csv"),
+            encoding=body.encoding,
+            delimiter=body.delimiter,
+            has_header=body.has_header,
+            sheet_name=body.sheet_name,
+            max_rows=int(settings.FILE_IMPORT_MAX_ROWS),
+            preview_rows=int(settings.FILE_IMPORT_PREVIEW_ROWS),
+            infer_rows=int(settings.FILE_IMPORT_INFER_ROWS),
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"解析失败: {e}")
+    return _public_parse_result(parsed, meta)
+
+
+@router.post("/file-import/preview-ddl")
+def file_import_preview_ddl(
+    body: FileImportDdlIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ds = require_datasource_row(db, current_user, body.datasource_id)
+    assert_workspace_data_capability(
+        db, current_user, ds.workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_WRITE
+    )
+    try:
+        from app.services.file_import_exec import build_create_table_ddl, table_exists
+
+        cols = [c.model_dump() for c in body.columns]
+        ddl = build_create_table_ddl(ds, body.table_name, cols)
+        exists = table_exists(ds, body.table_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ddl": ddl, "table_exists": exists, "ds_type": (ds.ds_type or "").lower()}
+
+
+@router.post("/file-import/tasks")
+def create_file_import_task(
+    body: FileImportTaskCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    assert_workspace_data_capability(
+        db, current_user, body.workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_WRITE
+    )
+    if body.if_exists not in ("fail", "append"):
+        raise HTTPException(status_code=400, detail="if_exists 仅支持 fail / append")
+    ds = require_datasource_row(db, current_user, body.dst_datasource_id)
+    if ds.workspace_id != body.workspace_id:
+        raise HTTPException(status_code=400, detail="目标数据源不属于该工作空间")
+    ds_type = (ds.ds_type or "").lower()
+    if ds_type not in ("mysql", "doris"):
+        raise HTTPException(status_code=400, detail="本地文件导入暂仅支持 MySQL / Doris 目标")
+
+    try:
+        from app.services.file_import_store import load_meta
+        from app.services.file_import_exec import normalize_columns, validate_table_name, table_exists
+
+        meta = load_meta(body.workspace_id, body.file_id)
+        table_name = validate_table_name(body.dst_table)
+        cols = normalize_columns([c.model_dump() for c in body.columns])
+        if body.if_exists == "fail" and table_exists(ds, table_name):
+            raise ValueError(f"目标表已存在: {table_name}")
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    sync_config = {
+        "source_type": "file",
+        "file_id": body.file_id,
+        "original_filename": meta.get("original_filename"),
+        "format": meta.get("format"),
+        "encoding": body.encoding,
+        "delimiter": body.delimiter,
+        "has_header": body.has_header,
+        "sheet_name": body.sheet_name,
+        "columns": cols,
+        "register_datamap": body.register_datamap,
+        "if_exists": body.if_exists,
+        "batch_size": 2000,
+    }
+    task = SyncTask(
+        workspace_id=body.workspace_id,
+        name=body.name.strip(),
+        description=body.description,
+        src_datasource_id=body.dst_datasource_id,
+        dst_datasource_id=body.dst_datasource_id,
+        src_table=str(meta.get("original_filename") or "local_file"),
+        dst_table=table_name,
+        sync_mode="file_import",
+        sync_config=sync_config,
+        schedule_cron=None,
+        is_active=True,
+        created_by=current_user.id,
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    out: Dict[str, Any] = {
+        "task": SyncTaskOut.model_validate(task).model_dump(),
+        "record_id": None,
+        "message": "导入任务已创建",
+    }
+    if body.run_now:
+        assert_workspace_data_capability(
+            db, current_user, body.workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_RUN
+        )
+        try:
+            record = start_sync_async(task.id, trigger_type="manual")
+            out["record_id"] = record.id
+            out["message"] = "导入已在后台执行，请在运行历史中查看进度"
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+    return out

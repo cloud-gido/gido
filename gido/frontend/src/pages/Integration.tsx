@@ -5,18 +5,20 @@
  * @date 2026-06-05
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   Table, Button, Modal, Form, Input, Select, Tag, Space, message, Drawer, Switch, Alert,
   Tabs, InputNumber, Popconfirm, Tooltip,
 } from 'antd'
 import {
   PlusOutlined, PlayCircleOutlined, DeleteOutlined, EditOutlined, HistoryOutlined,
-  CheckCircleOutlined, ReloadOutlined,
+  CheckCircleOutlined, ReloadOutlined, UploadOutlined,
 } from '@ant-design/icons'
 import { integrationApi, datasourceApi } from '../api'
 import { useAppStore } from '../store'
 import { can, P } from '../perm'
 import CronBuilder from '../components/CronBuilder'
+import FileImportDrawer from '../components/FileImportDrawer'
 
 type FieldMapping = { src: string; dst: string }
 
@@ -37,10 +39,12 @@ export default function IntegrationPage() {
   const wsId = currentWorkspace?.id
   const canWrite = can(user, P.GIDO_BATCH_INTEGRATION_WRITE, currentWorkspace)
   const canRun = can(user, P.GIDO_BATCH_INTEGRATION_RUN, currentWorkspace)
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const [tasks, setTasks] = useState<any[]>([])
   const [datasources, setDatasources] = useState<any[]>([])
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [fileImportOpen, setFileImportOpen] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historyTask, setHistoryTask] = useState<any>(null)
@@ -77,6 +81,15 @@ export default function IntegrationPage() {
   }
 
   useEffect(() => { load() }, [wsId])
+
+  useEffect(() => {
+    if (searchParams.get('action') === 'file-import' && canWrite) {
+      setFileImportOpen(true)
+      const next = new URLSearchParams(searchParams)
+      next.delete('action')
+      setSearchParams(next, { replace: true })
+    }
+  }, [searchParams, canWrite])
 
   const dsOptions = integrationDs.map((d: any) => ({
     label: `${d.name} (${d.ds_type})`,
@@ -128,6 +141,10 @@ export default function IntegrationPage() {
   }
 
   const openEdit = async (row: any) => {
+    if (row.sync_mode === 'file_import') {
+      message.info('本地文件导入任务不支持编辑配置，可查看运行历史或重新运行')
+      return
+    }
     setEditingId(row.id)
     const detail: any = await integrationApi.getTask(row.id)
     const cfg = detail.sync_config || {}
@@ -269,19 +286,26 @@ export default function IntegrationPage() {
       title: '源 → 目标',
       render: (_: unknown, row: any) => (
         <span style={{ fontSize: 12 }}>
-          {row.src_table} → {row.dst_table}
+          {row.sync_mode === 'file_import' ? (
+            <>本地文件 → {row.dst_table}</>
+          ) : (
+            <>{row.src_table} → {row.dst_table}</>
+          )}
         </span>
       ),
     },
     {
       title: '模式',
       dataIndex: 'sync_mode',
-      width: 88,
-      render: (t: string) => (
-        <Tag color={t === 'cdc' ? 'purple' : 'blue'}>
-          {t === 'incremental' ? '增量' : t === 'cdc' ? 'CDC' : '全量'}
-        </Tag>
-      ),
+      width: 100,
+      render: (t: string) => {
+        if (t === 'file_import') return <Tag color="cyan">本地文件</Tag>
+        return (
+          <Tag color={t === 'cdc' ? 'purple' : 'blue'}>
+            {t === 'incremental' ? '增量' : t === 'cdc' ? 'CDC' : '全量'}
+          </Tag>
+        )
+      },
     },
     {
       title: '调度',
@@ -360,9 +384,11 @@ export default function IntegrationPage() {
           </Button>
           {canWrite && (
             <>
-              <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(row)}>
-                编辑
-              </Button>
+              {row.sync_mode !== 'file_import' && (
+                <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(row)}>
+                  编辑
+                </Button>
+              )}
               <Button
                 size="small"
                 type="link"
@@ -395,11 +421,16 @@ export default function IntegrationPage() {
         <div>
           <h2 style={{ margin: 0 }}>数据集成</h2>
           <p style={{ margin: '6px 0 0', color: '#666', fontSize: 13 }}>
-            表级同步（PostgreSQL / Doris 等）。支持字段映射、增量/CDC 轮询准实时、Cron 调度、工作流 SYNC 节点与运行历史。
+            表级同步（PostgreSQL / Doris 等），以及本地 CSV/Excel 导入建表装数。支持字段映射、增量/CDC、Cron、工作流 SYNC 与运行历史。
           </p>
         </div>
         <Space>
           <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
+          {canWrite && (
+            <Button icon={<UploadOutlined />} onClick={() => setFileImportOpen(true)}>
+              本地文件导入
+            </Button>
+          )}
           {canWrite && (
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
               新建同步任务
@@ -687,6 +718,22 @@ export default function IntegrationPage() {
           ]}
         />
       </Drawer>
+
+      {wsId != null && (
+        <FileImportDrawer
+          open={fileImportOpen}
+          workspaceId={wsId}
+          canWrite={canWrite}
+          canRun={canRun}
+          defaultDatasourceId={
+            currentWorkspace?.effective_warehouse_datasource_id
+            ?? currentWorkspace?.warehouse_datasource_id
+            ?? currentWorkspace?.default_datasource_id
+          }
+          onClose={() => setFileImportOpen(false)}
+          onDone={load}
+        />
+      )}
     </div>
   )
 }

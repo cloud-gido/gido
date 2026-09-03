@@ -217,6 +217,57 @@ def run_sync_record(record_id: int, task_id: int, lock_handle: DistributedLockHa
         task = db.query(SyncTask).filter(SyncTask.id == task_id).first()
         if not record or not task:
             return
+
+        if task.sync_mode == "file_import":
+            dst_ds = db.query(DataSource).filter(DataSource.id == task.dst_datasource_id).first()
+            if not dst_ds:
+                record.status = "failed"
+                record.error_msg = "目标数据源不存在"
+                record.finished_at = datetime.utcnow()
+                db.commit()
+                return
+            try:
+                from app.services.file_import_exec import execute_file_import
+
+                cfg = _cfg(task)
+                rows_read, rows_written, _ddl = execute_file_import(
+                    db,
+                    workspace_id=task.workspace_id,
+                    ds=dst_ds,
+                    table_name=task.dst_table,
+                    file_id=str(cfg.get("file_id") or ""),
+                    columns=cfg.get("columns") or [],
+                    encoding=cfg.get("encoding"),
+                    delimiter=cfg.get("delimiter"),
+                    has_header=bool(cfg.get("has_header", True)),
+                    sheet_name=cfg.get("sheet_name"),
+                    register_datamap=bool(cfg.get("register_datamap")),
+                    batch_size=int(cfg.get("batch_size") or 2000),
+                    if_exists=str(cfg.get("if_exists") or "fail"),
+                )
+                record.status = "success"
+                record.rows_read = rows_read
+                record.rows_written = rows_written
+                task.last_sync_at = datetime.utcnow()
+                task.last_run_status = "success"
+                # 首次建表成功后，再次运行改为追加，避免「表已存在」失败
+                if str(cfg.get("if_exists") or "fail") == "fail":
+                    cfg = dict(cfg)
+                    cfg["if_exists"] = "append"
+                    task.sync_config = cfg
+            except Exception as e:
+                logger.exception("file import task %s failed", task_id)
+                record.status = "failed"
+                record.error_msg = str(e)[:4000]
+                task.last_run_status = "failed"
+            finally:
+                record.finished_at = datetime.utcnow()
+                if record.started_at:
+                    delta = record.finished_at - record.started_at
+                    record.duration_ms = int(delta.total_seconds() * 1000)
+                db.commit()
+            return
+
         src_ds = db.query(DataSource).filter(DataSource.id == task.src_datasource_id).first()
         dst_ds = db.query(DataSource).filter(DataSource.id == task.dst_datasource_id).first()
         if not src_ds or not dst_ds:

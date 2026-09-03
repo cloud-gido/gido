@@ -193,6 +193,15 @@ class Settings(BaseSettings):
     # 用户自定义头像（容器内建议挂卷持久化）
     AVATAR_UPLOAD_DIR: str = "/data/user-avatars"
     AVATAR_MAX_BYTES: int = 2 * 1024 * 1024
+    # 本地文件导入（CSV/Excel → 建表装数）临时文件目录；支持 GB 级 CSV 流式落盘
+    FILE_IMPORT_UPLOAD_DIR: str = "/data/file-imports"
+    FILE_IMPORT_MAX_BYTES: int = 3 * 1024 * 1024 * 1024  # 3GB
+    FILE_IMPORT_MAX_ROWS: int = 5_000_000
+    FILE_IMPORT_PREVIEW_ROWS: int = 100
+    FILE_IMPORT_INFER_ROWS: int = 2000  # 仅抽样推断类型，不全量进内存
+    FILE_IMPORT_XLSX_MAX_BYTES: int = 200 * 1024 * 1024  # Excel 仍限 200MB（单 sheet ≤104 万行）
+    FILE_IMPORT_MYSQL_BATCH: int = 5000
+    FILE_IMPORT_DORIS_HTTP_PORT: int = 8030  # FE HTTP（Stream Load）；可被数据源 extra_config.http_port 覆盖
     # 多副本生产头像写入与回源使用同一 S3 bucket；默认复用制品前缀下的 avatars/。
     AVATAR_S3_ENABLED: bool = False
 
