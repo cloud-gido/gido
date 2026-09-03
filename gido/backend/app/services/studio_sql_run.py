@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.models.workspace import DataSource, TaskNode, Workspace
 from app.services.integration_runtime import normalize_ds_type, open_connection
 from app.services.sql_readonly import (
+    _strip_sql_comments,
     apply_readonly_row_limit,
     column_types_from_description,
     json_cell_value,
@@ -62,9 +63,13 @@ def _adapt_statement(stmt: str, ds_type: str) -> str:
 
 
 def _looks_like_result_query(stmt: str) -> bool:
-    """判断是否可能返回结果集，以便追加 LIMIT / fetchmany 封顶。"""
-    core = (stmt or "").strip().lstrip("(").strip()
-    return bool(re.match(r"(?is)^(with|select|show|desc|describe|explain)\b", core))
+    """是否可在语句末尾安全追加 LIMIT（仅 SELECT / WITH…SELECT）。
+
+    SHOW / DESC / EXPLAIN / USE 等常不支持 LIMIT（如 Doris ``SHOW ROUTINE LOAD``），
+    行数仍由下方 ``fetchmany`` 封顶，不必改写 SQL。
+    """
+    core = _strip_sql_comments((stmt or "").strip().lstrip("(")).strip()
+    return bool(re.match(r"(?is)^(with|select)\b", core))
 
 
 def run_sql_with_result(

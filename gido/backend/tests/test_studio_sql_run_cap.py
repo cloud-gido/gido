@@ -23,9 +23,12 @@ from app.services.studio_sql_run import _looks_like_result_query, run_sql_with_r
     [
         ("SELECT 1", True),
         ("with t as (select 1) select * from t", True),
-        ("SHOW TABLES", True),
-        ("DESC foo", True),
-        ("EXPLAIN SELECT 1", True),
+        ("-- comment\nSELECT 1", True),
+        ("SHOW TABLES", False),
+        ("show ROUTINE load", False),
+        ("DESC foo", False),
+        ("EXPLAIN SELECT 1", False),
+        ("USE bigdata_ods", False),
         ("INSERT INTO t VALUES (1)", False),
         ("UPDATE t SET a=1", False),
         ("CREATE TABLE t (id INT)", False),
@@ -233,3 +236,61 @@ def test_run_sql_dml_does_not_force_limit(monkeypatch):
     assert result is None
     assert executed == ["INSERT INTO t VALUES (1)"]
     assert any("影响行数" in line for line in logs)
+
+
+def test_run_sql_use_and_show_do_not_append_limit(monkeypatch):
+    """Doris SHOW ROUTINE LOAD 等不支持尾部 LIMIT；USE 亦然。"""
+    from app.services import studio_sql_run as mod
+
+    node = SimpleNamespace(
+        workspace_id=1,
+        datasource_id=1,
+        script_content="use bigdata_ods;\nshow ROUTINE load;",
+        params=None,
+    )
+    ds = SimpleNamespace(id=1, name="doirs", ds_type="doris", host="h", port=9030)
+    monkeypatch.setattr(mod, "resolve_sql_datasource", lambda db, n: ds)
+    monkeypatch.setattr(mod, "normalize_ds_type", lambda d: "mysql")
+
+    class _WsQ:
+        def filter(self, *a, **k):
+            return self
+
+        def first(self):
+            return SimpleNamespace(timezone="Asia/Shanghai")
+
+    class _Db:
+        def query(self, *_a, **_k):
+            return _WsQ()
+
+    executed: list[str] = []
+    cur = MagicMock()
+    cur.description = None
+    cur.rowcount = 0
+
+    def _execute(sql):
+        executed.append(sql)
+        if sql.lower().startswith("show"):
+            cur.description = (("Id",), ("Name",))
+            cur.fetchmany = MagicMock(return_value=[])
+
+    cur.execute.side_effect = _execute
+    cur.close = MagicMock()
+    conn = MagicMock()
+    conn.cursor.return_value = cur
+    conn.commit = MagicMock()
+
+    @contextmanager
+    def _open(_ds):
+        yield ("mysql", conn)
+
+    monkeypatch.setattr(mod, "open_connection", _open)
+    monkeypatch.setattr(
+        "app.services.workspace_variables.substitute_script_variables",
+        lambda *a, **k: node.script_content,
+    )
+
+    logs, _result = run_sql_with_result(node, _Db(), resolve_date_expr=lambda *a, **k: None)
+    assert executed == ["use bigdata_ods", "show ROUTINE load"]
+    assert not any("LIMIT" in s.upper() for s in executed)
+    assert not any("已追加 LIMIT" in line for line in logs)
