@@ -190,6 +190,8 @@ jobs:
             type=sha,prefix=${{ github.ref_name }}-
 
       - name: Build and push backend image
+        id: build_backend
+        continue-on-error: true
         uses: docker/build-push-action@v6
         with:
           context: gido/backend
@@ -197,6 +199,18 @@ jobs:
           tags: ${{ steps.meta_backend.outputs.tags }}
           labels: ${{ steps.meta_backend.outputs.labels }}
           # GH Actions 在海外：清华 PyPI 常 403；DaoCloud 基础镜像也可能不稳
+          build-args: |
+            PY_IMAGE=python:3.9-slim
+            PIP_INDEX_URL=https://pypi.org/simple
+
+      - name: Retry backend image
+        if: steps.build_backend.outcome == 'failure'
+        uses: docker/build-push-action@v6
+        with:
+          context: gido/backend
+          push: true
+          tags: ${{ steps.meta_backend.outputs.tags }}
+          labels: ${{ steps.meta_backend.outputs.labels }}
           build-args: |
             PY_IMAGE=python:3.9-slim
             PIP_INDEX_URL=https://pypi.org/simple
