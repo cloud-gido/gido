@@ -198,6 +198,63 @@ def test_doris_stream_load_skip_header_is_integer(tmp_path):
     assert put.call_args.kwargs["headers"]["skip_header"] == "1"
 
 
+def test_doris_stream_load_control_separator_uses_hex_header(tmp_path):
+    """控制字符分隔符应以 \\xHH 形式放到 HTTP 头，避免 FE/网关 400。"""
+    from app.services.file_import_exec import _doris_stream_load
+
+    p = tmp_path / "data.csv"
+    p.write_text("1,a\n", encoding="utf-8")
+    cols = [{"name": "id", "type": "bigint"}, {"name": "name", "type": "string"}]
+    ds = _Ds("doris", database="demo", port=9030)
+    fake = MagicMock()
+    fake.status_code = 200
+    fake.json.return_value = {
+        "Status": "Success",
+        "NumberLoadedRows": 1,
+        "NumberTotalRows": 1,
+        "NumberFilteredRows": 0,
+    }
+    with patch("app.services.file_import_exec.requests.put", return_value=fake) as put:
+        _doris_stream_load(ds, "t1", cols, p, column_separator="\x01")
+    assert put.call_args.kwargs["headers"]["column_separator"] == "\\x01"
+
+
+def test_doris_stream_load_retries_on_http_400_empty_message(tmp_path):
+    """HTTP 400 且 Message 为空时，应按备选 header 再请求一次。"""
+    from app.services.file_import_exec import _doris_stream_load
+
+    p = tmp_path / "data.csv"
+    p.write_text("1,a\n", encoding="utf-8")
+    cols = [{"name": "id", "type": "bigint"}, {"name": "name", "type": "string"}]
+    ds = _Ds("doris", database="demo", port=9030)
+
+    bad = MagicMock()
+    bad.status_code = 400
+    bad.json.return_value = {"Status": "Fail", "Message": ""}
+
+    good = MagicMock()
+    good.status_code = 200
+    good.json.return_value = {
+        "Status": "Success",
+        "NumberLoadedRows": 1,
+        "NumberTotalRows": 1,
+        "NumberFilteredRows": 0,
+    }
+
+    with patch(
+        "app.services.file_import_exec.requests.put", side_effect=[bad, good]
+    ) as put:
+        read, written = _doris_stream_load(ds, "t1", cols, p, column_separator="\x01")
+
+    assert read == 1 and written == 1
+    # 第二次请求应使用不同的 column_separator header 表达
+    assert put.call_count == 2
+    assert (
+        put.call_args_list[0].kwargs["headers"]["column_separator"]
+        != put.call_args_list[1].kwargs["headers"]["column_separator"]
+    )
+
+
 def test_csv_to_stream_load_temp_strips_header(tmp_path):
     from app.services.file_import_exec import _DORIS_CSV_SEPARATOR, _csv_to_stream_load_temp
 

@@ -266,6 +266,49 @@ def _cell_for_doris_csv(value: Any) -> Any:
     return _DORIS_CSV_NULL if value is None else value
 
 
+def _doris_header_delimiter(separator: str) -> str:
+    """
+    将分隔符转换为 HTTP 头安全值。
+    Doris 支持 "\\x01" 形式；直接放控制字符到 header 可能被网关/FE 以 400 拒绝。
+    """
+    if separator is None:
+        return ","
+    if separator == "":
+        return ","
+    # 常见分隔符直接透传
+    if separator in {",", "\t", "|"}:
+        return separator
+    # 不可打印字符统一转为 \xHH（支持多字符）
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in separator):
+        return "".join(f"\\x{ord(ch):02x}" for ch in separator)
+    return separator
+
+
+def _doris_column_separator_header_candidates(separator: str) -> List[str]:
+    """
+    生成 Doris Stream Load 的 column_separator header 备选值。
+
+    目标是：避免把不可打印控制字符（如 SOH=0x01）直接塞进 HTTP 头导致 400。
+    """
+    candidates: List[str] = []
+    base = _doris_header_delimiter(separator)
+    candidates.append(base)
+
+    # SOH 备选表达：不同网关/FE 可能对转义解析支持不一致
+    if separator == _DORIS_CSV_SEPARATOR:
+        candidates.extend(["\\001", "\\u0001", r"\x01"])
+
+    # 去重但保序
+    out: List[str] = []
+    for c in candidates:
+        c2 = (c or "").strip()
+        if not c2:
+            continue
+        if c2 not in out:
+            out.append(c2)
+    return out
+
+
 def _rows_to_csv_temp(
     row_iter,
     cols: List[Dict[str, Any]],
@@ -443,85 +486,125 @@ def _doris_stream_load(
     label = f"gido_fi_{uuid.uuid4().hex[:16]}"
     url = f"http://{host}:{http_port}/api/{db_name}/{table_name}/_stream_load"
     col_names = ",".join(c["name"] for c in cols)
-    headers = {
-        "Expect": "100-continue",
-        "label": label,
-        "format": "csv",
-        "column_separator": column_separator,
-        # 字段含 SOH/换行时 writer 会用 "..." 且 "" 转义；与 Excel CSV 一致
-        "enclose": '"',
-        "escape": '"',
-        "columns": col_names,
-        "max_filter_ratio": "0.1",
-        "strict_mode": "false",
-        "timeout": "3600",
-    }
-    # Doris skip_header 是「跳过行数」(整数)，不是布尔；调用方应先去掉表头再传 False
-    if skip_header:
-        headers["skip_header"] = "1"
-
-    enc = (charset or "UTF-8").upper()
-    if enc not in ("UTF-8", "UTF8"):
-        headers["charset"] = enc
+    sep_candidates = _doris_column_separator_header_candidates(column_separator)
 
     size = csv_path.stat().st_size
     logger.info(
-        "doris stream load start url=%s size=%s label=%s user=%s",
+        "doris stream load start url=%s size=%s label=%s user=%s sep=%r candidates=%r",
         url,
         size,
         label,
         user,
+        column_separator,
+        sep_candidates,
     )
-    resp = _doris_stream_load_put(
-        url,
-        headers=headers,
-        auth=(user, password),
-        csv_path=csv_path,
-    )
-    try:
-        body = resp.json()
-    except Exception:
-        body = {"Status": "Fail", "Message": resp.text[:2000]}
 
-    status = str(body.get("Status") or body.get("status") or "").strip().lower()
-    loaded = int(body.get("NumberLoadedRows") or body.get("numberLoadedRows") or 0)
-    read = int(body.get("NumberTotalRows") or body.get("numberTotalRows") or loaded)
-    filtered = int(body.get("NumberFilteredRows") or body.get("numberFilteredRows") or 0)
-    error_url = str(
-        body.get("ErrorURL") or body.get("ErrorUrl") or body.get("errorURL") or ""
-    ).strip()
-    ok = status in ("success", "publish timeout") or (resp.status_code < 400 and loaded > 0)
-    if not ok:
-        msg = str(body.get("Message") or body.get("msg") or body)
-        detail_parts = [f"Doris Stream Load 失败 HTTP {resp.status_code}: {msg}"]
-        if read or filtered:
-            detail_parts.append(f"filtered={filtered}/{read or '?'}")
-        if error_url:
-            detail_parts.append(f"ErrorURL={error_url}")
-            sample = _fetch_doris_error_sample(error_url, (user, password))
-            if sample:
-                detail_parts.append(f"样例={sample}")
-        hint = ""
-        if "NOT_AUTHORIZED" in msg.upper() or "no valid Basic authorization" in msg:
-            hint = (
-                "（Stream Load 鉴权失败：请在数据源填写 Doris 用户名/密码；"
-                "空账号会按 root 空密码尝试。若仍失败，核对 FE HTTP 端口与账号权限。）"
-            )
-        elif "too many filtered" in msg.lower() or "DATA_QUALITY_ERROR" in msg.upper():
-            hint = (
-                "（大量行被过滤：常见原因是 JSON/文本内逗号被拆列、空值未写成 \\N、"
-                "表头被当数据或类型转换失败。请核对列类型；错误样例见上方。）"
-            )
-        raise ValueError("; ".join(detail_parts) + hint)
-    if filtered and loaded == 0:
-        sample = _fetch_doris_error_sample(error_url, (user, password)) if error_url else ""
-        raise ValueError(
-            f"Doris Stream Load 全部被过滤: filtered={filtered}/{read}"
-            + (f"; ErrorURL={error_url}" if error_url else f"; body={body}")
-            + (f"; 样例={sample}" if sample else "")
+    last_resp: Optional[requests.Response] = None
+    last_body: Dict[str, Any] = {}
+
+    # 兜底重试：FE/网关对不可打印 header 值格式不兼容时，可能直接返回 400 空 Message
+    for i, header_separator in enumerate(sep_candidates):
+        headers = {
+            "Expect": "100-continue",
+            "label": label,
+            "format": "csv",
+            # 字段含 SOH/换行时 writer 会用 "..." 且 "" 转义；与 Excel CSV 一致
+            "column_separator": header_separator,
+            "enclose": '"',
+            "escape": '"',
+            "columns": col_names,
+            "max_filter_ratio": "0.1",
+            "strict_mode": "false",
+            "timeout": "3600",
+        }
+        # Doris skip_header 是「跳过行数」(整数)，不是布尔；调用方应先去掉表头再传 False
+        if skip_header:
+            headers["skip_header"] = "1"
+
+        enc = (charset or "UTF-8").upper()
+        if enc not in ("UTF-8", "UTF8"):
+            headers["charset"] = enc
+
+        logger.info(
+            "doris stream load attempt %s/%s header_sep=%r",
+            i + 1,
+            len(sep_candidates),
+            header_separator,
         )
-    logger.info("doris stream load done loaded=%s read=%s filtered=%s", loaded, read, filtered)
-    return read or loaded, loaded
+        resp = _doris_stream_load_put(
+            url,
+            headers=headers,
+            auth=(user, password),
+            csv_path=csv_path,
+        )
+        last_resp = resp
+        try:
+            body = resp.json()
+        except Exception:
+            body = {"Status": "Fail", "Message": resp.text[:2000]}
+        last_body = body
+
+        status = str(body.get("Status") or body.get("status") or "").strip().lower()
+        loaded = int(body.get("NumberLoadedRows") or body.get("numberLoadedRows") or 0)
+        read = int(body.get("NumberTotalRows") or body.get("numberTotalRows") or loaded)
+        filtered = int(body.get("NumberFilteredRows") or body.get("numberFilteredRows") or 0)
+        error_url = str(
+            body.get("ErrorURL") or body.get("ErrorUrl") or body.get("errorURL") or ""
+        ).strip()
+
+        msg = str(body.get("Message") or body.get("msg") or "")
+        # 非空消息/非 400：按原逻辑直接结束
+        ok = status in ("success", "publish timeout") or (resp.status_code < 400 and loaded > 0)
+        if ok:
+            if filtered and loaded == 0:
+                sample = (
+                    _fetch_doris_error_sample(error_url, (user, password)) if error_url else ""
+                )
+                raise ValueError(
+                    f"Doris Stream Load 全部被过滤: filtered={filtered}/{read}"
+                    + (f"; ErrorURL={error_url}" if error_url else f"; body={body}")
+                    + (f"; 样例={sample}" if sample else "")
+                )
+            logger.info(
+                "doris stream load done loaded=%s read=%s filtered=%s",
+                loaded,
+                read,
+                filtered,
+            )
+            return read or loaded, loaded
+
+        # 兜底条件：HTTP 400 且 Message 为空，说明是 header/路由前置失败
+        if resp.status_code == 400 and (not msg.strip()):
+            if i + 1 < len(sep_candidates):
+                continue
+
+        # 走到这里：最终失败，抛出详细错误
+        if not ok:
+            detail_parts = [f"Doris Stream Load 失败 HTTP {resp.status_code}: {msg or body}"]
+            if read or filtered:
+                detail_parts.append(f"filtered={filtered}/{read or '?'}")
+            if error_url:
+                detail_parts.append(f"ErrorURL={error_url}")
+                sample = _fetch_doris_error_sample(error_url, (user, password))
+                if sample:
+                    detail_parts.append(f"样例={sample}")
+            hint = ""
+            if "NOT_AUTHORIZED" in (msg or "").upper() or "no valid Basic authorization" in msg:
+                hint = (
+                    "（Stream Load 鉴权失败：请在数据源填写 Doris 用户名/密码；"
+                    "空账号会按 root 空密码尝试。若仍失败，核对 FE HTTP 端口与账号权限。）"
+                )
+            elif "too many filtered" in (msg or "").lower() or "DATA_QUALITY_ERROR" in (msg or "").upper():
+                hint = (
+                    "（大量行被过滤：常见原因是 JSON/文本内逗号被拆列、空值未写成 \\N、"
+                    "表头被当数据或类型转换失败。请核对列类型；错误样例见上方。）"
+                )
+            raise ValueError("; ".join(detail_parts) + hint)
+
+    # 不应到这里，但兜底防御
+    if last_resp is not None:
+        raise ValueError(f"Doris Stream Load 失败 HTTP {last_resp.status_code}: {last_body}")
+    raise ValueError("Doris Stream Load 失败：无响应")
 
 
 def execute_file_import(
