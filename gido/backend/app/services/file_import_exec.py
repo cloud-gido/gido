@@ -256,6 +256,14 @@ def _load_mysql_batched(
     return rows_read, rows_written
 
 
+# Doris Stream Load CSV：NULL 必须写成 \N；空字段 "" 对 BIGINT/DATETIME 会整行被过滤
+_DORIS_CSV_NULL = "\\N"
+
+
+def _cell_for_doris_csv(value: Any) -> Any:
+    return _DORIS_CSV_NULL if value is None else value
+
+
 def _rows_to_csv_temp(row_iter, cols: List[Dict[str, Any]]) -> Tuple[Path, int]:
     """把数据行流式写成 UTF-8 CSV（无表头），供 Doris Stream Load。返回 (csv_path, rows)。"""
     tmp = tempfile.NamedTemporaryFile(prefix="gido_import_", suffix=".csv", delete=False)
@@ -273,9 +281,9 @@ def _rows_to_csv_temp(row_iter, cols: List[Dict[str, Any]]) -> Tuple[Path, int]:
                     for i, c in enumerate(cols):
                         raw_cell = row[i] if i < len(row) else None
                         v = coerce_cell(raw_cell, c["type"])
-                        cells.append("" if v is None else v)
+                        cells.append(_cell_for_doris_csv(v))
                     if len(cells) < width:
-                        cells.extend([""] * (width - len(cells)))
+                        cells.extend([_DORIS_CSV_NULL] * (width - len(cells)))
                     writer.writerow(cells[:width])
                     rows += 1
                 except Exception as e:
@@ -342,6 +350,22 @@ def _csv_to_stream_load_temp(
         ),
         cols,
     )
+
+
+def _fetch_doris_error_sample(error_url: str, auth: Tuple[str, str], *, limit: int = 3) -> str:
+    """拉取 Stream Load ErrorURL 前几行，便于定位类型/列数问题。"""
+    if not error_url:
+        return ""
+    try:
+        resp = requests.get(error_url, auth=auth, timeout=15)
+        text = (resp.text or "").strip()
+        if not text:
+            return ""
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()][:limit]
+        return " | ".join(lines)[:800]
+    except Exception as e:
+        logger.info("fetch doris ErrorURL failed: %s", e)
+        return ""
 
 
 def _doris_stream_load_put(
@@ -454,6 +478,9 @@ def _doris_stream_load(
             detail_parts.append(f"filtered={filtered}/{read or '?'}")
         if error_url:
             detail_parts.append(f"ErrorURL={error_url}")
+            sample = _fetch_doris_error_sample(error_url, (user, password))
+            if sample:
+                detail_parts.append(f"样例={sample}")
         hint = ""
         if "NOT_AUTHORIZED" in msg.upper() or "no valid Basic authorization" in msg:
             hint = (
@@ -462,14 +489,16 @@ def _doris_stream_load(
             )
         elif "too many filtered" in msg.lower() or "DATA_QUALITY_ERROR" in msg.upper():
             hint = (
-                "（大量行被过滤：常见原因是表头被当数据、分隔符不匹配或类型转换失败。"
-                "请核对列类型；ErrorURL 可查看被拒样例。）"
+                "（大量行被过滤：常见原因是空值未写成 \\N、表头被当数据、分隔符不匹配或类型转换失败。"
+                "请核对列类型；错误样例见上方。）"
             )
         raise ValueError("; ".join(detail_parts) + hint)
     if filtered and loaded == 0:
+        sample = _fetch_doris_error_sample(error_url, (user, password)) if error_url else ""
         raise ValueError(
             f"Doris Stream Load 全部被过滤: filtered={filtered}/{read}"
             + (f"; ErrorURL={error_url}" if error_url else f"; body={body}")
+            + (f"; 样例={sample}" if sample else "")
         )
     logger.info("doris stream load done loaded=%s read=%s filtered=%s", loaded, read, filtered)
     return read or loaded, loaded

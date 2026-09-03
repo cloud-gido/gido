@@ -218,6 +218,29 @@ def test_csv_to_stream_load_temp_strips_header(tmp_path):
         out.unlink(missing_ok=True)
 
 
+def test_csv_to_stream_load_temp_null_as_backslash_n(tmp_path):
+    """Doris CSV 空值须为 \\N，空字符串会导致数值列整行过滤。"""
+    from app.services.file_import_exec import _csv_to_stream_load_temp
+
+    p = tmp_path / "nulls.csv"
+    p.write_text("id,score,note\n1,,hello\n2,3.5,\n", encoding="utf-8")
+    cols = [
+        {"name": "id", "type": "bigint"},
+        {"name": "score", "type": "double"},
+        {"name": "note", "type": "string"},
+    ]
+    out, n = _csv_to_stream_load_temp(
+        p, encoding="utf-8", delimiter=",", has_header=True, cols=cols, max_rows=1000
+    )
+    try:
+        text = out.read_text(encoding="utf-8")
+        assert n == 2
+        assert "1,\\N,hello" in text.replace("\r\n", "\n")
+        assert "2,3.5,\\N" in text.replace("\r\n", "\n")
+    finally:
+        out.unlink(missing_ok=True)
+
+
 def test_doris_stream_load_data_quality_error_message(tmp_path):
     from app.services.file_import_exec import _doris_stream_load
     import pytest
