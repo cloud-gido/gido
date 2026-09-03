@@ -161,3 +161,29 @@ def test_doris_stream_load_mocked(tmp_path):
     assert read == 2 and written == 2
     assert put.call_args.kwargs["timeout"] == 3600
     assert "/api/demo/t1/_stream_load" in put.call_args.args[0]
+
+
+def test_chunked_upload_assemble(tmp_path, monkeypatch):
+    from app.services.file_import_store import (
+        init_chunked_upload,
+        save_upload_chunk,
+        finalize_chunked_upload,
+        resolve_data_path,
+    )
+
+    monkeypatch.setattr("app.core.config.settings.FILE_IMPORT_UPLOAD_DIR", str(tmp_path))
+    raw = b"id,name\n1,a\n2,b\n3,c\n"
+    parts = [raw[:8], raw[8:16], raw[16:]]
+    init = init_chunked_upload(
+        workspace_id=9,
+        user_id=1,
+        filename="demo.csv",
+        size_bytes=len(raw),
+        total_chunks=len(parts),
+    )
+    fid = init["file_id"]
+    for i, p in enumerate(parts):
+        save_upload_chunk(workspace_id=9, file_id=fid, chunk_index=i, content=p)
+    meta = finalize_chunked_upload(workspace_id=9, file_id=fid)
+    assert meta["status"] == "ready"
+    assert resolve_data_path(meta).read_bytes() == raw

@@ -168,3 +168,131 @@ def read_bytes(workspace_id: int, file_id: str) -> Tuple[Dict[str, Any], bytes]:
     meta = load_meta(workspace_id, file_id)
     path = resolve_data_path(meta)
     return meta, path.read_bytes()
+
+
+def init_chunked_upload(
+    *,
+    workspace_id: int,
+    user_id: int,
+    filename: str,
+    size_bytes: int,
+    total_chunks: int,
+) -> Dict[str, Any]:
+    original = sanitize_filename(filename)
+    fmt = detect_format(original)
+    max_bytes = max_bytes_for_format(fmt)
+    size_bytes = int(size_bytes or 0)
+    total_chunks = int(total_chunks or 0)
+    if size_bytes <= 0:
+        raise ValueError("文件大小无效")
+    if size_bytes > max_bytes:
+        raise ValueError(
+            f"文件超过上限 {max_bytes // (1024 * 1024)}MB"
+            + ("（Excel 大文件请先转为 CSV）" if fmt == "xlsx" else "（CSV 默认 ≤3GB）")
+        )
+    if total_chunks < 1 or total_chunks > 100_000:
+        raise ValueError("分片数量无效")
+
+    file_id = uuid.uuid4().hex
+    folder = _root() / str(int(workspace_id)) / file_id
+    parts = folder / "parts"
+    parts.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "file_id": file_id,
+        "workspace_id": int(workspace_id),
+        "uploaded_by": int(user_id),
+        "original_filename": original,
+        "format": fmt,
+        "size_bytes": size_bytes,
+        "total_chunks": total_chunks,
+        "received_chunks": [],
+        "status": "uploading",
+        "stored_path": str(folder / f"data.{fmt}"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _write_meta(folder, meta)
+    return {
+        "file_id": file_id,
+        "format": fmt,
+        "size_bytes": size_bytes,
+        "total_chunks": total_chunks,
+        "chunk_bytes_hint": int(settings.FILE_IMPORT_CHUNK_BYTES or 8 * 1024 * 1024),
+        "max_bytes": max_bytes,
+    }
+
+
+def save_upload_chunk(
+    *,
+    workspace_id: int,
+    file_id: str,
+    chunk_index: int,
+    content: bytes,
+) -> Dict[str, Any]:
+    meta = load_meta(workspace_id, file_id)
+    if meta.get("status") not in (None, "uploading"):
+        raise ValueError("该上传会话已结束，请重新选择文件")
+    total = int(meta.get("total_chunks") or 0)
+    idx = int(chunk_index)
+    if idx < 0 or (total and idx >= total):
+        raise ValueError(f"分片序号无效: {idx}")
+    if not content:
+        raise ValueError("空分片")
+
+    folder = _root() / str(int(workspace_id)) / file_id
+    parts = folder / "parts"
+    parts.mkdir(parents=True, exist_ok=True)
+    part_path = parts / f"{idx:06d}.part"
+    part_path.write_bytes(content)
+
+    received = set(int(x) for x in (meta.get("received_chunks") or []))
+    received.add(idx)
+    meta["received_chunks"] = sorted(received)
+    meta["status"] = "uploading"
+    _write_meta(folder, meta)
+    return {
+        "file_id": file_id,
+        "chunk_index": idx,
+        "received": len(received),
+        "total_chunks": total,
+    }
+
+
+def finalize_chunked_upload(*, workspace_id: int, file_id: str) -> Dict[str, Any]:
+    meta = load_meta(workspace_id, file_id)
+    total = int(meta.get("total_chunks") or 0)
+    received = sorted(int(x) for x in (meta.get("received_chunks") or []))
+    if total <= 0 or len(received) != total or received != list(range(total)):
+        missing = [i for i in range(total) if i not in set(received)]
+        raise ValueError(f"分片不完整，缺失 {len(missing)} 片（如 {missing[:8]}）")
+
+    folder = _root() / str(int(workspace_id)) / file_id
+    parts = folder / "parts"
+    fmt = str(meta.get("format") or "csv")
+    data_path = folder / f"data.{fmt}"
+    expected = int(meta.get("size_bytes") or 0)
+    written = 0
+    with data_path.open("wb") as out:
+        for i in range(total):
+            part = parts / f"{i:06d}.part"
+            if not part.is_file():
+                raise ValueError(f"缺失分片文件: {i}")
+            raw = part.read_bytes()
+            out.write(raw)
+            written += len(raw)
+            part.unlink(missing_ok=True)
+    try:
+        parts.rmdir()
+    except Exception:
+        pass
+
+    if expected and written != expected:
+        # 允许前端 size 与实际略有差异时仍接受，但偏差过大则失败
+        if abs(written - expected) > max(1024, expected // 1000):
+            raise ValueError(f"合并后大小不符: expect={expected}, got={written}")
+
+    meta["size_bytes"] = written
+    meta["stored_path"] = str(data_path)
+    meta["status"] = "ready"
+    meta["received_chunks"] = list(range(total))
+    _write_meta(folder, meta)
+    return meta

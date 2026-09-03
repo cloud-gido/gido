@@ -522,7 +522,15 @@ def _public_parse_result(parsed: Dict[str, Any], meta: Dict[str, Any]) -> Dict[s
         "max_bytes": settings.FILE_IMPORT_MAX_BYTES,
         "max_rows": settings.FILE_IMPORT_MAX_ROWS,
         "xlsx_max_bytes": settings.FILE_IMPORT_XLSX_MAX_BYTES,
+        "chunk_bytes": settings.FILE_IMPORT_CHUNK_BYTES,
     }
+
+
+class FileImportUploadInitIn(BaseModel):
+    workspace_id: int
+    filename: str
+    size_bytes: int
+    total_chunks: int
 
 
 @router.post("/file-import/upload")
@@ -568,6 +576,98 @@ async def file_import_upload(
             preview_rows=int(settings.FILE_IMPORT_PREVIEW_ROWS),
             infer_rows=int(settings.FILE_IMPORT_INFER_ROWS),
         )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"解析失败: {e}")
+    return _public_parse_result(parsed, meta)
+
+
+@router.post("/file-import/upload-init")
+def file_import_upload_init(
+    body: FileImportUploadInitIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """大文件分片上传：初始化会话（避免单次 multipart 触发 HTTP/2 ping 失败）。"""
+    assert_workspace_data_capability(
+        db, current_user, body.workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_WRITE
+    )
+    try:
+        from app.services.file_import_store import init_chunked_upload
+
+        return init_chunked_upload(
+            workspace_id=body.workspace_id,
+            user_id=current_user.id,
+            filename=body.filename,
+            size_bytes=body.size_bytes,
+            total_chunks=body.total_chunks,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/file-import/upload-chunk")
+async def file_import_upload_chunk(
+    workspace_id: int = Form(...),
+    file_id: str = Form(...),
+    chunk_index: int = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    assert_workspace_data_capability(
+        db, current_user, workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_WRITE
+    )
+    try:
+        from app.services.file_import_store import save_upload_chunk
+
+        raw = await file.read()
+        return save_upload_chunk(
+            workspace_id=workspace_id,
+            file_id=file_id,
+            chunk_index=chunk_index,
+            content=raw,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/file-import/upload-complete")
+def file_import_upload_complete(
+    workspace_id: int = Form(...),
+    file_id: str = Form(...),
+    encoding: Optional[str] = Form(None),
+    delimiter: Optional[str] = Form(None),
+    has_header: bool = Form(True),
+    sheet_name: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    assert_workspace_data_capability(
+        db, current_user, workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_WRITE
+    )
+    try:
+        from app.services.file_import_store import finalize_chunked_upload, resolve_data_path
+        from app.services.file_import_parse import parse_file_path
+
+        meta = finalize_chunked_upload(workspace_id=workspace_id, file_id=file_id)
+        path = resolve_data_path(meta)
+        parsed = parse_file_path(
+            path,
+            str(meta.get("format") or "csv"),
+            encoding=encoding,
+            delimiter=delimiter,
+            has_header=has_header,
+            sheet_name=sheet_name,
+            max_rows=int(settings.FILE_IMPORT_MAX_ROWS),
+            preview_rows=int(settings.FILE_IMPORT_PREVIEW_ROWS),
+            infer_rows=int(settings.FILE_IMPORT_INFER_ROWS),
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

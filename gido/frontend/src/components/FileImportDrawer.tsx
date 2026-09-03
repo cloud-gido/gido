@@ -119,6 +119,21 @@ export default function FileImportDrawer({
     return `${n} B`
   }
 
+  const uploadErrorMessage = (e: any) => {
+    const detail = e?.response?.data?.detail
+    if (typeof detail === 'string' && detail.trim()) return detail
+    const msg = String(e?.message || '')
+    const code = String(e?.code || '')
+    if (
+      code === 'ERR_NETWORK'
+      || /ERR_HTTP2_PING_FAILED|ERR_CONNECTION_|Network Error|Failed to fetch/i.test(msg)
+      || (!e?.response && msg)
+    ) {
+      return '上传中断（网络/HTTP2 连接被重置）。请刷新页面后重试；大文件已改为分片上传，若仍失败请检查网关超时或换稳定网络。'
+    }
+    return msg || '上传失败'
+  }
+
   const handleUpload = async (file: File) => {
     if (!canWrite) return false
     setSelectedFileName(file.name)
@@ -127,19 +142,26 @@ export default function FileImportDrawer({
     setUploading(true)
     setUploadPhase('uploading')
     setUploadPercent(0)
-    message.loading({ content: `正在上传 ${file.name}…`, key: 'file-import-upload', duration: 0 })
+    const useChunk = file.size > 8 * 1024 * 1024
+    message.loading({
+      content: useChunk
+        ? `正在分片上传 ${file.name}（约 ${formatBytes(file.size)}）…`
+        : `正在上传 ${file.name}…`,
+      key: 'file-import-upload',
+      duration: 0,
+    })
     try {
       const res: any = await integrationApi.uploadFileImport(workspaceId, file, {
         has_header: form.getFieldValue('has_header') !== false,
         encoding: form.getFieldValue('encoding'),
         delimiter: form.getFieldValue('delimiter'),
         sheet_name: form.getFieldValue('sheet_name'),
-        onProgress: (pct) => {
-          setUploadPercent(pct)
-          if (pct >= 99) {
-            setUploadPhase('parsing')
+        onProgress: (pct) => setUploadPercent(pct),
+        onPhase: (phase) => {
+          setUploadPhase(phase)
+          if (phase === 'parsing') {
             message.loading({
-              content: '上传完成，服务端正在解析（大文件可能需数分钟）…',
+              content: '分片已传完，服务端正在解析（大文件可能需数分钟）…',
               key: 'file-import-upload',
               duration: 0,
             })
@@ -157,8 +179,9 @@ export default function FileImportDrawer({
     } catch (e: any) {
       setUploadPhase('idle')
       message.error({
-        content: e?.response?.data?.detail || e?.message || '上传失败',
+        content: uploadErrorMessage(e),
         key: 'file-import-upload',
+        duration: 8,
       })
     } finally {
       setUploading(false)
@@ -297,7 +320,7 @@ export default function FileImportDrawer({
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="上传 CSV（推荐大文件，最大约 3GB / 500 万行）或 Excel（≤200MB）。Doris 目标走 Stream Load；MySQL 走流式批量插入。导入在后台执行，可在运行历史查看进度。"
+        message="上传 CSV（推荐大文件，最大约 3GB / 500 万行；>8MB 自动分片上传）或 Excel（≤200MB）。Doris 目标走 Stream Load；MySQL 走流式批量插入。导入在后台执行，可在运行历史查看进度。"
       />
       <Form form={form} layout="vertical" disabled={!canWrite}>
         <Tabs
@@ -342,7 +365,7 @@ export default function FileImportDrawer({
                           uploading
                             ? (uploadPhase === 'parsing'
                               ? '文件已传到服务器，正在抽样推断字段并统计行数（百万行 CSV 可能需数分钟，请勿关闭）。'
-                              : `正在上传到服务器… ${uploadPercent}%`)
+                              : `正在分片上传到服务器… ${uploadPercent}%（规避 HTTP/2 长连接中断）`)
                             : undefined
                         }
                       />

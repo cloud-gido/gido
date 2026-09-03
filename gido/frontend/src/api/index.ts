@@ -216,8 +216,14 @@ export const integrationApi = {
       has_header?: boolean
       sheet_name?: string
       onProgress?: (percent: number) => void
+      onPhase?: (phase: 'uploading' | 'parsing') => void
     },
   ) => {
+    const CHUNK = 8 * 1024 * 1024
+    // 大文件走分片，规避浏览器 HTTP/2 长上传 ERR_HTTP2_PING_FAILED
+    if (file.size > CHUNK) {
+      return integrationApi.uploadFileImportChunked(workspaceId, file, opts)
+    }
     const fd = new FormData()
     fd.append('workspace_id', String(workspaceId))
     fd.append('file', file)
@@ -227,7 +233,6 @@ export const integrationApi = {
     if (opts?.sheet_name) fd.append('sheet_name', opts.sheet_name)
     return request.post('/integration/file-import/upload', fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
-      // 2GB 级上传：关闭 axios 默认 330s 超时
       timeout: 0,
       onUploadProgress: (evt) => {
         if (!opts?.onProgress) return
@@ -239,6 +244,69 @@ export const integrationApi = {
         const pct = Math.min(99, Math.round((evt.loaded / total) * 100))
         opts.onProgress(pct)
       },
+    })
+  },
+  uploadFileImportChunked: async (
+    workspaceId: number,
+    file: File,
+    opts?: {
+      encoding?: string
+      delimiter?: string
+      has_header?: boolean
+      sheet_name?: string
+      onProgress?: (percent: number) => void
+      onPhase?: (phase: 'uploading' | 'parsing') => void
+    },
+  ) => {
+    const CHUNK = 8 * 1024 * 1024
+    const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK))
+    const init: any = await request.post('/integration/file-import/upload-init', {
+      workspace_id: workspaceId,
+      filename: file.name,
+      size_bytes: file.size,
+      total_chunks: totalChunks,
+    })
+    const fileId = init.file_id as string
+    opts?.onPhase?.('uploading')
+
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+    const uploadOne = async (index: number, blob: Blob, attempt = 1): Promise<void> => {
+      const fd = new FormData()
+      fd.append('workspace_id', String(workspaceId))
+      fd.append('file_id', fileId)
+      fd.append('chunk_index', String(index))
+      fd.append('file', blob, `${file.name}.part${index}`)
+      try {
+        await request.post('/integration/file-import/upload-chunk', fd, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: 0,
+        })
+      } catch (e) {
+        if (attempt >= 3) throw e
+        await sleep(500 * attempt)
+        return uploadOne(index, blob, attempt + 1)
+      }
+    }
+
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * CHUNK
+      const end = Math.min(file.size, start + CHUNK)
+      await uploadOne(i, file.slice(start, end))
+      opts?.onProgress?.(Math.min(99, Math.round(((i + 1) / totalChunks) * 100)))
+    }
+
+    opts?.onPhase?.('parsing')
+    opts?.onProgress?.(99)
+    const completeFd = new FormData()
+    completeFd.append('workspace_id', String(workspaceId))
+    completeFd.append('file_id', fileId)
+    if (opts?.encoding) completeFd.append('encoding', opts.encoding)
+    if (opts?.delimiter != null) completeFd.append('delimiter', opts.delimiter)
+    if (opts?.has_header != null) completeFd.append('has_header', String(opts.has_header))
+    if (opts?.sheet_name) completeFd.append('sheet_name', opts.sheet_name)
+    return request.post('/integration/file-import/upload-complete', completeFd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 0,
     })
   },
   previewFileImport: (data: any) => request.post('/integration/file-import/preview', data),
