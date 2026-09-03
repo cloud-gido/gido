@@ -172,13 +172,37 @@ async function runChunkedUpload(
   opts.onProgress?.(Math.min(99, Math.round((already / totalChunks) * 100)))
 
   let doneCount = already
-  const bump = () => {
-    doneCount += 1
-    opts.onProgress?.(Math.min(99, Math.round((doneCount / totalChunks) * 100)))
-    opts.onStatus?.({ received: doneCount, total: totalChunks, resumed, fileId })
+  let completedBytes = 0
+  for (let i = 0; i < totalChunks; i += 1) {
+    if (!missing.includes(i)) {
+      const start = i * chunkBytes
+      completedBytes += Math.min(chunkBytes, file.size - start)
+    }
+  }
+  const inflightLoaded = new Map<number, number>()
+
+  const reportByteProgress = () => {
+    let inflight = 0
+    inflightLoaded.forEach((n) => { inflight += n })
+    const pct = file.size > 0
+      ? Math.min(99, Math.round(((completedBytes + inflight) / file.size) * 100))
+      : 0
+    opts.onProgress?.(pct)
+    opts.onStatus?.({
+      received: Math.min(totalChunks, doneCount),
+      total: totalChunks,
+      resumed,
+      fileId,
+    })
   }
 
-  const uploadOne = async (index: number, attempt = 1): Promise<void> => {
+  const bump = (chunkSize: number) => {
+    doneCount += 1
+    completedBytes += chunkSize
+    reportByteProgress()
+  }
+
+  const uploadOne = async (index: number, attempt = 1): Promise<number> => {
     assertNotAborted(opts.signal)
     const start = index * chunkBytes
     const end = Math.min(file.size, start + chunkBytes)
@@ -189,12 +213,20 @@ async function runChunkedUpload(
     fd.append('chunk_index', String(index))
     fd.append('file', blob, `${file.name}.part${index}`)
     try {
+      // 勿手动设 Content-Type：须由浏览器带 multipart boundary，否则分片会一直 pending
       await request.post('/integration/file-import/upload-chunk', fd, {
-        headers: { 'Content-Type': 'multipart/form-data' },
         timeout: 0,
         signal: opts.signal,
+        onUploadProgress: (evt) => {
+          inflightLoaded.set(index, evt.loaded || 0)
+          reportByteProgress()
+        },
       })
+      inflightLoaded.delete(index)
+      return blob.size
     } catch (e: any) {
+      inflightLoaded.delete(index)
+      reportByteProgress()
       assertNotAborted(opts.signal)
       if (isSessionGoneError(e)) throw e
       if (attempt >= MAX_ATTEMPTS) throw e
@@ -206,8 +238,8 @@ async function runChunkedUpload(
   const uploadMissing = async (indices: number[]) => {
     if (!indices.length) return
     await mapPool(indices, CONCURRENCY, async (idx) => {
-      await uploadOne(idx)
-      bump()
+      const size = await uploadOne(idx)
+      bump(size)
       saveFileImportSession({
         workspaceId,
         fileId,
@@ -221,6 +253,7 @@ async function runChunkedUpload(
     })
   }
 
+  reportByteProgress()
   await uploadMissing(missing)
 
   // complete 前以服务端 status 为准补齐漏片（并发 / 多副本对账延迟）
@@ -236,9 +269,16 @@ async function runChunkedUpload(
     const stillMissing: number[] = Array.isArray(latest.missing_chunks) ? latest.missing_chunks : []
     if (!stillMissing.length) break
     opts.onPhase?.('uploading')
+    const missingSet = new Set(stillMissing)
     doneCount = Math.max(0, totalChunks - stillMissing.length)
-    opts.onStatus?.({ received: doneCount, total: totalChunks, resumed: true, fileId })
-    opts.onProgress?.(Math.min(99, Math.round((doneCount / totalChunks) * 100)))
+    completedBytes = 0
+    for (let i = 0; i < totalChunks; i += 1) {
+      if (!missingSet.has(i)) {
+        const start = i * chunkBytes
+        completedBytes += Math.min(chunkBytes, file.size - start)
+      }
+    }
+    reportByteProgress()
     await uploadMissing(stillMissing)
   }
 
@@ -255,7 +295,6 @@ async function runChunkedUpload(
   if (opts.sheet_name) completeFd.append('sheet_name', opts.sheet_name)
 
   const postComplete = () => request.post('/integration/file-import/upload-complete', completeFd, {
-    headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 0,
     signal: opts.signal,
   })
@@ -272,7 +311,16 @@ async function runChunkedUpload(
       const latest: any = await fetchUploadStatus(workspaceId, fileId)
       const stillMissing: number[] = Array.isArray(latest.missing_chunks) ? latest.missing_chunks : []
       if (stillMissing.length) {
+        const missingSet = new Set(stillMissing)
         doneCount = Math.max(0, totalChunks - stillMissing.length)
+        completedBytes = 0
+        for (let i = 0; i < totalChunks; i += 1) {
+          if (!missingSet.has(i)) {
+            const start = i * chunkBytes
+            completedBytes += Math.min(chunkBytes, file.size - start)
+          }
+        }
+        reportByteProgress()
         await uploadMissing(stillMissing)
       }
     } catch (inner: any) {
@@ -309,7 +357,7 @@ export async function abortFileImportUpload(workspaceId: number, fileId: string,
   fd.append('file_id', fileId)
   try {
     await request.post('/integration/file-import/upload-abort', fd, {
-      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 60000,
     })
   } finally {
     if (clientKey) clearFileImportSession(clientKey)

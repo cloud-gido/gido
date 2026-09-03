@@ -407,7 +407,8 @@ export default function FileImportDrawer({
                               ? '文件已传到服务器，正在抽样推断字段并统计行数（百万行 CSV 可能需数分钟，请勿关闭）。'
                               : chunkProgress
                                 ? `分片进度 ${chunkProgress.received}/${chunkProgress.total}`
-                                  + `${chunkProgress.resumed ? '（续传）' : ''} · ${uploadPercent}% · 失败分片自动重试`
+                                  + `${chunkProgress.resumed ? '（续传）' : ''} · ${uploadPercent}%`
+                                  + ' · 每片约 8MB，进度按字节更新；失败分片自动重试'
                                 : `正在上传… ${uploadPercent}%`)
                             : undefined
                         }

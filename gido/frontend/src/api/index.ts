@@ -236,7 +236,6 @@ export const integrationApi = {
     if (opts?.has_header != null) fd.append('has_header', String(opts.has_header))
     if (opts?.sheet_name) fd.append('sheet_name', opts.sheet_name)
     return request.post('/integration/file-import/upload', fd, {
-      headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 0,
       signal: opts?.signal,
       onUploadProgress: (evt) => {
@@ -260,7 +259,7 @@ export const integrationApi = {
     fd.append('workspace_id', String(workspaceId))
     fd.append('file_id', fileId)
     return request.post('/integration/file-import/upload-abort', fd, {
-      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 60000,
     })
   },
   previewFileImport: (data: any) => request.post('/integration/file-import/preview', data),
