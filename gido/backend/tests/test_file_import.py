@@ -358,7 +358,6 @@ def test_shared_chunk_path_uses_s3(tmp_path, monkeypatch):
 
     monkeypatch.setattr(store, "put_shared_object", put_obj)
     monkeypatch.setattr(store, "get_shared_object", get_obj)
-    monkeypatch.setattr(store, "shared_object_exists", exists)
     monkeypatch.setattr(store, "list_shared_object_names", list_names)
     monkeypatch.setattr(store, "put_shared_object_file", put_file)
     monkeypatch.setattr(store, "download_shared_object_to_file", download_to)
