@@ -215,7 +215,12 @@ export const integrationApi = {
       delimiter?: string
       has_header?: boolean
       sheet_name?: string
-      onProgress?: (percent: number) => void
+      onProgress?: (percent: number, meta?: {
+        loaded: number
+        total: number
+        speedBps: number
+        etaSeconds: number | null
+      }) => void
       onPhase?: (phase: 'uploading' | 'parsing') => void
       onStatus?: (info: { received: number; total: number; resumed: boolean; fileId: string }) => void
       signal?: AbortSignal
@@ -235,18 +240,32 @@ export const integrationApi = {
     if (opts?.delimiter != null) fd.append('delimiter', opts.delimiter)
     if (opts?.has_header != null) fd.append('has_header', String(opts.has_header))
     if (opts?.sheet_name) fd.append('sheet_name', opts.sheet_name)
+    let speedEwma = 0
+    let lastSampleAt = Date.now()
+    let lastSampleLoaded = 0
     return request.post('/integration/file-import/upload', fd, {
       timeout: 0,
       signal: opts?.signal,
       onUploadProgress: (evt) => {
         if (!opts?.onProgress) return
         const total = evt.total || file.size || 0
+        const loaded = evt.loaded || 0
         if (!total) {
           opts.onProgress(0)
           return
         }
-        const pct = Math.min(99, Math.round((evt.loaded / total) * 100))
-        opts.onProgress(pct)
+        const now = Date.now()
+        const dt = (now - lastSampleAt) / 1000
+        if (dt >= 0.4) {
+          const instant = Math.max(0, loaded - lastSampleLoaded) / dt
+          speedEwma = speedEwma > 0 ? speedEwma * 0.72 + instant * 0.28 : instant
+          lastSampleAt = now
+          lastSampleLoaded = loaded
+        }
+        const remain = Math.max(0, total - loaded)
+        const etaSeconds = speedEwma >= 8 * 1024 ? Math.ceil(remain / speedEwma) : null
+        const pct = Math.min(99, Math.round((loaded / total) * 100))
+        opts.onProgress(pct, { loaded, total, speedBps: speedEwma, etaSeconds })
       },
     })
   },

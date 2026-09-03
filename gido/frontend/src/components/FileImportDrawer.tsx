@@ -12,6 +12,8 @@ import { datasourceApi, integrationApi } from '../api'
 import {
   describeUploadNetworkError,
   fileImportClientKey,
+  formatUploadEta,
+  formatUploadSpeed,
   loadFileImportSession,
 } from '../utils/fileImportUpload'
 
@@ -57,6 +59,8 @@ export default function FileImportDrawer({
   const [uploading, setUploading] = useState(false)
   const [uploadPhase, setUploadPhase] = useState<'idle' | 'uploading' | 'parsing'>('idle')
   const [uploadPercent, setUploadPercent] = useState(0)
+  const [uploadEtaText, setUploadEtaText] = useState<string | null>(null)
+  const [uploadSpeedText, setUploadSpeedText] = useState<string | null>(null)
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null)
   const [selectedFileSize, setSelectedFileSize] = useState(0)
   const [chunkProgress, setChunkProgress] = useState<{ received: number; total: number; resumed: boolean } | null>(null)
@@ -97,6 +101,8 @@ export default function FileImportDrawer({
     setUploading(false)
     setUploadPhase('idle')
     setUploadPercent(0)
+    setUploadEtaText(null)
+    setUploadSpeedText(null)
     setSelectedFileName(null)
     setSelectedFileSize(0)
     setChunkProgress(null)
@@ -156,6 +162,8 @@ export default function FileImportDrawer({
     setUploading(true)
     setUploadPhase('uploading')
     setUploadPercent(0)
+    setUploadEtaText(null)
+    setUploadSpeedText(null)
     setChunkProgress(null)
     setResumeHint(null)
 
@@ -185,7 +193,13 @@ export default function FileImportDrawer({
         delimiter: form.getFieldValue('delimiter'),
         sheet_name: form.getFieldValue('sheet_name'),
         signal: ac.signal,
-        onProgress: (pct) => setUploadPercent(pct),
+        onProgress: (pct, meta) => {
+          setUploadPercent(pct)
+          if (meta) {
+            setUploadSpeedText(formatUploadSpeed(meta.speedBps) || null)
+            setUploadEtaText(formatUploadEta(meta.etaSeconds) || null)
+          }
+        },
         onStatus: (info) => {
           setActiveFileId(info.fileId)
           setChunkProgress({ received: info.received, total: info.total, resumed: info.resumed })
@@ -196,6 +210,8 @@ export default function FileImportDrawer({
         onPhase: (phase) => {
           setUploadPhase(phase)
           if (phase === 'parsing') {
+            setUploadEtaText(null)
+            setUploadSpeedText(null)
             message.loading({
               content: '分片已齐，服务端正在解析（大文件可能需数分钟）…',
               key: 'file-import-upload',
@@ -405,11 +421,15 @@ export default function FileImportDrawer({
                           uploading
                             ? (uploadPhase === 'parsing'
                               ? '文件已传到服务器，正在抽样推断字段并统计行数（百万行 CSV 可能需数分钟，请勿关闭）。'
-                              : chunkProgress
-                                ? `分片进度 ${chunkProgress.received}/${chunkProgress.total}`
-                                  + `${chunkProgress.resumed ? '（续传）' : ''} · ${uploadPercent}%`
-                                  + ' · 每片约 8MB，进度按字节更新；失败分片自动重试'
-                                : `正在上传… ${uploadPercent}%`)
+                              : [
+                                  chunkProgress
+                                    ? `分片进度 ${chunkProgress.received}/${chunkProgress.total}`
+                                      + `${chunkProgress.resumed ? '（续传）' : ''} · ${uploadPercent}%`
+                                    : `正在上传… ${uploadPercent}%`,
+                                  uploadSpeedText ? `速率 ${uploadSpeedText}` : null,
+                                  uploadEtaText ? `预计剩余 ${uploadEtaText}` : (uploadPercent < 2 ? '预计剩余计算中…' : null),
+                                  '失败分片自动重试',
+                                ].filter(Boolean).join(' · '))
                             : undefined
                         }
                       />

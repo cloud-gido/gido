@@ -14,12 +14,21 @@ const SESSION_PREFIX = 'gido.fileImport.session.v1:'
 
 export type FileImportUploadPhase = 'uploading' | 'parsing'
 
+export type FileImportProgressMeta = {
+  loaded: number
+  total: number
+  /** 平滑后的上传速率（字节/秒）；不足样本时为 0 */
+  speedBps: number
+  /** 预计剩余秒数；速率过低时为 null */
+  etaSeconds: number | null
+}
+
 export type FileImportUploadOpts = {
   encoding?: string
   delimiter?: string
   has_header?: boolean
   sheet_name?: string
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number, meta?: FileImportProgressMeta) => void
   onPhase?: (phase: FileImportUploadPhase) => void
   onStatus?: (info: { received: number; total: number; resumed: boolean; fileId: string }) => void
   signal?: AbortSignal
@@ -38,6 +47,29 @@ type StoredSession = {
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms))
+}
+
+/** 预计剩余时间文案，如「约 2 分 30 秒」；无法估计时返回空串 */
+export function formatUploadEta(etaSeconds: number | null | undefined): string {
+  if (etaSeconds == null || !Number.isFinite(etaSeconds) || etaSeconds < 0) return ''
+  const sec = Math.max(0, Math.ceil(etaSeconds))
+  if (sec < 5) return '即将完成'
+  if (sec < 60) return `约 ${sec} 秒`
+  const min = Math.floor(sec / 60)
+  const rem = sec % 60
+  if (min < 60) {
+    return rem > 0 ? `约 ${min} 分 ${rem} 秒` : `约 ${min} 分钟`
+  }
+  const hr = Math.floor(min / 60)
+  const minRem = min % 60
+  return minRem > 0 ? `约 ${hr} 小时 ${minRem} 分` : `约 ${hr} 小时`
+}
+
+export function formatUploadSpeed(speedBps: number | null | undefined): string {
+  if (speedBps == null || !Number.isFinite(speedBps) || speedBps < 256) return ''
+  if (speedBps >= 1024 * 1024) return `${(speedBps / (1024 * 1024)).toFixed(1)} MB/s`
+  if (speedBps >= 1024) return `${Math.round(speedBps / 1024)} KB/s`
+  return `${Math.round(speedBps)} B/s`
 }
 
 export function fileImportClientKey(workspaceId: number, file: File): string {
@@ -169,7 +201,6 @@ async function runChunkedUpload(
   const already = totalChunks - missing.length
   opts.onPhase?.('uploading')
   opts.onStatus?.({ received: already, total: totalChunks, resumed, fileId })
-  opts.onProgress?.(Math.min(99, Math.round((already / totalChunks) * 100)))
 
   let doneCount = already
   let completedBytes = 0
@@ -180,14 +211,34 @@ async function runChunkedUpload(
     }
   }
   const inflightLoaded = new Map<number, number>()
+  let speedEwma = 0
+  let lastSampleAt = Date.now()
+  let lastSampleLoaded = completedBytes
 
   const reportByteProgress = () => {
     let inflight = 0
     inflightLoaded.forEach((n) => { inflight += n })
-    const pct = file.size > 0
-      ? Math.min(99, Math.round(((completedBytes + inflight) / file.size) * 100))
-      : 0
-    opts.onProgress?.(pct)
+    const loaded = Math.min(file.size, completedBytes + inflight)
+    const now = Date.now()
+    const dt = (now - lastSampleAt) / 1000
+    if (dt >= 0.4) {
+      const delta = loaded - lastSampleLoaded
+      if (delta >= 0) {
+        const instant = delta / dt
+        speedEwma = speedEwma > 0 ? speedEwma * 0.72 + instant * 0.28 : instant
+      }
+      lastSampleAt = now
+      lastSampleLoaded = loaded
+    }
+    const remain = Math.max(0, file.size - loaded)
+    const etaSeconds = speedEwma >= 8 * 1024 ? Math.ceil(remain / speedEwma) : null
+    const pct = file.size > 0 ? Math.min(99, Math.round((loaded / file.size) * 100)) : 0
+    opts.onProgress?.(pct, {
+      loaded,
+      total: file.size,
+      speedBps: speedEwma,
+      etaSeconds,
+    })
     opts.onStatus?.({
       received: Math.min(totalChunks, doneCount),
       total: totalChunks,

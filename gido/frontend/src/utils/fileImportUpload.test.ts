@@ -7,6 +7,8 @@ import {
   clearFileImportSession,
   describeUploadNetworkError,
   fileImportClientKey,
+  formatUploadEta,
+  formatUploadSpeed,
   loadFileImportSession,
   saveFileImportSession,
 } from './fileImportUpload'
@@ -53,5 +55,15 @@ describe('fileImportUpload resume helpers', () => {
       .toContain('断点续传')
     expect(describeUploadNetworkError({ code: 'ERR_CANCELED', message: 'canceled' }))
       .toContain('取消')
+  })
+
+  it('formats upload eta and speed', () => {
+    expect(formatUploadEta(null)).toBe('')
+    expect(formatUploadEta(3)).toBe('即将完成')
+    expect(formatUploadEta(45)).toBe('约 45 秒')
+    expect(formatUploadEta(150)).toBe('约 2 分 30 秒')
+    expect(formatUploadSpeed(0)).toBe('')
+    expect(formatUploadSpeed(50 * 1024)).toContain('KB/s')
+    expect(formatUploadSpeed(2.5 * 1024 * 1024)).toContain('MB/s')
   })
 })
