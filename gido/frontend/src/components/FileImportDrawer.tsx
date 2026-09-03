@@ -32,6 +32,8 @@ type Props = {
   canWrite: boolean
   canRun: boolean
   defaultDatasourceId?: number | null
+  /** 非空时为「重新上传」模式：复用已有 file_import 任务，提交时调 updateTask */
+  editTask?: any | null
   onClose: () => void
   onDone: () => void
 }
@@ -53,7 +55,7 @@ function suggestTableName(filename?: string) {
 }
 
 export default function FileImportDrawer({
-  open, workspaceId, canWrite, canRun, defaultDatasourceId, onClose, onDone,
+  open, workspaceId, canWrite, canRun, defaultDatasourceId, editTask, onClose, onDone,
 }: Props) {
   const [form] = Form.useForm()
   const [tab, setTab] = useState('file')
@@ -84,14 +86,18 @@ export default function FileImportDrawer({
   useEffect(() => {
     if (!open || !workspaceId) return
     datasourceApi.list(workspaceId).then((d: any) => setDatasources(Array.isArray(d) ? d : []))
+    const editCfg = editTask?.sync_config || {}
     form.setFieldsValue({
-      has_header: true,
-      encoding: undefined,
-      delimiter: undefined,
-      register_datamap: true,
-      if_exists: 'fail',
+      has_header: editCfg.has_header !== false,
+      encoding: editCfg.encoding || undefined,
+      delimiter: editCfg.delimiter || undefined,
+      register_datamap: editCfg.register_datamap !== false,
+      if_exists: 'append', // 重新上传默认追加（表通常已存在）
       run_now: true,
-      dst_datasource_id: defaultDatasourceId || undefined,
+      dst_datasource_id: editTask?.dst_datasource_id || defaultDatasourceId || undefined,
+      dst_table: editTask?.dst_table || undefined,
+      name: editTask?.name || undefined,
+      description: editTask?.description || undefined,
     })
     setTab('file')
     setFileMeta(null)
@@ -320,7 +326,7 @@ export default function FileImportDrawer({
         return
       }
       setSubmitting(true)
-      const res: any = await integrationApi.createFileImportTask({
+      const payload = {
         workspace_id: workspaceId,
         name: values.name,
         description: values.description,
@@ -337,8 +343,35 @@ export default function FileImportDrawer({
         register_datamap: !!values.register_datamap,
         if_exists: values.if_exists || 'fail',
         run_now: !!values.run_now,
-      })
-      message.success(res?.message || '已创建')
+      }
+      let res: any
+      if (editTask?.id) {
+        // 重新上传：更新已有任务的 sync_config / 文件信息，然后触发运行
+        await integrationApi.updateTask(editTask.id, {
+          name: payload.name,
+          description: payload.description,
+          dst_datasource_id: payload.dst_datasource_id,
+          dst_table: payload.dst_table,
+          sync_config: {
+            file_id: payload.file_id,
+            columns: payload.columns,
+            encoding: payload.encoding,
+            delimiter: payload.delimiter,
+            has_header: payload.has_header,
+            sheet_name: payload.sheet_name,
+            register_datamap: payload.register_datamap,
+            if_exists: payload.if_exists,
+            batch_size: 2000,
+          },
+        })
+        if (payload.run_now) {
+          res = await integrationApi.runTask(editTask.id, { if_exists: payload.if_exists })
+        }
+        message.success('已更新并提交执行')
+      } else {
+        res = await integrationApi.createFileImportTask(payload)
+        message.success(res?.message || '已创建')
+      }
       onDone()
       onClose()
     } catch (e: any) {
@@ -351,7 +384,7 @@ export default function FileImportDrawer({
 
   return (
     <Drawer
-      title="本地文件导入"
+      title={editTask ? `重新上传 — ${editTask.name}` : '本地文件导入'}
       width={760}
       open={open}
       onClose={() => {

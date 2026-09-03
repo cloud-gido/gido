@@ -194,7 +194,7 @@ export const integrationApi = {
   deleteTask: (id: number) => request.delete(`/integration/tasks/${id}`),
   toggleActive: (id: number) => request.post(`/integration/tasks/${id}/toggle-active`),
   validateTask: (id: number) => request.post(`/integration/tasks/${id}/validate`),
-  runTask: (id: number) => request.post(`/integration/tasks/${id}/run`),
+  runTask: (id: number, body?: { if_exists?: string }) => request.post(`/integration/tasks/${id}/run`, body),
   records: (id: number, limit?: number) =>
     request.get(`/integration/tasks/${id}/records`, { params: limit ? { limit } : {} }),
   getRecord: (taskId: number, recordId: number) =>

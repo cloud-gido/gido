@@ -66,7 +66,8 @@ class SyncTaskUpdate(BaseModel):
     src_table: Optional[str] = None
     dst_table: Optional[str] = None
     sync_mode: Optional[str] = None
-    sync_config: Optional[SyncConfigIn] = None
+    # 接受原始 dict（file_import 模式传 file_id 等）或 SyncConfigIn（普通模式）
+    sync_config: Optional[Dict[str, Any]] = None
     schedule_cron: Optional[str] = None
     is_active: Optional[bool] = None
 
@@ -258,8 +259,18 @@ def update_sync_task(
         _assert_cron(data.get("schedule_cron"))
     if "sync_config" in data:
         sc = body.sync_config
-        data["sync_config"] = _sync_config_dump(sc) if sc is not None else task.sync_config
+        # sync_config 已经是 dict（SyncTaskUpdate 接受原始 dict）
+        data["sync_config"] = sc if sc is not None else task.sync_config
     ws = task.workspace_id
+    # file_import 任务：允许只更新 sync_config / dst_table 等字段，无需 src_ds 校验
+    if task.sync_mode == "file_import":
+        for k, v in data.items():
+            if k != "sync_mode":  # 禁止切换 sync_mode
+                setattr(task, k, v)
+        task.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(task)
+        return task
     src_id = data.get("src_datasource_id", task.src_datasource_id)
     dst_id = data.get("dst_datasource_id", task.dst_datasource_id)
     src_ds, dst_ds = _validate_ds_pair(db, ws, src_id, dst_id)
@@ -409,14 +420,29 @@ def internal_run_sync_task(
     return {"status": status, "log": "\n".join(logs), "meta": meta}
 
 
+class RunTaskIn(BaseModel):
+    if_exists: Optional[str] = None  # file_import 专用：覆盖 sync_config.if_exists
+
+
 @router.post("/tasks/{task_id}/run")
-def run_sync_task(task_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def run_sync_task(
+    task_id: int,
+    body: Optional[RunTaskIn] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     task = db.query(SyncTask).filter(SyncTask.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="同步任务不存在")
     assert_workspace_data_capability(db, current_user, task.workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_RUN)
     if not task.is_active:
         raise HTTPException(status_code=400, detail="任务已停用")
+    # file_import：允许调用方临时覆盖 if_exists（如「以追加方式重跑」）
+    if body and body.if_exists and task.sync_mode == "file_import":
+        cfg = dict(task.sync_config or {})
+        cfg["if_exists"] = body.if_exists
+        task.sync_config = cfg
+        db.commit()
     try:
         record = start_sync_async(task_id, trigger_type="manual")
     except RuntimeError as e:

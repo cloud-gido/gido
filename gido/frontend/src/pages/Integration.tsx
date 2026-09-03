@@ -45,6 +45,7 @@ export default function IntegrationPage() {
   const [datasources, setDatasources] = useState<any[]>([])
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [fileImportOpen, setFileImportOpen] = useState(false)
+  const [reuploadTask, setReuploadTask] = useState<any>(null) // file_import 任务重新上传
   const [editingId, setEditingId] = useState<number | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historyTask, setHistoryTask] = useState<any>(null)
@@ -384,7 +385,16 @@ export default function IntegrationPage() {
           </Button>
           {canWrite && (
             <>
-              {row.sync_mode !== 'file_import' && (
+              {row.sync_mode === 'file_import' ? (
+                <Button
+                  size="small"
+                  type="link"
+                  icon={<UploadOutlined />}
+                  onClick={() => { setReuploadTask(row); setFileImportOpen(true) }}
+                >
+                  重新上传
+                </Button>
+              ) : (
                 <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(row)}>
                   编辑
                 </Button>
@@ -715,6 +725,26 @@ export default function IntegrationPage() {
               ellipsis: true,
               render: (t: string) => (t ? <Tooltip title={t}><span style={{ color: '#cf1322' }}>{t.slice(0, 40)}…</span></Tooltip> : '—'),
             },
+            ...(historyTask?.sync_mode === 'file_import' && canRun ? [{
+              title: '操作',
+              width: 90,
+              render: (_: unknown, r: any) => r.status === 'failed' ? (
+                <Tooltip title="以追加方式重跑（目标表已存在时直接追加写入）">
+                  <Button
+                    size="small"
+                    type="link"
+                    icon={<PlayCircleOutlined />}
+                    onClick={async () => {
+                      await integrationApi.runTask(historyTask.id, { if_exists: 'append' })
+                      message.success('已提交追加重跑')
+                      openHistory(historyTask)
+                    }}
+                  >
+                    追加重跑
+                  </Button>
+                </Tooltip>
+              ) : null,
+            }] : []),
           ]}
         />
       </Drawer>
@@ -730,7 +760,8 @@ export default function IntegrationPage() {
             ?? currentWorkspace?.warehouse_datasource_id
             ?? currentWorkspace?.default_datasource_id
           }
-          onClose={() => setFileImportOpen(false)}
+          editTask={reuploadTask}
+          onClose={() => { setFileImportOpen(false); setReuploadTask(null) }}
           onDone={load}
         />
       )}

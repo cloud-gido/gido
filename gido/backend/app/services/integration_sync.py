@@ -260,6 +260,12 @@ def run_sync_record(record_id: int, task_id: int, lock_handle: DistributedLockHa
                 record.status = "failed"
                 record.error_msg = str(e)[:4000]
                 task.last_run_status = "failed"
+                # 若失败原因是「目标表已存在」，自动把 if_exists 升级为 append
+                # 使下次重跑直接追加写入，避免用户需要手动修改配置
+                if "目标表已存在" in str(e) and str(cfg.get("if_exists") or "fail") == "fail":
+                    cfg = dict(cfg)
+                    cfg["if_exists"] = "append"
+                    task.sync_config = cfg
             finally:
                 record.finished_at = datetime.utcnow()
                 if record.started_at:
