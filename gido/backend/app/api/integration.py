@@ -531,6 +531,8 @@ class FileImportUploadInitIn(BaseModel):
     filename: str
     size_bytes: int
     total_chunks: int
+    client_key: Optional[str] = None
+    chunk_bytes: Optional[int] = None
 
 
 @router.post("/file-import/upload")
@@ -602,6 +604,8 @@ def file_import_upload_init(
             filename=body.filename,
             size_bytes=body.size_bytes,
             total_chunks=body.total_chunks,
+            client_key=body.client_key,
+            chunk_bytes=body.chunk_bytes,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -629,6 +633,46 @@ async def file_import_upload_chunk(
             chunk_index=chunk_index,
             content=raw,
         )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/file-import/upload-status")
+def file_import_upload_status(
+    workspace_id: int,
+    file_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    assert_workspace_data_capability(
+        db, current_user, workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_WRITE
+    )
+    try:
+        from app.services.file_import_store import get_upload_status
+
+        return get_upload_status(workspace_id, file_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/file-import/upload-abort")
+def file_import_upload_abort(
+    workspace_id: int = Form(...),
+    file_id: str = Form(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    assert_workspace_data_capability(
+        db, current_user, workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_WRITE
+    )
+    try:
+        from app.services.file_import_store import abort_chunked_upload
+
+        return abort_chunked_upload(workspace_id=workspace_id, file_id=file_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:

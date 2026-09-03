@@ -180,6 +180,7 @@ def test_chunked_upload_assemble(tmp_path, monkeypatch):
         filename="demo.csv",
         size_bytes=len(raw),
         total_chunks=len(parts),
+        client_key="ws9|demo.csv|26|1",
     )
     fid = init["file_id"]
     for i, p in enumerate(parts):
@@ -187,3 +188,46 @@ def test_chunked_upload_assemble(tmp_path, monkeypatch):
     meta = finalize_chunked_upload(workspace_id=9, file_id=fid)
     assert meta["status"] == "ready"
     assert resolve_data_path(meta).read_bytes() == raw
+
+
+def test_chunked_upload_resume_and_idempotent(tmp_path, monkeypatch):
+    from app.services.file_import_store import (
+        init_chunked_upload,
+        save_upload_chunk,
+        get_upload_status,
+    )
+
+    monkeypatch.setattr("app.core.config.settings.FILE_IMPORT_UPLOAD_DIR", str(tmp_path))
+    raw = b"abcdefghijKLMNOPQRST"
+    parts = [raw[:10], raw[10:]]
+    key = "resume-key-1"
+    init1 = init_chunked_upload(
+        workspace_id=1,
+        user_id=1,
+        filename="x.csv",
+        size_bytes=len(raw),
+        total_chunks=2,
+        client_key=key,
+    )
+    fid = init1["file_id"]
+    r1 = save_upload_chunk(workspace_id=1, file_id=fid, chunk_index=0, content=parts[0])
+    assert r1["received"] == 1
+    r1b = save_upload_chunk(workspace_id=1, file_id=fid, chunk_index=0, content=parts[0])
+    assert r1b["skipped"] is True
+
+    init2 = init_chunked_upload(
+        workspace_id=1,
+        user_id=1,
+        filename="x.csv",
+        size_bytes=len(raw),
+        total_chunks=2,
+        client_key=key,
+    )
+    assert init2["resumed"] is True
+    assert init2["file_id"] == fid
+    assert 0 in init2["received_chunks"]
+    assert 1 in init2["missing_chunks"]
+
+    st = get_upload_status(1, fid)
+    assert st["received"] == 1
+    assert st["missing_chunks"] == [1]

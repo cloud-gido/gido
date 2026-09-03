@@ -2,13 +2,18 @@
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert, Button, Drawer, Form, Input, Progress, Select, Space, Switch, Table, Tabs, Upload,
   message, Typography,
 } from 'antd'
-import { InboxOutlined, CloudUploadOutlined, LoadingOutlined } from '@ant-design/icons'
+import { InboxOutlined, CloudUploadOutlined, LoadingOutlined, StopOutlined } from '@ant-design/icons'
 import { datasourceApi, integrationApi } from '../api'
+import {
+  describeUploadNetworkError,
+  fileImportClientKey,
+  loadFileImportSession,
+} from '../utils/fileImportUpload'
 
 type ColDef = {
   name: string
@@ -54,6 +59,10 @@ export default function FileImportDrawer({
   const [uploadPercent, setUploadPercent] = useState(0)
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null)
   const [selectedFileSize, setSelectedFileSize] = useState(0)
+  const [chunkProgress, setChunkProgress] = useState<{ received: number; total: number; resumed: boolean } | null>(null)
+  const [activeFileId, setActiveFileId] = useState<string | null>(null)
+  const [resumeHint, setResumeHint] = useState<string | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [datasources, setDatasources] = useState<any[]>([])
   const [fileMeta, setFileMeta] = useState<any>(null)
@@ -90,6 +99,11 @@ export default function FileImportDrawer({
     setUploadPercent(0)
     setSelectedFileName(null)
     setSelectedFileSize(0)
+    setChunkProgress(null)
+    setActiveFileId(null)
+    setResumeHint(null)
+    abortRef.current?.abort()
+    abortRef.current = null
   }, [open, workspaceId, defaultDatasourceId])
 
   const applyParseResult = (res: any) => {
@@ -119,19 +133,19 @@ export default function FileImportDrawer({
     return `${n} B`
   }
 
-  const uploadErrorMessage = (e: any) => {
-    const detail = e?.response?.data?.detail
-    if (typeof detail === 'string' && detail.trim()) return detail
-    const msg = String(e?.message || '')
-    const code = String(e?.code || '')
-    if (
-      code === 'ERR_NETWORK'
-      || /ERR_HTTP2_PING_FAILED|ERR_CONNECTION_|Network Error|Failed to fetch/i.test(msg)
-      || (!e?.response && msg)
-    ) {
-      return '上传中断（网络/HTTP2 连接被重置）。请刷新页面后重试；大文件已改为分片上传，若仍失败请检查网关超时或换稳定网络。'
+  const handleAbortUpload = async () => {
+    abortRef.current?.abort()
+    if (activeFileId) {
+      try {
+        await integrationApi.abortFileImportUpload(workspaceId, activeFileId)
+      } catch {
+        /* ignore */
+      }
     }
-    return msg || '上传失败'
+    setUploading(false)
+    setUploadPhase('idle')
+    setResumeHint(null)
+    message.info({ content: '已取消上传', key: 'file-import-upload' })
   }
 
   const handleUpload = async (file: File) => {
@@ -142,10 +156,24 @@ export default function FileImportDrawer({
     setUploading(true)
     setUploadPhase('uploading')
     setUploadPercent(0)
+    setChunkProgress(null)
+    setResumeHint(null)
+
     const useChunk = file.size > 8 * 1024 * 1024
+    const clientKey = fileImportClientKey(workspaceId, file)
+    const prior = useChunk ? loadFileImportSession(clientKey) : null
+    if (prior?.fileId) {
+      setResumeHint(`检测到未完成上传，将从已传分片继续（会话 ${prior.fileId.slice(0, 8)}…）`)
+    }
+
+    const ac = new AbortController()
+    abortRef.current = ac
+
     message.loading({
       content: useChunk
-        ? `正在分片上传 ${file.name}（约 ${formatBytes(file.size)}）…`
+        ? (prior
+          ? `断点续传 ${file.name}（约 ${formatBytes(file.size)}）…`
+          : `正在分片上传 ${file.name}（约 ${formatBytes(file.size)}）…`)
         : `正在上传 ${file.name}…`,
       key: 'file-import-upload',
       duration: 0,
@@ -156,12 +184,20 @@ export default function FileImportDrawer({
         encoding: form.getFieldValue('encoding'),
         delimiter: form.getFieldValue('delimiter'),
         sheet_name: form.getFieldValue('sheet_name'),
+        signal: ac.signal,
         onProgress: (pct) => setUploadPercent(pct),
+        onStatus: (info) => {
+          setActiveFileId(info.fileId)
+          setChunkProgress({ received: info.received, total: info.total, resumed: info.resumed })
+          if (info.resumed && info.received > 0) {
+            setResumeHint(`已跳过 ${info.received}/${info.total} 个已上传分片，继续传输剩余部分`)
+          }
+        },
         onPhase: (phase) => {
           setUploadPhase(phase)
           if (phase === 'parsing') {
             message.loading({
-              content: '分片已传完，服务端正在解析（大文件可能需数分钟）…',
+              content: '分片已齐，服务端正在解析（大文件可能需数分钟）…',
               key: 'file-import-upload',
               duration: 0,
             })
@@ -170,6 +206,7 @@ export default function FileImportDrawer({
       })
       setUploadPercent(100)
       setUploadPhase('idle')
+      setResumeHint(null)
       applyParseResult(res)
       message.success({
         content: `已解析 ${res.row_count ?? 0} 行（${formatBytes(res.size_bytes || file.size)}）`,
@@ -178,13 +215,16 @@ export default function FileImportDrawer({
       setTab('schema')
     } catch (e: any) {
       setUploadPhase('idle')
+      const tip = describeUploadNetworkError(e)
+      setResumeHint(tip)
       message.error({
-        content: uploadErrorMessage(e),
+        content: tip,
         key: 'file-import-upload',
-        duration: 8,
+        duration: 10,
       })
     } finally {
       setUploading(false)
+      abortRef.current = null
     }
     return false
   }
@@ -320,7 +360,7 @@ export default function FileImportDrawer({
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="上传 CSV（推荐大文件，最大约 3GB / 500 万行；>8MB 自动分片上传）或 Excel（≤200MB）。Doris 目标走 Stream Load；MySQL 走流式批量插入。导入在后台执行，可在运行历史查看进度。"
+        message="上传 CSV（推荐大文件，最大约 3GB / 500 万行；>8MB 自动分片且支持断点续传）或 Excel（≤200MB）。Doris 目标走 Stream Load。导入在后台执行，可在运行历史查看进度。"
       />
       <Form form={form} layout="vertical" disabled={!canWrite}>
         <Tabs
@@ -365,17 +405,40 @@ export default function FileImportDrawer({
                           uploading
                             ? (uploadPhase === 'parsing'
                               ? '文件已传到服务器，正在抽样推断字段并统计行数（百万行 CSV 可能需数分钟，请勿关闭）。'
-                              : `正在分片上传到服务器… ${uploadPercent}%（规避 HTTP/2 长连接中断）`)
+                              : chunkProgress
+                                ? `分片进度 ${chunkProgress.received}/${chunkProgress.total}`
+                                  + `${chunkProgress.resumed ? '（续传）' : ''} · ${uploadPercent}% · 失败分片自动重试`
+                                : `正在上传… ${uploadPercent}%`)
                             : undefined
                         }
                       />
-                      {uploading && (
-                        <Progress
+                      {resumeHint && !uploading && (
+                        <Alert
                           style={{ marginTop: 8 }}
-                          percent={uploadPhase === 'parsing' ? 100 : uploadPercent}
-                          status={uploadPhase === 'parsing' ? 'active' : (uploadPercent < 100 ? 'active' : 'normal')}
-                          format={() => (uploadPhase === 'parsing' ? '解析中' : `${uploadPercent}%`)}
+                          type="warning"
+                          showIcon
+                          message={resumeHint}
+                          description="请再次选择同一文件（同名、同大小）即可从断点继续，无需从头传。"
                         />
+                      )}
+                      {uploading && (
+                        <>
+                          <Progress
+                            style={{ marginTop: 8 }}
+                            percent={uploadPhase === 'parsing' ? 100 : uploadPercent}
+                            status={uploadPhase === 'parsing' ? 'active' : (uploadPercent < 100 ? 'active' : 'normal')}
+                            format={() => (uploadPhase === 'parsing' ? '解析中' : `${uploadPercent}%`)}
+                          />
+                          <Button
+                            danger
+                            size="small"
+                            icon={<StopOutlined />}
+                            style={{ marginTop: 8 }}
+                            onClick={handleAbortUpload}
+                          >
+                            取消上传
+                          </Button>
+                        </>
                       )}
                     </div>
                   )}
