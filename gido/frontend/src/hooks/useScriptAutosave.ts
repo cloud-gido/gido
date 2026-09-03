@@ -49,6 +49,12 @@ export type UseScriptAutosaveResult = {
    * 与草稿 dirty 解耦：静默 autosave 成功后仍可为 true，避免「保存版本 *」随草稿闪烁。
    */
   versionDirty: boolean
+  /**
+   * 跨 Tab 查询版本脏（Studio 多 Tab ● 用）。依赖 versionDirtyEpoch 触发重渲染。
+   */
+  isVersionDirty: (id: string | number | null | undefined) => boolean
+  /** 版本脏集合变更计数，供父组件派生 tab 铬态 */
+  versionDirtyEpoch: number
   setStatus: (s: ScriptAutosaveStatus, hint?: string) => void
   /** 立即冲刷当前 dirty 内容 */
   flush: () => Promise<boolean>
@@ -83,6 +89,7 @@ export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAuto
   const [status, setStatusState] = useState<ScriptAutosaveStatus>('idle')
   const [hint, setHint] = useState('')
   const [versionDirty, setVersionDirty] = useState(false)
+  const [versionDirtyEpoch, setVersionDirtyEpoch] = useState(0)
   const versionDirtyIdsRef = useRef<Set<string>>(new Set())
   const seqRef = useRef(0)
   const flushingRef = useRef(false)
@@ -104,6 +111,10 @@ export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAuto
   entityIdRef.current = entityId
   keepaliveRef.current = persistKeepalive
 
+  const bumpVersionDirtyEpoch = useCallback(() => {
+    setVersionDirtyEpoch(n => n + 1)
+  }, [])
+
   const setStatus = useCallback((s: ScriptAutosaveStatus, h = '') => {
     setStatusState(s)
     setHint(h)
@@ -116,9 +127,21 @@ export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAuto
       return
     }
     const key = String(entityId)
-    versionDirtyIdsRef.current.add(key)
+    if (!versionDirtyIdsRef.current.has(key)) {
+      versionDirtyIdsRef.current.add(key)
+      bumpVersionDirtyEpoch()
+    }
     setVersionDirty(true)
-  }, [dirty, entityId])
+  }, [dirty, entityId, bumpVersionDirtyEpoch])
+
+  const isVersionDirty = useCallback(
+    (id: string | number | null | undefined) => {
+      if (id == null) return false
+      void versionDirtyEpoch
+      return versionDirtyIdsRef.current.has(String(id))
+    },
+    [versionDirtyEpoch],
+  )
 
   const flush = useCallback(async (): Promise<boolean> => {
     if (!enabledRef.current || !dirtyRef.current) return true
@@ -158,11 +181,14 @@ export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAuto
   const markVersionSaved = useCallback(() => {
     clearScriptLocalDraft(storageKeyRef.current)
     const eid = entityIdRef.current
-    if (eid != null) versionDirtyIdsRef.current.delete(String(eid))
+    if (eid != null) {
+      versionDirtyIdsRef.current.delete(String(eid))
+      bumpVersionDirtyEpoch()
+    }
     setVersionDirty(false)
     // 成功路径保持静默，不刷「已自动保存」类文案
     setStatus('idle')
-  }, [setStatus])
+  }, [setStatus, bumpVersionDirtyEpoch])
 
   // 脏内容 → 防抖持久化；本地草稿与防抖对齐写入（避免每键 localStorage）
   useEffect(() => {
@@ -214,5 +240,15 @@ export function useScriptAutosave(opts: UseScriptAutosaveOptions): UseScriptAuto
     }
   }, [flushKeepalive])
 
-  return { status, hint, versionDirty, setStatus, flush, flushKeepalive, markVersionSaved }
+  return {
+    status,
+    hint,
+    versionDirty,
+    isVersionDirty,
+    versionDirtyEpoch,
+    setStatus,
+    flush,
+    flushKeepalive,
+    markVersionSaved,
+  }
 }

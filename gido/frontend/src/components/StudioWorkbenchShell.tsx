@@ -156,7 +156,10 @@ export function StudioWorkbenchToolbar({
         alignItems: 'center',
         gap: 8,
         flexShrink: 0,
-        flexWrap: wrap ? 'wrap' : undefined,
+        // 默认横向滚动，避免 Tag/按钮显隐导致折行把下方编辑区顶来顶去
+        flexWrap: wrap ? 'wrap' : 'nowrap',
+        overflowX: wrap ? undefined : 'auto',
+        minHeight: 40,
       }}
     >
       {children}

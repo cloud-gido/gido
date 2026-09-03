@@ -19,22 +19,26 @@ const tabs = [
   { id: 3, name: 'dim_error', node_type: 'SQL', script_content: null },
 ]
 
+const noopHandlers = {
+  onActivate: () => {},
+  onClose: () => {},
+  onReload: () => {},
+  onCloseOthers: () => {},
+  onCloseLeft: () => {},
+  onCloseRight: () => {},
+  onCloseAll: () => {},
+}
+
 describe('StudioEditorTabStrip E2E chrome', () => {
   it('renders all tabs at once with pending italic and ready normal', () => {
     render(
       <StudioEditorTabStrip
         tabs={tabs}
         activeTabId={1}
-        dirtyMap={{}}
+        versionDirtyMap={{}}
         tabContentLoading={{}}
         tabContentError={{}}
-        onActivate={() => {}}
-        onClose={() => {}}
-        onReload={() => {}}
-        onCloseOthers={() => {}}
-        onCloseLeft={() => {}}
-        onCloseRight={() => {}}
-        onCloseAll={() => {}}
+        {...noopHandlers}
       />,
     )
     expect(screen.getByTestId('studio-tab-1')).toHaveAttribute('data-chrome', 'ready')
@@ -50,22 +54,45 @@ describe('StudioEditorTabStrip E2E chrome', () => {
       <StudioEditorTabStrip
         tabs={tabs}
         activeTabId={1}
-        dirtyMap={{}}
+        versionDirtyMap={{}}
         tabContentLoading={{}}
         tabContentError={{ 3: '网络错误' }}
+        {...noopHandlers}
         onActivate={onActivate}
-        onClose={() => {}}
-        onReload={() => {}}
-        onCloseOthers={() => {}}
-        onCloseLeft={() => {}}
-        onCloseRight={() => {}}
-        onCloseAll={() => {}}
       />,
     )
     expect(screen.getByTestId('studio-tab-3')).toHaveAttribute('data-chrome', 'error')
     expect(screen.getByTestId('studio-tab-error-3')).toBeInTheDocument()
     await user.click(screen.getByTestId('studio-tab-3'))
     expect(onActivate).toHaveBeenCalledWith(3)
+  })
+
+  it('keeps a reserved dirty status slot so chrome toggles do not remount width', () => {
+    const { rerender } = render(
+      <StudioEditorTabStrip
+        tabs={tabs}
+        activeTabId={1}
+        versionDirtyMap={{}}
+        tabContentLoading={{}}
+        tabContentError={{}}
+        {...noopHandlers}
+      />,
+    )
+    const clean = screen.getByTestId('studio-tab-dirty-1')
+    expect(clean).toHaveStyle({ visibility: 'hidden' })
+
+    rerender(
+      <StudioEditorTabStrip
+        tabs={tabs}
+        activeTabId={1}
+        versionDirtyMap={{ 1: true }}
+        tabContentLoading={{}}
+        tabContentError={{}}
+        {...noopHandlers}
+      />,
+    )
+    const dirty = screen.getByTestId('studio-tab-dirty-1')
+    expect(dirty).toHaveStyle({ visibility: 'visible' })
   })
 
   it('context menu exposes reload and session close hint', async () => {
@@ -75,16 +102,11 @@ describe('StudioEditorTabStrip E2E chrome', () => {
       <StudioEditorTabStrip
         tabs={tabs}
         activeTabId={1}
-        dirtyMap={{}}
+        versionDirtyMap={{}}
         tabContentLoading={{}}
         tabContentError={{ 2: '超时' }}
-        onActivate={() => {}}
-        onClose={() => {}}
+        {...noopHandlers}
         onReload={onReload}
-        onCloseOthers={() => {}}
-        onCloseLeft={() => {}}
-        onCloseRight={() => {}}
-        onCloseAll={() => {}}
       />,
     )
     await user.pointer({ keys: '[MouseRight>]', target: screen.getByTestId('studio-tab-2') })

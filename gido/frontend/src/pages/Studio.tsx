@@ -741,6 +741,11 @@ export default function StudioPage() {
     },
   })
 
+  const tabVersionDirtyMap = useMemo(
+    () => Object.fromEntries(openTabs.map(t => [t.id, scriptAutosave.isVersionDirty(t.id)])),
+    [openTabs, scriptAutosave.isVersionDirty, scriptAutosave.versionDirtyEpoch],
+  )
+
   const resultColSig =
     activeTabId != null && resultMap[activeTabId]?.columns
       ? resultMap[activeTabId]!.columns.join('\x1e')
@@ -1398,7 +1403,7 @@ export default function StudioPage() {
           <StudioEditorTabStrip
             tabs={openTabs}
             activeTabId={activeTabId}
-            dirtyMap={dirtyMap}
+            versionDirtyMap={tabVersionDirtyMap}
             tabContentLoading={tabContentLoading}
             tabContentError={tabContentError}
             onActivate={activateTab}

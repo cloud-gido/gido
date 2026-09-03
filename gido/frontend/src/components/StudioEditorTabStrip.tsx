@@ -4,6 +4,7 @@
  *
  * 数据开发编辑器 Tab 条（会话壳 / 懒加载铬态），供 Studio 挂载与 E2E 覆盖。
  */
+import type { CSSProperties } from 'react'
 import { Dropdown, Tag, Tooltip } from 'antd'
 import {
   CloseCircleOutlined,
@@ -22,6 +23,18 @@ const TYPE_COLOR: Record<string, string> = {
   SQL: 'blue', PYTHON: 'green', SHELL: 'orange', SYNC: 'purple', VIRTUAL: 'default', DEPENDENT: 'magenta',
 }
 
+/** 状态铬固定槽宽，避免 loading / 脏点显隐把右侧 Tab 挤来挤去 */
+const STATUS_SLOT_STYLE: CSSProperties = {
+  width: 12,
+  height: 12,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  flexShrink: 0,
+  fontSize: 11,
+  lineHeight: 1,
+}
+
 export type StudioEditorTabModel = {
   id: number
   name: string
@@ -32,7 +45,8 @@ export type StudioEditorTabModel = {
 type Props = {
   tabs: StudioEditorTabModel[]
   activeTabId: number | null
-  dirtyMap: Record<number, string | undefined>
+  /** 相对「保存版本」的脏标记；勿用静默草稿 dirty，否则 autosave 会让 ● 闪烁带动布局抖 */
+  versionDirtyMap: Record<number, boolean | undefined>
   tabContentLoading: Record<number, boolean>
   tabContentError: Record<number, string>
   onActivate: (tabId: number) => void
@@ -44,10 +58,54 @@ type Props = {
   onCloseAll: () => void
 }
 
+function TabStatusSlot({
+  loading,
+  error,
+  dirty,
+  tabId,
+}: {
+  loading: boolean
+  error?: string
+  dirty: boolean
+  tabId: number
+}) {
+  if (loading) {
+    return (
+      <span style={STATUS_SLOT_STYLE} aria-hidden>
+        <LoadingOutlined data-testid={`studio-tab-loading-${tabId}`} style={{ fontSize: 11, color: '#1677ff' }} />
+      </span>
+    )
+  }
+  if (error) {
+    return (
+      <span style={STATUS_SLOT_STYLE} aria-hidden>
+        <ExclamationCircleOutlined
+          data-testid={`studio-tab-error-${tabId}`}
+          style={{ fontSize: 11, color: '#d48806' }}
+        />
+      </span>
+    )
+  }
+  return (
+    <span
+      data-testid={`studio-tab-dirty-${tabId}`}
+      style={{
+        ...STATUS_SLOT_STYLE,
+        color: '#faad14',
+        fontSize: 10,
+        visibility: dirty ? 'visible' : 'hidden',
+      }}
+      aria-hidden={!dirty}
+    >
+      ●
+    </span>
+  )
+}
+
 export default function StudioEditorTabStrip({
   tabs,
   activeTabId,
-  dirtyMap,
+  versionDirtyMap,
   tabContentLoading,
   tabContentError,
   onActivate,
@@ -132,7 +190,7 @@ export default function StudioEditorTabStrip({
   return (
     <>
       {tabs.map(tab => {
-        const dirty = dirtyMap[tab.id] !== undefined
+        const dirty = Boolean(versionDirtyMap[tab.id])
         const isActive = tab.id === activeTabId
         const contentPending = isEditorTabContentPending(tab)
         const contentLoading = Boolean(tabContentLoading[tab.id])
@@ -191,28 +249,25 @@ export default function StudioEditorTabStrip({
                   data-testid={`studio-tab-title-${tab.id}`}
                   style={{
                     fontStyle: studioTabTitleItalic(kind) ? 'italic' : 'normal',
-                    maxWidth: 180,
+                    // 固定标题槽，避免斜体/截断切换时挤压右侧 ● / 关闭钮
+                    width: 148,
+                    maxWidth: 148,
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
+                    flexShrink: 0,
                   }}
                 >
                   {tab.name}
                 </span>
-                {contentLoading && (
-                  <LoadingOutlined data-testid={`studio-tab-loading-${tab.id}`} style={{ fontSize: 11, color: '#1677ff' }} />
-                )}
-                {contentError && !contentLoading && (
-                  <ExclamationCircleOutlined
-                    data-testid={`studio-tab-error-${tab.id}`}
-                    style={{ fontSize: 11, color: '#d48806' }}
-                  />
-                )}
-                {dirty && !contentPending && !contentError && (
-                  <span style={{ color: '#faad14', fontSize: 10 }}>●</span>
-                )}
+                <TabStatusSlot
+                  tabId={tab.id}
+                  loading={contentLoading}
+                  error={!contentLoading ? contentError : undefined}
+                  dirty={dirty && !contentPending && !contentError}
+                />
                 <CloseCircleOutlined
                   data-testid={`studio-tab-close-${tab.id}`}
-                  style={{ fontSize: 12, color: '#999', marginLeft: 2 }}
+                  style={{ fontSize: 12, color: '#999', marginLeft: 2, flexShrink: 0 }}
                   onClick={e => { e.stopPropagation(); onClose(tab.id) }}
                 />
               </div>

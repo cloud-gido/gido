@@ -1191,7 +1191,7 @@ export default function StreamStudioPage() {
             </StudioWorkbenchEmpty>
           ) : (
             <>
-              <StudioWorkbenchToolbar wrap>
+              <StudioWorkbenchToolbar>
                 {!canWrite && (
                   <Tooltip title="可查看与运行（若有权限），不能修改作业定义">
                     <Tag style={{ margin: 0 }}>只读</Tag>
@@ -1249,12 +1249,16 @@ export default function StreamStudioPage() {
                 </Tooltip>
                 <Button size="small" icon={<AimOutlined />} onClick={locateSelectedJob} title="在左侧列表中定位当前作业">定位</Button>
                 <Button size="small" icon={<HistoryOutlined />} onClick={openHistory}>版本历史</Button>
-                <div style={{ flex: 1 }} />
+                <div style={{ flex: 1, minWidth: 8 }} />
                 {selected.job_type === 'SQL' && (
                   <EditorAppearanceToolbar value={editorAppearance} onChange={setEditorAppearance} />
                 )}
                 {selected.owner_username && <Tag style={{ margin: 0 }}>负责人 {selected.owner_username}</Tag>}
-                {streamJobLifecycleTags(selected, selected.job_type === 'SQL' ? scriptDirty || scriptAutosave.versionDirty : false).map((t) => (
+                {streamJobLifecycleTags(
+                  selected,
+                  // 静默草稿不改顶栏铬态；仅显式未保存版本才提示（与 autosave skill 一致）
+                  selected.job_type === 'SQL' ? scriptAutosave.versionDirty : false,
+                ).map((t) => (
                   <Tooltip key={t.text} title={t.title}>
                     <Tag color={t.color} style={{ margin: 0 }}>{t.text}</Tag>
                   </Tooltip>
