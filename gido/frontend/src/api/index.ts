@@ -207,12 +207,17 @@ export const integrationApi = {
   cdcStart: (id: number) => request.post(`/integration/tasks/${id}/cdc/start`),
   cdcStop: (id: number) => request.post(`/integration/tasks/${id}/cdc/stop`),
   cdcStatus: (id: number) => request.get(`/integration/tasks/${id}/cdc/status`),
-  uploadFileImport: (workspaceId: number, file: File, opts?: {
-    encoding?: string
-    delimiter?: string
-    has_header?: boolean
-    sheet_name?: string
-  }) => {
+  uploadFileImport: (
+    workspaceId: number,
+    file: File,
+    opts?: {
+      encoding?: string
+      delimiter?: string
+      has_header?: boolean
+      sheet_name?: string
+      onProgress?: (percent: number) => void
+    },
+  ) => {
     const fd = new FormData()
     fd.append('workspace_id', String(workspaceId))
     fd.append('file', file)
@@ -224,6 +229,16 @@ export const integrationApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
       // 2GB 级上传：关闭 axios 默认 330s 超时
       timeout: 0,
+      onUploadProgress: (evt) => {
+        if (!opts?.onProgress) return
+        const total = evt.total || file.size || 0
+        if (!total) {
+          opts.onProgress(0)
+          return
+        }
+        const pct = Math.min(99, Math.round((evt.loaded / total) * 100))
+        opts.onProgress(pct)
+      },
     })
   },
   previewFileImport: (data: any) => request.post('/integration/file-import/preview', data),

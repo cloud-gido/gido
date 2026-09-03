@@ -39,6 +39,9 @@ describe('file import adoption / regression', () => {
     expect(src).toContain('3GB')
     expect(src).toContain('Stream Load')
     expect(src).toContain('uploadFileImport')
+    expect(src).toContain('Progress')
+    expect(src).toContain('onProgress')
+    expect(src).toContain('服务端解析中')
   })
 
   it('integrationApi 暴露文件导入接口且上传关闭短超时', () => {
@@ -49,6 +52,7 @@ describe('file import adoption / regression', () => {
     expect(src).toContain('createFileImportTask')
     expect(src).toContain('/integration/file-import/upload')
     expect(src).toMatch(/timeout:\s*0/)
+    expect(src).toContain('onUploadProgress')
   })
 
   it('nginx 允许约 3GB body 且加长超时', () => {

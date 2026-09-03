@@ -4,10 +4,10 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Alert, Button, Drawer, Form, Input, Select, Space, Switch, Table, Tabs, Upload,
+  Alert, Button, Drawer, Form, Input, Progress, Select, Space, Switch, Table, Tabs, Upload,
   message, Typography,
 } from 'antd'
-import { InboxOutlined, CloudUploadOutlined } from '@ant-design/icons'
+import { InboxOutlined, CloudUploadOutlined, LoadingOutlined } from '@ant-design/icons'
 import { datasourceApi, integrationApi } from '../api'
 
 type ColDef = {
@@ -50,6 +50,10 @@ export default function FileImportDrawer({
   const [form] = Form.useForm()
   const [tab, setTab] = useState('file')
   const [uploading, setUploading] = useState(false)
+  const [uploadPhase, setUploadPhase] = useState<'idle' | 'uploading' | 'parsing'>('idle')
+  const [uploadPercent, setUploadPercent] = useState(0)
+  const [selectedFileName, setSelectedFileName] = useState<string | null>(null)
+  const [selectedFileSize, setSelectedFileSize] = useState(0)
   const [submitting, setSubmitting] = useState(false)
   const [datasources, setDatasources] = useState<any[]>([])
   const [fileMeta, setFileMeta] = useState<any>(null)
@@ -81,6 +85,11 @@ export default function FileImportDrawer({
     setPreviewRows([])
     setDdl('')
     setTableExists(false)
+    setUploading(false)
+    setUploadPhase('idle')
+    setUploadPercent(0)
+    setSelectedFileName(null)
+    setSelectedFileSize(0)
   }, [open, workspaceId, defaultDatasourceId])
 
   const applyParseResult = (res: any) => {
@@ -103,21 +112,54 @@ export default function FileImportDrawer({
     })
   }
 
+  const formatBytes = (n: number) => {
+    if (n >= 1024 * 1024 * 1024) return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
+    if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
+    if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`
+    return `${n} B`
+  }
+
   const handleUpload = async (file: File) => {
     if (!canWrite) return false
+    setSelectedFileName(file.name)
+    setSelectedFileSize(file.size)
+    setFileMeta(null)
     setUploading(true)
+    setUploadPhase('uploading')
+    setUploadPercent(0)
+    message.loading({ content: `正在上传 ${file.name}…`, key: 'file-import-upload', duration: 0 })
     try {
       const res: any = await integrationApi.uploadFileImport(workspaceId, file, {
         has_header: form.getFieldValue('has_header') !== false,
         encoding: form.getFieldValue('encoding'),
         delimiter: form.getFieldValue('delimiter'),
         sheet_name: form.getFieldValue('sheet_name'),
+        onProgress: (pct) => {
+          setUploadPercent(pct)
+          if (pct >= 99) {
+            setUploadPhase('parsing')
+            message.loading({
+              content: '上传完成，服务端正在解析（大文件可能需数分钟）…',
+              key: 'file-import-upload',
+              duration: 0,
+            })
+          }
+        },
       })
+      setUploadPercent(100)
+      setUploadPhase('idle')
       applyParseResult(res)
-      message.success(`已解析 ${res.row_count ?? 0} 行`)
+      message.success({
+        content: `已解析 ${res.row_count ?? 0} 行（${formatBytes(res.size_bytes || file.size)}）`,
+        key: 'file-import-upload',
+      })
       setTab('schema')
     } catch (e: any) {
-      message.error(e?.response?.data?.detail || e?.message || '上传失败')
+      setUploadPhase('idle')
+      message.error({
+        content: e?.response?.data?.detail || e?.message || '上传失败',
+        key: 'file-import-upload',
+      })
     } finally {
       setUploading(false)
     }
@@ -232,7 +274,13 @@ export default function FileImportDrawer({
       title="本地文件导入"
       width={760}
       open={open}
-      onClose={onClose}
+      onClose={() => {
+        if (uploading) {
+          message.warning('正在上传/解析，请稍候完成后再关闭')
+          return
+        }
+        onClose()
+      }}
       destroyOnClose
       extra={
         <Space>
@@ -268,13 +316,47 @@ export default function FileImportDrawer({
                     beforeUpload={handleUpload}
                     disabled={!canWrite || uploading}
                   >
-                    <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-                    <p className="ant-upload-text">点击或拖拽文件到此处</p>
+                    <p className="ant-upload-drag-icon">
+                      {uploading ? <LoadingOutlined /> : <InboxOutlined />}
+                    </p>
+                    <p className="ant-upload-text">
+                      {uploading
+                        ? (uploadPhase === 'parsing' ? '服务端解析中，请稍候…' : '正在上传，请稍候…')
+                        : '点击或拖拽文件到此处'}
+                    </p>
                     <p className="ant-upload-hint">
                       大文件请用 CSV（约 ≤3GB）；Excel 仅适合 ≤200MB。UTF-8 / GBK 均可。
                     </p>
                   </Upload.Dragger>
-                  {fileMeta && (
+                  {(uploading || selectedFileName) && (
+                    <div style={{ marginTop: 12 }}>
+                      <Alert
+                        type={uploading ? 'info' : (fileMeta ? 'success' : 'warning')}
+                        showIcon
+                        message={
+                          selectedFileName
+                            ? `${selectedFileName} · ${formatBytes(selectedFileSize || fileMeta?.size_bytes || 0)}`
+                            : '准备上传'
+                        }
+                        description={
+                          uploading
+                            ? (uploadPhase === 'parsing'
+                              ? '文件已传到服务器，正在抽样推断字段并统计行数（百万行 CSV 可能需数分钟，请勿关闭）。'
+                              : `正在上传到服务器… ${uploadPercent}%`)
+                            : undefined
+                        }
+                      />
+                      {uploading && (
+                        <Progress
+                          style={{ marginTop: 8 }}
+                          percent={uploadPhase === 'parsing' ? 100 : uploadPercent}
+                          status={uploadPhase === 'parsing' ? 'active' : (uploadPercent < 100 ? 'active' : 'normal')}
+                          format={() => (uploadPhase === 'parsing' ? '解析中' : `${uploadPercent}%`)}
+                        />
+                      )}
+                    </div>
+                  )}
+                  {fileMeta && !uploading && (
                     <Alert
                       style={{ marginTop: 12 }}
                       type="success"
@@ -282,7 +364,7 @@ export default function FileImportDrawer({
                       message={
                         `${fileMeta.original_filename} · ${fileMeta.row_count ?? 0} 行`
                         + `${fileMeta.row_count_estimated ? '（估算）' : ''}`
-                        + ` · ${((fileMeta.size_bytes || 0) / (1024 * 1024)).toFixed(1)} MB`
+                        + ` · ${formatBytes(fileMeta.size_bytes || 0)}`
                       }
                     />
                   )}
