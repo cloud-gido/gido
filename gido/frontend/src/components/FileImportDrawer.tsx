@@ -11,6 +11,7 @@ import { InboxOutlined, CloudUploadOutlined, LoadingOutlined, StopOutlined } fro
 import { datasourceApi, integrationApi } from '../api'
 import {
   describeUploadNetworkError,
+  FILE_IMPORT_CHUNK_BYTES,
   fileImportClientKey,
   formatUploadEta,
   formatUploadSpeed,
@@ -167,7 +168,7 @@ export default function FileImportDrawer({
     setChunkProgress(null)
     setResumeHint(null)
 
-    const useChunk = file.size > 8 * 1024 * 1024
+    const useChunk = file.size > FILE_IMPORT_CHUNK_BYTES
     const clientKey = fileImportClientKey(workspaceId, file)
     const prior = useChunk ? loadFileImportSession(clientKey) : null
     if (prior?.fileId) {
@@ -376,7 +377,7 @@ export default function FileImportDrawer({
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="上传 CSV（推荐大文件，最大约 3GB / 500 万行；>8MB 自动分片且支持断点续传）或 Excel（≤200MB）。Doris 目标走 Stream Load。导入在后台执行，可在运行历史查看进度。"
+        message="上传 CSV（推荐大文件，最大约 3GB / 500 万行；较大文件自动分片且支持断点续传）或 Excel（≤200MB）。Doris 目标走 Stream Load。导入在后台执行，可在运行历史查看进度。"
       />
       <Form form={form} layout="vertical" disabled={!canWrite}>
         <Tabs

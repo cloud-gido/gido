@@ -202,7 +202,7 @@ class Settings(BaseSettings):
     FILE_IMPORT_XLSX_MAX_BYTES: int = 200 * 1024 * 1024  # Excel 仍限 200MB（单 sheet ≤104 万行）
     FILE_IMPORT_MYSQL_BATCH: int = 5000
     FILE_IMPORT_DORIS_HTTP_PORT: int = 8030  # FE HTTP（Stream Load）；可被数据源 extra_config.http_port 覆盖
-    FILE_IMPORT_CHUNK_BYTES: int = 8 * 1024 * 1024  # 前端分片大小提示；单片上传避免 HTTP/2 长连接被掐
+    FILE_IMPORT_CHUNK_BYTES: int = 16 * 1024 * 1024  # 前端分片大小提示；单片上传避免 HTTP/2 长连接被掐
     # 多副本生产头像写入与回源使用同一 S3 bucket；默认复用制品前缀下的 avatars/。
     AVATAR_S3_ENABLED: bool = False
 

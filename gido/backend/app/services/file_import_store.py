@@ -27,7 +27,6 @@ from app.services.artifact_s3 import (
     list_shared_object_names,
     put_shared_object,
     put_shared_object_file,
-    shared_object_exists,
 )
 from app.services import shared_state
 
@@ -640,6 +639,16 @@ def get_upload_status(workspace_id: int, file_id: str) -> Dict[str, Any]:
     }
 
 
+def _parts_redis_count(workspace_id: int, file_id: str) -> Optional[int]:
+    client = _parts_redis_client()
+    if client is None:
+        return None
+    rkey = shared_state.key("cache", _parts_cache_key(workspace_id, file_id))
+    if not client.exists(rkey):
+        return None
+    return int(client.scard(rkey) or 0)
+
+
 def save_upload_chunk(
     *,
     workspace_id: int,
@@ -663,24 +672,24 @@ def save_upload_chunk(
     part_name = f"{idx:06d}.part"
     part_path = parts / part_name
     skipped = False
+    use_s3 = file_import_shared_enabled() or meta.get("storage") == "s3"
 
-    if file_import_shared_enabled() or meta.get("storage") == "s3":
+    if use_s3:
         s3_name = f"parts/{part_name}"
-        if shared_object_exists(_ns(workspace_id, file_id), s3_name):
-            # 幂等：已有对象则跳过（不再比大小，避免额外 GET）
-            skipped = True
-        else:
-            put_shared_object(
-                _ns(workspace_id, file_id),
-                s3_name,
-                content,
-                "application/octet-stream",
-            )
-        # 本地缓存便于同 Pod 合并加速
-        if not part_path.is_file() or part_path.stat().st_size != len(content):
+        # 直接覆盖写入，避免每片额外 HEAD；同内容 PUT 幂等
+        put_shared_object(
+            _ns(workspace_id, file_id),
+            s3_name,
+            content,
+            "application/octet-stream",
+        )
+        # 同 Pod 合并可走本地；不强制写盘（S3 已是权威源）
+        try:
             tmp_path = parts / f"{part_name}.tmp"
             tmp_path.write_bytes(content)
             tmp_path.replace(part_path)
+        except Exception:
+            logger.debug("file-import 本地分片缓存失败 idx=%s", idx, exc_info=True)
     else:
         if part_path.is_file() and part_path.stat().st_size == len(content):
             skipped = True
@@ -691,7 +700,11 @@ def save_upload_chunk(
 
     _mark_part_received(workspace_id, file_id, idx)
 
-    if not file_import_shared_enabled():
+    if use_s3:
+        # 热路径禁止 list S3；进度用 Redis SCARD，完整对账留给 status/complete
+        redis_n = _parts_redis_count(workspace_id, file_id)
+        received_n = int(redis_n) if redis_n is not None else max(1, idx + 1)
+    else:
         received = set(_reconcile_received_local(folder, meta))
         received.add(idx)
         meta["received_chunks"] = sorted(received)
@@ -699,8 +712,6 @@ def save_upload_chunk(
         meta["updated_at"] = datetime.now(timezone.utc).isoformat()
         _write_meta_local(folder, meta)
         received_n = len(received)
-    else:
-        received_n = len(set(_reconcile_received(workspace_id, file_id, meta)) | {idx})
 
     return {
         "file_id": file_id,

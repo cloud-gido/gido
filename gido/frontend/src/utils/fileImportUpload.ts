@@ -6,8 +6,8 @@
  */
 import request from '../api/request'
 
-export const FILE_IMPORT_CHUNK_BYTES = 8 * 1024 * 1024
-const CONCURRENCY = 3
+export const FILE_IMPORT_CHUNK_BYTES = 16 * 1024 * 1024
+const CONCURRENCY = 6
 const MAX_ATTEMPTS = 5
 const COMPLETE_GAP_ROUNDS = 3
 const SESSION_PREFIX = 'gido.fileImport.session.v1:'

@@ -226,7 +226,7 @@ export const integrationApi = {
       signal?: AbortSignal
     },
   ) => {
-    const CHUNK = 8 * 1024 * 1024
+    const CHUNK = 16 * 1024 * 1024
     // 大文件走可断点续传分片，规避 HTTP/2 长上传失败并支持网络中断恢复
     if (file.size > CHUNK) {
       return import('../utils/fileImportUpload').then(({ uploadFileImportResumable }) =>
