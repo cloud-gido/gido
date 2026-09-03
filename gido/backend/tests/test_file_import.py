@@ -231,3 +231,131 @@ def test_chunked_upload_resume_and_idempotent(tmp_path, monkeypatch):
     st = get_upload_status(1, fid)
     assert st["received"] == 1
     assert st["missing_chunks"] == [1]
+
+
+def test_chunked_upload_force_new(tmp_path, monkeypatch):
+    from app.services.file_import_store import init_chunked_upload, save_upload_chunk
+
+    monkeypatch.setattr("app.core.config.settings.FILE_IMPORT_UPLOAD_DIR", str(tmp_path))
+    raw = b"0123456789abcdef"
+    key = "force-new-key"
+    init1 = init_chunked_upload(
+        workspace_id=2,
+        user_id=1,
+        filename="y.csv",
+        size_bytes=len(raw),
+        total_chunks=2,
+        client_key=key,
+    )
+    fid1 = init1["file_id"]
+    save_upload_chunk(workspace_id=2, file_id=fid1, chunk_index=0, content=raw[:8])
+
+    init2 = init_chunked_upload(
+        workspace_id=2,
+        user_id=1,
+        filename="y.csv",
+        size_bytes=len(raw),
+        total_chunks=2,
+        client_key=key,
+        force_new=True,
+    )
+    assert init2["resumed"] is False
+    assert init2["file_id"] != fid1
+    assert init2["received"] == 0
+
+
+def test_shared_chunk_path_uses_s3(tmp_path, monkeypatch):
+    """多副本路径：meta/分片写入 S3（mock），本地仅作缓存。"""
+    import shutil
+
+    from app.services import file_import_store as store
+
+    monkeypatch.setattr("app.core.config.settings.FILE_IMPORT_UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(store, "file_import_shared_enabled", lambda: True)
+    monkeypatch.setattr(
+        store,
+        "file_import_s3_uri",
+        lambda ws, fid, fmt: f"s3://test-bucket/file-imports/{ws}/{fid}/data.{fmt}",
+    )
+
+    bucket: dict = {}
+
+    def put_obj(ns, filename, content, content_type):
+        bucket[f"{ns}/{filename}"] = content
+
+    def get_obj(ns, filename):
+        return bucket.get(f"{ns}/{filename}")
+
+    def exists(ns, filename):
+        return f"{ns}/{filename}" in bucket
+
+    def list_names(ns, subprefix=""):
+        prefix = f"{ns}/"
+        sub = (subprefix or "").strip("/")
+        want = prefix + (sub + "/" if sub else "")
+        out = []
+        for k in bucket:
+            if k.startswith(want):
+                out.append(k[len(prefix) :])
+        return out
+
+    def put_file(ns, filename, path, content_type="application/octet-stream"):
+        bucket[f"{ns}/{filename}"] = Path(path).read_bytes()
+
+    def download_to(ns, filename, dest):
+        data = bucket.get(f"{ns}/{filename}")
+        if data is None:
+            return False
+        Path(dest).write_bytes(data)
+        return True
+
+    def delete_prefix(ns, subprefix=""):
+        names = list_names(ns, subprefix)
+        for n in names:
+            bucket.pop(f"{ns}/{n}", None)
+        return len(names)
+
+    monkeypatch.setattr(store, "put_shared_object", put_obj)
+    monkeypatch.setattr(store, "get_shared_object", get_obj)
+    monkeypatch.setattr(store, "shared_object_exists", exists)
+    monkeypatch.setattr(store, "list_shared_object_names", list_names)
+    monkeypatch.setattr(store, "put_shared_object_file", put_file)
+    monkeypatch.setattr(store, "download_shared_object_to_file", download_to)
+    monkeypatch.setattr(store, "delete_shared_objects_with_prefix", delete_prefix)
+    monkeypatch.setattr(store, "delete_shared_object", lambda ns, fn: bucket.pop(f"{ns}/{fn}", None))
+
+    raw = b"id,name\n1,a\n2,b\n"
+    parts = [raw[:6], raw[6:]]
+    init = store.init_chunked_upload(
+        workspace_id=3,
+        user_id=1,
+        filename="s3.csv",
+        size_bytes=len(raw),
+        total_chunks=2,
+        client_key="s3-key",
+    )
+    fid = init["file_id"]
+    assert any(k.endswith("/meta.json") for k in bucket)
+
+    # 模拟另一副本：只清本地目录，依赖 S3 meta
+    local_folder = tmp_path / "3" / fid
+    if local_folder.exists():
+        shutil.rmtree(local_folder)
+
+    store.save_upload_chunk(workspace_id=3, file_id=fid, chunk_index=0, content=parts[0])
+    store.save_upload_chunk(workspace_id=3, file_id=fid, chunk_index=1, content=parts[1])
+
+    if local_folder.exists():
+        shutil.rmtree(local_folder)
+
+    meta = store.finalize_chunked_upload(workspace_id=3, file_id=fid)
+    assert meta["status"] == "ready"
+    assert meta["storage"] == "s3"
+    assert meta["s3_uri"] == f"s3://test-bucket/file-imports/3/{fid}/data.csv"
+    assert store.resolve_data_path(meta).read_bytes() == raw
+    assert f"file-imports/3/{fid}/data.csv" in bucket
+
+    pub = store.file_import_storage_public(meta)
+    assert pub["load_mode"] == "internal_table"
+    assert pub["s3_uri"] == meta["s3_uri"]
+    assert "S3(" in (pub.get("advanced_s3_tvf_hint") or "")

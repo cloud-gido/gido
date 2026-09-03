@@ -4,7 +4,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Alert, Button, Drawer, Form, Input, Progress, Select, Space, Switch, Table, Tabs, Upload,
+  Alert, Button, Collapse, Drawer, Form, Input, Progress, Select, Space, Switch, Table, Tabs, Upload,
   message, Typography,
 } from 'antd'
 import { InboxOutlined, CloudUploadOutlined, LoadingOutlined, StopOutlined } from '@ant-design/icons'
@@ -452,6 +452,7 @@ export default function FileImportDrawer({
                         + `${fileMeta.row_count_estimated ? '（估算）' : ''}`
                         + ` · ${formatBytes(fileMeta.size_bytes || 0)}`
                       }
+                      description="下一步将创建 Doris/MySQL 内表并装数；对象存储仅作上传中转。"
                     />
                   )}
                   <Form.Item name="has_header" label="首行为表头" valuePropName="checked" style={{ marginTop: 16 }}>
@@ -657,6 +658,49 @@ export default function FileImportDrawer({
               label: '装载与确认',
               children: (
                 <>
+                  <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 12 }}
+                    message="装载方式：内表写入"
+                    description={
+                      fileMeta?.storage_note
+                      || '创建物理表后通过 Stream Load（Doris）或批量 INSERT（MySQL）写入。不创建 CSV 外表。'
+                    }
+                  />
+                  {!!fileMeta?.s3_uri && (
+                    <Collapse
+                      style={{ marginBottom: 12 }}
+                      items={[{
+                        key: 's3',
+                        label: '高级：对象存储副本（上传中转）',
+                        children: (
+                          <>
+                            <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+                              多副本环境下文件会暂存在对象存储；正式查询请用内表，勿长期依赖该路径。
+                            </Typography.Paragraph>
+                            <Typography.Paragraph copyable={{ text: fileMeta.s3_uri }} code>
+                              {fileMeta.s3_uri}
+                            </Typography.Paragraph>
+                            {fileMeta.advanced_s3_tvf_hint && (
+                              <pre style={{
+                                background: '#f7f7f7',
+                                border: '1px solid #eee',
+                                borderRadius: 6,
+                                padding: 12,
+                                maxHeight: 200,
+                                overflow: 'auto',
+                                fontSize: 12,
+                              }}
+                              >
+                                {fileMeta.advanced_s3_tvf_hint}
+                              </pre>
+                            )}
+                          </>
+                        ),
+                      }]}
+                    />
+                  )}
                   <Form.Item name="run_now" label="创建后立即导入" valuePropName="checked">
                     <Switch disabled={!canRun} />
                   </Form.Item>

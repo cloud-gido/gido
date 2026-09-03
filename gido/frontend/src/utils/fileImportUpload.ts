@@ -91,6 +91,12 @@ function assertNotAborted(signal?: AbortSignal) {
   }
 }
 
+function isSessionGoneError(e: any): boolean {
+  const status = e?.response?.status
+  const detail = String(e?.response?.data?.detail || e?.message || '')
+  return status === 404 && /不存在或已过期|不属于该工作空间/.test(detail)
+}
+
 async function mapPool<T>(items: T[], limit: number, worker: (item: T) => Promise<void>) {
   const queue = [...items]
   const runners = Array.from({ length: Math.min(limit, Math.max(1, queue.length)) }, async () => {
@@ -103,10 +109,11 @@ async function mapPool<T>(items: T[], limit: number, worker: (item: T) => Promis
   await Promise.all(runners)
 }
 
-export async function uploadFileImportResumable(
+async function runChunkedUpload(
   workspaceId: number,
   file: File,
-  opts: FileImportUploadOpts = {},
+  opts: FileImportUploadOpts,
+  forceNew: boolean,
 ): Promise<any> {
   const chunkBytes = FILE_IMPORT_CHUNK_BYTES
   const totalChunks = Math.max(1, Math.ceil(file.size / chunkBytes))
@@ -120,10 +127,11 @@ export async function uploadFileImportResumable(
     total_chunks: totalChunks,
     client_key: clientKey,
     chunk_bytes: chunkBytes,
+    force_new: forceNew,
   })
 
   const fileId = String(init.file_id)
-  const resumed = !!init.resumed
+  const resumed = !!init.resumed && !forceNew
   saveFileImportSession({
     workspaceId,
     fileId,
@@ -135,13 +143,13 @@ export async function uploadFileImportResumable(
     updatedAt: Date.now(),
   })
 
-  // 以服务端 status 为准拿 missing（init 已带；再拉一次更稳）
   let status: any = init
   try {
     status = await request.get('/integration/file-import/upload-status', {
       params: { workspace_id: workspaceId, file_id: fileId },
     })
-  } catch {
+  } catch (e: any) {
+    if (isSessionGoneError(e)) throw e
     /* use init */
   }
 
@@ -178,6 +186,7 @@ export async function uploadFileImportResumable(
       })
     } catch (e: any) {
       assertNotAborted(opts.signal)
+      if (isSessionGoneError(e)) throw e
       if (attempt >= MAX_ATTEMPTS) throw e
       await sleep(Math.min(8000, 400 * 2 ** (attempt - 1)))
       return uploadOne(index, attempt + 1)
@@ -225,6 +234,23 @@ export async function uploadFileImportResumable(
   }
 }
 
+export async function uploadFileImportResumable(
+  workspaceId: number,
+  file: File,
+  opts: FileImportUploadOpts = {},
+): Promise<any> {
+  const clientKey = fileImportClientKey(workspaceId, file)
+  try {
+    return await runChunkedUpload(workspaceId, file, opts, false)
+  } catch (e: any) {
+    if (!isSessionGoneError(e)) throw e
+    // 多副本空会话 / 过期 file_id：清本地缓存后强制新建会话再传
+    clearFileImportSession(clientKey)
+    opts.onProgress?.(0)
+    return runChunkedUpload(workspaceId, file, opts, true)
+  }
+}
+
 export async function abortFileImportUpload(workspaceId: number, fileId: string, clientKey?: string) {
   const fd = new FormData()
   fd.append('workspace_id', String(workspaceId))
@@ -240,7 +266,12 @@ export async function abortFileImportUpload(workspaceId: number, fileId: string,
 
 export function describeUploadNetworkError(e: any): string {
   const detail = e?.response?.data?.detail
-  if (typeof detail === 'string' && detail.trim()) return detail
+  if (typeof detail === 'string' && detail.trim()) {
+    if (/不存在或已过期/.test(detail)) {
+      return '上传会话已失效（多副本或过期）。请再次选择同一文件重新开始上传。'
+    }
+    return detail
+  }
   const msg = String(e?.message || '')
   const code = String(e?.code || '')
   if (code === 'ERR_CANCELED' || /上传已取消|canceled|aborted/i.test(msg)) {

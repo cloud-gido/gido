@@ -182,7 +182,7 @@ metadata:
     app: gido
     component: backend
 spec:
-  # 多副本：emptyDir 仅缓存；制品权威源为 S3（勿挂 RWO PVC）
+  # 多副本：emptyDir 仅缓存；JAR/头像/本地文件导入分片权威源为 S3（勿挂 RWO PVC）
   replicas: 2
   strategy:
     type: RollingUpdate

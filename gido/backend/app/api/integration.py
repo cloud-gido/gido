@@ -505,6 +505,9 @@ class FileImportTaskCreate(BaseModel):
 
 
 def _public_parse_result(parsed: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services.file_import_store import file_import_storage_public
+
+    storage = file_import_storage_public(meta)
     return {
         "file_id": meta.get("file_id"),
         "original_filename": meta.get("original_filename"),
@@ -523,6 +526,7 @@ def _public_parse_result(parsed: Dict[str, Any], meta: Dict[str, Any]) -> Dict[s
         "max_rows": settings.FILE_IMPORT_MAX_ROWS,
         "xlsx_max_bytes": settings.FILE_IMPORT_XLSX_MAX_BYTES,
         "chunk_bytes": settings.FILE_IMPORT_CHUNK_BYTES,
+        **storage,
     }
 
 
@@ -533,6 +537,7 @@ class FileImportUploadInitIn(BaseModel):
     total_chunks: int
     client_key: Optional[str] = None
     chunk_bytes: Optional[int] = None
+    force_new: bool = False
 
 
 @router.post("/file-import/upload")
@@ -606,6 +611,7 @@ def file_import_upload_init(
             total_chunks=body.total_chunks,
             client_key=body.client_key,
             chunk_bytes=body.chunk_bytes,
+            force_new=bool(body.force_new),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

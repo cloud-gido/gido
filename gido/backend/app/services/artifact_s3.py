@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
 from app.core.config import settings
@@ -222,6 +222,16 @@ def shared_object_key(namespace: str, filename: str) -> str:
     )
 
 
+def build_shared_object_uri(namespace: str, filename: str) -> Optional[str]:
+    """返回共享对象的 s3:// URI；未配置制品前缀时返回 None。"""
+    prefix = artifact_s3_prefix()
+    if not prefix:
+        return None
+    bucket, _ = _parse_s3_prefix(prefix)
+    key = shared_object_key(namespace, filename)
+    return f"s3://{bucket}/{key}"
+
+
 def put_shared_object(namespace: str, filename: str, content: bytes, content_type: str) -> None:
     prefix = artifact_s3_prefix()
     if not prefix:
@@ -262,3 +272,116 @@ def delete_shared_object(namespace: str, filename: str) -> None:
         Bucket=bucket,
         Key=shared_object_key(namespace, filename),
     )
+
+
+def shared_object_exists(namespace: str, filename: str) -> bool:
+    prefix = artifact_s3_prefix()
+    if not prefix:
+        return False
+    bucket, _ = _parse_s3_prefix(prefix)
+    try:
+        _s3_client().head_object(
+            Bucket=bucket,
+            Key=shared_object_key(namespace, filename),
+        )
+        return True
+    except Exception as ex:
+        code = getattr(ex, "response", {}).get("Error", {}).get("Code", "")
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return False
+        logger.debug("S3 head_object 失败 ns=%s file=%s: %s", namespace, filename, ex)
+        return False
+
+
+def put_shared_object_file(
+    namespace: str,
+    filename: str,
+    path: str,
+    content_type: str = "application/octet-stream",
+) -> None:
+    """大文件上传（boto3 自动 multipart），避免整包进内存。"""
+    prefix = artifact_s3_prefix()
+    if not prefix:
+        raise RuntimeError("共享对象存储 S3 未配置")
+    bucket, _ = _parse_s3_prefix(prefix)
+    from boto3.s3.transfer import TransferConfig
+
+    _s3_client().upload_file(
+        Filename=path,
+        Bucket=bucket,
+        Key=shared_object_key(namespace, filename),
+        ExtraArgs={"ContentType": content_type},
+        Config=TransferConfig(multipart_threshold=64 * 1024 * 1024, max_concurrency=4),
+    )
+
+
+def download_shared_object_to_file(namespace: str, filename: str, dest_path: str) -> bool:
+    """下载到本地文件；不存在返回 False。"""
+    prefix = artifact_s3_prefix()
+    if not prefix:
+        return False
+    bucket, _ = _parse_s3_prefix(prefix)
+    key = shared_object_key(namespace, filename)
+    try:
+        _s3_client().download_file(Bucket=bucket, Key=key, Filename=dest_path)
+        return True
+    except Exception as ex:
+        code = getattr(ex, "response", {}).get("Error", {}).get("Code", "")
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return False
+        raise
+
+
+def list_shared_object_names(namespace: str, subprefix: str = "") -> List[str]:
+    """列出 namespace 下相对路径（不含 namespace 前缀）。"""
+    prefix = artifact_s3_prefix()
+    if not prefix:
+        return []
+    bucket, _ = _parse_s3_prefix(prefix)
+    ns = namespace.strip("/")
+    base = shared_object_key(ns, "").rstrip("/") + "/"
+    sub = (subprefix or "").strip("/")
+    list_prefix = (base + sub + "/") if sub else base
+    names: List[str] = []
+    client = _s3_client()
+    token = None
+    while True:
+        kwargs = {"Bucket": bucket, "Prefix": list_prefix}
+        if token:
+            kwargs["ContinuationToken"] = token
+        resp = client.list_objects_v2(**kwargs)
+        for obj in resp.get("Contents") or []:
+            full_key = str(obj.get("Key") or "")
+            if not full_key.startswith(base):
+                continue
+            rel = full_key[len(base) :]
+            if rel:
+                names.append(rel)
+        if not resp.get("IsTruncated"):
+            break
+        token = resp.get("NextContinuationToken")
+    return names
+
+
+def delete_shared_objects_with_prefix(namespace: str, subprefix: str = "") -> int:
+    """批量删除 namespace[/subprefix] 下对象，返回删除数量。"""
+    names = list_shared_object_names(namespace, subprefix)
+    if not names:
+        return 0
+    prefix = artifact_s3_prefix()
+    if not prefix:
+        return 0
+    bucket, _ = _parse_s3_prefix(prefix)
+    client = _s3_client()
+    deleted = 0
+    for i in range(0, len(names), 1000):
+        batch = names[i : i + 1000]
+        client.delete_objects(
+            Bucket=bucket,
+            Delete={
+                "Objects": [{"Key": shared_object_key(namespace, n)} for n in batch],
+                "Quiet": True,
+            },
+        )
+        deleted += len(batch)
+    return deleted
