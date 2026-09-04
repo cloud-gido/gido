@@ -52,3 +52,40 @@ export function planStudioSessionTabOrder(
     : [preferId, ...sessionTabIds]
   return { tabIds, activeId: preferId }
 }
+
+/**
+ * 恢复请求返回前用户可能已从树中打开脚本：用户当前选择优先，
+ * 但不能因此丢掉上次会话中的其它 Tab。
+ */
+export function mergeStudioSessionTabOrder(
+  sessionTabIds: number[],
+  currentTabIds: number[],
+  currentActiveId: number | null,
+): { tabIds: number[]; activeId: number | null } {
+  const merged = [...sessionTabIds]
+  for (let i = currentTabIds.length - 1; i >= 0; i -= 1) {
+    const id = currentTabIds[i]
+    if (!merged.includes(id)) merged.unshift(id)
+  }
+  return planStudioSessionTabOrder(merged, currentActiveId)
+}
+
+export function canRunStudioTabShortcut(opts: {
+  canRun: boolean
+  node?: { node_type?: string; script_content?: string | null; is_locked?: boolean } | null
+  loading?: boolean
+  error?: string | null
+  running?: boolean
+}): boolean {
+  const node = opts.node
+  return Boolean(
+    opts.canRun
+    && node
+    && (node.node_type === 'SQL' || node.node_type === 'PYTHON')
+    && !node.is_locked
+    && !isEditorTabContentPending(node)
+    && !opts.loading
+    && !opts.error
+    && !opts.running,
+  )
+}

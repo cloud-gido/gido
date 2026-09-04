@@ -4,6 +4,8 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
+  canRunStudioTabShortcut,
+  mergeStudioSessionTabOrder,
   planStudioSessionTabOrder,
   resolveStudioTabChrome,
   studioTabTitleColor,
@@ -46,5 +48,46 @@ describe('planStudioSessionTabOrder', () => {
       tabIds: [9, 2, 3],
       activeId: 9,
     })
+  })
+})
+
+describe('mergeStudioSessionTabOrder', () => {
+  it('keeps stored tabs when user opens a new active tab before restore', () => {
+    expect(mergeStudioSessionTabOrder([2, 3], [9], 9)).toEqual({
+      tabIds: [9, 2, 3],
+      activeId: 9,
+    })
+  })
+
+  it('preserves the stored order for an already restored active tab', () => {
+    expect(mergeStudioSessionTabOrder([1, 2, 3], [2], 2)).toEqual({
+      tabIds: [1, 2, 3],
+      activeId: 2,
+    })
+  })
+})
+
+describe('canRunStudioTabShortcut', () => {
+  const readySql = { node_type: 'SQL', script_content: 'SELECT 1', is_locked: false }
+
+  it('allows ready SQL/PYTHON tabs with run permission', () => {
+    expect(canRunStudioTabShortcut({ canRun: true, node: readySql })).toBe(true)
+    expect(canRunStudioTabShortcut({
+      canRun: true,
+      node: { ...readySql, node_type: 'PYTHON' },
+    })).toBe(true)
+  })
+
+  it('blocks pending, error, locked and running tabs', () => {
+    expect(canRunStudioTabShortcut({
+      canRun: true,
+      node: { ...readySql, script_content: null },
+    })).toBe(false)
+    expect(canRunStudioTabShortcut({ canRun: true, node: readySql, error: 'load failed' })).toBe(false)
+    expect(canRunStudioTabShortcut({
+      canRun: true,
+      node: { ...readySql, is_locked: true },
+    })).toBe(false)
+    expect(canRunStudioTabShortcut({ canRun: true, node: readySql, running: true })).toBe(false)
   })
 })

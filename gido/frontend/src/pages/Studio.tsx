@@ -51,7 +51,11 @@ import {
   scheduleWriteEditorSession,
   writeEditorSession,
 } from '../utils/editorSessionStore'
-import { planStudioSessionTabOrder } from '../utils/studioTabChrome'
+import {
+  canRunStudioTabShortcut,
+  mergeStudioSessionTabOrder,
+  planStudioSessionTabOrder,
+} from '../utils/studioTabChrome'
 import StudioEditorTabStrip from '../components/StudioEditorTabStrip'
 import { useSearchParams } from 'react-router-dom'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
@@ -150,6 +154,8 @@ export default function StudioPage() {
 
   // 运行状态
   const [runningId, setRunningId] = useState<number | null>(null)
+  const runningIdRef = useRef(runningId)
+  runningIdRef.current = runningId
   const [logMap, setLogMap] = useState<Record<number, string>>({})
   const [resultMap, setResultMap] = useState<Record<number, { columns: string[], rows: any[][], total: number } | null>>({})
   const [logPanelOpen, setLogPanelOpen] = useState(false)
@@ -231,6 +237,8 @@ export default function StudioPage() {
   activeTabIdRef.current = activeTabId
   const tabHydrateInflightRef = useRef(new Set<number>())
   const [tabContentLoading, setTabContentLoading] = useState<Record<number, boolean>>({})
+  const tabContentLoadingRef = useRef(tabContentLoading)
+  tabContentLoadingRef.current = tabContentLoading
   const [tabContentError, setTabContentError] = useState<Record<number, string>>({})
   const tabContentErrorRef = useRef(tabContentError)
   tabContentErrorRef.current = tabContentError
@@ -388,8 +396,10 @@ export default function StudioPage() {
       const normalized = normalizeEditorSession(tabIds, activeId, { existingIds: existing })
       if (!normalized.tabIds.length) return
       const byId = new Map(nodes.map((n: any) => [n.id as number, n]))
+      const currentById = new Map(openTabsRef.current.map((n: any) => [n.id as number, n]))
       const stubs = normalized.tabIds
-        .map(id => byId.get(id))
+        // 用户抢先打开的完整节点优先于 slim list 壳，避免恢复时冲掉已加载正文。
+        .map(id => currentById.get(id) ?? byId.get(id))
         .filter((n): n is any => Boolean(n))
       if (!stubs.length) return
       // 同 tick 内 finishPersistReady 会读 ref；先同步再 setState
@@ -424,6 +434,12 @@ export default function StudioPage() {
 
     if (openTabs.length > 0) {
       studioRestoreDoneRef.current = true
+      const planned = mergeStudioSessionTabOrder(
+        sessionTabIds,
+        openTabsRef.current.map(t => t.id),
+        activeTabIdRef.current,
+      )
+      seedSessionTabs(planned.tabIds, planned.activeId)
       finishPersistReady()
       return
     }
@@ -1286,12 +1302,15 @@ export default function StudioPage() {
             bindMonacoFindKeybindings(editor, monaco, () => findApiRef.current)
             bindMonacoScriptKeybindings(editor, monaco, {
               enableRun: () => {
-                const n = openTabsRef.current.find(t => t.id === activeTabIdRef.current)
-                return Boolean(
-                  canRun
-                  && n
-                  && (n.node_type === 'SQL' || n.node_type === 'PYTHON'),
-                )
+                const id = activeTabIdRef.current
+                const n = openTabsRef.current.find(t => t.id === id)
+                return canRunStudioTabShortcut({
+                  canRun,
+                  node: n,
+                  loading: id != null ? tabContentLoadingRef.current[id] : false,
+                  error: id != null ? tabContentErrorRef.current[id] : null,
+                  running: id != null && runningIdRef.current === id,
+                })
               },
               onRun: (script, meta) => {
                 void handleRunRef.current(script, meta)
