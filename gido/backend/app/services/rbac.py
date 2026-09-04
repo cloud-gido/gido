@@ -273,7 +273,8 @@ def require_quality_rule(
     return r
 
 
-def require_datasource_row(db: Session, user, ds_id: int):
+def require_datasource_row(db: Session, user, ds_id: int, *extra_fallback_codes: str):
+    """校验可访问该数据源行。默认需 DATASOURCE_READ；探查等可额外传入 PROBE_READ 等只读码。"""
     from app.models.workspace import DataSource
 
     from app.core import perm_codes as PCM
@@ -281,7 +282,8 @@ def require_datasource_row(db: Session, user, ds_id: int):
     ds = db.query(DataSource).filter(DataSource.id == ds_id).first()
     if not ds:
         raise HTTPException(status_code=404, detail="数据源不存在")
-    assert_workspace_data_capability(db, user, ds.workspace_id, "viewer", PCM.GIDO_BATCH_DATASOURCE_READ)
+    codes = (PCM.GIDO_BATCH_DATASOURCE_READ, *extra_fallback_codes)
+    assert_workspace_data_capability(db, user, ds.workspace_id, "viewer", *codes)
     return ds
 
 

@@ -10,13 +10,24 @@ import { Table, Input, Button, Modal, Form, Select, Tag, Space, message, Descrip
 import { SearchOutlined, PlusOutlined, SyncOutlined, ApartmentOutlined, TableOutlined, UploadOutlined } from '@ant-design/icons'
 import { datamapApi, datasourceApi } from '../api'
 import { useAppStore } from '../store'
+import { can, P } from '../perm'
 import { formatCellDisplay } from '../utils/cellDisplay'
 import LineageGraph from '../components/LineageGraph'
 import { R } from '../routes'
 
+function datamapErrMsg(e: any, fallback: string) {
+  const detail = e?.response?.data?.detail
+  if (typeof detail === 'string' && detail.trim()) return detail
+  const status = e?.response?.status
+  if (status === 403) return '无权限：数据分析等只读角色可浏览字典，注册/同步需具备数据字典写权限'
+  if (status === 401) return '登录已失效，请重新登录后再试'
+  return fallback
+}
+
 export default function DataMapPage() {
-  const { currentWorkspace } = useAppStore()
+  const { currentWorkspace, user } = useAppStore()
   const wsId = currentWorkspace?.id
+  const canWrite = can(user, P.GIDO_BATCH_DATAMAP_WRITE, currentWorkspace)
   const navigate = useNavigate()
   const [tables, setTables] = useState<any[]>([])
   const [datasources, setDatasources] = useState<any[]>([])
@@ -35,7 +46,7 @@ export default function DataMapPage() {
     if (!wsId) return
     const [c, d, regRaw]: any = await Promise.all([
       datamapApi.catalog(wsId, { datasource_id: dsFilter, keyword: keyword || undefined }).catch(() => []),
-      datasourceApi.list(wsId),
+      datasourceApi.list(wsId).catch(() => []),
       datamapApi.searchTables(wsId, keyword || undefined).catch(() => []),
     ])
     const catalogRows = Array.isArray(c) ? c : []
@@ -108,27 +119,40 @@ export default function DataMapPage() {
   }
 
   const handleSyncSchema = async (tableId: number) => {
+    if (!canWrite) {
+      message.warning('当前为只读角色，无法同步结构')
+      return
+    }
     try {
       const res: any = await datamapApi.syncSchema(tableId)
       message.success(`同步成功，共 ${res.columns} 个字段`)
       if (selectedTable?.id === tableId) openDetail({ id: tableId })
     } catch (e: any) {
-      message.error(e?.response?.data?.detail || '同步失败')
+      message.error(datamapErrMsg(e, '同步失败'))
     }
   }
 
   const handleRegister = async () => {
-    const values = await form.validateFields()
-    values.workspace_id = wsId
-    const created: any = await datamapApi.registerTable(values)
-    if (created?.sync_warning) {
-      message.warning(`已注册，但字段同步失败：${created.sync_warning}`)
-    } else {
-      message.success(`注册成功，已同步 ${created?.columns_synced ?? created?.columns?.length ?? 0} 个字段`)
+    if (!canWrite) {
+      message.warning('当前为只读角色，无法注册表')
+      return
     }
-    setRegisterModal(false)
-    await load()
-    if (created?.id) openDetail({ id: created.id })
+    try {
+      const values = await form.validateFields()
+      values.workspace_id = wsId
+      const created: any = await datamapApi.registerTable(values)
+      if (created?.sync_warning) {
+        message.warning(`已注册，但字段同步失败：${created.sync_warning}`)
+      } else {
+        message.success(`注册成功，已同步 ${created?.columns_synced ?? created?.columns?.length ?? 0} 个字段`)
+      }
+      setRegisterModal(false)
+      await load()
+      if (created?.id) openDetail({ id: created.id })
+    } catch (e: any) {
+      if (e?.errorFields) return
+      message.error(datamapErrMsg(e, '注册失败'))
+    }
   }
 
   const openCatalogRow = async (row: any) => {
@@ -140,26 +164,35 @@ export default function DataMapPage() {
       openDetail({ id: row.meta_table_id })
       return
     }
+    if (!canWrite) {
+      message.warning('当前为只读角色，可浏览物理表目录，注册需具备「数据字典写」权限')
+      return
+    }
     Modal.confirm({
       title: '注册到数据地图',
       content: `将「${row.qualified_name}」注册为元数据后自动同步字段，并可查看血缘、样例数据。`,
       okText: '注册并打开',
       onOk: async () => {
-        const created: any = await datamapApi.registerTable({
-          workspace_id: wsId,
-          datasource_id: row.datasource_id,
-          db_name: row.catalog,
-          table_name: row.table_name,
-          table_comment: row.table_comment || undefined,
-          table_type: String(row.table_type || 'table').toLowerCase().includes('view') ? 'view' : 'table',
-        })
-        if (created?.sync_warning) {
-          message.warning(`已注册，但字段同步失败：${created.sync_warning}`)
-        } else {
-          message.success(`已注册并同步 ${created?.columns_synced ?? created?.columns?.length ?? 0} 个字段`)
+        try {
+          const created: any = await datamapApi.registerTable({
+            workspace_id: wsId,
+            datasource_id: row.datasource_id,
+            db_name: row.catalog,
+            table_name: row.table_name,
+            table_comment: row.table_comment || undefined,
+            table_type: String(row.table_type || 'table').toLowerCase().includes('view') ? 'view' : 'table',
+          })
+          if (created?.sync_warning) {
+            message.warning(`已注册，但字段同步失败：${created.sync_warning}`)
+          } else {
+            message.success(`已注册并同步 ${created?.columns_synced ?? created?.columns?.length ?? 0} 个字段`)
+          }
+          await load()
+          if (created?.id) openDetail({ id: created.id })
+        } catch (e: any) {
+          message.error(datamapErrMsg(e, '注册失败'))
+          throw e
         }
-        await load()
-        if (created?.id) openDetail({ id: created.id })
       },
     })
   }
@@ -169,7 +202,11 @@ export default function DataMapPage() {
       title: '限定名（数据源.库.表）',
       dataIndex: 'qualified_name',
       ellipsis: true,
-      render: (q: string, row: any) => <a onClick={() => openCatalogRow(row)}>{q}</a>,
+      render: (q: string, row: any) => (
+        row.registered || canWrite
+          ? <a onClick={() => openCatalogRow(row)}>{q}</a>
+          : <span>{q}</span>
+      ),
     },
     { title: '数据源', dataIndex: 'datasource_name', width: 110 },
     { title: '库', dataIndex: 'catalog', width: 100 },
@@ -184,15 +221,17 @@ export default function DataMapPage() {
     { title: '类型', dataIndex: 'table_type', width: 80, render: (t: string) => t ? <Tag>{t}</Tag> : '—' },
     { title: '行数', dataIndex: 'row_count', width: 88, render: (n: number) => n ?? '—' },
     {
-      title: '操作', width: 200, render: (_: any, row: any) => (
+      title: '操作', width: 220, render: (_: any, row: any) => (
         <Space>
           {row.meta_table_id && (
             <>
-              <Button size="small" icon={<SyncOutlined />} onClick={(e) => { e.stopPropagation(); handleSyncSchema(row.meta_table_id) }}>同步结构</Button>
+              {canWrite && (
+                <Button size="small" icon={<SyncOutlined />} onClick={(e) => { e.stopPropagation(); handleSyncSchema(row.meta_table_id) }}>同步结构</Button>
+              )}
               <Button size="small" icon={<ApartmentOutlined />} onClick={(e) => { e.stopPropagation(); openDetail({ id: row.meta_table_id }) }}>字典</Button>
             </>
           )}
-          {!row.registered && !row.error && (
+          {!row.registered && !row.error && canWrite && (
             <Button size="small" type="link" onClick={(e) => { e.stopPropagation(); openCatalogRow(row) }}>注册</Button>
           )}
         </Space>
@@ -233,21 +272,37 @@ export default function DataMapPage() {
             onSearch={load}
             style={{ width: 260 }}
           />
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setRegisterModal(true)}>手动注册表</Button>
-          <Button
-            icon={<UploadOutlined />}
-            onClick={() => navigate(`${R.batch.integration}?action=file-import`)}
-          >
-            从本地文件建表
-          </Button>
+          {canWrite && (
+            <>
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => setRegisterModal(true)}>手动注册表</Button>
+              <Button
+                icon={<UploadOutlined />}
+                onClick={() => navigate(`${R.batch.integration}?action=file-import`)}
+              >
+                从本地文件建表
+              </Button>
+            </>
+          )}
           <Button icon={<SearchOutlined />} onClick={load}>刷新目录</Button>
         </Space>
       </div>
+      {!canWrite && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="当前角色为只读：可浏览物理表目录与已注册字典，注册/同步结构需具备「数据字典写」权限（如数据开发、管理员）。"
+        />
+      )}
       <Alert
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="展示当前工作空间内已启用数据源中可枚举的物理表（MySQL / Doris / PostgreSQL；未注册也可浏览）。注册时会自动同步字段到数据字典；表结构变更后可点「同步结构」刷新；新建物理表后请点「刷新目录」。"
+        message={
+          canWrite
+            ? '展示当前工作空间内已启用数据源中可枚举的物理表（MySQL / Doris / PostgreSQL；未注册也可浏览）。注册时会自动同步字段到数据字典；表结构变更后可点「同步结构」刷新；新建物理表后请点「刷新目录」。'
+            : '展示当前工作空间内已启用数据源中可枚举的物理表。点击已注册表可查看字典与血缘；未注册表仅可浏览目录信息。'
+        }
       />
       <Table dataSource={tables} columns={columns} rowKey="rowKey" scroll={{ x: 1100 }} />
 

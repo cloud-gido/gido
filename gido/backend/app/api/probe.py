@@ -166,7 +166,7 @@ def probe_query(
     current_user: User = Depends(get_current_user),
 ):
     assert_workspace_data_capability(db, current_user, body.workspace_id, "viewer", PC.GIDO_BATCH_PROBE_READ)
-    ds = require_datasource_row(db, current_user, body.datasource_id)
+    ds = require_datasource_row(db, current_user, body.datasource_id, PC.GIDO_BATCH_PROBE_READ)
     if ds.workspace_id != body.workspace_id:
         raise HTTPException(status_code=400, detail="数据源不属于该工作空间")
     from app.services.workspace_variables import substitute_script_variables

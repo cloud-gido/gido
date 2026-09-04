@@ -1999,12 +1999,12 @@ def seed_roles(db: Session, by_code: dict[str, Permission]) -> dict[str, Role]:
     all_perms = list(by_code.values())
     no_system = [by_code[c] for c in P.ALL_PERMISSIONS if not c.startswith("system:")]
 
-    # 数据分析（只读）：仅探查 + 数据字典 + 数据源列表；不含开发/工作流/运维/系统管理
+    # 数据分析（只读）：仅探查 + 数据字典；不含数据源管理/开发/工作流/运维/系统管理
+    # 探查下拉选源、字典目录筛选用 PROBE/DATAMAP 读权限走轻量列表，不授予 DATASOURCE_READ
     analyst_read_codes = [
         P.WORKSPACE_READ,
         P.GIDO_BATCH_PROBE_READ,
         P.GIDO_BATCH_DATAMAP_READ,
-        P.GIDO_BATCH_DATASOURCE_READ,
     ]
     read_only = [by_code[c] for c in analyst_read_codes if c in by_code]
 
@@ -2042,7 +2042,7 @@ def seed_roles(db: Session, by_code: dict[str, Permission]) -> dict[str, Role]:
         ("platform_admin", "平台管理员", "内置；用户/角色管理与全业务权限", True, all_perms),
         ("developer", "开发工程师", "内置；业务开发全权限（无系统管理）", True, no_system),
         ("workspace_steward", "空间管理员（数据源）", "内置；仅数据源读写 + 查看空间列表；实际可操作范围由「空间成员角色」限定在自己归属的空间", True, workspace_steward_perms),
-        ("analyst", "数据分析（只读）", "内置；数据探查 + 数据字典 + 数据源查看（无开发/工作流/运维/系统管理）", True, read_only),
+        ("analyst", "数据分析（只读）", "内置；数据探查 + 数据字典（无数据源管理/开发/工作流/运维/系统管理）", True, read_only),
         (
             "operator",
             "运维工程师",

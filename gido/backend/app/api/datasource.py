@@ -132,7 +132,16 @@ def _with_dolphin(db: Session, ds: DataSource, do_push: bool) -> DataSourceOut:
 
 @router.get("", response_model=List[DataSourceOut])
 def list_datasources(workspace_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    assert_workspace_data_capability(db, current_user, workspace_id, "viewer", PC.GIDO_BATCH_DATASOURCE_READ)
+    # 数据源管理页：DATASOURCE_READ；探查/字典仅需选用源时允许对应模块读权限（不开放管理页菜单）
+    assert_workspace_data_capability(
+        db,
+        current_user,
+        workspace_id,
+        "viewer",
+        PC.GIDO_BATCH_DATASOURCE_READ,
+        PC.GIDO_BATCH_PROBE_READ,
+        PC.GIDO_BATCH_DATAMAP_READ,
+    )
     return db.query(DataSource).filter(DataSource.workspace_id == workspace_id).all()
 
 

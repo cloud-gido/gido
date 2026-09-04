@@ -73,7 +73,7 @@ def test_operator_has_run_not_write_across_products():
         db.close()
 
 
-def test_analyst_is_probe_datamap_datasource_only():
+def test_analyst_is_probe_datamap_only():
     db = _session()
     try:
         codes = get_user_permission_codes(db, _user_with_role(db, "analyst"))
@@ -81,8 +81,8 @@ def test_analyst_is_probe_datamap_datasource_only():
             P.WORKSPACE_READ,
             P.GIDO_BATCH_PROBE_READ,
             P.GIDO_BATCH_DATAMAP_READ,
-            P.GIDO_BATCH_DATASOURCE_READ,
         }
+        assert P.GIDO_BATCH_DATASOURCE_READ not in codes
     finally:
         db.close()
 
