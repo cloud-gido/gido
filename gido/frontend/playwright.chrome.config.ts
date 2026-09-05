@@ -1,4 +1,7 @@
 /**
+ * Copyright 2026 玑渡 GIDO Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
  * Local-only: use system Google Chrome when Playwright browser download fails.
  * Do not commit reliance in CI — CI should use bundled chromium.
  */
