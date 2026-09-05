@@ -3,8 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * 数据开发编辑器 Tab 条（会话壳 / 懒加载铬态），供 Studio 挂载与 E2E 覆盖。
+ * 激活 Tab 须 scrollIntoView，避免多 Tab 时当前文件名滚出可视区（对齐编辑器常见体验）。
  */
-import type { CSSProperties } from 'react'
+import { useEffect, useRef, type CSSProperties } from 'react'
 import { Dropdown, Tag, Tooltip } from 'antd'
 import {
   CloseCircleOutlined,
@@ -116,6 +117,15 @@ export default function StudioEditorTabStrip({
   onCloseRight,
   onCloseAll,
 }: Props) {
+  const activeTabElRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const el = activeTabElRef.current
+    if (!el || activeTabId == null) return
+    // nearest：已在可视区则不动；偏出左右时滚入（类似 Notepad++ / Chrome）
+    el.scrollIntoView?.({ behavior: 'smooth', inline: 'nearest', block: 'nearest' })
+  }, [activeTabId, tabs.length])
+
   const tabContextMenu = (tabId: number) => {
     const idx = tabs.findIndex(t => t.id === tabId)
     const tab = idx >= 0 ? tabs[idx] : null
@@ -211,12 +221,14 @@ export default function StudioEditorTabStrip({
                     ? `加载失败：${contentError}（再点一次或右键重新加载）`
                     : contentPending
                       ? '尚未加载正文，点击后拉取（会话恢复的后台标签）'
-                      : undefined
+                      : tab.name
               }
             >
               <div
+                ref={isActive ? activeTabElRef : undefined}
                 data-testid={`studio-tab-${tab.id}`}
                 data-chrome={kind}
+                data-active={isActive ? 'true' : undefined}
                 onClick={() => onActivate(tab.id)}
                 onAuxClick={e => {
                   if (e.button === 1) {

@@ -29,6 +29,11 @@ describe('studio workbench shell adoption', () => {
     expect(src).toContain('</StudioWorkbenchShell>')
   })
 
+  it.each(PAGES)('$name mounts StudioWorkbenchActiveEntityTitle for current entity', ({ path }) => {
+    const src = readPage(path)
+    expect(src).toContain('StudioWorkbenchActiveEntityTitle')
+  })
+
   it.each(PAGES)('$name does not reintroduce page-local bleed ResizableSidebar', ({ path }) => {
     const src = readPage(path)
     expect(src).not.toContain("from '../components/ResizableSidebar'")
@@ -41,5 +46,6 @@ describe('studio workbench shell adoption', () => {
     expect(src).toContain("height: 'calc(100vh - 112px)'")
     expect(src).toContain('margin: -24')
     expect(src).toContain("from './ResizableSidebar'")
+    expect(src).toContain('StudioWorkbenchActiveEntityTitle')
   })
 })

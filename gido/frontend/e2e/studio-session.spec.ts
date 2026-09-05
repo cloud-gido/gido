@@ -125,12 +125,14 @@ test.describe('Studio editor session E2E', () => {
 
     // active 已 hydrate
     await expect(page.getByTestId('studio-tab-10')).toHaveAttribute('data-chrome', 'ready', { timeout: 15_000 })
+    await expect(page.getByTestId('studio-active-script-title')).toHaveText('ads_active')
     expect(getNodeHits.filter(id => id === 10).length).toBeGreaterThanOrEqual(1)
     expect(getNodeHits.includes(20)).toBe(false)
     expect(getNodeHits.includes(30)).toBe(false)
 
     await page.getByTestId('studio-tab-20').click()
     await expect(page.getByTestId('studio-tab-20')).toHaveAttribute('data-chrome', 'ready', { timeout: 15_000 })
+    await expect(page.getByTestId('studio-active-script-title')).toHaveText('dws_pending')
     expect(getNodeHits.includes(20)).toBe(true)
   })
 

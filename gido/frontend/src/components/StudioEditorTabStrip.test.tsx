@@ -4,10 +4,14 @@
  *
  * UI 级 E2E：Tab 铬态、激活、关闭会话提示（jsdom + Testing Library）。
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import StudioEditorTabStrip from './StudioEditorTabStrip'
+
+beforeEach(() => {
+  Element.prototype.scrollIntoView = vi.fn()
+})
 
 afterEach(() => {
   cleanup()
@@ -115,5 +119,34 @@ describe('StudioEditorTabStrip E2E chrome', () => {
     expect(within(menu).getByText(/关闭即移出会话/)).toBeInTheDocument()
     await user.click(within(menu).getByText('重新加载脚本'))
     expect(onReload).toHaveBeenCalledWith(2)
+  })
+
+  it('scrolls active tab into view when selection changes', () => {
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    const { rerender } = render(
+      <StudioEditorTabStrip
+        tabs={tabs}
+        activeTabId={1}
+        versionDirtyMap={{}}
+        tabContentLoading={{}}
+        tabContentError={{}}
+        {...noopHandlers}
+      />,
+    )
+    expect(scrollIntoView).toHaveBeenCalled()
+    scrollIntoView.mockClear()
+    rerender(
+      <StudioEditorTabStrip
+        tabs={tabs}
+        activeTabId={3}
+        versionDirtyMap={{}}
+        tabContentLoading={{}}
+        tabContentError={{}}
+        {...noopHandlers}
+      />,
+    )
+    expect(scrollIntoView).toHaveBeenCalled()
+    expect(screen.getByTestId('studio-tab-3')).toHaveAttribute('data-active', 'true')
   })
 })

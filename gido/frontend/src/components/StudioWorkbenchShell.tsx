@@ -6,9 +6,10 @@
  *
  * 批开发 Studio / 实时 Stream Studio / 数据探查 Probe 共用工作台壳：
  * 全高 bleed + 左侧目录树 chrome + 右侧 flex 列。业务条（Tab / 工具栏 / 编辑器）走插槽。
+ * 当前实体标题用 StudioWorkbenchActiveEntityTitle，勿在页面内散写 Tag/span。
  */
 import type { CSSProperties, ReactNode } from 'react'
-import { Button, Space, Tooltip } from 'antd'
+import { Button, Space, Tag, Tooltip } from 'antd'
 import { MenuUnfoldOutlined } from '@ant-design/icons'
 import ResizableSidebar from './ResizableSidebar'
 
@@ -218,6 +219,58 @@ export function StudioWorkbenchExpandSidebarButton({
         onClick={onExpand}
         style={{ marginLeft: 4, flexShrink: 0 }}
       />
+    </Tooltip>
+  )
+}
+
+/**
+ * 当前打开实体标题（与编辑区内容对齐）。
+ * - plain：顶栏单实体（Stream）
+ * - chip：工具栏常驻（Studio 多 Tab 溢出时仍可见）
+ */
+export function StudioWorkbenchActiveEntityTitle({
+  name,
+  variant = 'plain',
+  testId,
+}: {
+  name: string
+  variant?: 'plain' | 'chip'
+  testId?: string
+}) {
+  if (variant === 'chip') {
+    return (
+      <Tooltip title={name}>
+        <Tag
+          data-testid={testId}
+          color="blue"
+          style={{
+            margin: 0,
+            maxWidth: 220,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            fontWeight: 600,
+          }}
+        >
+          {name}
+        </Tag>
+      </Tooltip>
+    )
+  }
+  return (
+    <Tooltip title={name}>
+      <span
+        data-testid={testId}
+        style={{
+          fontWeight: 600,
+          fontSize: 13,
+          maxWidth: 320,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {name}
+      </span>
     </Tooltip>
   )
 }

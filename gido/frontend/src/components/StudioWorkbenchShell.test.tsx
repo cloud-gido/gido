@@ -7,6 +7,7 @@ import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import StudioWorkbenchShell, {
   STUDIO_WORKBENCH_BLEED_STYLE,
+  StudioWorkbenchActiveEntityTitle,
   StudioWorkbenchEmpty,
   StudioWorkbenchExpandSidebarButton,
   StudioWorkbenchStage,
@@ -135,5 +136,18 @@ describe('StudioWorkbench chrome slots', () => {
     )
     await user.click(within(container).getByRole('button'))
     expect(onExpand).toHaveBeenCalledTimes(1)
+  })
+
+  it('ActiveEntityTitle renders plain and chip variants', () => {
+    const { rerender } = render(
+      <StudioWorkbenchActiveEntityTitle name="job_a" testId="entity-title" />,
+    )
+    expect(screen.getByTestId('entity-title')).toHaveTextContent('job_a')
+    expect(screen.getByTestId('entity-title').tagName).toBe('SPAN')
+
+    rerender(
+      <StudioWorkbenchActiveEntityTitle name="script_b" variant="chip" testId="entity-title" />,
+    )
+    expect(screen.getByTestId('entity-title')).toHaveTextContent('script_b')
   })
 })

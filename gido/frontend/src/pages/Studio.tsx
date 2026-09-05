@@ -26,6 +26,7 @@ import { can, isWorkspaceAdmin, P } from '../perm'
 import EditorAppearanceToolbar from '../components/EditorAppearanceToolbar'
 import ResizableVerticalSplit from '../components/ResizableVerticalSplit'
 import StudioWorkbenchShell, {
+  StudioWorkbenchActiveEntityTitle,
   StudioWorkbenchEmpty,
   StudioWorkbenchExpandSidebarButton,
   StudioWorkbenchStage,
@@ -1454,6 +1455,11 @@ export default function StudioPage() {
                   <Tag style={{ margin: 0 }}>只读</Tag>
                 </Tooltip>
               )}
+              <StudioWorkbenchActiveEntityTitle
+                name={activeNode.name}
+                variant="chip"
+                testId="studio-active-script-title"
+              />
               <Button
                 type="primary"
                 icon={isRunning ? <LoadingOutlined /> : <PlayCircleOutlined />}

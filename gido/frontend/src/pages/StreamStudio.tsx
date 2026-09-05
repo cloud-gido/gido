@@ -24,6 +24,7 @@ import { approvalPendingKey } from '../approvalLabels'
 import EditorAppearanceToolbar from '../components/EditorAppearanceToolbar'
 import ResizableVerticalSplit from '../components/ResizableVerticalSplit'
 import StudioWorkbenchShell, {
+  StudioWorkbenchActiveEntityTitle,
   StudioWorkbenchEmpty,
   StudioWorkbenchExpandSidebarButton,
   StudioWorkbenchStage,
@@ -1158,7 +1159,10 @@ export default function StreamStudioPage() {
             />
             {selected ? (
               <>
-                <span style={{ fontWeight: 600, fontSize: 13 }}>{selected.name}</span>
+                <StudioWorkbenchActiveEntityTitle
+                  name={selected.name}
+                  testId="stream-active-job-title"
+                />
                 <Button
                   type="link"
                   size="small"

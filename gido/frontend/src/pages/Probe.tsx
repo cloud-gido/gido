@@ -19,6 +19,7 @@ import { useAppStore } from '../store'
 import EditorAppearanceToolbar from '../components/EditorAppearanceToolbar'
 import ResizableVerticalSplit from '../components/ResizableVerticalSplit'
 import StudioWorkbenchShell, {
+  StudioWorkbenchActiveEntityTitle,
   StudioWorkbenchExpandSidebarButton,
   StudioWorkbenchStage,
   StudioWorkbenchToolbar,
@@ -639,6 +640,12 @@ export default function ProbePage() {
           tooltip="显示探查目录"
         />
         <span style={{ fontWeight: 600, fontSize: 13 }}>数据探查</span>
+        {activeScript && (
+          <StudioWorkbenchActiveEntityTitle
+            name={activeScript.name}
+            testId="probe-active-script-title"
+          />
+        )}
       </StudioWorkbenchTopStrip>
       <Alert
         type="info"
