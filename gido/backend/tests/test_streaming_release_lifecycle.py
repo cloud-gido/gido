@@ -443,6 +443,7 @@ def test_stop_persists_new_savepoint_and_suspends(monkeypatch):
     monkeypatch.setattr(streaming_api, "require_streaming_job", lambda *a, **k: job)
     monkeypatch.setattr(flink_operator_submit, "_operator_namespace", lambda: "flink")
     monkeypatch.setattr(flink_operator_submit, "read_flink_deployment", lambda *a, **k: cr)
+    monkeypatch.setattr(flink_operator_submit, "list_flink_state_snapshots", lambda **k: [])
     monkeypatch.setattr(
         flink_operator_submit,
         "extract_savepoint_status_from_cr",
@@ -501,6 +502,7 @@ def test_stop_timeout_keeps_job_running_and_audits_failure(monkeypatch):
     monkeypatch.setattr(streaming_api, "require_streaming_job", lambda *a, **k: job)
     monkeypatch.setattr(flink_operator_submit, "_operator_namespace", lambda: "flink")
     monkeypatch.setattr(flink_operator_submit, "read_flink_deployment", lambda *a, **k: cr)
+    monkeypatch.setattr(flink_operator_submit, "list_flink_state_snapshots", lambda **k: [])
     monkeypatch.setattr(
         flink_operator_submit,
         "extract_savepoint_status_from_cr",
@@ -568,6 +570,7 @@ def test_stop_failure_unknown_cluster_stays_running(monkeypatch):
     monkeypatch.setattr(streaming_api, "require_streaming_job", lambda *a, **k: job)
     monkeypatch.setattr(flink_operator_submit, "_operator_namespace", lambda: "flink")
     monkeypatch.setattr(flink_operator_submit, "read_flink_deployment", lambda *a, **k: cr)
+    monkeypatch.setattr(flink_operator_submit, "list_flink_state_snapshots", lambda **k: [])
     monkeypatch.setattr(
         flink_operator_submit,
         "extract_savepoint_status_from_cr",
