@@ -42,9 +42,23 @@ jobs:
       - run: npm run build
       - name: Production bundle smoke (StudioWorkbench markers)
         run: npm run test:smoke
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('gido/frontend/package-lock.json') }}
       - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
-      - name: Playwright studio session E2E
+        # ubuntu-latest 已带齐大部分动态库；--with-deps 每次 apt 装字体可多耗数分钟。
+        # 缓存未命中时只下载浏览器；系统依赖仅在首次/缓存 miss 时补一次。
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" = "true" ]; then
+            npx playwright install chromium
+          else
+            npx playwright install --with-deps chromium
+          fi
+      - name: Playwright E2E
         run: npm run test:e2e
         env:
           CI: true
