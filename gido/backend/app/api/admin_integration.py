@@ -11,7 +11,8 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.core.access import require_platform_manager
+from app.core.access import RequireAnyPerm
+from app.core import perm_codes as PC
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.workspace import User
@@ -94,12 +95,12 @@ def _dolphin_integration_out(db: Session) -> DolphinIntegrationOut:
     )
 
 
-@router.get("/dolphin", response_model=DolphinIntegrationOut, dependencies=[Depends(require_platform_manager)])
+@router.get("/dolphin", response_model=DolphinIntegrationOut, dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_READ))])
 def get_dolphin_integration(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     return _dolphin_integration_out(db)
 
 
-@router.put("/dolphin", response_model=DolphinIntegrationOut, dependencies=[Depends(require_platform_manager)])
+@router.put("/dolphin", response_model=DolphinIntegrationOut, dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_WRITE))])
 def put_dolphin_integration(
     body: DolphinIntegrationUpdate,
     db: Session = Depends(get_db),
@@ -138,7 +139,7 @@ def put_dolphin_integration(
     return _dolphin_integration_out(db)
 
 
-@router.post("/dolphin/test", dependencies=[Depends(require_platform_manager)])
+@router.post("/dolphin/test", dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_WRITE))])
 def test_dolphin(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> Dict[str, Any]:
     cfg = get_dolphin_runtime(db)
     if not cfg.enabled:
@@ -210,7 +211,7 @@ def test_dolphin(db: Session = Depends(get_db), _: User = Depends(get_current_us
         raise HTTPException(status_code=502, detail=str(e))
 
 
-@router.post("/dolphin/reset-overrides", response_model=DolphinIntegrationOut, dependencies=[Depends(require_platform_manager)])
+@router.post("/dolphin/reset-overrides", response_model=DolphinIntegrationOut, dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_WRITE))])
 def reset_dolphin_overrides(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     """清空库中 Dolphin 覆盖项，全部回退为环境变量。"""
     row = ensure_platform_integration_row(db)
@@ -237,14 +238,14 @@ class ApsWorkflowScheduleUpdate(BaseModel):
     enabled: Optional[bool] = None
 
 
-@router.get("/aps-workflow-schedule", dependencies=[Depends(require_platform_manager)])
+@router.get("/aps-workflow-schedule", dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_READ))])
 def get_aps_workflow_schedule(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> Dict[str, Any]:
     from app.services.aps_workflow_schedule import aps_workflow_status
 
     return aps_workflow_status(db)
 
 
-@router.put("/aps-workflow-schedule", dependencies=[Depends(require_platform_manager)])
+@router.put("/aps-workflow-schedule", dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_WRITE))])
 def put_aps_workflow_schedule(
     body: ApsWorkflowScheduleUpdate,
     db: Session = Depends(get_db),
@@ -268,7 +269,7 @@ def put_aps_workflow_schedule(
     return out
 
 
-@router.post("/aps-workflow-schedule/disable", dependencies=[Depends(require_platform_manager)])
+@router.post("/aps-workflow-schedule/disable", dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_WRITE))])
 def disable_aps_workflow_schedule(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
@@ -388,12 +389,12 @@ def _flink_integration_out(db: Session) -> FlinkIntegrationOut:
     )
 
 
-@router.get("/flink", response_model=FlinkIntegrationOut, dependencies=[Depends(require_platform_manager)])
+@router.get("/flink", response_model=FlinkIntegrationOut, dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_READ))])
 def get_flink_integration(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     return _flink_integration_out(db)
 
 
-@router.get("/flink/sql-gateway-k8s-yml", dependencies=[Depends(require_platform_manager)])
+@router.get("/flink/sql-gateway-k8s-yml", dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_READ))])
 def get_flink_sql_gateway_k8s_yml(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     """按当前生效集成配置生成 flink-sql-gateway Deployment YAML（kubectl apply 对接不同 K8s）。"""
     cfg = get_flink_runtime(db)
@@ -401,7 +402,7 @@ def get_flink_sql_gateway_k8s_yml(db: Session = Depends(get_db), _: User = Depen
     return PlainTextResponse(content=body, media_type="text/yaml; charset=utf-8")
 
 
-@router.put("/flink", response_model=FlinkIntegrationOut, dependencies=[Depends(require_platform_manager)])
+@router.put("/flink", response_model=FlinkIntegrationOut, dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_WRITE))])
 def put_flink_integration(
     body: FlinkIntegrationUpdate,
     db: Session = Depends(get_db),
@@ -454,7 +455,7 @@ def put_flink_integration(
     return _flink_integration_out(db)
 
 
-@router.post("/flink/test", dependencies=[Depends(require_platform_manager)])
+@router.post("/flink/test", dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_WRITE))])
 def test_flink_integration(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> Dict[str, Any]:
     refresh_flink_client(db)
     from app.api.streaming import flink
@@ -480,7 +481,7 @@ def test_flink_integration(db: Session = Depends(get_db), _: User = Depends(get_
     }
 
 
-@router.post("/flink/deploy-hint", dependencies=[Depends(require_platform_manager)])
+@router.post("/flink/deploy-hint", dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_WRITE))])
 def flink_deploy_hint(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> Dict[str, Any]:
     """根据当前生效配置生成可粘贴的 compose / .env 片段（不执行远程安装）。"""
     cfg = get_flink_runtime(db)
@@ -518,7 +519,7 @@ def flink_deploy_hint(db: Session = Depends(get_db), _: User = Depends(get_curre
     }
 
 
-@router.post("/flink/reset-overrides", response_model=FlinkIntegrationOut, dependencies=[Depends(require_platform_manager)])
+@router.post("/flink/reset-overrides", response_model=FlinkIntegrationOut, dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_WRITE))])
 def reset_flink_overrides(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     row = ensure_platform_integration_row(db)
     row.flink_url = None
@@ -586,12 +587,12 @@ def _copilot_integration_out(db: Session) -> CopilotIntegrationOut:
     )
 
 
-@router.get("/copilot", response_model=CopilotIntegrationOut, dependencies=[Depends(require_platform_manager)])
+@router.get("/copilot", response_model=CopilotIntegrationOut, dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_READ))])
 def get_copilot_integration(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     return _copilot_integration_out(db)
 
 
-@router.put("/copilot", response_model=CopilotIntegrationOut, dependencies=[Depends(require_platform_manager)])
+@router.put("/copilot", response_model=CopilotIntegrationOut, dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_WRITE))])
 def put_copilot_integration(
     body: CopilotIntegrationUpdate,
     db: Session = Depends(get_db),
@@ -617,14 +618,14 @@ def put_copilot_integration(
     return _copilot_integration_out(db)
 
 
-@router.post("/copilot/test", dependencies=[Depends(require_platform_manager)])
+@router.post("/copilot/test", dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_WRITE))])
 def test_copilot_integration(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> Dict[str, Any]:
     from app.services.copilot_runtime import get_copilot_runtime, test_copilot_runtime
 
     return test_copilot_runtime(get_copilot_runtime(db))
 
 
-@router.post("/copilot/reset-overrides", response_model=CopilotIntegrationOut, dependencies=[Depends(require_platform_manager)])
+@router.post("/copilot/reset-overrides", response_model=CopilotIntegrationOut, dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_WRITE))])
 def reset_copilot_overrides(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     row = ensure_platform_integration_row(db)
     row.copilot_llm_base_url = None

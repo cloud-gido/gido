@@ -2161,7 +2161,7 @@ def seed_roles(db: Session, by_code: dict[str, Permission]) -> dict[str, Role]:
         ("super_admin", "超级管理员", "内置；平台最高管理角色（全部权限）。平台管理能力由角色授予，不再单独开关", True, all_perms),
         ("platform_admin", "平台管理员", "内置；与超级管理员同等平台管理能力（用户/角色/空间/集成）", True, all_perms),
         ("developer", "开发工程师", "内置；业务开发全权限（无系统管理）", True, no_system),
-        ("workspace_steward", "空间管理员（数据源）", "内置；仅数据源读写 + 查看空间列表；实际可操作范围由「空间成员角色」限定在自己归属的空间", True, workspace_steward_perms),
+        ("workspace_steward", "数据源管家", "内置平台角色；仅数据源读写 + 查看空间列表。勿与「空间成员·空间管理员」混淆：后者是某工作空间内的成员角色", True, workspace_steward_perms),
         ("analyst", "数据分析（只读）", "内置；数据探查 + 数据字典（无数据源管理/开发/工作流/运维/系统管理）", True, read_only),
         (
             "operator",

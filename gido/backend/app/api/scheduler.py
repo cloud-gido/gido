@@ -7,6 +7,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.core.access import require_platform_manager
 from app.models.workspace import User
 from app.core.config import settings
 from app.services.ds_runtime import get_dolphin_runtime, refresh_ds_client
@@ -40,16 +41,16 @@ def preview_cron(
 
 
 @router.post("/reload")
-def reload_scheduler(current_user: User = Depends(get_current_user)):
-    """重新加载本地 APScheduler 调度任务（DS 未启用时使用）"""
+def reload_scheduler(_: None = Depends(require_platform_manager)):
+    """重新加载本地 APScheduler 调度任务（DS 未启用时使用）。仅平台管理员。"""
     from app.services import scheduler as svc_scheduler
     svc_scheduler.reload_schedules()
     return {"message": "调度器已重载"}
 
 
 @router.get("/jobs")
-def list_jobs(current_user: User = Depends(get_current_user)):
-    """查看本地调度任务列表"""
+def list_jobs(_: None = Depends(require_platform_manager)):
+    """查看本地调度任务列表。仅平台管理员。"""
     from app.services.scheduler import scheduler as apscheduler
     jobs = [
         {"id": job.id, "name": job.name,
@@ -61,8 +62,8 @@ def list_jobs(current_user: User = Depends(get_current_user)):
 
 
 @router.get("/ds/status")
-def ds_status(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """检查生产调度引擎连通性与同步健康度。"""
+def ds_status(db: Session = Depends(get_db), _: None = Depends(require_platform_manager)):
+    """检查生产调度引擎连通性与同步健康度。仅平台管理员。"""
     cfg = get_dolphin_runtime(db)
     from app.models.workspace import WorkflowInstance
 
@@ -121,13 +122,14 @@ def ds_status(db: Session = Depends(get_db), current_user: User = Depends(get_cu
 
 
 @router.post("/ds/sync-instances")
-def sync_ds_instances(current_user: User = Depends(get_current_user)):
+def sync_ds_instances(_: None = Depends(require_platform_manager)):
     """
     主动同步 DS 流程实例：
     1) 按已发布工作流（dag 内 ds_process_code）从 Dolphin 拉最近流程实例入库/更新（含定时调度、未经过 GIDO /run 的运行）；
     2) 拉任务实例填充运维节点明细；
     3) 对库内最近含 ds: 的实例调详情 API 补 commandType / 终态。
     建议由定时任务分钟级调用；运维页「同步 Dolphin 触发类型」亦调用本接口。
+    仅平台管理员。
     """
     from app.core.database import SessionLocal
     from app.services.dolphin import ds_client

@@ -32,7 +32,7 @@ const FIXED_THEME_LABELS: Record<UiThemeId, string> = {
 import { R } from '../routes'
 import { can, isPlatformAdmin, P } from '../perm'
 import { BRAND } from '../branding'
-import { platformIdentityLabel } from '../utils/roleLabels'
+import { headerAccountRoleLabel, platformIdentityLabel, spaceMemberRoleLabel } from '../utils/roleLabels'
 import UserAvatarDisplay from './UserAvatarDisplay'
 import AvatarPickerModal from './AvatarPickerModal'
 
@@ -52,6 +52,9 @@ export default function UserAccountMenu() {
   const [pwdOpen, setPwdOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [form] = Form.useForm()
+
+  const spaceRole = headerAccountRoleLabel(currentWorkspace)
+  const platformRole = platformIdentityLabel(user)
 
   const handleLogout = () => {
     logout()
@@ -76,7 +79,39 @@ export default function UserAccountMenu() {
     }
   }
 
+  const identityBlock: NonNullable<MenuProps['items']> = [
+    {
+      key: 'identity',
+      type: 'group',
+      label: '身份',
+      children: [
+        {
+          key: 'identity-space',
+          disabled: true,
+          label: (
+            <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'normal' }}>
+              当前空间：{spaceRole || '未加入空间'}
+            </Text>
+          ),
+        },
+        {
+          key: 'identity-platform',
+          disabled: true,
+          label: (
+            <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'normal' }}>
+              平台权限：{platformRole || '—'}
+              <br />
+              <span style={{ opacity: 0.85 }}>跨空间能力（用户管理等）；日常以当前空间角色为准</span>
+            </Text>
+          ),
+        },
+      ],
+    },
+    { type: 'divider' },
+  ]
+
   const items: MenuProps['items'] = [
+    ...identityBlock,
     {
       key: 'avatar',
       icon: <UserAvatarDisplay user={user} size={18} />,
@@ -149,8 +184,9 @@ export default function UserAccountMenu() {
               <span>
                 {user?.email && <>邮箱：{user.email}<br /></>}
                 {user?.full_name && <>姓名：{user.full_name}<br /></>}
-                {user?.role_name && <>角色：{user.role_name}</>}
-                {!user?.email && !user?.full_name && !user?.role_name && '账号菜单'}
+                {spaceRole && <>当前空间：{spaceRole}<br /></>}
+                {platformRole && <>平台权限：{platformRole}</>}
+                {!user?.email && !user?.full_name && !spaceRole && !platformRole && '账号菜单'}
               </span>
             }
           >
@@ -172,9 +208,9 @@ export default function UserAccountMenu() {
           </Tooltip>
           <Space direction="vertical" size={0} style={{ lineHeight: 1.15, alignItems: 'flex-start' }}>
             <Text style={{ fontSize: 14 }}>{user?.username ?? '…'}</Text>
-            {(platformIdentityLabel(user) || user?.role_name) && (
+            {spaceRole && (
               <Text type="secondary" style={{ fontSize: 11, maxWidth: 140 }} ellipsis>
-                {platformIdentityLabel(user)}
+                {spaceRole}
               </Text>
             )}
           </Space>

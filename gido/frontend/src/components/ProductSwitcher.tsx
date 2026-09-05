@@ -13,6 +13,7 @@ import { BRAND, BRAND_ASSETS } from '../branding'
 import { can, P } from '../perm'
 import { useAppStore } from '../store'
 import { canEnterServiceProduct } from '../serviceMenuPolicy'
+import { canEnterStreamProduct } from '../streamMenuPolicy'
 import ProductMark from './ProductMark'
 import { PRODUCT_SHELL_META } from '../branding'
 
@@ -38,7 +39,7 @@ export default function ProductSwitcher({ active }: Props) {
     } else if (can(user, P.GIDO_BATCH_PROBE_READ, currentWorkspace)) {
       list.push({ label: BRAND.offline, value: 'batch', path: R.batch.probe })
     }
-    if (can(user, P.GIDO_STREAM_READ, currentWorkspace)) {
+    if (canEnterStreamProduct(user, currentWorkspace)) {
       list.push({ label: BRAND.realtime, value: 'stream', path: R.stream.studio })
     }
     if (canEnterServiceProduct(user, currentWorkspace)) {

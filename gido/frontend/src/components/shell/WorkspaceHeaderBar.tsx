@@ -51,9 +51,10 @@ export default function WorkspaceHeaderBar({
           value={currentWorkspace?.id}
           onChange={id => setCurrentWorkspace(workspaces.find(w => w.id === id))}
           options={workspaces.map((w: any) => ({ label: wsLabel(w), value: w.id }))}
-          style={{ width: 220 }}
+          style={{ width: 240 }}
           placeholder="工作空间"
           variant="borderless"
+          title="工作空间 · 你在该空间的成员角色"
         />
         {isPlatformAdmin(user) && (
           <Tooltip title="仅平台管理员可新建工作空间">

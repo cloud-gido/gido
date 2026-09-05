@@ -1053,6 +1053,7 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
               <>
                 能力只由「平台角色」决定：选 <Tag>超级管理员</Tag> / <Tag>平台管理员</Tag> 即具备平台管理（用户/角色/空间/集成）；
                 开发、分析、运维等业务角色不再叠加单独的「管理员」开关。
+                <Tag>数据源管家</Tag> 是平台能力包（只管数据源权限码），不是某空间的「空间管理员」成员角色。
                 空间内的 admin/developer/viewer 请到「工作空间成员」配置。
               </>
             }

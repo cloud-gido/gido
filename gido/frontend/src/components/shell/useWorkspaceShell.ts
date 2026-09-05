@@ -9,7 +9,7 @@ import { Form, message } from 'antd'
 import { workspaceApi, authApi } from '../../api'
 import { useAppStore } from '../../store'
 import { pickDefaultWorkspace } from '../../workspacePick'
-import { spaceMemberRoleLabel } from '../../utils/roleLabels'
+import { workspaceSwitcherLabel } from '../../utils/roleLabels'
 
 export function useWorkspaceShell() {
   const { user, currentWorkspace, setCurrentWorkspace, setUser } = useAppStore()
@@ -70,7 +70,7 @@ export function useWorkspaceShell() {
     setCurrentWorkspace(created)
   }
 
-  const wsLabel = (w: any) => (w.my_role ? `${w.name} · ${spaceMemberRoleLabel(w.my_role)}` : w.name)
+  const wsLabel = (w: any) => workspaceSwitcherLabel(w)
 
   return {
     user,

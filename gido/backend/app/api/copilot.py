@@ -19,6 +19,7 @@ from app.models.workspace import User
 from app.services.copilot.orchestrator import CopilotOrchestrator
 from app.services.copilot.session_store import session_store
 from app.services.copilot_runtime import get_copilot_runtime
+from app.services.rbac import assert_workspace_access
 from app.services.shared_state import rate_limit_hit
 
 router = APIRouter(prefix="/copilot", tags=["玑渡 Copilot"])
@@ -69,6 +70,8 @@ def copilot_status(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    if workspace_id is not None:
+        assert_workspace_access(db, current_user, int(workspace_id))
     cfg = get_copilot_runtime(db, workspace_id)
     configured = bool(cfg.api_key)
     return {
@@ -90,8 +93,11 @@ def _session_store_call(fn, *args, **kwargs):
 @router.get("/sessions")
 def list_sessions(
     workspace_id: Optional[int] = None,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    if workspace_id is not None:
+        assert_workspace_access(db, current_user, int(workspace_id))
     return {"sessions": _session_store_call(session_store.list_for_user, current_user.id, workspace_id)}
 
 
@@ -121,6 +127,7 @@ def copilot_chat(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    assert_workspace_access(db, current_user, int(body.workspace_id))
     _check_rate_limit(current_user.id)
     _require_configured(db, body.workspace_id)
     runtime = get_copilot_runtime(db, body.workspace_id)

@@ -169,7 +169,7 @@ def get_datasource(ds_id: int, db: Session = Depends(get_db), current_user: User
     ds = db.query(DataSource).filter(DataSource.id == ds_id).first()
     if not ds:
         raise HTTPException(status_code=404, detail="数据源不存在")
-    assert_workspace_data_capability(db, current_user, ds.workspace_id, "viewer", PC.GIDO_BATCH_DATASOURCE_READ)
+    assert_workspace_data_capability(db, current_user, ds.workspace_id, "viewer", PC.GIDO_BATCH_DATASOURCE_READ, PC.GIDO_BATCH_PROBE_READ, PC.GIDO_BATCH_DATAMAP_READ)
     return ds
 
 
@@ -225,7 +225,16 @@ def test_connection(ds_id: int, db: Session = Depends(get_db), current_user: Use
     ds = db.query(DataSource).filter(DataSource.id == ds_id).first()
     if not ds:
         raise HTTPException(status_code=404, detail="数据源不存在")
-    assert_workspace_data_capability(db, current_user, ds.workspace_id, "viewer", PC.GIDO_BATCH_DATASOURCE_READ)
+    # 与 list 一致：探查/字典选源可测连通（不开放数据源管理菜单）
+    assert_workspace_data_capability(
+        db,
+        current_user,
+        ds.workspace_id,
+        "viewer",
+        PC.GIDO_BATCH_DATASOURCE_READ,
+        PC.GIDO_BATCH_PROBE_READ,
+        PC.GIDO_BATCH_DATAMAP_READ,
+    )
     _assert_jdbc_database_if_needed(ds.ds_type, ds.database)
     _assert_jdbc_username_if_needed(ds.ds_type, ds.username)
     try:
