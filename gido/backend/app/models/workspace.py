@@ -331,23 +331,57 @@ class SyncTask(Base):
     is_active = Column(Boolean, default=True)
     last_sync_at = Column(DateTime)
     last_run_status = Column(String(32))  # running / success / failed
+    active_import_version_id = Column(Integer, nullable=True)  # file_import: 当前生效版本
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_by = Column(Integer, ForeignKey("dw_users.id"))
+
+
+class FileImportVersion(Base):
+    """本地文件导入的不可变版本快照（文件 + 解析参数 + 字段 + 操作模式）。"""
+    __tablename__ = "dw_file_import_versions"
+    id = Column(Integer, primary_key=True, index=True)
+    sync_task_id = Column(Integer, ForeignKey("dw_sync_tasks.id"), nullable=False, index=True)
+    workspace_id = Column(Integer, ForeignKey("dw_workspaces.id"), nullable=False, index=True)
+    file_id = Column(String(64), nullable=False, index=True)
+    content_sha256 = Column(String(64), nullable=True)
+    original_filename = Column(String(256), nullable=True)
+    format = Column(String(16), nullable=True)
+    encoding = Column(String(32), nullable=True)
+    delimiter = Column(String(16), nullable=True)
+    has_header = Column(Boolean, default=True)
+    sheet_name = Column(String(128), nullable=True)
+    columns = Column(JSON, nullable=False)
+    schema_fingerprint = Column(String(64), nullable=True, index=True)
+    operation_mode = Column(String(16), nullable=False, default="create")  # create|append|replace
+    quality_mode = Column(String(16), nullable=False, default="strict")  # strict|lenient
+    status = Column(String(16), nullable=False, default="draft")  # draft|active|superseded
+    created_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    activated_at = Column(DateTime, nullable=True)
 
 
 class SyncRecord(Base):
     __tablename__ = "dw_sync_records"
     id = Column(Integer, primary_key=True, index=True)
     sync_task_id = Column(Integer, ForeignKey("dw_sync_tasks.id"))
-    status = Column(String(32))  # running/success/failed
-    trigger_type = Column(String(32), default="manual")  # manual / schedule
+    status = Column(String(32))  # pending/running/success/failed
+    trigger_type = Column(String(32), default="manual")  # manual / schedule / retry
     rows_read = Column(Integer, default=0)
     rows_written = Column(Integer, default=0)
     error_msg = Column(Text)
     duration_ms = Column(Integer)
     started_at = Column(DateTime)
     finished_at = Column(DateTime)
+    # file_import 生产基线字段
+    execution_key = Column(String(64), nullable=True, index=True)
+    retry_of = Column(Integer, nullable=True)
+    version_id = Column(Integer, ForeignKey("dw_file_import_versions.id"), nullable=True)
+    config_snapshot = Column(JSON, nullable=True)
+    phase = Column(String(32), nullable=True)  # queued|staging|loading|committing|done
+    heartbeat_at = Column(DateTime, nullable=True)
+    triggered_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    quality = Column(JSON, nullable=True)
 
 
 class AdhocRun(Base):

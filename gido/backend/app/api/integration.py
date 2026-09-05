@@ -66,7 +66,7 @@ class SyncTaskUpdate(BaseModel):
     src_table: Optional[str] = None
     dst_table: Optional[str] = None
     sync_mode: Optional[str] = None
-    # 接受原始 dict（file_import 模式传 file_id 等）或 SyncConfigIn（普通模式）
+    # 普通集成任务可用；file_import 禁止经此接口改 sync_config
     sync_config: Optional[Dict[str, Any]] = None
     schedule_cron: Optional[str] = None
     is_active: Optional[bool] = None
@@ -87,6 +87,7 @@ class SyncTaskOut(BaseModel):
     is_active: bool
     last_sync_at: Optional[datetime] = None
     last_run_status: Optional[str] = None
+    active_import_version_id: Optional[int] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
 
@@ -105,6 +106,14 @@ class SyncRecordOut(BaseModel):
     duration_ms: Optional[int] = None
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
+    execution_key: Optional[str] = None
+    retry_of: Optional[int] = None
+    version_id: Optional[int] = None
+    config_snapshot: Optional[Dict[str, Any]] = None
+    phase: Optional[str] = None
+    heartbeat_at: Optional[datetime] = None
+    triggered_by: Optional[int] = None
+    quality: Optional[Dict[str, Any]] = None
 
     class Config:
         from_attributes = True
@@ -257,16 +266,21 @@ def update_sync_task(
         raise HTTPException(status_code=400, detail="sync_mode 仅支持 full / incremental / cdc")
     if "schedule_cron" in data:
         _assert_cron(data.get("schedule_cron"))
+    if task.sync_mode == "file_import" and "sync_config" in data:
+        raise HTTPException(
+            status_code=400,
+            detail="file_import 禁止经通用 update 修改 sync_config，请使用 /file-import/tasks/{id}/versions",
+        )
     if "sync_config" in data:
         sc = body.sync_config
-        # sync_config 已经是 dict（SyncTaskUpdate 接受原始 dict）
         data["sync_config"] = sc if sc is not None else task.sync_config
     ws = task.workspace_id
-    # file_import 任务：允许只更新 sync_config / dst_table 等字段，无需 src_ds 校验
+    # file_import 任务：仅允许改 name/description/is_active/dst_table 等元数据
     if task.sync_mode == "file_import":
         for k, v in data.items():
-            if k != "sync_mode":  # 禁止切换 sync_mode
-                setattr(task, k, v)
+            if k in ("sync_mode", "sync_config"):
+                continue
+            setattr(task, k, v)
         task.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(task)
@@ -421,7 +435,8 @@ def internal_run_sync_task(
 
 
 class RunTaskIn(BaseModel):
-    if_exists: Optional[str] = None  # file_import 专用：覆盖 sync_config.if_exists
+    # 已废弃：file_import 请用版本 operation_mode；保留字段仅为兼容旧客户端
+    if_exists: Optional[str] = None
 
 
 @router.post("/tasks/{task_id}/run")
@@ -437,20 +452,51 @@ def run_sync_task(
     assert_workspace_data_capability(db, current_user, task.workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_RUN)
     if not task.is_active:
         raise HTTPException(status_code=400, detail="任务已停用")
-    # file_import：允许调用方临时覆盖 if_exists（如「以追加方式重跑」）
-    if body and body.if_exists and task.sync_mode == "file_import":
-        cfg = dict(task.sync_config or {})
-        cfg["if_exists"] = body.if_exists
-        task.sync_config = cfg
+    if task.sync_mode == "file_import":
+        # 成功记录不可用通用 run 再跑；失败请走 retry；显式再导入请建新版本
+        last = (
+            db.query(SyncRecord)
+            .filter(SyncRecord.sync_task_id == task_id)
+            .order_by(SyncRecord.id.desc())
+            .first()
+        )
+        if last and last.status == "success":
+            raise HTTPException(
+                status_code=400,
+                detail="成功执行不可直接重跑；请创建新版本并选择 append/replace，或对失败记录使用 retry",
+            )
+        if last and last.status == "failed":
+            raise HTTPException(
+                status_code=400,
+                detail="失败执行请调用 /file-import/records/{record_id}/retry 以复用 execution_key",
+            )
+        from app.services.file_import_version import ensure_legacy_version
+
+        ver = ensure_legacy_version(db, task)
         db.commit()
+        try:
+            record = start_sync_async(
+                task_id,
+                trigger_type="manual",
+                triggered_by=current_user.id,
+                version_id=ver.id if ver else None,
+            )
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        return {
+            "record_id": record.id,
+            "status": record.status,
+            "message": "导入已排队，请在运行历史中查看进度",
+            "execution_key": record.execution_key,
+        }
     try:
-        record = start_sync_async(task_id, trigger_type="manual")
+        record = start_sync_async(task_id, trigger_type="manual", triggered_by=current_user.id)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return {
         "record_id": record.id,
         "status": record.status,
-        "message": "同步已在后台执行，请在运行历史中查看进度",
+        "message": "同步已排队执行，请在运行历史中查看进度",
     }
 
 
@@ -526,8 +572,29 @@ class FileImportTaskCreate(BaseModel):
     has_header: bool = True
     sheet_name: Optional[str] = None
     register_datamap: bool = True
-    if_exists: str = "fail"  # fail | append
+    if_exists: Optional[str] = None  # 兼容旧客户端 fail|append|replace
+    operation_mode: Optional[str] = None  # create|append|replace（优先）
+    quality_mode: str = "strict"
     run_now: bool = True
+
+
+class FileImportVersionCreate(BaseModel):
+    file_id: str
+    columns: List[FileImportColumnIn]
+    operation_mode: str = "append"
+    quality_mode: str = "strict"
+    encoding: Optional[str] = None
+    delimiter: Optional[str] = None
+    has_header: bool = True
+    sheet_name: Optional[str] = None
+    activate: bool = True
+    run_now: bool = False
+
+
+class FileImportSchemaDiffIn(BaseModel):
+    datasource_id: int
+    table_name: str
+    columns: List[FileImportColumnIn]
 
 
 def _public_parse_result(parsed: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -649,6 +716,7 @@ async def file_import_upload_chunk(
     file_id: str = Form(...),
     chunk_index: int = Form(...),
     file: UploadFile = File(...),
+    chunk_sha256: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -664,6 +732,8 @@ async def file_import_upload_chunk(
             file_id=file_id,
             chunk_index=chunk_index,
             content=raw,
+            expected_sha256=chunk_sha256,
+            user_id=current_user.id,
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -729,7 +799,7 @@ def file_import_upload_complete(
         from app.services.file_import_store import finalize_chunked_upload, resolve_data_path
         from app.services.file_import_parse import parse_file_path
 
-        meta = finalize_chunked_upload(workspace_id=workspace_id, file_id=file_id)
+        meta = finalize_chunked_upload(workspace_id=workspace_id, file_id=file_id, user_id=current_user.id)
         path = resolve_data_path(meta)
         parsed = parse_file_path(
             path,
@@ -818,8 +888,12 @@ def create_file_import_task(
     assert_workspace_data_capability(
         db, current_user, body.workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_WRITE
     )
-    if body.if_exists not in ("fail", "append"):
-        raise HTTPException(status_code=400, detail="if_exists 仅支持 fail / append")
+    from app.services.file_import_version import operation_mode_from_if_exists, create_version, version_to_dict
+
+    try:
+        op_mode = (body.operation_mode or "").strip().lower() or operation_mode_from_if_exists(body.if_exists or "fail")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     ds = require_datasource_row(db, current_user, body.dst_datasource_id)
     if ds.workspace_id != body.workspace_id:
         raise HTTPException(status_code=400, detail="目标数据源不属于该工作空间")
@@ -830,12 +904,22 @@ def create_file_import_task(
     try:
         from app.services.file_import_store import load_meta
         from app.services.file_import_exec import normalize_columns, validate_table_name, table_exists
+        from app.services.file_import_version import column_schema_diff
+        from app.services.integration_runtime import list_columns
 
         meta = load_meta(body.workspace_id, body.file_id)
+        if meta.get("user_id") is not None and int(meta["user_id"]) != int(current_user.id):
+            # 允许同空间同事复用 ready 文件；仅警告级——生产可收紧
+            pass
         table_name = validate_table_name(body.dst_table)
         cols = normalize_columns([c.model_dump() for c in body.columns])
-        if body.if_exists == "fail" and table_exists(ds, table_name):
+        exists = table_exists(ds, table_name)
+        if op_mode == "create" and exists:
             raise ValueError(f"目标表已存在: {table_name}")
+        if op_mode == "append" and exists:
+            diff = column_schema_diff(cols, list_columns(ds, table_name) or [])
+            if not diff.get("compatible"):
+                raise ValueError(f"append 结构不兼容: {diff}")
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -852,7 +936,10 @@ def create_file_import_task(
         "sheet_name": body.sheet_name,
         "columns": cols,
         "register_datamap": body.register_datamap,
-        "if_exists": body.if_exists,
+        "if_exists": "fail" if op_mode == "create" else op_mode,
+        "operation_mode": op_mode,
+        "quality_mode": body.quality_mode,
+        "content_sha256": meta.get("content_sha256"),
         "batch_size": 2000,
     }
     task = SyncTask(
@@ -870,11 +957,29 @@ def create_file_import_task(
         created_by=current_user.id,
     )
     db.add(task)
+    db.flush()
+    ver = create_version(
+        db,
+        task=task,
+        file_id=body.file_id,
+        columns=cols,
+        operation_mode=op_mode,
+        meta=meta,
+        encoding=body.encoding,
+        delimiter=body.delimiter,
+        has_header=body.has_header,
+        sheet_name=body.sheet_name,
+        quality_mode=body.quality_mode,
+        content_sha256=meta.get("content_sha256"),
+        created_by=current_user.id,
+        activate=True,
+    )
     db.commit()
     db.refresh(task)
 
     out: Dict[str, Any] = {
         "task": SyncTaskOut.model_validate(task).model_dump(),
+        "version": version_to_dict(ver),
         "record_id": None,
         "message": "导入任务已创建",
     }
@@ -883,9 +988,163 @@ def create_file_import_task(
             db, current_user, body.workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_RUN
         )
         try:
-            record = start_sync_async(task.id, trigger_type="manual")
+            record = start_sync_async(
+                task.id,
+                trigger_type="manual",
+                triggered_by=current_user.id,
+                version_id=ver.id,
+            )
             out["record_id"] = record.id
-            out["message"] = "导入已在后台执行，请在运行历史中查看进度"
+            out["execution_key"] = record.execution_key
+            out["message"] = "导入已排队执行，请在运行历史中查看进度"
         except RuntimeError as e:
             raise HTTPException(status_code=409, detail=str(e))
     return out
+
+
+@router.get("/file-import/tasks/{task_id}/versions")
+def list_file_import_versions(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    task = require_sync_task(db, current_user, task_id)
+    if task.sync_mode != "file_import":
+        raise HTTPException(status_code=400, detail="非文件导入任务")
+    from app.services.file_import_version import ensure_legacy_version, list_versions, version_to_dict
+
+    ensure_legacy_version(db, task)
+    db.commit()
+    return [version_to_dict(v) for v in list_versions(db, task_id)]
+
+
+@router.post("/file-import/tasks/{task_id}/versions")
+def create_file_import_version(
+    task_id: int,
+    body: FileImportVersionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    task = require_sync_task(db, current_user, task_id)
+    assert_workspace_data_capability(
+        db, current_user, task.workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_WRITE
+    )
+    if task.sync_mode != "file_import":
+        raise HTTPException(status_code=400, detail="非文件导入任务")
+    from app.services.file_import_store import load_meta
+    from app.services.file_import_version import create_version, version_to_dict, column_schema_diff
+    from app.services.file_import_exec import normalize_columns, table_exists
+    from app.services.integration_runtime import list_columns
+
+    try:
+        meta = load_meta(task.workspace_id, body.file_id)
+        cols = normalize_columns([c.model_dump() for c in body.columns])
+        ds = require_datasource_row(db, current_user, task.dst_datasource_id)
+        exists = table_exists(ds, task.dst_table)
+        mode = body.operation_mode.strip().lower()
+        if mode == "create" and exists:
+            raise ValueError("目标表已存在，请使用 append 或 replace")
+        if mode == "append" and exists:
+            diff = column_schema_diff(cols, list_columns(ds, task.dst_table) or [])
+            if not diff.get("compatible"):
+                raise ValueError(f"append 结构不兼容: {diff}")
+        ver = create_version(
+            db,
+            task=task,
+            file_id=body.file_id,
+            columns=cols,
+            operation_mode=mode,
+            meta=meta,
+            encoding=body.encoding,
+            delimiter=body.delimiter,
+            has_header=body.has_header,
+            sheet_name=body.sheet_name,
+            quality_mode=body.quality_mode,
+            content_sha256=meta.get("content_sha256"),
+            created_by=current_user.id,
+            activate=bool(body.activate),
+        )
+        db.commit()
+        db.refresh(ver)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    out: Dict[str, Any] = {"version": version_to_dict(ver), "record_id": None}
+    if body.run_now:
+        assert_workspace_data_capability(
+            db, current_user, task.workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_RUN
+        )
+        try:
+            record = start_sync_async(
+                task.id,
+                trigger_type="manual",
+                triggered_by=current_user.id,
+                version_id=ver.id,
+            )
+            out["record_id"] = record.id
+            out["execution_key"] = record.execution_key
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+    return out
+
+
+@router.post("/file-import/schema-diff")
+def file_import_schema_diff(
+    body: FileImportSchemaDiffIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ds = require_datasource_row(db, current_user, body.datasource_id)
+    assert_workspace_data_capability(
+        db, current_user, ds.workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_WRITE
+    )
+    from app.services.file_import_version import column_schema_diff
+    from app.services.file_import_exec import table_exists, normalize_columns
+    from app.services.integration_runtime import list_columns
+
+    cols = normalize_columns([c.model_dump() for c in body.columns])
+    exists = table_exists(ds, body.table_name)
+    actual = list_columns(ds, body.table_name) if exists else []
+    diff = column_schema_diff(cols, actual)
+    return {"table_exists": exists, "diff": diff}
+
+
+@router.post("/file-import/records/{record_id}/retry")
+def retry_file_import_record(
+    record_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    rec = db.query(SyncRecord).filter(SyncRecord.id == record_id).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    task = require_sync_task(db, current_user, rec.sync_task_id)
+    assert_workspace_data_capability(
+        db, current_user, task.workspace_id, "developer", PC.GIDO_BATCH_INTEGRATION_RUN
+    )
+    if task.sync_mode != "file_import":
+        raise HTTPException(status_code=400, detail="仅文件导入支持幂等 retry")
+    if rec.status != "failed":
+        raise HTTPException(status_code=400, detail="仅失败记录可 retry")
+    if not rec.execution_key:
+        raise HTTPException(status_code=400, detail="记录缺少 execution_key，无法幂等重试")
+    try:
+        new_rec = start_sync_async(
+            task.id,
+            trigger_type="retry",
+            triggered_by=current_user.id,
+            execution_key=rec.execution_key,
+            retry_of=rec.id,
+            version_id=rec.version_id,
+            config_snapshot=rec.config_snapshot,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {
+        "record_id": new_rec.id,
+        "execution_key": new_rec.execution_key,
+        "retry_of": rec.id,
+        "message": "已按同一 execution_key 排队重试",
+    }

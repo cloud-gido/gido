@@ -194,11 +194,18 @@ export const integrationApi = {
   deleteTask: (id: number) => request.delete(`/integration/tasks/${id}`),
   toggleActive: (id: number) => request.post(`/integration/tasks/${id}/toggle-active`),
   validateTask: (id: number) => request.post(`/integration/tasks/${id}/validate`),
-  runTask: (id: number, body?: { if_exists?: string }) => request.post(`/integration/tasks/${id}/run`, body),
+  runTask: (id: number, body?: { if_exists?: string }) => request.post(`/integration/tasks/${id}/run`, body || {}),
   records: (id: number, limit?: number) =>
     request.get(`/integration/tasks/${id}/records`, { params: limit ? { limit } : {} }),
   getRecord: (taskId: number, recordId: number) =>
     request.get(`/integration/tasks/${taskId}/records/${recordId}`),
+  listFileImportVersions: (taskId: number) =>
+    request.get(`/integration/file-import/tasks/${taskId}/versions`),
+  createFileImportVersion: (taskId: number, data: any) =>
+    request.post(`/integration/file-import/tasks/${taskId}/versions`, data),
+  fileImportSchemaDiff: (data: any) => request.post('/integration/file-import/schema-diff', data),
+  retryFileImportRecord: (recordId: number) =>
+    request.post(`/integration/file-import/records/${recordId}/retry`),
   listTables: (datasourceId: number, keyword?: string) =>
     request.get(`/integration/datasources/${datasourceId}/tables`, { params: { keyword: keyword || '' } }),
   getColumns: (datasourceId: number, tableName: string) =>

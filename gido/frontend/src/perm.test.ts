@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import { describe, expect, it } from 'vitest'
-import { can, P, workspaceAdminBypassesPlatformPerm } from './perm'
+import { can, isPlatformAdmin, P, workspaceAdminBypassesPlatformPerm } from './perm'
 
 describe('perm can()', () => {
   it('denies empty user or undefined code', () => {
@@ -15,6 +15,11 @@ describe('perm can()', () => {
     const admin = { is_admin: true, permissions: [] }
     expect(can(admin, P.GIDO_BATCH_STUDIO_WRITE)).toBe(true)
     expect(can(admin, P.SYSTEM_USER_DELETE)).toBe(true)
+  })
+
+  it('platform admin via role_code', () => {
+    expect(isPlatformAdmin({ role_code: 'platform_admin', is_admin: false, permissions: [] })).toBe(true)
+    expect(isPlatformAdmin({ role_code: 'developer', is_admin: false, permissions: [] })).toBe(false)
   })
 
   it('operator-like user: run yes, write no', () => {

@@ -434,6 +434,26 @@ def init_chunked_upload(
             except FileNotFoundError:
                 _clear_client_key(workspace_id, client_key, existing.get("file_id"))
 
+    # 单用户并发 uploading 上限
+    max_conc = int(getattr(settings, "FILE_IMPORT_MAX_CONCURRENT_UPLOADS", 3) or 3)
+    uploading_n = 0
+    try:
+        for d in _root().joinpath(str(int(workspace_id))).glob("*"):
+            mp = d / "meta.json"
+            if not mp.is_file():
+                continue
+            try:
+                m = json.loads(mp.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            owner = m.get("user_id", m.get("uploaded_by"))
+            if int(owner or 0) == int(user_id) and m.get("status") == "uploading":
+                uploading_n += 1
+    except Exception:
+        pass
+    if uploading_n >= max_conc:
+        raise ValueError(f"并发上传过多（上限 {max_conc}），请先完成或取消进行中的上传")
+
     file_id = uuid.uuid4().hex
     folder = _folder(workspace_id, file_id)
     parts = folder / "parts"
@@ -655,16 +675,25 @@ def save_upload_chunk(
     file_id: str,
     chunk_index: int,
     content: bytes,
+    expected_sha256: Optional[str] = None,
+    user_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     meta = load_meta(workspace_id, file_id)
+    assert_upload_owner(meta, user_id)
     if meta.get("status") not in (None, "uploading"):
         raise ValueError("该上传会话已结束，请重新选择文件")
+    max_chunk = int(settings.FILE_IMPORT_CHUNK_BYTES or 16 * 1024 * 1024) * 2
+    if len(content) > max_chunk:
+        raise ValueError(f"单片过大: {len(content)} > {max_chunk}")
     total = int(meta.get("total_chunks") or 0)
     idx = int(chunk_index)
     if idx < 0 or (total and idx >= total):
         raise ValueError(f"分片序号无效: {idx}")
     if not content:
         raise ValueError("空分片")
+    digest = hashlib.sha256(content).hexdigest()
+    if expected_sha256 and expected_sha256.lower() != digest:
+        raise ValueError(f"分片 checksum 不匹配 index={idx}")
 
     folder = _folder(workspace_id, file_id)
     parts = folder / "parts"
@@ -676,14 +705,12 @@ def save_upload_chunk(
 
     if use_s3:
         s3_name = f"parts/{part_name}"
-        # 直接覆盖写入，避免每片额外 HEAD；同内容 PUT 幂等
         put_shared_object(
             _ns(workspace_id, file_id),
             s3_name,
             content,
             "application/octet-stream",
         )
-        # 同 Pod 合并可走本地；不强制写盘（S3 已是权威源）
         try:
             tmp_path = parts / f"{part_name}.tmp"
             tmp_path.write_bytes(content)
@@ -699,9 +726,17 @@ def save_upload_chunk(
             tmp_path.replace(part_path)
 
     _mark_part_received(workspace_id, file_id, idx)
+    # 记录分片 digest（便于排障；不强制全量保存）
+    digests = dict(meta.get("chunk_sha256") or {})
+    digests[str(idx)] = digest
+    meta["chunk_sha256"] = digests
+    meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        _persist_meta(meta)
+    except Exception:
+        pass
 
     if use_s3:
-        # 热路径禁止 list S3；进度用 Redis SCARD，完整对账留给 status/complete
         redis_n = _parts_redis_count(workspace_id, file_id)
         received_n = int(redis_n) if redis_n is not None else max(1, idx + 1)
     else:
@@ -709,7 +744,6 @@ def save_upload_chunk(
         received.add(idx)
         meta["received_chunks"] = sorted(received)
         meta["status"] = "uploading"
-        meta["updated_at"] = datetime.now(timezone.utc).isoformat()
         _write_meta_local(folder, meta)
         received_n = len(received)
 
@@ -717,6 +751,7 @@ def save_upload_chunk(
         "file_id": file_id,
         "chunk_index": idx,
         "skipped": skipped,
+        "sha256": digest,
         "received": received_n,
         "total_chunks": total,
         "percent": int(round(100.0 * received_n / total)) if total else 0,
@@ -760,8 +795,21 @@ def abort_chunked_upload(*, workspace_id: int, file_id: str) -> Dict[str, Any]:
     return {"file_id": file_id, "status": "aborted"}
 
 
-def finalize_chunked_upload(*, workspace_id: int, file_id: str) -> Dict[str, Any]:
+def assert_upload_owner(meta: Dict[str, Any], user_id: Optional[int]) -> None:
+    if user_id is None:
+        return
+    owner = meta.get("user_id", meta.get("uploaded_by"))
+    if owner is not None and int(owner) != int(user_id):
+        raise ValueError("无权访问该上传会话")
+
+
+def _finalize_lock_key(workspace_id: int, file_id: str) -> str:
+    return f"file-import-finalize:{int(workspace_id)}:{file_id}"
+
+
+def finalize_chunked_upload(*, workspace_id: int, file_id: str, user_id: Optional[int] = None) -> Dict[str, Any]:
     meta = load_meta(workspace_id, file_id)
+    assert_upload_owner(meta, user_id)
     fmt = str(meta.get("format") or "csv")
     folder = _folder(workspace_id, file_id)
     data_path = folder / f"data.{fmt}"
@@ -774,67 +822,145 @@ def finalize_chunked_upload(*, workspace_id: int, file_id: str) -> Dict[str, Any
             pass
     if meta.get("status") == "aborted":
         raise ValueError("上传会话已取消")
+    if meta.get("status") == "finalizing":
+        raise ValueError("正在合并分片，请稍后重试")
 
-    total = int(meta.get("total_chunks") or 0)
-    received = _reconcile_received(workspace_id, file_id, meta)
-    if total <= 0 or len(received) != total or set(received) != set(range(total)):
-        missing = [i for i in range(total) if i not in set(received)]
-        raise ValueError(f"分片不完整，缺失 {len(missing)} 片（如 {missing[:8]}）")
+    from app.services.distributed_lock import acquire_distributed_lock
 
-    expected = int(meta.get("size_bytes") or 0)
-    written = 0
-    folder.mkdir(parents=True, exist_ok=True)
-    parts = folder / "parts"
-    parts.mkdir(parents=True, exist_ok=True)
-
-    with data_path.open("wb") as out:
-        for i in range(total):
-            part_name = f"{i:06d}.part"
-            part = parts / part_name
-            if not part.is_file() or part.stat().st_size <= 0:
-                if file_import_shared_enabled() or meta.get("storage") == "s3":
-                    ok = download_shared_object_to_file(
-                        _ns(workspace_id, file_id),
-                        f"parts/{part_name}",
-                        str(part),
-                    )
-                    if not ok or not part.is_file():
-                        raise ValueError(f"缺失分片文件: {i}")
-                else:
-                    raise ValueError(f"缺失分片文件: {i}")
-            raw = part.read_bytes()
-            out.write(raw)
-            written += len(raw)
-            part.unlink(missing_ok=True)
+    lock = acquire_distributed_lock(_finalize_lock_key(workspace_id, file_id))
+    if lock is None:
+        raise ValueError("其他节点正在合并该上传，请稍后重试")
     try:
-        parts.rmdir()
-    except Exception:
-        pass
+        # 重新加载，避免双 complete
+        meta = load_meta(workspace_id, file_id)
+        if meta.get("status") == "ready":
+            resolve_data_path(meta)
+            return meta
+        meta["status"] = "finalizing"
+        meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _persist_meta(meta)
 
-    if expected and written != expected:
-        if abs(written - expected) > max(1024, expected // 1000):
-            raise ValueError(f"合并后大小不符: expect={expected}, got={written}")
+        total = int(meta.get("total_chunks") or 0)
+        received = _reconcile_received(workspace_id, file_id, meta)
+        if total <= 0 or len(received) != total or set(received) != set(range(total)):
+            missing = [i for i in range(total) if i not in set(received)]
+            raise ValueError(f"分片不完整，缺失 {len(missing)} 片（如 {missing[:8]}）")
 
-    if file_import_shared_enabled() or meta.get("storage") == "s3":
-        put_shared_object_file(
-            _ns(workspace_id, file_id),
-            f"data.{fmt}",
-            str(data_path),
-            "application/octet-stream",
-        )
+        expected = int(meta.get("size_bytes") or 0)
+        written = 0
+        hasher = hashlib.sha256()
+        folder.mkdir(parents=True, exist_ok=True)
+        parts = folder / "parts"
+        parts.mkdir(parents=True, exist_ok=True)
+
+        with data_path.open("wb") as out:
+            for i in range(total):
+                part_name = f"{i:06d}.part"
+                part = parts / part_name
+                if not part.is_file() or part.stat().st_size <= 0:
+                    if file_import_shared_enabled() or meta.get("storage") == "s3":
+                        ok = download_shared_object_to_file(
+                            _ns(workspace_id, file_id),
+                            f"parts/{part_name}",
+                            str(part),
+                        )
+                        if not ok or not part.is_file():
+                            raise ValueError(f"缺失分片文件: {i}")
+                    else:
+                        raise ValueError(f"缺失分片文件: {i}")
+                raw = part.read_bytes()
+                out.write(raw)
+                hasher.update(raw)
+                written += len(raw)
+                part.unlink(missing_ok=True)
         try:
-            delete_shared_objects_with_prefix(_ns(workspace_id, file_id), "parts")
-        except Exception as ex:
-            logger.warning("合并后清理 S3 parts 失败 file_id=%s: %s", file_id, ex)
-        meta["storage"] = "s3"
-        meta["s3_uri"] = file_import_s3_uri(workspace_id, file_id, fmt)
+            parts.rmdir()
+        except Exception:
+            pass
 
-    meta["size_bytes"] = written
-    meta["stored_path"] = str(data_path)
-    meta["status"] = "ready"
-    meta["received_chunks"] = list(range(total))
-    meta["updated_at"] = datetime.now(timezone.utc).isoformat()
-    _persist_meta(meta)
-    _clear_client_key(workspace_id, meta.get("client_key"), file_id)
-    _clear_parts_redis(workspace_id, file_id)
-    return meta
+        if expected and written != expected:
+            if abs(written - expected) > max(1024, expected // 1000):
+                raise ValueError(f"合并后大小不符: expect={expected}, got={written}")
+
+        content_sha = hasher.hexdigest()
+        if file_import_shared_enabled() or meta.get("storage") == "s3":
+            put_shared_object_file(
+                _ns(workspace_id, file_id),
+                f"data.{fmt}",
+                str(data_path),
+                "application/octet-stream",
+            )
+            try:
+                delete_shared_objects_with_prefix(_ns(workspace_id, file_id), "parts")
+            except Exception as ex:
+                logger.warning("合并后清理 S3 parts 失败 file_id=%s: %s", file_id, ex)
+            meta["storage"] = "s3"
+            meta["s3_uri"] = file_import_s3_uri(workspace_id, file_id, fmt)
+
+        meta["size_bytes"] = written
+        meta["content_sha256"] = content_sha
+        meta["stored_path"] = str(data_path)
+        meta["status"] = "ready"
+        meta["received_chunks"] = list(range(total))
+        meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _persist_meta(meta)
+        _clear_client_key(workspace_id, meta.get("client_key"), file_id)
+        _clear_parts_redis(workspace_id, file_id)
+        return meta
+    except Exception:
+        try:
+            meta["status"] = "uploading"
+            _persist_meta(meta)
+        except Exception:
+            pass
+        raise
+    finally:
+        lock.release()
+
+
+def cleanup_orphan_uploads(*, older_than_hours: Optional[int] = None) -> Dict[str, Any]:
+    """回收未引用的 ready/aborted 上传（引用感知：检查 FileImportVersion.file_id）。"""
+    from app.core.database import SessionLocal
+    from app.models.workspace import FileImportVersion
+
+    hours = int(older_than_hours or getattr(settings, "FILE_IMPORT_ORPHAN_TTL_HOURS", 72) or 72)
+    cutoff = datetime.now(timezone.utc).timestamp() - hours * 3600
+    removed = 0
+    scanned = 0
+    root = _root()
+    db = SessionLocal()
+    try:
+        referenced = {
+            str(r[0])
+            for r in db.query(FileImportVersion.file_id).distinct().all()
+            if r and r[0]
+        }
+        for ws_dir in root.glob("*"):
+            if not ws_dir.is_dir() or not ws_dir.name.isdigit():
+                continue
+            for file_dir in ws_dir.iterdir():
+                if not file_dir.is_dir():
+                    continue
+                scanned += 1
+                file_id = file_dir.name
+                if file_id in referenced:
+                    continue
+                meta_path = file_dir / "meta.json"
+                try:
+                    mtime = meta_path.stat().st_mtime if meta_path.is_file() else file_dir.stat().st_mtime
+                except Exception:
+                    continue
+                if mtime > cutoff:
+                    continue
+                try:
+                    import shutil
+
+                    shutil.rmtree(file_dir, ignore_errors=True)
+                    if file_import_shared_enabled():
+                        delete_shared_objects_with_prefix(_ns(int(ws_dir.name), file_id), "")
+                    removed += 1
+                except Exception as ex:
+                    logger.warning("cleanup orphan failed %s: %s", file_id, ex)
+    finally:
+        db.close()
+    return {"scanned": scanned, "removed": removed, "ttl_hours": hours}

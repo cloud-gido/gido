@@ -11,10 +11,35 @@ from app.core.security import get_current_user
 from app.models.workspace import User
 from app.models.rbac_models import Role, Permission, role_permissions
 
+# 平台管理能力只由平台角色授予；is_admin 列为兼容缓存，随角色自动同步。
+PLATFORM_MANAGER_ROLE_CODES = frozenset({"super_admin", "platform_admin"})
+
+
+def role_grants_platform_admin(role_code: Optional[str]) -> bool:
+    return bool(role_code and role_code in PLATFORM_MANAGER_ROLE_CODES)
+
+
+def sync_is_admin_with_role(user: User, role: Optional[Role] = None) -> None:
+    """按平台角色写回 is_admin，避免 UI 出现「角色 / 管理员开关」双轨。"""
+    code = role.code if role is not None else None
+    if code is None:
+        linked = getattr(user, "system_role", None)
+        if linked is not None:
+            code = linked.code
+    user.is_admin = bool(role_grants_platform_admin(code) or user.username == "admin")
+
 
 def is_platform_admin(user: User) -> bool:
-    """与 RBAC 列 is_admin 对齐：库中可能为 NULL；用户名为 admin 且未显式降级仍视为平台管理员。"""
-    return user.is_admin is True or (user.username == "admin" and user.is_admin is not False)
+    """
+    是否具备平台管理能力（创建空间、平台集成、用户启停等）。
+    真相源为平台角色 super_admin / platform_admin；is_admin 与用户名 admin 为兼容路径。
+    """
+    if user.is_admin is True or (user.username == "admin" and user.is_admin is not False):
+        return True
+    linked = getattr(user, "system_role", None)
+    if linked is not None and role_grants_platform_admin(linked.code):
+        return True
+    return False
 
 
 def get_user_permission_codes(db: Session, user: User) -> Set[str]:
@@ -26,8 +51,6 @@ def get_user_permission_codes(db: Session, user: User) -> Set[str]:
     role = db.query(Role).filter(Role.id == user.role_id).first()
     if not role:
         return set()
-    if role.code == "super_admin":
-        return {"*"}
     rows = db.execute(
         select(Permission.code).join(
             role_permissions, Permission.id == role_permissions.c.permission_id
@@ -77,13 +100,13 @@ def require_system_admin(user: User = Depends(get_current_user)) -> None:
 
 
 def is_platform_manager_role(db: Session, user: User) -> bool:
-    """是否承担「平台管理员」职责：账号级 is_admin / admin，或绑定内置 platform_admin / super_admin 角色。"""
+    """是否承担「平台管理员」职责：与 is_platform_admin 一致；system_role 未加载时回查 role_id。"""
     if is_platform_admin(user):
         return True
     if not user.role_id:
         return False
     role = db.query(Role).filter(Role.id == user.role_id).first()
-    return bool(role and role.code in ("platform_admin", "super_admin"))
+    return role_grants_platform_admin(role.code if role else None)
 
 
 def require_platform_manager(

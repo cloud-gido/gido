@@ -77,6 +77,7 @@ export default function FileImportDrawer({
   const [previewRows, setPreviewRows] = useState<any[][]>([])
   const [ddl, setDdl] = useState('')
   const [tableExists, setTableExists] = useState(false)
+  const [schemaDiff, setSchemaDiff] = useState<any>(null)
 
   const targetDs = useMemo(
     () => datasources.filter((d: any) => ['mysql', 'doris'].includes((d.ds_type || '').toLowerCase())),
@@ -92,7 +93,9 @@ export default function FileImportDrawer({
       encoding: editCfg.encoding || undefined,
       delimiter: editCfg.delimiter || undefined,
       register_datamap: editCfg.register_datamap !== false,
-      if_exists: 'append', // 重新上传默认追加（表通常已存在）
+      if_exists: 'fail',
+      operation_mode: editTask ? 'append' : 'create',
+      quality_mode: 'strict',
       run_now: true,
       dst_datasource_id: editTask?.dst_datasource_id || defaultDatasourceId || undefined,
       dst_table: editTask?.dst_table || undefined,
@@ -105,6 +108,7 @@ export default function FileImportDrawer({
     setPreviewRows([])
     setDdl('')
     setTableExists(false)
+    setSchemaDiff(null)
     setUploading(false)
     setUploadPhase('idle')
     setUploadPercent(0)
@@ -293,6 +297,18 @@ export default function FileImportDrawer({
       })
       setDdl(res.ddl || '')
       setTableExists(!!res.table_exists)
+      try {
+        const diffRes: any = await integrationApi.fileImportSchemaDiff({
+          datasource_id: dsId,
+          table_name: table,
+          columns: columns.map(({ name, type, nullable, is_primary_key }) => ({
+            name, type, nullable, is_primary_key,
+          })),
+        })
+        setSchemaDiff(diffRes?.diff || null)
+      } catch {
+        setSchemaDiff(null)
+      }
     } catch (e: any) {
       setDdl('')
       message.error(e?.response?.data?.detail || e?.message || '生成 DDL 失败')
@@ -305,11 +321,35 @@ export default function FileImportDrawer({
     }
   }, [tab])
 
+  const canEnterTab = (key: string) => {
+    if (key === 'file') return true
+    if (!fileMeta?.file_id) return false
+    if (key === 'schema') return true
+    if (!columns.length) return false
+    return true
+  }
+
+  const handleTabChange = (key: string) => {
+    if (!canEnterTab(key)) {
+      if (!fileMeta?.file_id) {
+        message.warning('请先完成文件上传')
+        setTab('file')
+        return
+      }
+      if (!columns.length) {
+        message.warning('请先确认字段定义')
+        setTab('schema')
+        return
+      }
+    }
+    setTab(key)
+  }
+
   const handleSubmit = async () => {
     if (!canWrite) return
     try {
       const values = await form.validateFields([
-        'name', 'dst_datasource_id', 'dst_table', 'if_exists', 'register_datamap', 'run_now',
+        'name', 'dst_datasource_id', 'dst_table', 'operation_mode', 'quality_mode', 'register_datamap', 'run_now',
       ])
       if (!fileMeta?.file_id) {
         message.warning('请先上传文件')
@@ -321,55 +361,58 @@ export default function FileImportDrawer({
         setTab('schema')
         return
       }
+      const op = values.operation_mode || 'create'
+      if (op === 'append' && schemaDiff && schemaDiff.compatible === false) {
+        message.error('目标表结构不兼容，无法 append；请调整字段或改用 replace')
+        setTab('target')
+        return
+      }
+      if (op === 'replace' && tableExists) {
+        const ok = window.confirm('replace 将用本次导入结果替换目标表全部数据，确认继续？')
+        if (!ok) return
+      }
       if (values.run_now && !canRun) {
         message.warning('无运行权限，请取消「立即导入」后仅创建任务')
         return
       }
       setSubmitting(true)
-      const payload = {
-        workspace_id: workspaceId,
-        name: values.name,
-        description: values.description,
-        dst_datasource_id: values.dst_datasource_id,
-        dst_table: values.dst_table,
+      const cols = columns.map(({ name, type, nullable, is_primary_key }) => ({
+        name, type, nullable, is_primary_key,
+      }))
+      const base = {
         file_id: fileMeta.file_id,
-        columns: columns.map(({ name, type, nullable, is_primary_key }) => ({
-          name, type, nullable, is_primary_key,
-        })),
+        columns: cols,
         encoding: form.getFieldValue('encoding'),
         delimiter: form.getFieldValue('delimiter'),
         has_header: form.getFieldValue('has_header') !== false,
         sheet_name: form.getFieldValue('sheet_name'),
+        operation_mode: op,
+        quality_mode: values.quality_mode || 'strict',
         register_datamap: !!values.register_datamap,
-        if_exists: values.if_exists || 'fail',
         run_now: !!values.run_now,
       }
       let res: any
       if (editTask?.id) {
-        // 重新上传：更新已有任务的 sync_config / 文件信息，然后触发运行
         await integrationApi.updateTask(editTask.id, {
-          name: payload.name,
-          description: payload.description,
-          dst_datasource_id: payload.dst_datasource_id,
-          dst_table: payload.dst_table,
-          sync_config: {
-            file_id: payload.file_id,
-            columns: payload.columns,
-            encoding: payload.encoding,
-            delimiter: payload.delimiter,
-            has_header: payload.has_header,
-            sheet_name: payload.sheet_name,
-            register_datamap: payload.register_datamap,
-            if_exists: payload.if_exists,
-            batch_size: 2000,
-          },
+          name: values.name,
+          description: values.description,
+          dst_datasource_id: values.dst_datasource_id,
+          dst_table: values.dst_table,
         })
-        if (payload.run_now) {
-          res = await integrationApi.runTask(editTask.id, { if_exists: payload.if_exists })
-        }
-        message.success('已更新并提交执行')
+        res = await integrationApi.createFileImportVersion(editTask.id, {
+          ...base,
+          activate: true,
+        })
+        message.success(res?.record_id ? '已创建新版本并排队执行' : '已创建新版本（未立即运行）')
       } else {
-        res = await integrationApi.createFileImportTask(payload)
+        res = await integrationApi.createFileImportTask({
+          workspace_id: workspaceId,
+          name: values.name,
+          description: values.description,
+          dst_datasource_id: values.dst_datasource_id,
+          dst_table: values.dst_table,
+          ...base,
+        })
         message.success(res?.message || '已创建')
       }
       onDone()
@@ -415,7 +458,7 @@ export default function FileImportDrawer({
       <Form form={form} layout="vertical" disabled={!canWrite}>
         <Tabs
           activeKey={tab}
-          onChange={setTab}
+          onChange={handleTabChange}
           items={[
             {
               key: 'file',
@@ -691,19 +734,41 @@ export default function FileImportDrawer({
                   >
                     <Input placeholder="新建物理表名" onBlur={() => refreshDdl()} />
                   </Form.Item>
-                  <Form.Item name="if_exists" label="表已存在时">
+                  <Form.Item name="operation_mode" label="写入模式" rules={[{ required: true }]}>
                     <Select
                       options={[
-                        { label: '失败（仅新建）', value: 'fail' },
-                        { label: '追加写入', value: 'append' },
+                        { label: '创建（表必须不存在）', value: 'create' },
+                        { label: '追加（结构须兼容）', value: 'append', disabled: tableExists && schemaDiff?.compatible === false },
+                        { label: '替换（覆盖目标表数据）', value: 'replace' },
+                      ]}
+                    />
+                  </Form.Item>
+                  <Form.Item name="quality_mode" label="质量模式">
+                    <Select
+                      options={[
+                        { label: '严格（坏行则失败）', value: 'strict' },
+                        { label: '宽松（跳过坏行并记录）', value: 'lenient' },
                       ]}
                     />
                   </Form.Item>
                   <Form.Item name="register_datamap" label="导入后注册到数据字典" valuePropName="checked">
                     <Switch />
                   </Form.Item>
-                  {tableExists && form.getFieldValue('if_exists') === 'fail' && (
-                    <Alert type="warning" showIcon message="目标表已存在，请更换表名或改为追加写入" />
+                  {tableExists && form.getFieldValue('operation_mode') === 'create' && (
+                    <Alert type="warning" showIcon message="目标表已存在，请更换表名或改为追加/替换" />
+                  )}
+                  {tableExists && schemaDiff && (
+                    <Alert
+                      style={{ marginTop: 8 }}
+                      type={schemaDiff.compatible ? 'success' : 'error'}
+                      showIcon
+                      message={schemaDiff.compatible ? '与目标表结构兼容' : '与目标表结构不兼容'}
+                      description={
+                        schemaDiff.compatible
+                          ? `目标字段 ${schemaDiff.actual_count}，导入字段 ${schemaDiff.expected_count}`
+                          : `缺失 ${JSON.stringify(schemaDiff.missing_in_target)}；类型差异 ${JSON.stringify(schemaDiff.type_mismatch)}`
+                      }
+                    />
                   )}
                 </>
               ),

@@ -34,6 +34,7 @@ from app.services.rbac_seed import (
     migrate_dw_flink_session_profiles,
     migrate_dw_streaming_jobs_flink_session_profile,
     migrate_dw_sync_tasks_enhance,
+    migrate_file_import_production,
     migrate_dw_data_service,
     migrate_workspace_space_settings,
     migrate_workflow_instance_trigger_type_widen,
@@ -85,6 +86,7 @@ migrate_dw_streaming_resource_libraries(engine)
 migrate_dw_flink_session_profiles(engine)
 migrate_dw_streaming_jobs_flink_session_profile(engine)
 migrate_dw_sync_tasks_enhance(engine)
+migrate_file_import_production(engine)
 migrate_dw_data_service(engine)
 migrate_workspace_space_settings(engine)
 migrate_workflow_instance_trigger_type_widen(engine)

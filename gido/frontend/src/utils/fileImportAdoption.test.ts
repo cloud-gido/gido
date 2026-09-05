@@ -44,6 +44,36 @@ describe('file import adoption / regression', () => {
     expect(src).toContain('loadFileImportSession')
   })
 
+  it('FileImportDrawer 生产门禁：写入模式 / schema diff / append 拦截', () => {
+    const src = read('components/FileImportDrawer.tsx')
+    expect(src).toContain('operation_mode')
+    expect(src).toContain('quality_mode')
+    expect(src).toContain('fileImportSchemaDiff')
+    expect(src).toContain('canEnterTab')
+    expect(src).toContain('请先完成文件上传')
+    expect(src).toContain('目标表结构不兼容，无法 append')
+    expect(src).toContain('replace 将用本次导入结果替换目标表全部数据')
+    expect(src).toContain('createFileImportVersion')
+  })
+
+  it('Integration 历史对文件导入提供幂等重试入口', () => {
+    const src = read('pages/Integration.tsx')
+    expect(src).toContain('retryFileImportRecord')
+    expect(src).toContain('重试本次')
+    expect(src).toContain('execution_key')
+    expect(src).toContain('成功执行不可直接重跑')
+  })
+
+  it('integrationApi 暴露版本 / schema-diff / retry', () => {
+    const src = read('api/index.ts')
+    expect(src).toContain('fileImportSchemaDiff')
+    expect(src).toContain('retryFileImportRecord')
+    expect(src).toContain('listFileImportVersions')
+    expect(src).toContain('createFileImportVersion')
+    expect(src).toContain('/file-import/schema-diff')
+    expect(src).toContain('/file-import/records/')
+  })
+
   it('integrationApi 暴露文件导入接口且上传关闭短超时', () => {
     const src = read('api/index.ts')
     expect(src).toContain('uploadFileImport')

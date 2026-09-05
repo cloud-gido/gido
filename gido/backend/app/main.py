@@ -98,6 +98,7 @@ async def lifespan(app: FastAPI):
         migrate_dw_flink_session_profiles,
         migrate_dw_streaming_jobs_flink_session_profile,
         migrate_dw_sync_tasks_enhance,
+        migrate_file_import_production,
         migrate_dw_data_service,
         migrate_workspace_space_settings,
         migrate_workflow_instance_trigger_type_widen,
@@ -148,6 +149,7 @@ async def lifespan(app: FastAPI):
     migrate_dw_flink_session_profiles(engine)
     migrate_dw_streaming_jobs_flink_session_profile(engine)
     migrate_dw_sync_tasks_enhance(engine)
+    migrate_file_import_production(engine)
     migrate_dw_data_service(engine)
     migrate_workspace_space_settings(engine)
     migrate_workflow_instance_trigger_type_widen(engine)
@@ -178,8 +180,10 @@ async def lifespan(app: FastAPI):
     _ensure_internal_token()
     scheduler.start()
     from app.services.integration_cdc import start_cdc_manager
+    from app.services.sync_worker import start_sync_worker
 
     start_cdc_manager()
+    start_sync_worker()
     db2 = SessionLocal()
     try:
         from app.services.ds_runtime import get_dolphin_runtime

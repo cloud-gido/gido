@@ -210,13 +210,27 @@ def _pg_primary_keys(cur, schema: str, table: str) -> List[str]:
     return [r[0] for r in cur.fetchall()]
 
 
-def run_sync_record(record_id: int, task_id: int, lock_handle: DistributedLockHandle) -> None:
+def run_sync_record(record_id: int, task_id: int, lock_handle: DistributedLockHandle, heartbeat_cb=None) -> None:
     db = SessionLocal()
     try:
         record = db.query(SyncRecord).filter(SyncRecord.id == record_id).first()
         task = db.query(SyncTask).filter(SyncTask.id == task_id).first()
         if not record or not task:
             return
+
+        def _hb(phase: Optional[str] = None) -> None:
+            record.heartbeat_at = datetime.utcnow()
+            if phase:
+                record.phase = phase
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+            if callable(heartbeat_cb):
+                try:
+                    heartbeat_cb(phase)
+                except Exception:
+                    pass
 
         if task.sync_mode == "file_import":
             dst_ds = db.query(DataSource).filter(DataSource.id == task.dst_datasource_id).first()
@@ -228,9 +242,29 @@ def run_sync_record(record_id: int, task_id: int, lock_handle: DistributedLockHa
                 return
             try:
                 from app.services.file_import_exec import execute_file_import
+                from app.services.file_import_version import (
+                    ensure_legacy_version,
+                    if_exists_from_operation_mode,
+                    config_snapshot_from_version,
+                )
 
+                ver = ensure_legacy_version(db, task)
                 cfg = _cfg(task)
-                rows_read, rows_written, _ddl = execute_file_import(
+                if ver:
+                    snap = config_snapshot_from_version(ver)
+                    cfg = {**cfg, **snap}
+                    record.version_id = ver.id
+                    record.config_snapshot = snap
+                    db.commit()
+                op_mode = str(cfg.get("operation_mode") or "")
+                if not op_mode:
+                    op_mode = (
+                        "create"
+                        if str(cfg.get("if_exists") or "fail") in ("fail", "create")
+                        else str(cfg.get("if_exists") or "append")
+                    )
+                _hb("staging")
+                result = execute_file_import(
                     db,
                     workspace_id=task.workspace_id,
                     ds=dst_ds,
@@ -243,31 +277,41 @@ def run_sync_record(record_id: int, task_id: int, lock_handle: DistributedLockHa
                     sheet_name=cfg.get("sheet_name"),
                     register_datamap=bool(cfg.get("register_datamap")),
                     batch_size=int(cfg.get("batch_size") or 2000),
-                    if_exists=str(cfg.get("if_exists") or "fail"),
+                    if_exists=if_exists_from_operation_mode(op_mode) if op_mode in ("create", "append", "replace") else str(cfg.get("if_exists") or "fail"),
+                    operation_mode=op_mode,
+                    quality_mode=str(cfg.get("quality_mode") or "strict"),
+                    execution_key=record.execution_key,
+                    on_phase=_hb,
                 )
+                if len(result) == 4:
+                    rows_read, rows_written, _ddl, quality = result
+                else:
+                    rows_read, rows_written, _ddl = result  # type: ignore
+                    quality = {}
                 record.status = "success"
                 record.rows_read = rows_read
                 record.rows_written = rows_written
+                record.quality = quality
+                record.phase = "done"
                 task.last_sync_at = datetime.utcnow()
                 task.last_run_status = "success"
-                # 首次建表成功后，再次运行改为追加，避免「表已存在」失败
-                if str(cfg.get("if_exists") or "fail") == "fail":
-                    cfg = dict(cfg)
-                    cfg["if_exists"] = "append"
-                    task.sync_config = cfg
+                # 首次 create 成功后，后续默认 append（写回 sync_config / 版本）
+                if op_mode == "create":
+                    cfg2 = dict(task.sync_config or {})
+                    cfg2["if_exists"] = "append"
+                    cfg2["operation_mode"] = "append"
+                    task.sync_config = cfg2
+                    if ver:
+                        ver.operation_mode = "append"
             except Exception as e:
                 logger.exception("file import task %s failed", task_id)
                 record.status = "failed"
                 record.error_msg = str(e)[:4000]
+                record.phase = "failed"
                 task.last_run_status = "failed"
-                # 若失败原因是「目标表已存在」，自动把 if_exists 升级为 append
-                # 使下次重跑直接追加写入，避免用户需要手动修改配置
-                if "目标表已存在" in str(e) and str(cfg.get("if_exists") or "fail") == "fail":
-                    cfg = dict(cfg)
-                    cfg["if_exists"] = "append"
-                    task.sync_config = cfg
             finally:
                 record.finished_at = datetime.utcnow()
+                record.heartbeat_at = datetime.utcnow()
                 if record.started_at:
                     delta = record.finished_at - record.started_at
                     record.duration_ms = int(delta.total_seconds() * 1000)
@@ -284,6 +328,7 @@ def run_sync_record(record_id: int, task_id: int, lock_handle: DistributedLockHa
             return
 
         try:
+            _hb("loading")
             saved_mode = task.sync_mode
             if saved_mode == "cdc":
                 task.sync_mode = "incremental"
@@ -292,6 +337,7 @@ def run_sync_record(record_id: int, task_id: int, lock_handle: DistributedLockHa
             record.status = "success"
             record.rows_read = rows_read
             record.rows_written = rows_written
+            record.phase = "done"
             task.last_sync_at = datetime.utcnow()
             task.last_run_status = "success"
             cfg = _cfg(task)
@@ -302,9 +348,11 @@ def run_sync_record(record_id: int, task_id: int, lock_handle: DistributedLockHa
             logger.exception("sync task %s failed", task_id)
             record.status = "failed"
             record.error_msg = str(e)[:4000]
+            record.phase = "failed"
             task.last_run_status = "failed"
         finally:
             record.finished_at = datetime.utcnow()
+            record.heartbeat_at = datetime.utcnow()
             if record.started_at:
                 delta = record.finished_at - record.started_at
                 record.duration_ms = int(delta.total_seconds() * 1000)
@@ -316,56 +364,28 @@ def run_sync_record(record_id: int, task_id: int, lock_handle: DistributedLockHa
             _running_tasks.discard(task_id)
 
 
-def start_sync_async(task_id: int, trigger_type: str = "manual") -> SyncRecord:
-    lock_handle = acquire_distributed_lock(f"integration-sync:{int(task_id)}")
-    if lock_handle is None:
-        raise RuntimeError("该任务正在其他 backend 副本执行中，请稍后再试")
-    with _run_lock:
-        if task_id in _running_tasks:
-            lock_handle.release()
-            raise RuntimeError("该任务正在执行中，请稍后再试")
-        _running_tasks.add(task_id)
+def start_sync_async(
+    task_id: int,
+    trigger_type: str = "manual",
+    *,
+    triggered_by: Optional[int] = None,
+    execution_key: Optional[str] = None,
+    retry_of: Optional[int] = None,
+    version_id: Optional[int] = None,
+    config_snapshot: Optional[dict] = None,
+) -> SyncRecord:
+    """入队 pending SyncRecord，由 sync_worker 认领执行。"""
+    from app.services.sync_worker import enqueue_sync_record
 
-    db = SessionLocal()
-    try:
-        task = db.query(SyncTask).filter(SyncTask.id == task_id).first()
-        if not task:
-            raise ValueError("任务不存在")
-        if not task.is_active:
-            raise ValueError("任务已停用，无法执行")
-        record = SyncRecord(
-            sync_task_id=task_id,
-            status="running",
-            trigger_type=trigger_type,
-            started_at=datetime.utcnow(),
-        )
-        db.add(record)
-        task.last_run_status = "running"
-        db.commit()
-        db.refresh(record)
-        rid, tid = record.id, task_id
-    except Exception:
-        lock_handle.release()
-        with _run_lock:
-            _running_tasks.discard(task_id)
-        raise
-    finally:
-        db.close()
-
-    t = threading.Thread(
-        target=run_sync_record,
-        args=(rid, tid, lock_handle),
-        daemon=True,
-        name=f"sync-{tid}",
+    return enqueue_sync_record(
+        task_id,
+        trigger_type=trigger_type,
+        triggered_by=triggered_by,
+        execution_key=execution_key,
+        retry_of=retry_of,
+        version_id=version_id,
+        config_snapshot=config_snapshot,
     )
-    try:
-        t.start()
-    except Exception:
-        lock_handle.release()
-        with _run_lock:
-            _running_tasks.discard(task_id)
-        raise
-    return record
 
 
 def validate_task_config(task: SyncTask, src_ds: DataSource, dst_ds: DataSource) -> List[str]:

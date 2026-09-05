@@ -17,6 +17,11 @@ import { useAppStore } from '../store'
 import { can, isPlatformAdmin, P } from '../perm'
 import { Link } from 'react-router-dom'
 import { R } from '../routes'
+import {
+  SPACE_MEMBER_ROLE_OPTS,
+  platformRoleOptionLabel,
+  spaceMemberRoleLabel,
+} from '../utils/roleLabels'
 
 type PermRow = { id: number; code: string; name: string; module: string }
 type RoleRow = { id: number; code: string; name: string; description?: string; is_system: boolean; permission_codes: string[] }
@@ -71,12 +76,6 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
   const canIntegrationRead = isSuper
   const canIntegrationWrite = isSuper
   const canAccessControl = canManageUsers || can(me, P.SYSTEM_ROLE_READ)
-
-  const SPACE_MEMBER_ROLE_OPTS = [
-    { value: 'admin', label: '空间管理员', title: '本空间全部离线能力 + 空间设置；不含平台系统管理' },
-    { value: 'developer', label: '开发者', title: '开发/集成/运维等；不含空间设置与平台系统管理' },
-    { value: 'viewer', label: '只读（分析师）', title: '仅数据探查 + 数据字典' },
-  ]
 
   const [workspaceListUi, setWorkspaceListUi] = useState<any[]>([])
   const [wsManageId, setWsManageId] = useState<number | undefined>()
@@ -575,12 +574,15 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
         <Select
           style={{ minWidth: 160 }}
           value={row.role_id}
-          options={roles.map(r => ({ label: `${r.name} (${r.code})`, value: r.id }))}
+          options={roles.map(r => ({
+            label: platformRoleOptionLabel(r),
+            value: r.id,
+          }))}
           disabled={!can(me, P.SYSTEM_USER_WRITE)}
           onChange={async (role_id: number) => {
             try {
               await adminApi.setUserRole(row.id, role_id)
-              message.success('角色已更新')
+              message.success('平台角色已更新')
               await load()
               if (row.id === me?.id) {
                 const u: any = await authApi.me()
@@ -594,41 +596,19 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
       ),
     },
     {
-      title: '管理员',
-      key: 'is_admin',
-      width: 90,
-      render: (_: any, row: UserRow) => (
-        <Switch
-          checked={row.is_admin}
-          disabled={!isSuper || row.id === me?.id}
-          onChange={async (checked) => {
-            try {
-              await adminApi.setUserFlags(row.id, { is_admin: checked })
-              message.success('已更新')
-              await load()
-              if (row.id === me?.id) {
-                const u: any = await authApi.me()
-                setUser(u)
-              }
-            } catch (e: any) {
-              message.error(e?.response?.data?.detail || '仅超级管理员可修改')
-            }
-          }}
-        />
-      ),
-    },
-    {
-      title: '启用',
+      title: '账号状态',
       key: 'is_active',
-      width: 90,
+      width: 100,
       render: (_: any, row: UserRow) => (
         <Switch
           checked={row.is_active}
+          checkedChildren="启用"
+          unCheckedChildren="停用"
           disabled={!isSuper || row.id === me?.id}
           onChange={async (checked) => {
             try {
               await adminApi.setUserFlags(row.id, { is_active: checked })
-              message.success('已更新')
+              message.success(checked ? '已启用' : '已停用')
               await load()
             } catch (e: any) {
               message.error(e?.response?.data?.detail || '更新失败')
@@ -1069,7 +1049,13 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
             showIcon
             style={{ marginBottom: 14 }}
             message="平台账号"
-            description="列表为可登录 GIDO 的账号。登录后的能力由「平台角色」聚合；空间内的 admin/developer/viewer 在「工作空间成员」中单独配置。"
+            description={
+              <>
+                能力只由「平台角色」决定：选 <Tag>超级管理员</Tag> / <Tag>平台管理员</Tag> 即具备平台管理（用户/角色/空间/集成）；
+                开发、分析、运维等业务角色不再叠加单独的「管理员」开关。
+                空间内的 admin/developer/viewer 请到「工作空间成员」配置。
+              </>
+            }
           />
           {canManageUsers ? (
             <Table rowKey="id" loading={loading} dataSource={users} columns={userColumns} pagination={{ pageSize: 12 }} />
@@ -1132,7 +1118,12 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
             }
             description={
               <>
-                此处<strong>只配置</strong>用户在各工作空间内的 <Tag>admin</Tag> / <Tag>developer</Tag> / <Tag>viewer</Tag>，<strong>不修改</strong>用户的平台角色。
+                此处<strong>只配置</strong>用户在各工作空间内的角色：
+                <Tag>{spaceMemberRoleLabel('admin')}</Tag>
+                <Tag>{spaceMemberRoleLabel('developer')}</Tag>
+                <Tag>{spaceMemberRoleLabel('viewer')}</Tag>
+                ，<strong>不修改</strong>用户的平台角色。
+                「负责人」是空间归属标记（通常同时是空间管理员），不是平台角色。
                 {!canWorkspacePlatformOps && (
                   <> 创建空间、Dolphin/Flink 等请在侧栏「平台集成」或顶栏联系平台管理员。</>
                 )}
@@ -1197,7 +1188,7 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
                   </Space>
                 ),
               },
-              { title: '空间内角色', dataIndex: 'role', width: 120 },
+              { title: '空间内角色', dataIndex: 'role', width: 140, render: (r: string) => spaceMemberRoleLabel(r) },
               {
                 title: '操作',
                 width: 100,
@@ -1221,7 +1212,7 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
                 showIcon
                 style={{ marginTop: 20 }}
                 message="变更负责人（owner）"
-                description="不能直接移除现任负责人；请先在下方选择新任负责人并转移，系统会将其设为空间 admin。"
+                description="不能直接移除现任负责人；请先在下方选择新任负责人并转移，系统会将其设为空间管理员。"
               />
               <Form layout="inline" form={ownerTransferForm} style={{ marginTop: 12 }} onFinish={transferWorkspaceOwner}>
                 <Form.Item name="owner_id" label="新任负责人" rules={[{ required: true, message: '请选择用户 id' }]}>
@@ -1238,7 +1229,7 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
                 </Form.Item>
                 <Form.Item>
                   <Button type="primary" htmlType="submit">
-                    转移负责人并设为空间 admin
+                    转移负责人并设为空间管理员
                   </Button>
                 </Form.Item>
               </Form>
@@ -1324,8 +1315,8 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
           style={{ marginBottom: 14 }}
           message={
             canAccessControl
-              ? '选择「admin」可将该同事设为所选工作空间的<strong>空间管理员</strong>'
-              : '仅从「尚未加入本空间的平台用户」中选人；平台级角色与全局权限不在此修改。选择「admin」即本空间的空间管理员。'
+              ? '选择「空间管理员」可将该同事设为所选工作空间的管理员'
+              : '仅从「尚未加入本空间的平台用户」中选人；平台级角色与全局权限不在此修改。选择「空间管理员」即本空间的空间管理员。'
           }
         />
         <Form form={wsMemberForm} layout="vertical">
@@ -1367,10 +1358,15 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
           <Form.Item name="full_name" label="显示名">
             <Input placeholder="可选" />
           </Form.Item>
-          <Form.Item name="role_id" label="平台角色" rules={[{ required: true, message: '请选择角色' }]}>
+          <Form.Item name="role_id" label="平台角色" rules={[{ required: true, message: '请选择角色' }]}
+            extra="超级管理员 / 平台管理员 = 平台管理能力；业务角色不再另开管理员开关"
+          >
             <Select
-              placeholder="决定该用户有哪些菜单与操作权限"
-              options={roles.map(r => ({ label: `${r.name} (${r.code})`, value: r.id }))}
+              placeholder="决定菜单与操作权限"
+              options={roles.map(r => ({
+                label: platformRoleOptionLabel(r),
+                value: r.id,
+              }))}
             />
           </Form.Item>
         </Form>

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field, EmailStr
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.core.access import RequireAnyPerm, is_platform_admin
+from app.core.access import RequireAnyPerm, is_platform_admin, sync_is_admin_with_role
 from app.core import perm_codes as P
 from app.models.workspace import User
 from app.models.rbac_models import Role, Permission
@@ -198,12 +198,14 @@ def admin_create_user(
     if db.query(User).filter(User.email == body.email).first():
         raise HTTPException(status_code=400, detail="邮箱已存在")
     role_id = body.role_id
+    role = None
     if role_id is not None:
-        if not db.query(Role).filter(Role.id == role_id).first():
+        role = db.query(Role).filter(Role.id == role_id).first()
+        if not role:
             raise HTTPException(status_code=400, detail="角色不存在")
     else:
-        dev = db.query(Role).filter(Role.code == "developer").first()
-        role_id = dev.id if dev else None
+        role = db.query(Role).filter(Role.code == "developer").first()
+        role_id = role.id if role else None
     u = User(
         username=body.username,
         email=body.email,
@@ -211,6 +213,7 @@ def admin_create_user(
         hashed_password=get_password_hash(body.password),
         role_id=role_id,
     )
+    sync_is_admin_with_role(u, role)
     db.add(u)
     db.commit()
     db.refresh(u)
@@ -221,7 +224,7 @@ def admin_create_user(
         rc, rn = u.system_role.code, u.system_role.name
     return UserBriefOut(
         id=u.id, username=u.username, email=u.email, full_name=u.full_name,
-        is_admin=u.is_admin, is_active=u.is_active, role_id=u.role_id,
+        is_admin=is_platform_admin(u), is_active=u.is_active, role_id=u.role_id,
         role_code=rc, role_name=rn,
     )
 
@@ -240,7 +243,7 @@ def list_users(
             rc, rn = u.system_role.code, u.system_role.name
         out.append(UserBriefOut(
             id=u.id, username=u.username, email=u.email, full_name=u.full_name,
-            is_admin=u.is_admin, is_active=u.is_active, role_id=u.role_id,
+            is_admin=is_platform_admin(u), is_active=u.is_active, role_id=u.role_id,
             role_code=rc, role_name=rn,
         ))
     return out
@@ -261,12 +264,13 @@ def set_user_role(
     if not role:
         raise HTTPException(status_code=400, detail="角色不存在")
     u.role_id = body.role_id
+    sync_is_admin_with_role(u, role)
     db.commit()
     db.refresh(u)
     rc, rn = role.code, role.name
     return UserBriefOut(
         id=u.id, username=u.username, email=u.email, full_name=u.full_name,
-        is_admin=u.is_admin, is_active=u.is_active, role_id=u.role_id,
+        is_admin=is_platform_admin(u), is_active=u.is_active, role_id=u.role_id,
         role_code=rc, role_name=rn,
     )
 
@@ -280,14 +284,17 @@ def set_user_flags(
     _: None = Depends(RequireAnyPerm(P.SYSTEM_USER_WRITE)),
 ):
     if not is_platform_admin(current_user):
-        raise HTTPException(status_code=403, detail="仅超级管理员可修改管理员/禁用状态")
+        raise HTTPException(status_code=403, detail="仅平台管理员可启停账号")
+    if body.is_admin is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="平台管理能力请通过「平台角色」授予或收回，不再单独设置管理员开关",
+        )
     u = db.query(User).filter(User.id == user_id).first()
     if not u:
         raise HTTPException(status_code=404, detail="用户不存在")
     if u.id == current_user.id and body.is_active is False:
         raise HTTPException(status_code=400, detail="不能禁用当前登录用户")
-    if body.is_admin is not None:
-        u.is_admin = body.is_admin
     if body.is_active is not None:
         u.is_active = body.is_active
     db.commit()
@@ -297,7 +304,7 @@ def set_user_flags(
         rc, rn = u.system_role.code, u.system_role.name
     return UserBriefOut(
         id=u.id, username=u.username, email=u.email, full_name=u.full_name,
-        is_admin=u.is_admin, is_active=u.is_active, role_id=u.role_id,
+        is_admin=is_platform_admin(u), is_active=u.is_active, role_id=u.role_id,
         role_code=rc, role_name=rn,
     )
 

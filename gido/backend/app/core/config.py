@@ -203,6 +203,11 @@ class Settings(BaseSettings):
     FILE_IMPORT_MYSQL_BATCH: int = 5000
     FILE_IMPORT_DORIS_HTTP_PORT: int = 8030  # FE HTTP（Stream Load）；可被数据源 extra_config.http_port 覆盖
     FILE_IMPORT_CHUNK_BYTES: int = 16 * 1024 * 1024  # 前端分片大小提示；单片上传避免 HTTP/2 长连接被掐
+    FILE_IMPORT_MAX_CONCURRENT_UPLOADS: int = 3  # 单用户并发上传会话上限
+    FILE_IMPORT_ORPHAN_TTL_HOURS: int = 72  # 未引用 ready/draft 上传回收
+    FILE_IMPORT_STALE_RUNNING_MINUTES: int = 120  # running 无心跳后回收为可重试失败
+    FILE_IMPORT_REQUIRE_SHARED_STORAGE: bool = False  # 生产多副本建议 true（S3+Redis）
+    FILE_IMPORT_STRICT_QUALITY_DEFAULT: bool = True
     # 多副本生产头像写入与回源使用同一 S3 bucket；默认复用制品前缀下的 avatars/。
     AVATAR_S3_ENABLED: bool = False
 

@@ -718,6 +718,17 @@ export default function IntegrationPage() {
               width: 72,
               render: (ms: number) => (ms != null ? `${(ms / 1000).toFixed(1)}s` : '—'),
             },
+            { title: '阶段', dataIndex: 'phase', width: 90, render: (p: string) => p || '—' },
+            {
+              title: '质量',
+              key: 'quality',
+              width: 120,
+              render: (_: unknown, r: any) => {
+                const q = r.quality || {}
+                if (!q || (!q.rows_skipped && !q.rows_filtered)) return '—'
+                return `skip=${q.rows_skipped || 0} filt=${q.rows_filtered || 0}`
+              },
+            },
             { title: '开始', dataIndex: 'started_at', ellipsis: true },
             {
               title: '错误',
@@ -727,23 +738,31 @@ export default function IntegrationPage() {
             },
             ...(historyTask?.sync_mode === 'file_import' && canRun ? [{
               title: '操作',
-              width: 90,
+              width: 100,
               render: (_: unknown, r: any) => r.status === 'failed' ? (
-                <Tooltip title="以追加方式重跑（目标表已存在时直接追加写入）">
+                <Tooltip title="按同一 execution_key 幂等重试（不重复提交成功装载）">
                   <Button
                     size="small"
                     type="link"
                     icon={<PlayCircleOutlined />}
                     onClick={async () => {
-                      await integrationApi.runTask(historyTask.id, { if_exists: 'append' })
-                      message.success('已提交追加重跑')
-                      openHistory(historyTask)
+                      try {
+                        await integrationApi.retryFileImportRecord(r.id)
+                        message.success('已排队幂等重试')
+                        openHistory(historyTask)
+                      } catch (e: any) {
+                        message.error(e?.response?.data?.detail || e?.message || '重试失败')
+                      }
                     }}
                   >
-                    追加重跑
+                    重试本次
                   </Button>
                 </Tooltip>
-              ) : null,
+              ) : (r.status === 'success' ? (
+                <Tooltip title="成功执行不可直接重跑；请重新上传并选择 append/replace">
+                  <span style={{ color: '#999' }}>—</span>
+                </Tooltip>
+              ) : null),
             }] : []),
           ]}
         />

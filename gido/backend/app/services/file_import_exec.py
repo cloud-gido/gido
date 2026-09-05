@@ -514,6 +514,7 @@ def _doris_stream_load(
     skip_header: bool = False,
     charset: str = "UTF-8",
     target_db_name: Optional[str] = None,
+    label: Optional[str] = None,
 ) -> Tuple[int, int]:
     db_name = (target_db_name or _doris_effective_database(ds)).strip()
     if not db_name:
@@ -522,7 +523,7 @@ def _doris_stream_load(
     http_port = doris_http_port(ds)
     user = mysql_protocol_connect_user(ds)
     password = ds.password or ""
-    label = f"gido_fi_{uuid.uuid4().hex[:16]}"
+    label = (label or f"gido_fi_{uuid.uuid4().hex[:16]}")[:128]
     url = f"http://{host}:{http_port}/api/{db_name}/{table_name}/_stream_load"
     col_names = ",".join(c["name"] for c in cols)
     sep_candidates = _doris_column_separator_header_candidates(column_separator)
@@ -662,22 +663,69 @@ def execute_file_import(
     owner: Optional[str] = None,
     batch_size: Optional[int] = None,
     if_exists: str = "fail",
-) -> Tuple[int, int, str]:
-    """建表（若不存在）+ 流式装数。Doris CSV 走 Stream Load。"""
+    operation_mode: Optional[str] = None,
+    quality_mode: str = "strict",
+    execution_key: Optional[str] = None,
+    on_phase: Optional[Any] = None,
+) -> Tuple[int, int, str, Dict[str, Any]]:
+    """Staging 装载 + create/append/replace；返回 (rows_read, rows_written, ddl, quality)。"""
     lt = assert_supported_ds(ds, "目标")
     if lt not in ("mysql", "doris"):
         raise ValueError("本地文件导入暂仅支持 MySQL / Doris 目标")
     table_name = validate_table_name(table_name)
     cols = normalize_columns(columns)
-    ddl = build_create_table_ddl(ds, table_name, cols)
-    mode = (if_exists or "fail").strip().lower()
-    if mode not in ("fail", "append"):
-        raise ValueError("if_exists 仅支持 fail / append")
+    mode = (operation_mode or "").strip().lower()
+    if not mode:
+        ie = (if_exists or "fail").strip().lower()
+        mode = "create" if ie in ("fail", "create") else ie
+    if mode not in ("create", "append", "replace"):
+        raise ValueError("operation_mode 仅支持 create / append / replace")
+    qm = (quality_mode or "strict").strip().lower()
+    if qm not in ("strict", "lenient"):
+        raise ValueError("quality_mode 仅支持 strict / lenient")
+
+    import hashlib
+    import re as _re
+    from app.services.file_import_version import column_schema_diff
+
+    key = (execution_key or hashlib.sha256(f"{workspace_id}:{table_name}:{file_id}".encode()).hexdigest())[:32]
+    safe_key = _re.sub(r"[^a-zA-Z0-9_]", "", key)[:20] or "x"
+    staging_name = validate_table_name(f"_fi_stg_{safe_key}")
+
+    def _phase(name: str) -> None:
+        if callable(on_phase):
+            try:
+                on_phase(name)
+            except Exception:
+                pass
 
     doris_target_db: Optional[str] = _doris_effective_database(ds) if lt == "doris" else None
     exists = table_exists(ds, table_name, database_override=doris_target_db)
-    if exists and mode == "fail":
-        raise ValueError(f"目标表已存在: {table_name}（请更换表名，或选择追加写入）")
+    if mode == "create" and exists:
+        raise ValueError(f"目标表已存在: {table_name}（请改用 append/replace，或更换表名）")
+    if mode in ("append", "replace") and not exists and mode == "append":
+        # append 且表不存在：等价于 create
+        mode = "create"
+
+    if mode == "append" and exists:
+        # schema 兼容检查
+        from app.services.integration_runtime import list_columns
+
+        try:
+            actual_cols = list_columns(ds, table_name) or []
+        except Exception:
+            actual_cols = []
+        diff = column_schema_diff(cols, actual_cols)
+        if not diff.get("compatible"):
+            raise ValueError(
+                "目标表结构与导入字段不兼容，禁止 append："
+                f" missing={diff.get('missing_in_target')} type_mismatch={diff.get('type_mismatch')}"
+            )
+
+    ddl = build_create_table_ddl(ds, staging_name if mode != "create" or exists else table_name, cols)
+    # staging DDL 始终按 staging 表名生成
+    staging_ddl = build_create_table_ddl(ds, staging_name, cols)
+    target_ddl = build_create_table_ddl(ds, table_name, cols)
 
     meta = load_meta(workspace_id, file_id)
     path = resolve_data_path(meta)
@@ -686,13 +734,24 @@ def execute_file_import(
     batch = int(batch_size or settings.FILE_IMPORT_MYSQL_BATCH or 5000)
     batch = max(500, min(batch, 20000))
 
-    _ensure_table(ds, table_name, ddl, exists, database_override=doris_target_db)
+    _phase("staging")
+    # 清理可能残留的同名 staging
+    _drop_table_if_exists(ds, staging_name, database_override=doris_target_db)
+    _ensure_table(ds, staging_name, staging_ddl, False, database_override=doris_target_db)
 
     cleanup_paths: List[Path] = []
+    quality: Dict[str, Any] = {
+        "quality_mode": qm,
+        "operation_mode": mode,
+        "execution_key": key,
+        "staging_table": staging_name,
+        "rows_filtered": 0,
+        "rows_skipped": 0,
+        "error_samples": [],
+    }
     try:
+        _phase("loading")
         if lt == "doris":
-            # 统一：先写成无表头 UTF-8 CSV（含类型 coerce），再 Stream Load。
-            # 避免 Doris skip_header 语义差异（须传整数行数，不能传 true）。
             if fmt == "csv":
                 tmp_csv, converted = _csv_to_stream_load_temp(
                     path,
@@ -713,17 +772,23 @@ def execute_file_import(
             cleanup_paths.append(tmp_csv)
             rows_read, rows_written = _doris_stream_load(
                 ds,
-                table_name,
+                staging_name,
                 cols,
                 tmp_csv,
                 column_separator=_DORIS_CSV_SEPARATOR,
                 skip_header=False,
                 target_db_name=doris_target_db,
+                label=f"fi_{safe_key}",
             )
             if converted and rows_read == 0:
                 rows_read = converted
+            # Doris filtered 行：_doris_stream_load 已在失败时抛错；此处严格模式要求 written≈read
+            if qm == "strict" and rows_read and rows_written is not None and rows_written < rows_read:
+                quality["rows_filtered"] = max(0, int(rows_read) - int(rows_written))
+                raise ValueError(
+                    f"严格质量模式：Stream Load 写入 {rows_written}/{rows_read}，存在过滤行"
+                )
         else:
-            # MySQL：流式批量 INSERT
             if fmt == "csv":
                 delim = delimiter if delimiter is not None and delimiter != "" else ","
                 row_iter = iter_csv_rows_from_path(
@@ -740,9 +805,39 @@ def execute_file_import(
                     sheet_name=sheet_name,
                     max_rows=max_rows,
                 )
-            rows_read, rows_written = _load_mysql_batched(
-                ds, table_name, cols, row_iter, batch_size=batch, max_rows=max_rows
+            rows_read, rows_written, skip_info = _load_mysql_batched_quality(
+                ds,
+                staging_name,
+                cols,
+                row_iter,
+                batch_size=batch,
+                max_rows=max_rows,
+                quality_mode=qm,
             )
+            quality["rows_skipped"] = skip_info.get("rows_skipped", 0)
+            quality["error_samples"] = skip_info.get("error_samples") or []
+            if qm == "strict" and quality["rows_skipped"]:
+                raise ValueError(
+                    f"严格质量模式：跳过 {quality['rows_skipped']} 行，样例={quality['error_samples'][:3]}"
+                )
+
+        _phase("committing")
+        _publish_staging_to_target(
+            ds,
+            lt=lt,
+            target=table_name,
+            staging=staging_name,
+            mode=mode,
+            target_ddl=target_ddl,
+            database_override=doris_target_db,
+            target_existed=exists,
+        )
+    except Exception:
+        try:
+            _drop_table_if_exists(ds, staging_name, database_override=doris_target_db)
+        except Exception:
+            pass
+        raise
     finally:
         for p in cleanup_paths:
             try:
@@ -760,4 +855,144 @@ def execute_file_import(
             database_override=doris_target_db,
         )
 
-    return rows_read, rows_written, ddl
+    _phase("done")
+    return rows_read, rows_written, target_ddl, quality
+
+
+def _drop_table_if_exists(
+    ds: DataSource,
+    table_name: str,
+    *,
+    database_override: Optional[str] = None,
+) -> None:
+    lt = assert_supported_ds(ds, "目标")
+    with open_connection(ds, database=database_override) as opened:
+        _, conn = opened
+        cur = conn.cursor()
+        cur.execute(f"DROP TABLE IF EXISTS {quote_ident(lt, table_name)}")
+        conn.commit()
+
+
+def _publish_staging_to_target(
+    ds: DataSource,
+    *,
+    lt: str,
+    target: str,
+    staging: str,
+    mode: str,
+    target_ddl: str,
+    database_override: Optional[str],
+    target_existed: bool,
+) -> None:
+    """将 staging 原子发布到目标表。"""
+    with open_connection(ds, database=database_override) as opened:
+        _, conn = opened
+        cur = conn.cursor()
+        t = quote_ident(lt, target)
+        s = quote_ident(lt, staging)
+        if mode == "create" or (mode == "append" and not target_existed):
+            # staging → target：目标不应存在
+            if target_existed:
+                raise ValueError(f"目标表已存在: {target}")
+            if lt == "mysql":
+                cur.execute(f"RENAME TABLE {s} TO {t}")
+            else:
+                # Doris: CREATE LIKE + INSERT + DROP staging；或 RENAME
+                try:
+                    cur.execute(f"ALTER TABLE {s} RENAME {t}")
+                except Exception:
+                    cur.execute(target_ddl)
+                    cur.execute(f"INSERT INTO {t} SELECT * FROM {s}")
+                    cur.execute(f"DROP TABLE IF EXISTS {s}")
+            conn.commit()
+            return
+
+        if mode == "append":
+            cur.execute(f"INSERT INTO {t} SELECT * FROM {s}")
+            cur.execute(f"DROP TABLE IF EXISTS {s}")
+            conn.commit()
+            return
+
+        if mode == "replace":
+            if lt == "doris":
+                # Doris 原子替换
+                try:
+                    cur.execute(f"ALTER TABLE {t} REPLACE WITH TABLE {s} PROPERTIES('swap' = 'false')")
+                    conn.commit()
+                    return
+                except Exception as e:
+                    raise ValueError(
+                        f"Doris 不支持原子 REPLACE WITH TABLE，已中止以免先删表丢数据: {e}"
+                    ) from e
+            # MySQL：原子 rename 交换
+            bak = quote_ident(lt, f"{target}__fi_bak")
+            cur.execute(f"DROP TABLE IF EXISTS {bak}")
+            cur.execute(f"RENAME TABLE {t} TO {bak}, {s} TO {t}")
+            cur.execute(f"DROP TABLE IF EXISTS {bak}")
+            conn.commit()
+            return
+
+        raise ValueError(f"未知 operation_mode: {mode}")
+
+
+def _load_mysql_batched_quality(
+    ds: DataSource,
+    table_name: str,
+    cols: List[Dict[str, Any]],
+    row_iter,
+    *,
+    batch_size: int,
+    max_rows: int,
+    quality_mode: str,
+) -> Tuple[int, int, Dict[str, Any]]:
+    """MySQL 批量写入，收集跳过行质量信息。"""
+    lt = "mysql"
+    col_list = ", ".join(quote_ident(lt, c["name"]) for c in cols)
+    placeholders = ", ".join(["%s"] * len(cols))
+    insert_sql = f"INSERT INTO {quote_ident(lt, table_name)} ({col_list}) VALUES ({placeholders})"
+    width = len(cols)
+    rows_read = 0
+    rows_written = 0
+    rows_skipped = 0
+    sample_errors: List[str] = []
+    batch: List[Tuple[Any, ...]] = []
+
+    with open_connection(ds) as opened:
+        _, conn = opened
+        cur = conn.cursor()
+        for row in row_iter:
+            rows_read += 1
+            if rows_read > max_rows:
+                raise ValueError(f"行数超过上限 {max_rows}")
+            try:
+                values: List[Any] = []
+                for i, c in enumerate(cols):
+                    raw_cell = row[i] if i < len(row) else None
+                    values.append(coerce_cell(raw_cell, c["type"]))
+                if len(values) < width:
+                    values.extend([None] * (width - len(values)))
+                batch.append(tuple(values[:width]))
+            except Exception as e:
+                rows_skipped += 1
+                if len(sample_errors) < 8:
+                    sample_errors.append(f"第 {rows_read} 行: {e}")
+                continue
+
+            if len(batch) >= batch_size:
+                cur.executemany(insert_sql, batch)
+                conn.commit()
+                rows_written += len(batch)
+                batch = []
+
+        if batch:
+            cur.executemany(insert_sql, batch)
+            conn.commit()
+            rows_written += len(batch)
+
+    if quality_mode == "strict" and rows_skipped and rows_written == 0:
+        raise ValueError("装数失败: " + "; ".join(sample_errors))
+    if sample_errors:
+        logger.warning(
+            "file import coerce skipped rows=%s samples=%s", rows_skipped, sample_errors
+        )
+    return rows_read, rows_written, {"rows_skipped": rows_skipped, "error_samples": sample_errors}

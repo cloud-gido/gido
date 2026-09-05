@@ -292,3 +292,200 @@ def test_file_import_rejects_oversized_xlsx(client, monkeypatch, tmp_path):
     )
     assert up.status_code == 400
     assert "上限" in up.json()["detail"]
+
+
+def _create_file_import_task(c, h, ws_id, ds_id, name="fi_task"):
+    up = c.post(
+        "/api/integration/file-import/upload",
+        headers=h,
+        data={"workspace_id": str(ws_id), "has_header": "true"},
+        files={"file": ("t.csv", BytesIO(b"id,name\n1,a\n"), "text/csv")},
+    )
+    assert up.status_code == 200, up.text
+    file_id = up.json()["file_id"]
+    cols = [
+        {"name": x["name"], "type": x["type"], "nullable": True, "is_primary_key": False}
+        for x in up.json()["columns"]
+    ]
+    with patch("app.services.file_import_exec.table_exists", return_value=False):
+        created = c.post(
+            "/api/integration/file-import/tasks",
+            headers=h,
+            json={
+                "workspace_id": ws_id,
+                "name": name,
+                "dst_datasource_id": ds_id,
+                "dst_table": f"t_{name}",
+                "file_id": file_id,
+                "columns": cols,
+                "has_header": True,
+                "run_now": False,
+                "register_datamap": False,
+                "operation_mode": "create",
+            },
+        )
+    assert created.status_code == 200, created.text
+    return created.json(), file_id, cols
+
+
+def test_file_import_block_sync_config_update(client):
+    c, SessionLocal, ws_id, ds_id = client
+    token = _login(c)
+    h = _auth(token)
+    body, _, _ = _create_file_import_task(c, h, ws_id, ds_id, "block_cfg")
+    task_id = body["task"]["id"]
+    upd = c.put(
+        f"/api/integration/tasks/{task_id}",
+        headers=h,
+        json={"sync_config": {"file_id": "hijack"}},
+    )
+    assert upd.status_code == 400
+    assert "versions" in upd.json()["detail"]
+
+
+def test_file_import_schema_diff_endpoint(client):
+    c, SessionLocal, ws_id, ds_id = client
+    token = _login(c)
+    h = _auth(token)
+    cols = [
+        {"name": "id", "type": "bigint", "nullable": False, "is_primary_key": True},
+        {"name": "name", "type": "string", "nullable": True, "is_primary_key": False},
+    ]
+    with patch("app.services.file_import_exec.table_exists", return_value=True), patch(
+        "app.services.integration_runtime.list_columns",
+        return_value=[{"name": "id", "type": "bigint"}, {"name": "name", "type": "string"}],
+    ):
+        r = c.post(
+            "/api/integration/file-import/schema-diff",
+            headers=h,
+            json={"datasource_id": ds_id, "table_name": "t1", "columns": cols},
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["table_exists"] is True
+    assert r.json()["diff"]["compatible"] is True
+
+
+def test_file_import_versions_list_and_create(client):
+    c, SessionLocal, ws_id, ds_id = client
+    token = _login(c)
+    h = _auth(token)
+    body, file_id, cols = _create_file_import_task(c, h, ws_id, ds_id, "ver1")
+    task_id = body["task"]["id"]
+
+    listed = c.get(f"/api/integration/file-import/tasks/{task_id}/versions", headers=h)
+    assert listed.status_code == 200, listed.text
+    assert isinstance(listed.json(), list)
+    assert len(listed.json()) >= 1
+
+    # 再传一份文件建新版本（目标表已存在 → append）
+    up2 = c.post(
+        "/api/integration/file-import/upload",
+        headers=h,
+        data={"workspace_id": str(ws_id), "has_header": "true"},
+        files={"file": ("t2.csv", BytesIO(b"id,name\n2,b\n"), "text/csv")},
+    )
+    fid2 = up2.json()["file_id"]
+    with patch("app.services.file_import_exec.table_exists", return_value=True), patch(
+        "app.services.integration_runtime.list_columns",
+        return_value=[{"name": c["name"], "type": c["type"]} for c in cols],
+    ):
+        ver = c.post(
+            f"/api/integration/file-import/tasks/{task_id}/versions",
+            headers=h,
+            json={
+                "file_id": fid2,
+                "columns": cols,
+                "operation_mode": "append",
+                "quality_mode": "strict",
+                "activate": True,
+                "run_now": False,
+            },
+        )
+    assert ver.status_code == 200, ver.text
+    assert ver.json()["version"]["operation_mode"] == "append"
+    assert ver.json()["version"]["file_id"] == fid2
+
+
+def test_file_import_run_blocks_after_success_and_failed(client):
+    from app.models.workspace import SyncRecord
+
+    c, SessionLocal, ws_id, ds_id = client
+    token = _login(c)
+    h = _auth(token)
+    body, _, _ = _create_file_import_task(c, h, ws_id, ds_id, "run_gate")
+    task_id = body["task"]["id"]
+
+    db = SessionLocal()
+    db.add(
+        SyncRecord(
+            sync_task_id=task_id,
+            status="success",
+            trigger_type="manual",
+            execution_key="ek-ok",
+            started_at=__import__("datetime").datetime.utcnow(),
+        )
+    )
+    db.commit()
+    db.close()
+
+    blocked = c.post(f"/api/integration/tasks/{task_id}/run", headers=h)
+    assert blocked.status_code == 400
+    assert "不可直接重跑" in blocked.json()["detail"]
+
+    db = SessionLocal()
+    db.query(SyncRecord).filter(SyncRecord.sync_task_id == task_id).delete()
+    db.add(
+        SyncRecord(
+            sync_task_id=task_id,
+            status="failed",
+            trigger_type="manual",
+            execution_key="ek-fail",
+            started_at=__import__("datetime").datetime.utcnow(),
+        )
+    )
+    db.commit()
+    db.close()
+
+    blocked2 = c.post(f"/api/integration/tasks/{task_id}/run", headers=h)
+    assert blocked2.status_code == 400
+    assert "retry" in blocked2.json()["detail"]
+
+
+def test_file_import_idempotent_retry(client):
+    from app.models.workspace import SyncRecord
+
+    c, SessionLocal, ws_id, ds_id = client
+    token = _login(c)
+    h = _auth(token)
+    body, _, _ = _create_file_import_task(c, h, ws_id, ds_id, "retry1")
+    task_id = body["task"]["id"]
+
+    db = SessionLocal()
+    rec = SyncRecord(
+        sync_task_id=task_id,
+        status="failed",
+        trigger_type="manual",
+        execution_key="ek-retry-same",
+        started_at=__import__("datetime").datetime.utcnow(),
+        error_msg="boom",
+    )
+    db.add(rec)
+    db.commit()
+    db.refresh(rec)
+    rid = rec.id
+    db.close()
+
+    with patch("app.api.integration.start_sync_async") as start:
+        fake = MagicMock()
+        fake.id = 501
+        fake.execution_key = "ek-retry-same"
+        start.return_value = fake
+        r = c.post(f"/api/integration/file-import/records/{rid}/retry", headers=h)
+        assert r.status_code == 200, r.text
+        assert r.json()["execution_key"] == "ek-retry-same"
+        assert r.json()["retry_of"] == rid
+        start.assert_called_once()
+        kwargs = start.call_args.kwargs
+        assert kwargs.get("execution_key") == "ek-retry-same"
+        assert kwargs.get("retry_of") == rid
+        assert kwargs.get("trigger_type") == "retry"

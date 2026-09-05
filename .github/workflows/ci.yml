@@ -49,23 +49,44 @@ jobs:
         env:
           CI: true
 
-#  backend:
-#    name: Backend tests
-#    runs-on: ubuntu-latest
-#    defaults:
-#      run:
-#        working-directory: gido/backend
-#    steps:
-#      - uses: actions/checkout@v5
-#      - uses: actions/setup-python@v5
-#        with:
-#          python-version: "3.11"
-#          cache: pip
-#          cache-dependency-path: gido/backend/requirements.txt
-#      - run: |
-#          python -m pip install --upgrade pip
-#          pip install -r requirements.txt pytest
-#      - run: pytest -q
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gido/backend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: gido/backend/requirements.txt
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          for i in 1 2 3; do
+            pip install -r requirements.txt pytest && break
+            echo "pip install failed (attempt $i), retrying..."
+            sleep $((i * 5))
+          done
+      - name: Pytest (unit + non-integration)
+        run: |
+          pytest -q \
+            --ignore=tests/test_approval_preview_integration.py \
+            --ignore=tests/test_autosave_collab_integration.py \
+            --ignore=tests/test_data_api_contract_integration.py \
+            --ignore=tests/test_rbac_capability_integration.py \
+            --ignore=tests/test_studio_folder_tree_integration.py \
+            --ignore=tests/test_studio_node_list_slim_integration.py \
+            --ignore=tests/test_studio_run_script_override_integration.py \
+            --ignore=tests/test_stream_folder_tree_integration.py \
+            --ignore=tests/test_streaming_job_list_detail_integration.py \
+            --ignore=tests/test_aps_workflow_schedule_integration.py \
+            --ignore=tests/test_workflow_delete.py \
+            --ignore=tests/test_workflow_list_perf.py \
+            -k "not integration"
 
   compliance:
     name: Open-source compliance

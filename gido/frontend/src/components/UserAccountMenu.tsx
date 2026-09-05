@@ -32,6 +32,7 @@ const FIXED_THEME_LABELS: Record<UiThemeId, string> = {
 import { R } from '../routes'
 import { can, isPlatformAdmin, P } from '../perm'
 import { BRAND } from '../branding'
+import { platformIdentityLabel } from '../utils/roleLabels'
 import UserAvatarDisplay from './UserAvatarDisplay'
 import AvatarPickerModal from './AvatarPickerModal'
 
@@ -171,9 +172,9 @@ export default function UserAccountMenu() {
           </Tooltip>
           <Space direction="vertical" size={0} style={{ lineHeight: 1.15, alignItems: 'flex-start' }}>
             <Text style={{ fontSize: 14 }}>{user?.username ?? '…'}</Text>
-            {(user?.role_name || isPlatformAdmin(user)) && (
+            {(platformIdentityLabel(user) || user?.role_name) && (
               <Text type="secondary" style={{ fontSize: 11, maxWidth: 140 }} ellipsis>
-                {isPlatformAdmin(user) ? '管理员' : user?.role_name}
+                {platformIdentityLabel(user)}
               </Text>
             )}
           </Space>

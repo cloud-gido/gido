@@ -1781,6 +1781,126 @@ def migrate_dw_sync_tasks_enhance(engine: Engine) -> None:
                 conn.execute(text("ALTER TABLE dw_sync_records ADD COLUMN duration_ms INTEGER"))
 
 
+def migrate_file_import_production(engine: Engine) -> None:
+    """文件导入生产基线：版本表 + SyncRecord/SyncTask 执行字段。"""
+    insp = inspect(engine)
+    dialect = engine.dialect.name
+    with engine.begin() as conn:
+        if not insp.has_table("dw_file_import_versions"):
+            if dialect == "mysql":
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE dw_file_import_versions (
+                            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                            sync_task_id INT NOT NULL,
+                            workspace_id INT NOT NULL,
+                            file_id VARCHAR(64) NOT NULL,
+                            content_sha256 VARCHAR(64) NULL,
+                            original_filename VARCHAR(256) NULL,
+                            format VARCHAR(16) NULL,
+                            encoding VARCHAR(32) NULL,
+                            delimiter VARCHAR(16) NULL,
+                            has_header TINYINT(1) NULL,
+                            sheet_name VARCHAR(128) NULL,
+                            columns JSON NOT NULL,
+                            schema_fingerprint VARCHAR(64) NULL,
+                            operation_mode VARCHAR(16) NOT NULL DEFAULT 'create',
+                            quality_mode VARCHAR(16) NOT NULL DEFAULT 'strict',
+                            status VARCHAR(16) NOT NULL DEFAULT 'draft',
+                            created_by INT NULL,
+                            created_at DATETIME NULL,
+                            activated_at DATETIME NULL,
+                            INDEX ix_fi_ver_task (sync_task_id),
+                            INDEX ix_fi_ver_ws (workspace_id),
+                            INDEX ix_fi_ver_file (file_id),
+                            INDEX ix_fi_ver_fp (schema_fingerprint)
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                        """
+                    )
+                )
+            elif dialect == "postgresql":
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE dw_file_import_versions (
+                            id SERIAL PRIMARY KEY,
+                            sync_task_id INTEGER NOT NULL,
+                            workspace_id INTEGER NOT NULL,
+                            file_id VARCHAR(64) NOT NULL,
+                            content_sha256 VARCHAR(64),
+                            original_filename VARCHAR(256),
+                            format VARCHAR(16),
+                            encoding VARCHAR(32),
+                            delimiter VARCHAR(16),
+                            has_header BOOLEAN,
+                            sheet_name VARCHAR(128),
+                            columns JSON NOT NULL,
+                            schema_fingerprint VARCHAR(64),
+                            operation_mode VARCHAR(16) NOT NULL DEFAULT 'create',
+                            quality_mode VARCHAR(16) NOT NULL DEFAULT 'strict',
+                            status VARCHAR(16) NOT NULL DEFAULT 'draft',
+                            created_by INTEGER,
+                            created_at TIMESTAMP,
+                            activated_at TIMESTAMP
+                        )
+                        """
+                    )
+                )
+                conn.execute(text("CREATE INDEX ix_fi_ver_task ON dw_file_import_versions (sync_task_id)"))
+                conn.execute(text("CREATE INDEX ix_fi_ver_ws ON dw_file_import_versions (workspace_id)"))
+                conn.execute(text("CREATE INDEX ix_fi_ver_file ON dw_file_import_versions (file_id)"))
+            else:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE dw_file_import_versions (
+                            id INTEGER PRIMARY KEY,
+                            sync_task_id INTEGER NOT NULL,
+                            workspace_id INTEGER NOT NULL,
+                            file_id VARCHAR(64) NOT NULL,
+                            content_sha256 VARCHAR(64),
+                            original_filename VARCHAR(256),
+                            format VARCHAR(16),
+                            encoding VARCHAR(32),
+                            delimiter VARCHAR(16),
+                            has_header BOOLEAN,
+                            sheet_name VARCHAR(128),
+                            columns JSON NOT NULL,
+                            schema_fingerprint VARCHAR(64),
+                            operation_mode VARCHAR(16) NOT NULL DEFAULT 'create',
+                            quality_mode VARCHAR(16) NOT NULL DEFAULT 'strict',
+                            status VARCHAR(16) NOT NULL DEFAULT 'draft',
+                            created_by INTEGER,
+                            created_at TIMESTAMP,
+                            activated_at TIMESTAMP
+                        )
+                        """
+                    )
+                )
+
+        if insp.has_table("dw_sync_tasks"):
+            cols = {c["name"] for c in insp.get_columns("dw_sync_tasks")}
+            if "active_import_version_id" not in cols:
+                conn.execute(text("ALTER TABLE dw_sync_tasks ADD COLUMN active_import_version_id INTEGER"))
+
+        if insp.has_table("dw_sync_records"):
+            cols = {c["name"] for c in insp.get_columns("dw_sync_records")}
+            alters = [
+                ("execution_key", "VARCHAR(64)"),
+                ("retry_of", "INTEGER"),
+                ("version_id", "INTEGER"),
+                ("config_snapshot", "JSON" if dialect != "sqlite" else "TEXT"),
+                ("phase", "VARCHAR(32)"),
+                ("heartbeat_at", "DATETIME" if dialect == "mysql" else "TIMESTAMP"),
+                ("triggered_by", "INTEGER"),
+                ("quality", "JSON" if dialect != "sqlite" else "TEXT"),
+            ]
+            for name, typ in alters:
+                if name not in cols:
+                    conn.execute(text(f"ALTER TABLE dw_sync_records ADD COLUMN {name} {typ}"))
+
+
 def migrate_workspace_space_settings(engine: Engine) -> None:
     """工作空间：默认/数仓数据源；按空间的 Dolphin/Flink 集成表。"""
     insp = inspect(engine)
@@ -2038,8 +2158,8 @@ def seed_roles(db: Session, by_code: dict[str, Permission]) -> dict[str, Role]:
     ]
 
     specs = [
-        ("super_admin", "超级管理员", "内置；全部权限（与 is_admin 等价超集）", True, all_perms),
-        ("platform_admin", "平台管理员", "内置；用户/角色管理与全业务权限", True, all_perms),
+        ("super_admin", "超级管理员", "内置；平台最高管理角色（全部权限）。平台管理能力由角色授予，不再单独开关", True, all_perms),
+        ("platform_admin", "平台管理员", "内置；与超级管理员同等平台管理能力（用户/角色/空间/集成）", True, all_perms),
         ("developer", "开发工程师", "内置；业务开发全权限（无系统管理）", True, no_system),
         ("workspace_steward", "空间管理员（数据源）", "内置；仅数据源读写 + 查看空间列表；实际可操作范围由「空间成员角色」限定在自己归属的空间", True, workspace_steward_perms),
         ("analyst", "数据分析（只读）", "内置；数据探查 + 数据字典（无数据源管理/开发/工作流/运维/系统管理）", True, read_only),
@@ -2069,6 +2189,8 @@ def seed_roles(db: Session, by_code: dict[str, Permission]) -> dict[str, Role]:
 
 
 def assign_default_roles(db: Session, roles: dict[str, Role]):
+    from app.core.access import sync_is_admin_with_role
+
     dev = roles.get("developer")
     sup = roles.get("super_admin")
     for u in db.query(User).all():
@@ -2081,6 +2203,12 @@ def assign_default_roles(db: Session, roles: dict[str, Role]):
                 u.is_admin = True
         elif dev:
             u.role_id = dev.id
+    # 全量对齐：平台管理能力只跟角色走，清掉「有开关无角色 / 有角色无开关」的历史脏数据
+    for u in db.query(User).all():
+        role = roles.get(u.system_role.code) if u.system_role else None
+        if role is None and u.role_id:
+            role = db.query(Role).filter(Role.id == u.role_id).first()
+        sync_is_admin_with_role(u, role)
     db.commit()
 
 

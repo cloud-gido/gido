@@ -25,13 +25,14 @@ export function workspaceAdminBypassesPlatformPerm(code: string): boolean {
 /**
  * 与后端 is_platform_admin / 平台角色对齐。
  * 客户端仅影响菜单显隐，真实鉴权在后端。
+ * 平台管理能力只看角色（或兼容字段 is_admin），不再单独开关。
  */
 export function isPlatformAdmin(user: any): boolean {
   if (!user) return false
-  if (user.is_admin === true || user.is_admin === 1) return true
-  if (user.username === 'admin' && user.is_admin !== false) return true
   const rc = user.role_code
   if (rc === 'super_admin' || rc === 'platform_admin') return true
+  if (user.is_admin === true || user.is_admin === 1) return true
+  if (user.username === 'admin' && user.is_admin !== false) return true
   return false
 }
 
