@@ -2,19 +2,22 @@
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * UI 级 E2E：Tab 铬态、激活、关闭会话提示（jsdom + Testing Library）。
+ * UI 级 E2E：Tab 铬态、激活、关闭会话提示、溢出列表（jsdom + Testing Library）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import StudioEditorTabStrip from './StudioEditorTabStrip'
+import * as studioTabScroll from '../utils/studioTabScroll'
 
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
+  Element.prototype.scrollBy = vi.fn()
 })
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
 })
 
 const tabs = [
@@ -121,7 +124,8 @@ describe('StudioEditorTabStrip E2E chrome', () => {
     expect(onReload).toHaveBeenCalledWith(2)
   })
 
-  it('scrolls active tab into view when selection changes', () => {
+  it('keeps active tab visible via container scrollLeft (not Element.scrollIntoView)', () => {
+    const ensure = vi.spyOn(studioTabScroll, 'ensureChildFullyVisibleHorizontally')
     const scrollIntoView = vi.fn()
     Element.prototype.scrollIntoView = scrollIntoView
     const { rerender } = render(
@@ -134,8 +138,9 @@ describe('StudioEditorTabStrip E2E chrome', () => {
         {...noopHandlers}
       />,
     )
-    expect(scrollIntoView).toHaveBeenCalled()
-    scrollIntoView.mockClear()
+    expect(ensure).toHaveBeenCalled()
+    expect(scrollIntoView).not.toHaveBeenCalled()
+    ensure.mockClear()
     rerender(
       <StudioEditorTabStrip
         tabs={tabs}
@@ -146,7 +151,29 @@ describe('StudioEditorTabStrip E2E chrome', () => {
         {...noopHandlers}
       />,
     )
-    expect(scrollIntoView).toHaveBeenCalled()
+    expect(ensure).toHaveBeenCalled()
+    expect(scrollIntoView).not.toHaveBeenCalled()
     expect(screen.getByTestId('studio-tab-3')).toHaveAttribute('data-active', 'true')
+  })
+
+  it('overflow list shows full names and activates on pick', async () => {
+    const user = userEvent.setup()
+    const onActivate = vi.fn()
+    render(
+      <StudioEditorTabStrip
+        tabs={tabs}
+        activeTabId={1}
+        versionDirtyMap={{}}
+        tabContentLoading={{}}
+        tabContentError={{}}
+        {...noopHandlers}
+        onActivate={onActivate}
+      />,
+    )
+    await user.click(screen.getByTestId('studio-tabs-overflow'))
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getByTestId('studio-tabs-overflow-item-2')).toHaveTextContent('dws_pending')
+    await user.click(within(menu).getByTestId('studio-tabs-overflow-item-2'))
+    expect(onActivate).toHaveBeenCalledWith(2)
   })
 })

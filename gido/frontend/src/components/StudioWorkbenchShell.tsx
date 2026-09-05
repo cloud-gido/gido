@@ -128,7 +128,8 @@ export function StudioWorkbenchTopStrip({
         alignItems: 'center',
         minHeight: 40,
         flexShrink: 0,
-        overflowX: 'auto',
+        // Tab 条自有横向滚动；外层再 overflowX:auto 会让 scrollIntoView / 居中误滚
+        overflowX: 'hidden',
         padding: padded ? '0 12px' : undefined,
         gap: padded ? 8 : undefined,
         ...style,
