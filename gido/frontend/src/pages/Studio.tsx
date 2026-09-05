@@ -7,7 +7,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type Key, type PointerEvent } from 'react'
 import {
   Button, Input, Select, Tag, message, Spin, Tooltip,
-  Modal, Form, Tabs, Space, Badge, Table
+  Modal, Form, Tabs, Space, Badge, Table, DatePicker
 } from 'antd'
 import {
   PlayCircleOutlined, SaveOutlined, CloudUploadOutlined, PlusOutlined,
@@ -15,12 +15,15 @@ import {
   LoadingOutlined, CheckCircleOutlined,
   ReloadOutlined, SettingOutlined, FormatPainterOutlined, UnlockOutlined,
   LockOutlined, DownloadOutlined, MenuFoldOutlined, AimOutlined,
-  ExclamationCircleOutlined,
+  ExclamationCircleOutlined, TableOutlined, DiffOutlined, ScheduleOutlined,
 } from '@ant-design/icons'
-import Editor from '@monaco-editor/react'
+import Editor, { DiffEditor } from '@monaco-editor/react'
 import { format as sqlFormat } from 'sql-formatter'
+import type { Dayjs } from 'dayjs'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { studioApi, datasourceApi, approvalApi, workflowApi } from '../api'
 import { BRAND } from '../branding'
+import { R } from '../routes'
 import { useAppStore } from '../store'
 import { can, isWorkspaceAdmin, P } from '../perm'
 import EditorAppearanceToolbar from '../components/EditorAppearanceToolbar'
@@ -42,6 +45,8 @@ import {
 } from '../utils/editorAppearance'
 import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from '../components/MonacoFindBar'
 import { bindMonacoScriptKeybindings } from '../utils/monacoScriptKeybindings'
+import { useSqlSchemaCompletion } from '../hooks/useSqlSchemaCompletion'
+import SqlSchemaBrowserDrawer from '../components/SqlSchemaBrowserDrawer'
 import {
   cancelScheduledEditorSessionWrite,
   canPersistEditorSession,
@@ -58,7 +63,6 @@ import {
   planStudioSessionTabOrder,
 } from '../utils/studioTabChrome'
 import StudioEditorTabStrip from '../components/StudioEditorTabStrip'
-import { useSearchParams } from 'react-router-dom'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
 import { normalizeQueryColumns } from '../utils/queryColumns'
 import { buildDefaultSqlPublishScript } from '../utils/sqlPublishTemplate'
@@ -126,6 +130,7 @@ export default function StudioPage() {
   const { currentWorkspace, pendingOpenNodeId, setPendingOpenNodeId, user } = useAppStore()
   const wsId = currentWorkspace?.id
   const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
   const canPublishDirect = isWorkspaceAdmin(user, currentWorkspace)
   const canWrite = can(user, P.GIDO_BATCH_STUDIO_WRITE, currentWorkspace)
   const canRun = can(user, P.GIDO_BATCH_STUDIO_RUN, currentWorkspace)
@@ -178,6 +183,9 @@ export default function StudioPage() {
   const [configModal, setConfigModal] = useState(false)
   const [historyModal, setHistoryModal] = useState(false)
   const [historyList, setHistoryList] = useState<any[]>([])
+  const [diffHistory, setDiffHistory] = useState<{ saved_at?: string; script_content?: string } | null>(null)
+  const [schemaBrowserOpen, setSchemaBrowserOpen] = useState(false)
+  const [runBizdate, setRunBizdate] = useState<Dayjs | null>(null)
   const [workflows, setWorkflows] = useState<any[]>([])
   /** 当前用户是否持有各节点的协作编辑锁（与发布锁定 is_locked 独立） */
   const [editLockHeld, setEditLockHeld] = useState<Record<number, boolean>>({})
@@ -943,6 +951,18 @@ export default function StudioPage() {
     )
   }, [activeNode, currentWorkspace, datasources])
 
+  const sqlDefaultCatalog = useMemo(() => {
+    const id = dsResolve?.effectiveId
+    if (id == null) return null
+    const ds = datasources.find((d: any) => d.id === id)
+    return (ds?.database || null) as string | null
+  }, [dsResolve?.effectiveId, datasources])
+
+  const { bindSqlSchemaCompletion } = useSqlSchemaCompletion({
+    datasourceId: activeNode?.node_type === 'SQL' ? dsResolve?.effectiveId : null,
+    defaultCatalog: sqlDefaultCatalog,
+  })
+
   const handleRun = async (overrideScript?: string, meta?: { fromSelection?: boolean }) => {
     if (!activeNode) return
     if (activeNode.node_type === 'SQL' && !dsResolve?.effectiveId) {
@@ -963,7 +983,11 @@ export default function StudioPage() {
     setLogPanelOpen(true)
     setResultTab(prev => ({ ...prev, [activeNode.id]: activeNode.node_type === 'SQL' ? 'result' : 'log' }))
     try {
-      const res: any = await studioApi.runNode(activeNode.id, latestScript)
+      const res: any = await studioApi.runNode(
+        activeNode.id,
+        latestScript,
+        runBizdate ? runBizdate.format('YYYY-MM-DD') : undefined,
+      )
       setLogMap(prev => ({ ...prev, [activeNode.id]: res.log || '执行完成，无输出' }))
       if (res.result) setResultMap(prev => ({ ...prev, [activeNode.id]: res.result }))
     } catch (e: any) {
@@ -1069,8 +1093,12 @@ export default function StudioPage() {
       return
     }
     const current = dirtyMap[activeTabId!] ?? activeNode.script_content ?? ''
+    const dsType = String(
+      datasources.find((d: any) => d.id === dsResolve?.effectiveId)?.ds_type || '',
+    ).toLowerCase()
+    const language = dsType === 'postgresql' || dsType === 'postgres' ? 'postgresql' : 'mysql'
     try {
-      const formatted = sqlFormat(current, { language: 'mysql', tabWidth: 2, keywordCase: 'upper' })
+      const formatted = sqlFormat(current, { language, tabWidth: 2, keywordCase: 'upper' })
       setDirtyMap(prev => ({ ...prev, [activeTabId!]: formatted }))
     } catch {
       message.warning('格式化失败，请检查 SQL 语法')
@@ -1317,6 +1345,9 @@ export default function StudioPage() {
                 void handleRunRef.current(script, meta)
               },
             })
+            if (activeNode?.node_type === 'SQL') {
+              bindSqlSchemaCompletion(editor, monaco)
+            }
           }}
           theme={editorAppearance.theme}
           options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: Boolean(!canEdit || activeContentPending) }}
@@ -1488,6 +1519,29 @@ export default function StudioPage() {
               {activeNode?.node_type === 'SQL' && (
                 <Button icon={<FormatPainterOutlined />} onClick={() => void handleFormat()} size="small" disabled={!canWrite || activeNode.is_locked}>格式化</Button>
               )}
+              {activeNode?.node_type === 'SQL' && (
+                <Button
+                  icon={<TableOutlined />}
+                  size="small"
+                  onClick={() => setSchemaBrowserOpen(true)}
+                  disabled={!dsResolve?.effectiveId}
+                  title={dsResolve?.effectiveId ? '浏览库表并插入' : '请先绑定数据源'}
+                >
+                  库表
+                </Button>
+              )}
+              {(activeNode?.node_type === 'SQL' || activeNode?.node_type === 'PYTHON') && (
+                <Tooltip title="试跑业务日期（宏 ${bizdate}）；清空则用当天">
+                  <DatePicker
+                    size="small"
+                    allowClear
+                    value={runBizdate}
+                    onChange={v => setRunBizdate(v)}
+                    style={{ width: 140 }}
+                    placeholder="业务日期"
+                  />
+                </Tooltip>
+              )}
               {(activeNode?.node_type === 'SQL' || activeNode?.node_type === 'PYTHON') && dsResolve && (
                 <Tag
                   color={dsResolve.effectiveId ? (dsResolve.source === 'explicit' ? 'purple' : 'blue') : 'red'}
@@ -1527,6 +1581,14 @@ export default function StudioPage() {
                 定位
               </Button>
               <Button icon={<ReloadOutlined />} onClick={openHistory} size="small">版本历史</Button>
+              <Button
+                icon={<ScheduleOutlined />}
+                size="small"
+                title="到运维中心查看调度实例（Studio 提交≠上线调度）"
+                onClick={() => navigate(R.batch.operation)}
+              >
+                运维
+              </Button>
               <div style={{ flex: 1 }} />
               <EditorAppearanceToolbar value={editorAppearance} onChange={setEditorAppearance} />
               <Tag color={activeNode.is_locked ? 'orange' : activeNode.is_published ? 'green' : 'default'}>
@@ -1704,9 +1766,18 @@ export default function StudioPage() {
         {historyList.length === 0 && <div style={{ color: '#bbb', textAlign: 'center', padding: 24 }}>暂无历史版本</div>}
         {historyList.map((h: any) => (
           <div key={h.id} style={{ marginBottom: 12, border: '1px solid #f0f0f0', borderRadius: 4, padding: 12 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, gap: 8 }}>
               <span style={{ color: '#999', fontSize: 12 }}>{h.saved_at}</span>
-              <Button size="small" onClick={() => handleRollback(h.id, h.script_content)}>回滚到此版本</Button>
+              <Space size={4}>
+                <Button
+                  size="small"
+                  icon={<DiffOutlined />}
+                  onClick={() => setDiffHistory({ saved_at: h.saved_at, script_content: h.script_content })}
+                >
+                  对比当前
+                </Button>
+                <Button size="small" onClick={() => handleRollback(h.id, h.script_content)}>回滚到此版本</Button>
+              </Space>
             </div>
             <pre style={{ background: '#f5f5f5', padding: 8, borderRadius: 4, fontSize: 12, maxHeight: 120, overflow: 'auto', margin: 0 }}>
               {h.script_content?.slice(0, 300)}{h.script_content?.length > 300 ? '...' : ''}
@@ -1714,6 +1785,51 @@ export default function StudioPage() {
           </div>
         ))}
       </Modal>
+
+      <Modal
+        title={`对比版本${diffHistory?.saved_at ? ` · ${diffHistory.saved_at}` : ''}`}
+        open={Boolean(diffHistory)}
+        onCancel={() => setDiffHistory(null)}
+        footer={null}
+        width={960}
+        destroyOnClose
+      >
+        <div style={{ height: 480 }}>
+          <DiffEditor
+            original={diffHistory?.script_content || ''}
+            modified={
+              activeTabId != null
+                ? (dirtyMap[activeTabId] ?? activeNode?.script_content ?? '')
+                : (activeNode?.script_content ?? '')
+            }
+            language="sql"
+            theme={editorAppearance.theme}
+            beforeMount={registerDwMonacoThemes}
+            options={{ readOnly: true, renderSideBySide: true, minimap: { enabled: false } }}
+          />
+        </div>
+      </Modal>
+
+      <SqlSchemaBrowserDrawer
+        open={schemaBrowserOpen}
+        onClose={() => setSchemaBrowserOpen(false)}
+        datasourceId={dsResolve?.effectiveId}
+        defaultCatalog={sqlDefaultCatalog}
+        onInsert={(text) => {
+          const ed = editorRef.current
+          if (!ed) {
+            message.warning('请先打开脚本编辑器')
+            return
+          }
+          const sel = ed.getSelection?.()
+          if (sel) {
+            ed.executeEdits?.('sql-schema-insert', [{ range: sel, text, forceMoveMarkers: true }])
+          } else {
+            ed.trigger?.('keyboard', 'type', { text })
+          }
+          ed.focus?.()
+        }}
+      />
 
       {wsId != null && (
         <NodeConfigModal

@@ -67,7 +67,21 @@ def open_connection(ds: DataSource, *, database: Optional[str] = None):
         conn.close()
 
 
-def list_tables(ds: DataSource, keyword: str = "") -> List[Dict[str, Any]]:
+def _resolve_mysql_catalog(ds: DataSource, catalog: Optional[str] = None) -> str:
+    schema = (catalog or ds.database or "").strip()
+    if not schema:
+        raise ValueError("未指定库名（catalog），且数据源未配置默认 database")
+    return schema
+
+
+def _resolve_pg_schema(ds: DataSource, catalog: Optional[str] = None) -> str:
+    if catalog and catalog.strip():
+        return catalog.strip()
+    return pg_schema_for(ds)
+
+
+def list_schemas(ds: DataSource, keyword: str = "") -> List[Dict[str, Any]]:
+    """列出可补全的库/schema（MySQL/Doris=database，PostgreSQL=schema）。"""
     kw = (keyword or "").strip().lower()
     lt = assert_supported_ds(ds)
     rows: List[Dict[str, Any]] = []
@@ -75,7 +89,46 @@ def list_tables(ds: DataSource, keyword: str = "") -> List[Dict[str, Any]]:
         if opened[0] == "mysql":
             _, conn = opened
             cur = conn.cursor()
-            schema = (ds.database or "").strip()
+            cur.execute(
+                "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA "
+                "WHERE SCHEMA_NAME NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') "
+                "ORDER BY SCHEMA_NAME"
+            )
+            default = (ds.database or "").strip()
+            for (name,) in cur.fetchall():
+                if kw and kw not in str(name).lower():
+                    continue
+                rows.append({"name": name, "is_default": bool(default) and name == default})
+            return rows
+
+        _, conn, pg_schema = opened
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT schema_name FROM information_schema.schemata "
+            "WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast') "
+            "ORDER BY schema_name"
+        )
+        for (name,) in cur.fetchall():
+            if kw and kw not in str(name).lower():
+                continue
+            rows.append({"name": name, "is_default": name == pg_schema})
+        return rows
+
+
+def list_tables(
+    ds: DataSource,
+    keyword: str = "",
+    catalog: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """列出物理表。catalog=MySQL/Doris 库名，或 PostgreSQL schema；默认用数据源配置。"""
+    kw = (keyword or "").strip().lower()
+    lt = assert_supported_ds(ds)
+    rows: List[Dict[str, Any]] = []
+    with open_connection(ds) as opened:
+        if opened[0] == "mysql":
+            _, conn = opened
+            cur = conn.cursor()
+            schema = _resolve_mysql_catalog(ds, catalog)
             cur.execute(
                 "SELECT TABLE_NAME, TABLE_TYPE, TABLE_COMMENT FROM information_schema.TABLES "
                 "WHERE TABLE_SCHEMA = %s ORDER BY TABLE_NAME",
@@ -84,40 +137,71 @@ def list_tables(ds: DataSource, keyword: str = "") -> List[Dict[str, Any]]:
             for name, ttype, comment in cur.fetchall():
                 if kw and kw not in str(name).lower() and kw not in str(comment or "").lower():
                     continue
-                rows.append({"name": name, "type": ttype, "comment": comment or ""})
+                rows.append({
+                    "name": name,
+                    "type": ttype,
+                    "comment": comment or "",
+                    "catalog": schema,
+                })
             return rows
 
-        _, conn, pg_schema = opened
+        _, conn, _pg_default = opened
         cur = conn.cursor()
+        schema = _resolve_pg_schema(ds, catalog)
         cur.execute(
             "SELECT table_name, table_type FROM information_schema.tables "
             "WHERE table_schema = %s AND table_type IN ('BASE TABLE', 'VIEW') ORDER BY table_name",
-            (pg_schema,),
+            (schema,),
         )
         for name, ttype in cur.fetchall():
             if kw and kw not in str(name).lower():
                 continue
-            rows.append({"name": name, "type": ttype, "comment": ""})
+            rows.append({"name": name, "type": ttype, "comment": "", "catalog": schema})
         return rows
 
 
-def list_columns(ds: DataSource, table_name: str) -> List[Dict[str, Any]]:
+def list_columns(
+    ds: DataSource,
+    table_name: str,
+    catalog: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """列出列。支持 catalog.table；MySQL/Doris 也可用 catalog 参数指定库。"""
     table_name = (table_name or "").strip()
     if not table_name:
         raise ValueError("表名不能为空")
+    # 允许 table_name 写成 db.table
+    if "." in table_name and not catalog:
+        parts = table_name.split(".", 1)
+        if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+            catalog, table_name = parts[0].strip(), parts[1].strip()
     lt = assert_supported_ds(ds)
     with open_connection(ds) as opened:
         if opened[0] == "mysql":
             _, conn = opened
             cur = conn.cursor()
-            cur.execute(f"DESCRIBE `{table_name}`")
+            schema = _resolve_mysql_catalog(ds, catalog)
+            cur.execute(
+                "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY "
+                "FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s "
+                "ORDER BY ORDINAL_POSITION",
+                (schema, table_name),
+            )
             return [
-                {"name": row[0], "type": row[1], "nullable": row[2] == "YES", "key": row[3] or ""}
+                {
+                    "name": row[0],
+                    "type": row[1],
+                    "nullable": str(row[2]).upper() == "YES",
+                    "key": row[3] or "",
+                    "catalog": schema,
+                    "table": table_name,
+                }
                 for row in cur.fetchall()
             ]
 
-        _, conn, pg_schema = opened
+        _, conn, _pg_default = opened
         cur = conn.cursor()
+        schema = _resolve_pg_schema(ds, catalog)
         cur.execute(
             """
             SELECT column_name, data_type, is_nullable,
@@ -133,7 +217,7 @@ def list_columns(ds: DataSource, table_name: str) -> List[Dict[str, Any]]:
             WHERE c.table_schema = %s AND c.table_name = %s
             ORDER BY c.ordinal_position
             """,
-            (pg_schema, table_name),
+            (schema, table_name),
         )
         return [
             {
@@ -141,6 +225,8 @@ def list_columns(ds: DataSource, table_name: str) -> List[Dict[str, Any]]:
                 "type": row[1],
                 "nullable": row[2] == "YES",
                 "key": "PRI" if row[3] else "",
+                "catalog": schema,
+                "table": table_name,
             }
             for row in cur.fetchall()
         ]

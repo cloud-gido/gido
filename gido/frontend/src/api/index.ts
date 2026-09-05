@@ -103,11 +103,11 @@ export const studioApi = {
     request.patch(`/studio/nodes/${id}/folder`, { folder_id }),
   reorderNodes: (workspace_id: number, folder_id: number | null, node_ids: number[]) =>
     request.put('/studio/nodes/reorder', { workspace_id, folder_id, node_ids }),
-  runNode: (id: number, scriptContent?: string) =>
-    request.post(
-      `/studio/nodes/${id}/run`,
-      scriptContent !== undefined ? { script_content: scriptContent } : {},
-    ),
+  runNode: (id: number, scriptContent?: string, bizdate?: string) =>
+    request.post(`/studio/nodes/${id}/run`, {
+      ...(scriptContent !== undefined ? { script_content: scriptContent } : {}),
+      ...(bizdate ? { bizdate } : {}),
+    }),
   getInstances: (id: number) => request.get(`/studio/nodes/${id}/instances`),
   getHistory: (id: number) => request.get(`/studio/nodes/${id}/history`),
   rollback: (id: number, historyId: number) => request.post(`/studio/nodes/${id}/history/${historyId}/rollback`),
@@ -206,10 +206,22 @@ export const integrationApi = {
   fileImportSchemaDiff: (data: any) => request.post('/integration/file-import/schema-diff', data),
   retryFileImportRecord: (recordId: number) =>
     request.post(`/integration/file-import/records/${recordId}/retry`),
-  listTables: (datasourceId: number, keyword?: string) =>
-    request.get(`/integration/datasources/${datasourceId}/tables`, { params: { keyword: keyword || '' } }),
-  getColumns: (datasourceId: number, tableName: string) =>
-    request.get('/integration/datasource-columns', { params: { datasource_id: datasourceId, table_name: tableName } }),
+  listTables: (datasourceId: number, keyword?: string, catalog?: string) =>
+    request.get(`/integration/datasources/${datasourceId}/tables`, {
+      params: { keyword: keyword || '', catalog: catalog || undefined },
+    }),
+  listSchemas: (datasourceId: number, keyword?: string) =>
+    request.get(`/integration/datasources/${datasourceId}/schemas`, {
+      params: { keyword: keyword || undefined },
+    }),
+  getColumns: (datasourceId: number, tableName: string, catalog?: string) =>
+    request.get('/integration/datasource-columns', {
+      params: {
+        datasource_id: datasourceId,
+        table_name: tableName,
+        catalog: catalog || undefined,
+      },
+    }),
   testDatasource: (datasourceId: number) => request.post(`/integration/datasources/${datasourceId}/test`),
   cdcStart: (id: number) => request.post(`/integration/tasks/${id}/cdc/start`),
   cdcStop: (id: number) => request.post(`/integration/tasks/${id}/cdc/stop`),

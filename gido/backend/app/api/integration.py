@@ -157,16 +157,36 @@ def supported_types(_: User = Depends(get_current_user)):
     return {"types": sorted(SUPPORTED_DS_TYPES)}
 
 
-@router.get("/datasources/{datasource_id}/tables")
-def datasource_tables(
+@router.get("/datasources/{datasource_id}/schemas")
+def datasource_schemas(
     datasource_id: int,
     keyword: str = Query("", max_length=128),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """列出库/schema，供 Studio/Probe SQL 补全跨库触发。"""
+    from app.services.integration_runtime import list_schemas
+
     ds = require_datasource_row(db, current_user, datasource_id)
     try:
-        return {"tables": list_tables(ds, keyword)}
+        return {"schemas": list_schemas(ds, keyword)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/datasources/{datasource_id}/tables")
+def datasource_tables(
+    datasource_id: int,
+    keyword: str = Query("", max_length=128),
+    catalog: Optional[str] = Query(None, max_length=128, description="MySQL/Doris 库名或 PG schema；默认数据源 database"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ds = require_datasource_row(db, current_user, datasource_id)
+    try:
+        return {"tables": list_tables(ds, keyword, catalog=catalog)}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -177,12 +197,13 @@ def datasource_tables(
 def get_datasource_columns(
     datasource_id: int,
     table_name: str,
+    catalog: Optional[str] = Query(None, max_length=128, description="MySQL/Doris 库名或 PG schema"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     ds = require_datasource_row(db, current_user, datasource_id)
     try:
-        return {"columns": list_columns(ds, table_name)}
+        return {"columns": list_columns(ds, table_name, catalog=catalog)}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

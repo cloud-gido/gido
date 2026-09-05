@@ -33,6 +33,7 @@ import {
 } from '../utils/editorAppearance'
 import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from '../components/MonacoFindBar'
 import { bindMonacoScriptKeybindings } from '../utils/monacoScriptKeybindings'
+import { useSqlSchemaCompletion } from '../hooks/useSqlSchemaCompletion'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
 import QueryResultPanel from '../components/QueryResultPanel'
 import EditorResultDock, { EditorResultRowBadge } from '../components/EditorResultDock'
@@ -372,6 +373,18 @@ export default function ProbePage() {
     return resolveDatasourceForRun(activeScript.datasource_id, currentWorkspace, datasources)
   }, [activeScript, currentWorkspace, datasources])
 
+  const probeDefaultCatalog = useMemo(() => {
+    const id = probeDsResolve?.effectiveId
+    if (id == null) return null
+    const ds = datasources.find((d: any) => d.id === id)
+    return (ds?.database || null) as string | null
+  }, [probeDsResolve?.effectiveId, datasources])
+
+  const { bindSqlSchemaCompletion } = useSqlSchemaCompletion({
+    datasourceId: probeDsResolve?.effectiveId ?? null,
+    defaultCatalog: probeDefaultCatalog,
+  })
+
   useEffect(() => {
     if (!datasources.length || !activeScript) return
     if (!hasExplicitDatasource(activeScript.datasource_id)) return
@@ -454,23 +467,22 @@ export default function ProbePage() {
         void runRef.current(sql, meta)
       },
     })
+    bindSqlSchemaCompletion(ed, monaco)
   }
 
   const formatSql = () => {
     const raw = (activeScript?.sql || '').trim()
     if (!raw) return
+    const dsType = String(
+      datasources.find((d: any) => d.id === probeDsResolve?.effectiveId)?.ds_type || '',
+    ).toLowerCase()
+    const language = dsType === 'postgresql' || dsType === 'postgres' ? 'postgresql' : 'mysql'
     try {
-      const formatted = sqlFormat(raw, { language: 'postgresql', tabWidth: 2, keywordCase: 'upper' })
+      const formatted = sqlFormat(raw, { language, tabWidth: 2, keywordCase: 'upper' })
       patchActiveScript({ sql: formatted })
       message.success('已格式化 SQL')
-    } catch {
-      try {
-        const formatted = sqlFormat(raw, { language: 'mysql', tabWidth: 2, keywordCase: 'upper' })
-        patchActiveScript({ sql: formatted })
-        message.success('已格式化 SQL')
-      } catch (e: any) {
-        message.error(e?.message || '格式化失败，请检查 SQL 语法')
-      }
+    } catch (e: any) {
+      message.error(e?.message || '格式化失败，请检查 SQL 语法')
     }
   }
 
