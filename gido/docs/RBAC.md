@@ -37,9 +37,15 @@
 | 平台集成 / scheduler 运维面 | — | `system:integration:*` 或平台管理员（`*`） |
 | 告警列表 | 空间成员即可 | 配置需空间 admin |
 
-## 关键文件
+## 默认空间 infras
 
-- 权限码：`app/core/perm_codes.py` ↔ `frontend/src/perm.ts`
-- 平台鉴权：`app/core/access.py`
-- 种子角色：`app/services/rbac_seed.py`
-- 管理 UI：`frontend/src/pages/SystemRbac.tsx`
+创建用户 / 注册 / 启动 backfill 会自动加入 `infras`（若尚无成员关系）。  
+**空间档位按平台角色映射**（避免分析师默认为开发者）：
+
+| 平台角色 | 自动空间角色 |
+|----------|--------------|
+| analyst / 自定义 | viewer |
+| developer / operator / workspace_steward | developer |
+| super_admin / platform_admin | admin |
+
+可在「工作空间成员」中调整或移出。创建用户成功提示会写明已加入的空间与档位。

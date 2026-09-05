@@ -5,46 +5,94 @@
 """默认工作空间 infras：成员归属、前端默认选中解析。"""
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
 from app.core.access import is_platform_manager_role
+from app.models.rbac_models import Role
 from app.models.workspace import Workspace, WorkspaceMember, User
-from app.services.rbac import get_accessible_workspace_ids
+from app.services.rbac import VALID_SPACE_MEMBER_ROLES, get_accessible_workspace_ids
 
 DEFAULT_WORKSPACE_NAME = "infras"
+
+# 平台角色 → 自动加入 infras 时的空间成员档位（自定义角色默认只读）
+_PLATFORM_CODE_TO_SPACE_ROLE = {
+    "super_admin": "admin",
+    "platform_admin": "admin",
+    "developer": "developer",
+    "operator": "developer",
+    "workspace_steward": "developer",
+    "analyst": "viewer",
+}
 
 
 def get_default_workspace(db: Session) -> Optional[Workspace]:
     return db.query(Workspace).filter(Workspace.name == DEFAULT_WORKSPACE_NAME).first()
 
 
+def space_role_for_platform_user(db: Session, user: User) -> str:
+    """按平台角色推导默认空间成员角色；未知/自定义 → viewer。"""
+    code = None
+    linked = getattr(user, "system_role", None)
+    if linked is not None and getattr(linked, "code", None):
+        code = linked.code
+    elif user.role_id:
+        row = db.query(Role).filter(Role.id == user.role_id).first()
+        code = row.code if row else None
+    role = _PLATFORM_CODE_TO_SPACE_ROLE.get(code or "", "viewer")
+    return role if role in VALID_SPACE_MEMBER_ROLES else "viewer"
+
+
 def ensure_default_workspace_membership(
     db: Session,
     user: User,
     *,
-    member_role: str = "developer",
-) -> Optional[int]:
+    member_role: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     将用户加入默认空间 infras（若尚无成员或负责人关系）。
-    普通注册用户与管理员创建的用户应在首次写入后即归属默认空间，便于与「空间管理员」模型对齐。
+    member_role 未指定时按平台角色映射（分析师→viewer，开发/运维→developer，平台管理→admin）。
+    返回 {workspace_id, workspace_name, member_role, created}。
     """
     ws = get_default_workspace(db)
     if not ws:
-        return None
+        return {
+            "workspace_id": None,
+            "workspace_name": DEFAULT_WORKSPACE_NAME,
+            "member_role": None,
+            "created": False,
+        }
     if ws.owner_id == user.id:
-        return ws.id
+        return {
+            "workspace_id": ws.id,
+            "workspace_name": ws.name,
+            "member_role": "admin",
+            "created": False,
+        }
     existing = (
         db.query(WorkspaceMember)
         .filter(WorkspaceMember.workspace_id == ws.id, WorkspaceMember.user_id == user.id)
         .first()
     )
     if existing:
-        return ws.id
-    db.add(WorkspaceMember(workspace_id=ws.id, user_id=user.id, role=member_role))
+        return {
+            "workspace_id": ws.id,
+            "workspace_name": ws.name,
+            "member_role": existing.role,
+            "created": False,
+        }
+    role = (member_role or "").strip().lower() if member_role else space_role_for_platform_user(db, user)
+    if role not in VALID_SPACE_MEMBER_ROLES:
+        role = "viewer"
+    db.add(WorkspaceMember(workspace_id=ws.id, user_id=user.id, role=role))
     db.commit()
-    return ws.id
+    return {
+        "workspace_id": ws.id,
+        "workspace_name": ws.name,
+        "member_role": role,
+        "created": True,
+    }
 
 
 def resolve_default_workspace_id(db: Session, user: User) -> Optional[int]:
@@ -67,8 +115,11 @@ def resolve_default_workspace_id(db: Session, user: User) -> Optional[int]:
     return min(accessible)
 
 
-def backfill_all_users_default_workspace(db: Session, *, member_role: str = "developer") -> int:
-    """启动/迁移时执行：为尚未加入 infras 的用户补成员行。返回新增成员行数量。"""
+def backfill_all_users_default_workspace(db: Session, *, member_role: Optional[str] = None) -> int:
+    """
+    启动/迁移：为尚未加入 infras 的用户补成员行。
+    member_role 若传入则全员同一档；否则按各用户平台角色映射。
+    """
     ws = get_default_workspace(db)
     if not ws:
         return 0
@@ -83,7 +134,10 @@ def backfill_all_users_default_workspace(db: Session, *, member_role: str = "dev
         )
         if exists:
             continue
-        db.add(WorkspaceMember(workspace_id=ws.id, user_id=u.id, role=member_role))
+        role = (member_role or "").strip().lower() if member_role else space_role_for_platform_user(db, u)
+        if role not in VALID_SPACE_MEMBER_ROLES:
+            role = "viewer"
+        db.add(WorkspaceMember(workspace_id=ws.id, user_id=u.id, role=role))
         added += 1
     if added:
         db.commit()

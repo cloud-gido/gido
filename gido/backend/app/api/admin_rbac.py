@@ -62,6 +62,10 @@ class UserBriefOut(BaseModel):
     role_id: Optional[int]
     role_code: Optional[str]
     role_name: Optional[str]
+    # 仅创建用户时填充：已自动加入默认空间时的说明
+    default_workspace_name: Optional[str] = None
+    default_workspace_member_role: Optional[str] = None
+    default_workspace_joined: Optional[bool] = None
 
 
 class UserRoleUpdate(BaseModel):
@@ -217,7 +221,7 @@ def admin_create_user(
     db.add(u)
     db.commit()
     db.refresh(u)
-    ensure_default_workspace_membership(db, u)
+    joined = ensure_default_workspace_membership(db, u)
     db.refresh(u)
     rc, rn = None, None
     if u.system_role:
@@ -226,6 +230,9 @@ def admin_create_user(
         id=u.id, username=u.username, email=u.email, full_name=u.full_name,
         is_admin=is_platform_admin(u), is_active=u.is_active, role_id=u.role_id,
         role_code=rc, role_name=rn,
+        default_workspace_name=joined.get("workspace_name"),
+        default_workspace_member_role=joined.get("member_role"),
+        default_workspace_joined=bool(joined.get("created")),
     )
 
 

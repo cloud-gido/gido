@@ -457,14 +457,19 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
   const saveNewUser = async () => {
     const v = await userForm.validateFields()
     try {
-      await adminApi.createUser({
+      const created: any = await adminApi.createUser({
         username: v.username,
         email: v.email,
         password: v.password,
         full_name: v.full_name || undefined,
         role_id: v.role_id,
       })
-      message.success('用户已创建，可将账号密码告知对方登录')
+      const wsName = created?.default_workspace_name || 'infras'
+      const spaceRole = created?.default_workspace_member_role
+      const roleHint = spaceRole
+        ? `已自动加入默认空间 ${wsName}，空间角色：${spaceMemberRoleLabel(spaceRole)}（可在「工作空间成员」调整）`
+        : '可将账号密码告知对方登录'
+      message.success(`用户已创建。${roleHint}`)
       setUserModal(false)
       await load()
     } catch (e: any) {
@@ -1360,7 +1365,7 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
             <Input placeholder="可选" />
           </Form.Item>
           <Form.Item name="role_id" label="平台角色" rules={[{ required: true, message: '请选择角色' }]}
-            extra="超级管理员 / 平台管理员 = 平台管理能力；业务角色不再另开管理员开关"
+            extra="决定全站能力包。创建后会自动加入默认空间 infras：分析师→只读，开发/运维→开发者，平台管理→空间管理员（可在「工作空间成员」修改）"
           >
             <Select
               placeholder="决定菜单与操作权限"
