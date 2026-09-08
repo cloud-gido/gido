@@ -716,30 +716,61 @@ class DSClient:
             "executionType": "PARALLEL",
         }
 
-        # 检查是否已存在（按名称）
-        existing_code = self._find_process_code(project_code, payload["name"])
+        process_code = self._upsert_process_definition(project_code, workflow, payload)
+        return process_code, sync_diag
+
+    def _upsert_process_definition(self, project_code: int, workflow, payload: dict) -> int:
+        """按稳定 process code 更新或首次创建；改名只改 payload.name，不换 code。"""
+        existing_code = self._existing_process_code_for_workflow(project_code, workflow)
         if existing_code:
-            # 已存在：先下线，再更新
             try:
                 self._post(
                     f"/projects/{project_code}/process-definition/{existing_code}/release",
-                    data={"releaseState": "OFFLINE"}
+                    data={"releaseState": "OFFLINE"},
                 )
             except Exception:
-                pass  # 已经是 OFFLINE 则忽略
+                pass
             self._put(f"/projects/{project_code}/process-definition/{existing_code}", data=payload)
-            logger.info(f"DS 流程定义已更新: {payload['name']} code={existing_code}")
-            return existing_code, sync_diag
-        else:
-            resp = self._post(f"/projects/{project_code}/process-definition", data=payload)
-            code = unwrap_ds_numeric(resp.get("data"), keys=("code", "id"))
-            logger.info(f"DS 流程定义已创建: {payload['name']} code={code}")
-            return code, sync_diag
+            logger.info("DS 流程定义已更新: %s code=%s", payload.get("name"), existing_code)
+            return int(existing_code)
+
+        resp = self._post(f"/projects/{project_code}/process-definition", data=payload)
+        code = unwrap_ds_numeric(resp.get("data"), keys=("code", "id"))
+        logger.info("DS 流程定义已创建: %s code=%s", payload.get("name"), code)
+        return int(code)
+
+    def _bound_process_code(self, workflow) -> Optional[int]:
+        """GIDO 侧已绑定的 Dolphin processDefinitionCode（稳定主键，与展示名无关）。"""
+        candidates = [getattr(workflow, "scheduler_definition_id", None)]
+        dag = getattr(workflow, "dag_config", None)
+        if isinstance(dag, dict):
+            candidates.append(dag.get("ds_process_code"))
+        for raw in candidates:
+            if raw is None:
+                continue
+            text = str(raw).strip()
+            if not text:
+                continue
+            try:
+                return int(text)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _existing_process_code_for_workflow(self, project_code: int, workflow) -> Optional[int]:
+        """解析应对齐的已有 DS 流程：code 优先，仅无绑定时才按全名回退（兼容首次发布前历史数据）。"""
+        bound = self._bound_process_code(workflow)
+        if bound is not None:
+            return bound
+        name = f"dw_{getattr(workflow, 'id', '')}_{getattr(workflow, 'name', '')}"
+        return self._find_process_code(project_code, name)
 
     def _find_process_code(self, project_code: int, name: str) -> Optional[int]:
         try:
-            resp = self._get(f"/projects/{project_code}/process-definition",
-                             params={"pageSize": 100, "pageNo": 1, "searchVal": name})
+            resp = self._get(
+                f"/projects/{project_code}/process-definition",
+                params={"pageSize": 100, "pageNo": 1, "searchVal": name},
+            )
             for item in resp.get("data", {}).get("totalList", []):
                 if item["name"] == name:
                     return item["code"]
