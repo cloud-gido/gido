@@ -9,6 +9,7 @@ import {
   platformRoleOptionLabel,
   spaceMemberRoleLabel,
   workspaceSwitcherLabel,
+  workspaceSwitcherTitle,
 } from './roleLabels'
 
 describe('roleLabels', () => {
@@ -19,10 +20,18 @@ describe('roleLabels', () => {
     expect(spaceMemberRoleLabel(null)).toBe('—')
   })
 
-  it('workspace switcher shows space role as the primary chrome identity', () => {
-    expect(workspaceSwitcherLabel({ name: 'infras', my_role: 'developer' })).toBe('infras · 开发者')
-    expect(workspaceSwitcherLabel({ name: 'infras', my_role: 'admin' })).toBe('infras · 空间管理员')
+  it('workspace switcher label is space name only (role lives in account chip)', () => {
+    expect(workspaceSwitcherLabel({ name: 'infras', my_role: 'developer' })).toBe('infras')
+    expect(workspaceSwitcherLabel({ name: 'infras', my_role: 'admin' })).toBe('infras')
     expect(workspaceSwitcherLabel({ name: 'infras' })).toBe('infras')
+    expect(workspaceSwitcherLabel({ name: '  ads  ', my_role: 'viewer' })).toBe('ads')
+    expect(workspaceSwitcherLabel(null)).toBe('未命名空间')
+  })
+
+  it('workspace switcher title points role to account area', () => {
+    expect(workspaceSwitcherTitle({ name: 'infras', my_role: 'admin' })).toContain('空间管理员')
+    expect(workspaceSwitcherTitle({ name: 'infras', my_role: 'admin' })).toContain('右上角')
+    expect(workspaceSwitcherTitle({ name: 'infras' })).toContain('切换工作空间')
   })
 
   it('account chip mirrors current workspace role only', () => {

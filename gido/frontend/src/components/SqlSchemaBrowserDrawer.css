@@ -1,0 +1,213 @@
+/* Studio / Probe 库表抽屉：与工作台侧栏同系的浅灰 chrome + 等宽表名 */
+
+.sql-schema-browser-drawer .ant-drawer-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.sql-schema-browser-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.3;
+}
+
+.sql-schema-browser-title-main {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f1f1f;
+}
+
+.sql-schema-browser-title-sub {
+  font-size: 12px;
+  font-weight: 400;
+  color: #8c8c8c;
+}
+
+.sql-schema-browser-title-sub code {
+  margin-left: 4px;
+  padding: 0 4px;
+  font-size: 11px;
+  color: #595959;
+  background: #f5f5f5;
+  border-radius: 3px;
+}
+
+.sql-schema-browser-search {
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+
+.sql-schema-browser-hint {
+  flex-shrink: 0;
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #8c8c8c;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+}
+
+.sql-schema-browser-hint code {
+  font-size: 11px;
+  color: #595959;
+  background: #fff;
+  border: 1px solid #f0f0f0;
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+.sql-schema-browser-hint-sep {
+  margin: 0 6px;
+  color: #d9d9d9;
+}
+
+.sql-schema-browser-spin {
+  flex: 1;
+  min-height: 0;
+}
+
+.sql-schema-browser-spin .ant-spin-container {
+  height: 100%;
+}
+
+.sql-schema-browser-empty {
+  padding: 24px 8px;
+  text-align: center;
+}
+
+.sql-schema-browser-tree.ant-tree {
+  background: transparent;
+}
+
+.sql-schema-browser-tree .ant-tree-treenode {
+  padding: 1px 0;
+  width: 100%;
+}
+
+.sql-schema-browser-tree .ant-tree-node-content-wrapper {
+  min-width: 0;
+  flex: 1;
+  border-radius: 6px;
+  transition: background 0.15s ease;
+}
+
+.sql-schema-browser-tree .ant-tree-node-content-wrapper:hover {
+  background: #f5f5f5 !important;
+}
+
+.sql-schema-browser-tree .ant-tree-node-selected .ant-tree-node-content-wrapper,
+.sql-schema-browser-tree .ant-tree-node-content-wrapper.ant-tree-node-selected {
+  background: #e6f4ff !important;
+}
+
+.sql-schema-browser-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  width: 100%;
+  padding: 2px 0;
+  user-select: none;
+}
+
+.sql-schema-browser-row.insertable {
+  cursor: pointer;
+}
+
+.sql-schema-browser-row-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
+
+.sql-schema-browser-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sql-schema-browser-row-line {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.35;
+}
+
+.sql-schema-browser-row-line.secondary {
+  line-height: 1.3;
+}
+
+.sql-schema-browser-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  font-size: 13px;
+}
+
+.sql-schema-browser-icon.schema {
+  color: #1677ff;
+}
+
+.sql-schema-browser-icon.table {
+  color: #13c2c2;
+}
+
+.sql-schema-browser-icon.column {
+  color: #8c8c8c;
+}
+
+.sql-schema-browser-name {
+  font-size: 13px;
+  color: #262626;
+}
+
+.sql-schema-browser-name.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px;
+  letter-spacing: -0.01em;
+}
+
+.sql-schema-browser-comment {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: #8c8c8c;
+}
+
+.sql-schema-browser-type {
+  flex-shrink: 0;
+  max-width: 96px;
+  margin-top: 1px;
+  margin-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  color: #8c8c8c;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 3px;
+  padding: 0 5px;
+  line-height: 18px;
+}
+
+.sql-schema-browser-default-tag.ant-tag {
+  flex-shrink: 0;
+  margin: 1px 0 0 4px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 18px;
+  border-radius: 4px;
+  border-color: #91caff;
+  color: #1677ff;
+  background: #e6f4ff;
+}

@@ -1,0 +1,29 @@
+---
+description: GIDO git push remotes — skip origin; GitHub SSH 22 Fake-IP → use 443
+alwaysApply: true
+---
+
+# GIDO 远程推送
+
+用户要求「推送到全部/几个远程」时：
+
+**推送：** `gitee`、`github`、`github2`（`dev` 等当前分支按用户指定）
+
+**禁止推送：** `origin`（`https://gitee.com/bigdata_troy/gido.git`，无交互凭证且不再使用）
+
+不要尝试 `git push origin`，也不要建议改 origin 凭证来「补齐」推送。
+
+## GitHub SSH 失败（已踩坑多次，禁止空转）
+
+若 `github` / `github2` 出现 `Connection closed by 198.18.0.x port 22`，或 `github.com` 解析到 `198.18.0.x`：
+
+1. **不要**对同一 `git push github` / 22 端口反复重试超过 1 次  
+2. **立刻**改用 GitHub 443 SSH：
+
+```bash
+GIT_SSH_COMMAND='ssh -p 443' git push git@ssh.github.com:gidocloud/gido.git HEAD:<branch>
+GIT_SSH_COMMAND='ssh -p 443' git push git@ssh.github.com:cloud-gido/gido.git HEAD:<branch>
+```
+
+3. `gitee` 仍正常 `git push gitee`  
+4. 细则见 skill：`.cursor/skills/gido-git-push-remotes/SKILL.md`

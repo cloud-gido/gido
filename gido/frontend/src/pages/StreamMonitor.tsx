@@ -22,6 +22,15 @@ import { R } from '../routes'
 import { Link } from 'react-router-dom'
 import { formatInTimeZone } from '../utils/datetime'
 import { openFlinkConsoleUrl } from '../utils/flinkConsole'
+import { useResizableTableColumns } from '../hooks/useResizableTableColumns'
+import {
+  DEFAULT_STREAM_JOB_STATE_FILTER,
+  STREAM_JOB_STATE_FILTER_OPTIONS,
+  matchStreamJobDeployFilter,
+  matchStreamJobKeyword,
+  matchStreamJobStateFilter,
+  matchStreamJobTypeFilter,
+} from '../utils/streamJobMonitorFilters'
 import StreamRuntimeConfig, {
   buildStreamRuntimeProperties,
   EMPTY_OPERATOR_RESOURCES,
@@ -266,7 +275,7 @@ export default function StreamMonitorPage() {
   const [keyword, setKeyword] = useState('')
   const [typeFilter, setTypeFilter] = useState<string | undefined>()
   const [deployFilter, setDeployFilter] = useState<string | undefined>()
-  const [stateFilter, setStateFilter] = useState<string | undefined>()
+  const [stateFilter, setStateFilter] = useState<string | undefined>(DEFAULT_STREAM_JOB_STATE_FILTER)
   const [releaseMap, setReleaseMap] = useState<Record<number, any[]>>({})
   const [actionOpen, setActionOpen] = useState(false)
   const [actionKind, setActionKind] = useState<'deploy' | 'restart'>('deploy')
@@ -921,27 +930,12 @@ export default function StreamMonitorPage() {
   }
 
   const filteredJobs = useMemo(() => {
-    const kw = keyword.trim().toLowerCase()
     return jobs.filter(row => {
       const stateClass = unifiedJobState(row).key
-      const deployMode = isOperatorJob(row) ? 'operator' : ((row.flink_sql_submit_mode || row.flink_jar_submit_mode || 'session').toString().toLowerCase())
-      if (typeFilter && row.job_type !== typeFilter) return false
-      if (deployFilter && deployMode !== deployFilter) return false
-      if (stateFilter) {
-        if (stateClass !== stateFilter) return false
-      }
-      if (!kw) return true
-      const hay = [
-        row.name,
-        row.id,
-        row.flink_operator_deployment_name,
-        row.flink_application_cluster_id,
-        row.flink_job_id,
-        row.last_submitted_by_username,
-        row.pipeline_spec?.source?.topic,
-        row.pipeline_spec?.sink?.table,
-      ].filter(Boolean).join(' ').toLowerCase()
-      return hay.includes(kw)
+      if (!matchStreamJobTypeFilter(row.job_type, typeFilter)) return false
+      if (!matchStreamJobDeployFilter(row, deployFilter)) return false
+      if (!matchStreamJobStateFilter(stateClass, stateFilter)) return false
+      return matchStreamJobKeyword(row, keyword)
     })
   }, [jobs, flinkMap, keyword, typeFilter, deployFilter, stateFilter, releaseMap])
 
@@ -1033,13 +1027,13 @@ export default function StreamMonitorPage() {
     },
   ]
 
-  const columns = [
-    { title: '作业名', dataIndex: 'name', key: 'name', width: 180, ellipsis: true },
+  const columns = useResizableTableColumns([
+    { title: '作业名', dataIndex: 'name', key: 'name', width: 200, ellipsis: true },
     {
       title: '类型',
       dataIndex: 'job_type',
       key: 'job_type',
-      width: 120,
+      width: 100,
       render: (t: string, row: any) => row.definition_kind === 'pipeline'
         ? <Space size={4}><Tag color="cyan">Pipeline</Tag><Tag>{String(row.pipeline_spec?.mode || 'append').toUpperCase()}</Tag></Space>
         : <Tag>{t}</Tag>,
@@ -1250,7 +1244,24 @@ export default function StreamMonitorPage() {
         )
       },
     }] : []),
-  ]
+  ] as any, {
+    storageKey: wsId ? `gido.stream.monitor.jobCols.w${wsId}` : undefined,
+    defaultWidths: {
+      name: 200,
+      job_type: 100,
+      deploy: 88,
+      state: 128,
+      release: 160,
+      cid: 150,
+      lsub: 132,
+      fc: 128,
+      diag: 118,
+      flink_job_id: 150,
+      parallelism: 64,
+      history: 88,
+      'lifecycle-actions': 300,
+    },
+  })
 
   return (
     <div>
@@ -1258,6 +1269,7 @@ export default function StreamMonitorPage() {
         <div>
           <Typography.Title level={4} style={{ marginBottom: 4 }}>作业运维</Typography.Title>
           <Paragraph type="secondary" style={{ marginBottom: 0, maxWidth: 920 }}>
+            列表默认展示「关注中」作业（运行中 / 待部署），已停止与历史失败可通过状态筛选查看。
             部署运行中的作业；默认「保存并停止」会生成恢复点，失败时作业仍保持运行。
             清理集群（丢弃状态）在「更多」中。诊断与 Flink UI 见行内入口；逻辑编辑请到
             {' '}<Link to={R.stream.studio}>作业开发</Link>
@@ -1382,20 +1394,29 @@ export default function StreamMonitorPage() {
                       placeholder="运行状态"
                       value={stateFilter}
                       onChange={setStateFilter}
-                      style={{ width: 150 }}
-                      options={[
-                        { value: 'active', label: '运行中' },
-                        { value: 'terminal', label: '已结束' },
-                        { value: 'stopped', label: '已停止' },
-                        { value: 'ready_to_deploy', label: '已批准待部署' },
-                        { value: 'draft', label: '草稿' },
-                        { value: 'needs_attention', label: '需处理' },
-                      ]}
+                      style={{ width: 200 }}
+                      options={STREAM_JOB_STATE_FILTER_OPTIONS}
                     />
-                    <Text type="secondary">共 {filteredJobs.length} / {jobs.length} 个作业</Text>
+                    <Text type="secondary">
+                      共 {filteredJobs.length} / {jobs.length} 个作业
+                      {stateFilter === 'focus' ? ' · 默认隐藏已停止与历史失败' : ''}
+                    </Text>
                   </Space>
                 </Card>
-                <Table rowKey="id" loading={loading} dataSource={filteredJobs} columns={columns as any} scroll={{ x: 1750 }} pagination={{ pageSize: 12 }} />
+                <Table
+                  className="dw-resizable-table"
+                  rowKey="id"
+                  loading={loading}
+                  dataSource={filteredJobs}
+                  columns={columns as any}
+                  scroll={{ x: 1750 }}
+                  pagination={{ pageSize: 12 }}
+                  locale={{
+                    emptyText: stateFilter === 'focus'
+                      ? '当前无运行中或待部署作业；可清空状态筛选查看全部（含已停止 / 需处理）'
+                      : '暂无作业',
+                  }}
+                />
               </>
             ),
           },

@@ -11,6 +11,7 @@ import {
 import { useNavigate } from 'react-router-dom'
 import { R } from '../../routes'
 import { can, isPlatformAdmin, P } from '../../perm'
+import { workspaceSwitcherTitle } from '../../utils/roleLabels'
 import ProductSwitcher from '../ProductSwitcher'
 import type { ProductId } from '../../routes'
 import UserAccountMenu from '../UserAccountMenu'
@@ -51,10 +52,10 @@ export default function WorkspaceHeaderBar({
           value={currentWorkspace?.id}
           onChange={id => setCurrentWorkspace(workspaces.find(w => w.id === id))}
           options={workspaces.map((w: any) => ({ label: wsLabel(w), value: w.id }))}
-          style={{ width: 240 }}
+          style={{ width: 200 }}
           placeholder="工作空间"
           variant="borderless"
-          title="工作空间 · 你在该空间的成员角色"
+          title={workspaceSwitcherTitle(currentWorkspace)}
         />
         {isPlatformAdmin(user) && (
           <Tooltip title="仅平台管理员可新建工作空间">

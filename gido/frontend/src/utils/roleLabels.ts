@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * 角色展示约定（鉴权仍两层，界面只突出当前上下文）：
- * - 顶栏主文案：本空间成员角色（空间切换器 / 账号副标题）
+ * - 空间切换器：只显示空间名（回答「在哪个空间」）
+ * - 顶栏账号区：显示本空间成员角色（回答「我是谁」）；三端共用 WorkspaceHeaderBar
  * - 平台角色：仅出现在账号菜单「平台权限」、用户管理；不当日常第二身份并排展示
  * - 负责人：空间属性（owner），不是第三种权限角色
  */
@@ -38,14 +39,22 @@ export function spaceMemberRoleLabel(role?: string | null): string {
   return SPACE_MEMBER_ROLE_LABELS[role] || role
 }
 
-/** 空间切换器：空间名 + 成员角色（顶栏唯一日常身份） */
+/** 空间切换器主文案：仅空间名（批 / 流 / 服顶栏共用） */
 export function workspaceSwitcherLabel(workspace?: {
   name?: string | null
   my_role?: string | null
 } | null): string {
-  const name = (workspace?.name || '').trim() || '未命名空间'
-  if (!workspace?.my_role) return name
-  return `${name} · ${spaceMemberRoleLabel(workspace.my_role)}`
+  return (workspace?.name || '').trim() || '未命名空间'
+}
+
+/** 空间切换器悬停补充：角色在右上角账号区，这里仅作发现提示 */
+export function workspaceSwitcherTitle(workspace?: {
+  name?: string | null
+  my_role?: string | null
+} | null): string {
+  const name = workspaceSwitcherLabel(workspace)
+  const role = headerAccountRoleLabel(workspace)
+  return role ? `${name} · 当前角色见右上角（${role}）` : `${name} · 切换工作空间`
 }
 
 /** 顶栏账号副标题：只显示当前空间角色，避免与平台角色并排误解 */
