@@ -3,7 +3,8 @@ name: gido-workspace-folder-tree
 description: >-
   Keeps GIDO workspace folder/script side trees on one shared component across
   Batch Studio, Probe, and Stream Studio. Use when changing folder tree UI,
-  drag-drop move/reparent, inline rename, locate/expand, or tree sort helpers.
+  drag-drop move/reparent, inline rename, locate/expand, name filter search,
+  leaf copy, or tree sort helpers.
 ---
 
 # GIDO 工作区目录树：三端复用同步
@@ -30,24 +31,40 @@ description: >-
 2. `gido/frontend/src/pages/Probe.tsx`
 3. `gido/frontend/src/pages/StreamStudio.tsx`
 
-三端只接线（API、权限、文案、id 类型），**不各自实现**树 UI / 拖拽 / 行内重命名。
+三端只接线（API、权限、文案、id 类型），**不各自实现**树 UI / 拖拽 / 行内重命名 / 名称搜索。
 
 ## 共享实现（改行为时先改这里）
 
 | 能力 | 位置 |
 |------|------|
-| 树 UI、拖拽迁入/移出、行内重命名、展开定位 | `gido/frontend/src/components/WorkspaceFolderTree.tsx` |
+| 树 UI、拖拽迁入/移出、行内重命名、展开定位、顶部名称搜索 | `gido/frontend/src/components/WorkspaceFolderTree.tsx` |
+| 按名称过滤（保留祖先 / 目录命中含子树） | `gido/frontend/src/utils/treeFilter.ts`（`filterWorkspaceTree`） |
 | 叶子类型小标识（sql/jar/py…） | `LeafTypeBadge` + `utils/leafTypeBadge.ts`（读 `job_type` / `node_type` / `leaf_type`） |
 | 拖放迁移动机 | `gido/frontend/src/utils/treeDropOrder.ts` |
 | 名称字典序 + 递归建树 | `gido/frontend/src/utils/treeSort.ts`（`buildSortedWorkspaceTree`） |
+
+## 搜索（默认开启）
+
+- UI：树体顶部细 Input（`查找…`），紧贴工作台侧栏标题下方
+- 语义：只匹配**目录/叶子名称**子串（大小写不敏感），不搜脚本正文
+- 命中叶子保留祖先目录；目录名命中则保留该目录子树
+
+## 复制叶子（三端均需接线 `onCopyLeaf`）
+
+| 端 | 实现 |
+|----|------|
+| Studio | `POST /studio/nodes/{id}/copy` → `studioApi.copyNode` |
+| Stream | `POST /streaming/jobs/{id}/copy` → `streamingApi.copyJob`（已有） |
+| Probe | 本地 duplicate + `uniqueProbeCopyName` |
+
+命名对齐：`{name}-copy` / `{name}-copy-n`；同目录；打开新项。`readOnly` 不展示复制。
 
 ## 页面层允许的差异
 
 - **ID 类型**：Studio / Stream 多为 `number`；Probe 本地目录可为 `string`
 - **API**：`studioApi` / `streamingApi` / Probe 本地 store
 - **叶子含义**：脚本节点 vs 流作业 vs Probe 查询
-- **权限 / 锁**：写在页面 `onRenameLeaf` 等回调
-- **复制叶子**：Stream 可提供 `onCopyLeaf`
+- **权限 / 锁**：写在页面 `onRenameLeaf` / `onCopyLeaf` 等回调
 
 ## 删除语义（三端对齐）
 
@@ -59,7 +76,7 @@ description: >-
 
 ## 禁止
 
-- 在任一页面内再写一套 `Tree`
+- 在任一页面内再写一套 `Tree` 或各自搜索框
 - 恢复同级手工排序 / 半行插队启发式
 - 只改三端之一
 
@@ -68,4 +85,5 @@ description: >-
 - [ ] 同级是否仍「目录→脚本 + 字典序」、无手工排序？
 - [ ] 拖拽是否只换父级 / 迁入？
 - [ ] Studio、Probe、StreamStudio 是否只接线共享组件？
-- [ ] `treeDropOrder` / `treeSort` 单测是否更新？
+- [ ] 三端是否都接了 `onCopyLeaf`？搜索是否在 `WorkspaceFolderTree`？
+- [ ] `treeFilter` / `treeDropOrder` / `treeSort` 单测是否更新？

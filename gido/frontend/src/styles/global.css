@@ -516,6 +516,11 @@ body {
 .dw-header-workspace-select.ant-select-borderless .ant-select-selector {
   padding-inline: 4px !important;
   font-weight: 500;
+  min-width: 168px;
+}
+
+.dw-header-workspace-select {
+  flex-shrink: 0;
 }
 
 /* 顶栏子产品启动器（紧凑触发 + 卡片面板，对标云厂商控制台产品切换） */
@@ -531,6 +536,7 @@ body {
   align-items: center;
   gap: 8px;
   height: 36px;
+  min-width: 168px;
   padding: 0 10px 0 8px;
   border: 1px solid transparent;
   border-radius: 10px;

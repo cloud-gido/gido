@@ -42,20 +42,34 @@ function loadAppearanceLatLng(): { lat: number; lng: number } | null {
 interface AppState {
   user: any
   currentWorkspace: any
+  /** 空间列表跨批/流/服 Layout 复用，避免切换子产品时 Select 空 options 闪出 id */
+  workspaces: any[]
   pendingOpenNodeId: number | null
   appearancePreset: AppearancePreset
   appearanceLatLng: { lat: number; lng: number } | null
   setUser: (user: any) => void
   setCurrentWorkspace: (ws: any) => void
+  setWorkspaces: (list: any[]) => void
   setPendingOpenNodeId: (id: number | null) => void
   setAppearancePreset: (preset: AppearancePreset) => void
   setAppearanceLatLng: (lat: number, lng: number) => void
   logout: () => void
 }
 
+function loadInitialWorkspace(): any {
+  try {
+    return JSON.parse(localStorage.getItem('workspace') || 'null')
+  } catch {
+    return null
+  }
+}
+
+const initialWorkspace = loadInitialWorkspace()
+
 export const useAppStore = create<AppState>(set => ({
   user: JSON.parse(localStorage.getItem('user') || 'null'),
-  currentWorkspace: JSON.parse(localStorage.getItem('workspace') || 'null'),
+  currentWorkspace: initialWorkspace,
+  workspaces: initialWorkspace ? [initialWorkspace] : [],
   pendingOpenNodeId: null,
   appearancePreset: loadAppearancePreset(),
   appearanceLatLng: loadAppearanceLatLng(),
@@ -65,8 +79,17 @@ export const useAppStore = create<AppState>(set => ({
   },
   setCurrentWorkspace: (ws) => {
     localStorage.setItem('workspace', JSON.stringify(ws))
-    set({ currentWorkspace: ws })
+    set((state) => {
+      const list = Array.isArray(state.workspaces) ? state.workspaces : []
+      const nextList = ws?.id == null
+        ? list
+        : list.some((w: any) => w.id === ws.id)
+          ? list.map((w: any) => (w.id === ws.id ? { ...w, ...ws } : w))
+          : [ws, ...list]
+      return { currentWorkspace: ws, workspaces: nextList }
+    })
   },
+  setWorkspaces: (list) => set({ workspaces: Array.isArray(list) ? list : [] }),
   setPendingOpenNodeId: (id) => set({ pendingOpenNodeId: id }),
   setAppearancePreset: (preset) => {
     try {
@@ -86,6 +109,6 @@ export const useAppStore = create<AppState>(set => ({
     localStorage.removeItem('token')
     localStorage.removeItem('user')
     localStorage.removeItem('workspace')
-    set({ user: null, currentWorkspace: null })
+    set({ user: null, currentWorkspace: null, workspaces: [] })
   },
 }))

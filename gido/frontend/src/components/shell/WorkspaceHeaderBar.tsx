@@ -4,7 +4,8 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { Button, Select, Space, Tooltip } from 'antd'
+import { useMemo } from 'react'
+import { Button, Select, Tooltip } from 'antd'
 import {
   FolderAddOutlined, GlobalOutlined, PartitionOutlined, SettingOutlined,
 } from '@ant-design/icons'
@@ -12,6 +13,10 @@ import { useNavigate } from 'react-router-dom'
 import { R } from '../../routes'
 import { can, isPlatformAdmin, P } from '../../perm'
 import { workspaceSwitcherTitle } from '../../utils/roleLabels'
+import {
+  buildWorkspaceSelectOptions,
+  workspaceSelectDisplayLabel,
+} from '../../utils/workspaceSelectOptions'
 import ProductSwitcher from '../ProductSwitcher'
 import type { ProductId } from '../../routes'
 import UserAccountMenu from '../UserAccountMenu'
@@ -42,6 +47,11 @@ export default function WorkspaceHeaderBar({
 }: Props) {
   const navigate = useNavigate()
 
+  const wsOptions = useMemo(
+    () => buildWorkspaceSelectOptions(workspaces, currentWorkspace, wsLabel),
+    [workspaces, currentWorkspace, wsLabel],
+  )
+
   return (
     <div className="dw-header-inner">
       <div className="dw-header-left">
@@ -50,12 +60,18 @@ export default function WorkspaceHeaderBar({
         <Select
           className="dw-header-workspace-select"
           value={currentWorkspace?.id}
-          onChange={id => setCurrentWorkspace(workspaces.find(w => w.id === id))}
-          options={workspaces.map((w: any) => ({ label: wsLabel(w), value: w.id }))}
-          style={{ width: 200 }}
+          onChange={id => {
+            const hit = workspaces.find((w: any) => w.id === id)
+              || (currentWorkspace?.id === id ? currentWorkspace : null)
+            if (hit) setCurrentWorkspace(hit)
+          }}
+          options={wsOptions}
+          labelRender={(props) => workspaceSelectDisplayLabel(props.value, wsOptions, currentWorkspace)}
+          style={{ width: 168, minWidth: 168 }}
           placeholder="工作空间"
           variant="borderless"
           title={workspaceSwitcherTitle(currentWorkspace)}
+          popupMatchSelectWidth={false}
         />
         {isPlatformAdmin(user) && (
           <Tooltip title="仅平台管理员可新建工作空间">

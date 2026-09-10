@@ -4,12 +4,11 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom'
 import LoginPage from './pages/Login'
 import AboutPage from './pages/About'
-import MainLayout from './components/MainLayout'
-import StreamLayout from './components/StreamLayout'
-import ServiceLayout from './components/ServiceLayout'
+import ProductWorkspaceShell from './components/shell/ProductWorkspaceShell'
+import { ServiceProductOutlet } from './components/shell/ServiceProductSider'
 import ShellThemeProvider from './components/ShellThemeProvider'
 import StudioPage from './pages/Studio'
 import DataMapPage from './pages/DataMap'
@@ -68,6 +67,15 @@ function ServiceIndexRedirect() {
   return <Navigate to={defaultServiceHome(user, currentWorkspace)} replace />
 }
 
+/** 流产品段：守卫通过后渲染嵌套子路由 */
+function StreamSegment() {
+  return (
+    <RequireStreamRoute>
+      <Outlet />
+    </RequireStreamRoute>
+  )
+}
+
 export default function App() {
   return (
     <ShellThemeProvider>
@@ -76,50 +84,53 @@ export default function App() {
           <Route path={R.login} element={<LoginPage />} />
           <Route path={R.about} element={<AboutPage />} />
 
-          <Route path={R.batch.root} element={<RequireAuth><MainLayout /></RequireAuth>}>
-            <Route index element={<BatchIndexRedirect />} />
-            <Route path="studio" element={<RequireGidoBatchRoute><StudioPage /></RequireGidoBatchRoute>} />
-            <Route path="workflow" element={<RequireGidoBatchRoute><WorkflowPage /></RequireGidoBatchRoute>} />
-            <Route path="datamap" element={<RequireGidoBatchRoute><DataMapPage /></RequireGidoBatchRoute>} />
-            <Route path="probe" element={<RequireGidoBatchRoute><ProbePage /></RequireGidoBatchRoute>} />
-            <Route path="quality" element={<RequireGidoBatchRoute><QualityPage /></RequireGidoBatchRoute>} />
-            <Route path="integration" element={<RequireGidoBatchRoute><IntegrationPage /></RequireGidoBatchRoute>} />
-            <Route path="run-history" element={<RequireGidoBatchRoute><RunHistoryPage /></RequireGidoBatchRoute>} />
-            <Route path="run-history/:id" element={<RequireGidoBatchRoute><RunHistoryDetailPage /></RequireGidoBatchRoute>} />
-            <Route path="operation" element={<RequireGidoBatchRoute><OperationPage /></RequireGidoBatchRoute>} />
-            <Route path="alert" element={<RequireGidoBatchRoute><AlertCenterPage /></RequireGidoBatchRoute>} />
-            <Route path="approval" element={<RequireGidoBatchRoute><ApprovalPage /></RequireGidoBatchRoute>} />
-            <Route path="dataservice" element={<Navigate to={R.service.apis} replace />} />
-            <Route path="datasource" element={<RequireGidoBatchRoute><DatasourcePage /></RequireGidoBatchRoute>} />
-            <Route path="workspace-settings" element={<RequireGidoBatchRoute><WorkspaceSettingsPage /></RequireGidoBatchRoute>} />
-            <Route path="admin" element={<RequireGidoBatchRoute><SystemRbacPage /></RequireGidoBatchRoute>} />
-            <Route path="system/integration" element={<RequireGidoBatchRoute><SystemRbacPage view="integration" /></RequireGidoBatchRoute>} />
-          </Route>
+          {/* 统一工作台壳：/gido/* 下切批/流/服不卸载空间顶栏 */}
+          <Route path="/gido" element={<RequireAuth><ProductWorkspaceShell /></RequireAuth>}>
+            <Route path="batch">
+              <Route index element={<BatchIndexRedirect />} />
+              <Route path="studio" element={<RequireGidoBatchRoute><StudioPage /></RequireGidoBatchRoute>} />
+              <Route path="workflow" element={<RequireGidoBatchRoute><WorkflowPage /></RequireGidoBatchRoute>} />
+              <Route path="datamap" element={<RequireGidoBatchRoute><DataMapPage /></RequireGidoBatchRoute>} />
+              <Route path="probe" element={<RequireGidoBatchRoute><ProbePage /></RequireGidoBatchRoute>} />
+              <Route path="quality" element={<RequireGidoBatchRoute><QualityPage /></RequireGidoBatchRoute>} />
+              <Route path="integration" element={<RequireGidoBatchRoute><IntegrationPage /></RequireGidoBatchRoute>} />
+              <Route path="run-history" element={<RequireGidoBatchRoute><RunHistoryPage /></RequireGidoBatchRoute>} />
+              <Route path="run-history/:id" element={<RequireGidoBatchRoute><RunHistoryDetailPage /></RequireGidoBatchRoute>} />
+              <Route path="operation" element={<RequireGidoBatchRoute><OperationPage /></RequireGidoBatchRoute>} />
+              <Route path="alert" element={<RequireGidoBatchRoute><AlertCenterPage /></RequireGidoBatchRoute>} />
+              <Route path="approval" element={<RequireGidoBatchRoute><ApprovalPage /></RequireGidoBatchRoute>} />
+              <Route path="dataservice" element={<Navigate to={R.service.apis} replace />} />
+              <Route path="datasource" element={<RequireGidoBatchRoute><DatasourcePage /></RequireGidoBatchRoute>} />
+              <Route path="workspace-settings" element={<RequireGidoBatchRoute><WorkspaceSettingsPage /></RequireGidoBatchRoute>} />
+              <Route path="admin" element={<RequireGidoBatchRoute><SystemRbacPage /></RequireGidoBatchRoute>} />
+              <Route path="system/integration" element={<RequireGidoBatchRoute><SystemRbacPage view="integration" /></RequireGidoBatchRoute>} />
+            </Route>
 
-          <Route path={R.stream.root} element={<RequireAuth><RequireStreamRoute><StreamLayout /></RequireStreamRoute></RequireAuth>}>
-            <Route index element={<Navigate to={R.stream.studio} replace />} />
-            <Route path="studio" element={<StreamStudioPage />} />
-            <Route path="pipelines" element={<StreamPipelinePage />} />
-            <Route path="resources" element={<StreamResourcesPage />} />
-            <Route path="resources/jars" element={<StreamJarLibraryPage />} />
-            <Route path="resources/connectors" element={<StreamConnectorLibraryPage />} />
-            <Route path="resources/files" element={<StreamFileLibraryPage />} />
-            <Route path="jars" element={<Navigate to={R.stream.resourcesJars} replace />} />
-            <Route path="monitor" element={<StreamMonitorPage />} />
-            <Route path="overview" element={<Navigate to={R.stream.monitor} replace />} />
-            <Route path="flink-sessions" element={<Navigate to={R.stream.monitor} replace />} />
-            <Route path="approval" element={<ApprovalPage />} />
-          </Route>
+            <Route path="stream" element={<StreamSegment />}>
+              <Route index element={<Navigate to={R.stream.studio} replace />} />
+              <Route path="studio" element={<StreamStudioPage />} />
+              <Route path="pipelines" element={<StreamPipelinePage />} />
+              <Route path="resources" element={<StreamResourcesPage />} />
+              <Route path="resources/jars" element={<StreamJarLibraryPage />} />
+              <Route path="resources/connectors" element={<StreamConnectorLibraryPage />} />
+              <Route path="resources/files" element={<StreamFileLibraryPage />} />
+              <Route path="jars" element={<Navigate to={R.stream.resourcesJars} replace />} />
+              <Route path="monitor" element={<StreamMonitorPage />} />
+              <Route path="overview" element={<Navigate to={R.stream.monitor} replace />} />
+              <Route path="flink-sessions" element={<Navigate to={R.stream.monitor} replace />} />
+              <Route path="approval" element={<ApprovalPage />} />
+            </Route>
 
-          <Route path={R.service.root} element={<RequireAuth><ServiceLayout /></RequireAuth>}>
-            <Route index element={<ServiceIndexRedirect />} />
-            <Route path="overview" element={<RequireServiceRoute><ServiceOverviewPage /></RequireServiceRoute>} />
-            <Route path="apis" element={<RequireServiceRoute><ServiceApisPage /></RequireServiceRoute>} />
-            <Route path="apps" element={<RequireServiceRoute><ServiceAppsPage /></RequireServiceRoute>} />
-            <Route path="monitor" element={<RequireServiceRoute><ServiceMonitorPage /></RequireServiceRoute>} />
-            <Route path="gateway" element={<RequireServiceRoute><ServiceGatewayPage /></RequireServiceRoute>} />
-            <Route path="datasource" element={<RequireServiceRoute><DatasourcePage /></RequireServiceRoute>} />
-            <Route path="approval" element={<RequireServiceRoute><ApprovalPage /></RequireServiceRoute>} />
+            <Route path="service" element={<ServiceProductOutlet />}>
+              <Route index element={<ServiceIndexRedirect />} />
+              <Route path="overview" element={<RequireServiceRoute><ServiceOverviewPage /></RequireServiceRoute>} />
+              <Route path="apis" element={<RequireServiceRoute><ServiceApisPage /></RequireServiceRoute>} />
+              <Route path="apps" element={<RequireServiceRoute><ServiceAppsPage /></RequireServiceRoute>} />
+              <Route path="monitor" element={<RequireServiceRoute><ServiceMonitorPage /></RequireServiceRoute>} />
+              <Route path="gateway" element={<RequireServiceRoute><ServiceGatewayPage /></RequireServiceRoute>} />
+              <Route path="datasource" element={<RequireServiceRoute><DatasourcePage /></RequireServiceRoute>} />
+              <Route path="approval" element={<RequireServiceRoute><ApprovalPage /></RequireServiceRoute>} />
+            </Route>
           </Route>
 
           <Route path="/" element={<RootRedirect />} />

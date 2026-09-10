@@ -2,13 +2,14 @@
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-import React, { useMemo, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Dropdown, Input, Tree, message } from 'antd'
 import type { DataNode, TreeProps } from 'antd/es/tree'
-import { FolderOutlined, MoreOutlined } from '@ant-design/icons'
+import { FolderOutlined, MoreOutlined, SearchOutlined } from '@ant-design/icons'
 import LeafTypeBadge from './LeafTypeBadge'
 import { leafTypeFromRow } from '../utils/leafTypeBadge'
 import { buildSortedWorkspaceTree, sortByName } from '../utils/treeSort'
+import { filterWorkspaceTree } from '../utils/treeFilter'
 import {
   ancestorFolderKeys,
   pickVisualDropKey,
@@ -129,6 +130,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
   showRootCreateButton = true,
   treeClassName = 'workspace-folder-tree',
 }: Props<T>) {
+  const [filterQuery, setFilterQuery] = useState('')
   const [renamingFolderId, setRenamingFolderId] = useState<T | null>(null)
   const [renamingLeafId, setRenamingLeafId] = useState<T | null>(null)
   const dragPointerRef = useRef<DragPointer | null>(null)
@@ -137,6 +139,24 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
   const renamingLeafNameRef = useRef('')
   const renamingFolderIdRef = useRef<T | null>(null)
   const renamingLeafIdRef = useRef<T | null>(null)
+
+  const filtered = useMemo(
+    () => filterWorkspaceTree({ folders, leaves, query: filterQuery }),
+    [folders, leaves, filterQuery],
+  )
+  const viewFolders = filtered.folders
+  const viewLeaves = filtered.leaves
+  const filterActive = Boolean(String(filterQuery || '').trim())
+
+  useEffect(() => {
+    if (!filterActive || !filtered.expandFolderKeys.length) return
+    const missing = filtered.expandFolderKeys.some(k => !expandedKeys.includes(k))
+    const needRoot = !expandedKeys.includes('root')
+    if (!missing && !needRoot) return
+    onExpandedKeysChange([...new Set<React.Key>([...expandedKeys, 'root', ...filtered.expandFolderKeys])])
+    // expandFolderKeys 内容随 query 变；用 join 稳定依赖，避免无意义循环
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterActive, filterQuery, filtered.expandFolderKeys.join('|')])
 
   const beginRenameFolder = (id: T, name: string) => {
     renamingFolderIdRef.current = id
@@ -194,7 +214,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
 
   const treeData = useMemo(() => {
     const folderMap: Record<string, any> = {}
-    folders.forEach(f => {
+    viewFolders.forEach(f => {
       const fid = String(f.id)
       folderMap[fid] = {
         key: `folder-${fid}`,
@@ -266,7 +286,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
     })
 
     const leafMap: Record<string, any> = {}
-    leaves.forEach(n => {
+    viewLeaves.forEach(n => {
       leafMap[String(n.id)] = {
         key: String(n.id),
         title: sameId(renamingLeafId, n.id) ? (
@@ -311,7 +331,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
     })
 
     // 结构与每一层排序由共享纯函数保证（Studio / Probe / Stream 同一路径）
-    const hierarchy = buildSortedWorkspaceTree({ folders, leaves })
+    const hierarchy = buildSortedWorkspaceTree({ folders: viewFolders, leaves: viewLeaves })
     const toDataNodes = (nodes: ReturnType<typeof buildSortedWorkspaceTree<T>>): any[] =>
       nodes.map(n => {
         if (n.kind === 'folder') {
@@ -336,7 +356,7 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
       },
     ] as DataNode[]
   }, [
-    folders, leaves, renamingFolderId, renamingLeafId, rootTitle,
+    viewFolders, viewLeaves, folders, renamingFolderId, renamingLeafId, rootTitle,
     folderMenuExtra, onCreateFolder, onDeleteFolder, onDeleteLeaf, onCopyLeaf, onSelectLeaf, readOnly,
     showRootCreateButton, onMoveFolder,
   ])
@@ -446,36 +466,62 @@ export default function WorkspaceFolderTree<T extends TreeId = TreeId>({
   }
 
   return (
-    <Tree
-      className={treeClassName}
-      blockNode
-      draggable={!readOnly}
-      allowDrop={({ dropNode, dragNode }) => {
-        const dragKey = String(dragNode.key)
-        const dropKey = String(dropNode.key)
-        if (dragKey === 'root') return false
-        if (dragKey.startsWith('folder-')) {
-          if (!onMoveFolder) return false
-          if (dropKey === dragKey) return false
-          return true
-        }
-        return true
-      }}
-      treeData={treeData}
-      expandedKeys={expandedKeys}
-      onExpand={keys => onExpandedKeysChange(keys)}
-      selectedKeys={selectedLeafId != null ? [String(selectedLeafId)] : []}
-      onSelect={(keys) => {
-        const k = String(keys[0] || '')
-        if (!k || k === 'root' || k.startsWith('folder-')) return
-        const leaf = leaves.find(l => String(l.id) === k)
-        if (leaf) onSelectLeaf(leaf)
-      }}
-      onDragEnter={rememberDragPointer}
-      onDragOver={rememberDragPointer}
-      onDrop={onDrop}
-      style={{ padding: '4px 0' }}
-    />
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      <div
+        style={{
+          flexShrink: 0,
+          padding: '6px 10px',
+          borderBottom: '1px solid #f0f0f0',
+          background: '#fafafa',
+        }}
+      >
+        <Input
+          size="small"
+          allowClear
+          value={filterQuery}
+          onChange={e => setFilterQuery(e.target.value)}
+          placeholder="查找…"
+          prefix={<SearchOutlined style={{ color: '#bfbfbf' }} />}
+          aria-label="查找目录或脚本"
+        />
+      </div>
+      {filterActive && viewLeaves.length === 0 && viewFolders.length === 0 ? (
+        <div style={{ padding: '16px 12px', color: '#999', fontSize: 12 }}>无匹配项</div>
+      ) : (
+        <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
+          <Tree
+            className={treeClassName}
+            blockNode
+            draggable={!readOnly}
+            allowDrop={({ dropNode, dragNode }) => {
+              const dragKey = String(dragNode.key)
+              const dropKey = String(dropNode.key)
+              if (dragKey === 'root') return false
+              if (dragKey.startsWith('folder-')) {
+                if (!onMoveFolder) return false
+                if (dropKey === dragKey) return false
+                return true
+              }
+              return true
+            }}
+            treeData={treeData}
+            expandedKeys={expandedKeys}
+            onExpand={keys => onExpandedKeysChange(keys)}
+            selectedKeys={selectedLeafId != null ? [String(selectedLeafId)] : []}
+            onSelect={(keys) => {
+              const k = String(keys[0] || '')
+              if (!k || k === 'root' || k.startsWith('folder-')) return
+              const leaf = leaves.find(l => String(l.id) === k)
+              if (leaf) onSelectLeaf(leaf)
+            }}
+            onDragEnter={rememberDragPointer}
+            onDragOver={rememberDragPointer}
+            onDrop={onDrop}
+            style={{ padding: '4px 0' }}
+          />
+        </div>
+      )}
+    </div>
   )
 }
 

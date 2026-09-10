@@ -4,7 +4,7 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useState, useEffect, useCallback, useMemo, useRef, type Key } from 'react'
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, type Key } from 'react'
 import {
   Button, Select, InputNumber, Alert, Space, message, Input, Modal, Form, Tooltip, Tabs, Tag, Spin,
 } from 'antd'
@@ -55,6 +55,9 @@ import {
   defaultProbeState,
   newProbeId,
   mergeLocalIntoRemote,
+  initialProbeWorkspaceState,
+  probeTreeReadyFromCache,
+  uniqueProbeCopyName,
 } from '../utils/probeLocalStore'
 import WorkspaceFolderTree, { locateLeafInFolderTree, type FolderRow, type LeafRow } from '../components/WorkspaceFolderTree'
 import AutosaveStatusHint from '../components/AutosaveStatusHint'
@@ -82,8 +85,13 @@ export default function ProbePage() {
   const { currentWorkspace } = useAppStore()
   const wsId = currentWorkspace?.id
   const [datasources, setDatasources] = useState<any[]>([])
-  const [probeState, setProbeState] = useState<ProbeWorkspaceState>(() => defaultProbeState())
-  const [treeReady, setTreeReady] = useState(false)
+  /** 有本地缓存时先同步灌入，避免主区先闪「加载探查目录…」而侧栏已像就绪 */
+  const [probeState, setProbeState] = useState<ProbeWorkspaceState>(() =>
+    initialProbeWorkspaceState(useAppStore.getState().currentWorkspace?.id),
+  )
+  const [treeReady, setTreeReady] = useState(() =>
+    probeTreeReadyFromCache(useAppStore.getState().currentWorkspace?.id),
+  )
   const [loading, setLoading] = useState(false)
   type StmtResult = {
     index: number
@@ -128,10 +136,21 @@ export default function ProbePage() {
   const probeStateRef = useRef(probeState)
   probeStateRef.current = probeState
 
+  useLayoutEffect(() => {
+    if (!wsId) return
+    const local = loadProbeState(wsId)
+    if (local) {
+      setProbeState(local)
+      setTreeReady(true)
+    } else {
+      // 无本地缓存才挡主区；有缓存则后台对齐远端，不闪全屏 Spin
+      setTreeReady(probeTreeReadyFromCache(wsId))
+    }
+  }, [wsId])
+
   useEffect(() => {
     if (!wsId) return
     let cancelled = false
-    setTreeReady(false)
     const local = loadProbeState(wsId)
     ;(async () => {
       let next: ProbeWorkspaceState | null = null
@@ -578,6 +597,32 @@ export default function ProbePage() {
     message.success('已删除')
   }
 
+  const copyScript = (leafId: string) => {
+    const src = probeState.scripts.find(s => s.id === leafId)
+    if (!src) return
+    const id = newProbeId('s')
+    const name = uniqueProbeCopyName(probeState.scripts.map(s => s.name), src.name)
+    setProbeState(prev => ({
+      ...prev,
+      scripts: [
+        ...prev.scripts,
+        {
+          id,
+          name,
+          folderId: src.folderId,
+          sql: src.sql,
+          limit: src.limit,
+          datasource_id: src.datasource_id,
+          sort_order: sortOrderForNewScript(prev.scripts, src.folderId),
+        },
+      ],
+      activeScriptId: id,
+    }))
+    setResult(null)
+    setResultPanelOpen(false)
+    message.success(`已复制为「${name}」`)
+  }
+
   const deleteFolder = async (folderId: string) => {
     const hasChildFolders = probeState.folders.some(f => f.parentId === folderId)
     if (hasChildFolders) {
@@ -903,6 +948,7 @@ export default function ProbePage() {
                     onOk: () => deleteScript(leaf.id),
                   })
                 }}
+                onCopyLeaf={leaf => copyScript(leaf.id)}
                 onMoveAndReorder={moveAndReorderProbeScripts}
                 onMoveFolder={async ({ folderId, targetParentId }) => {
                   await moveProbeFolder(folderId, targetParentId)

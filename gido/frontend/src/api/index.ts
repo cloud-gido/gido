@@ -83,6 +83,8 @@ export const studioApi = {
       params: { workspace_id: workspaceId, folder_id: folderId },
     }),
   createNode: (data: any) => request.post('/studio/nodes', data),
+  copyNode: (id: number, data?: { name?: string }) =>
+    request.post(`/studio/nodes/${id}/copy`, data || {}),
   getNode: (id: number) => request.get(`/studio/nodes/${id}`),
   /** createHistory=false：静默草稿保存，不写版本历史（编辑器自动保存） */
   updateNode: (id: number, data: any, opts?: { createHistory?: boolean }) =>

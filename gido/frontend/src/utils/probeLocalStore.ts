@@ -83,6 +83,35 @@ export function saveProbeState(wsId: number, state: ProbeWorkspaceState) {
   }
 }
 
+/** 进页初始态：优先本地缓存，避免主区先闪全屏加载 */
+export function initialProbeWorkspaceState(wsId: number | undefined | null): ProbeWorkspaceState {
+  if (wsId == null) return defaultProbeState()
+  return loadProbeState(wsId) ?? defaultProbeState()
+}
+
+/**
+ * 有本地树则主区可立即编辑（远端后台对齐）；无缓存才挡「加载探查目录…」。
+ * 切空间时同样按目标空间本地缓存决定，禁止无条件 setTreeReady(false)。
+ */
+export function probeTreeReadyFromCache(wsId: number | undefined | null): boolean {
+  if (wsId == null) return false
+  return loadProbeState(wsId) != null
+}
+
+/** 复制脚本名称：`name-copy` / `name-copy-n`，与 Studio/Stream 对齐 */
+export function uniqueProbeCopyName(existingNames: string[], baseName: string): string {
+  const root = (baseName || 'query').trim() || 'query'
+  const clipped = root.slice(0, 100)
+  let candidate = `${clipped}-copy`
+  let n = 1
+  const set = new Set(existingNames.map(s => s.toLowerCase()))
+  while (set.has(candidate.toLowerCase())) {
+    n += 1
+    candidate = `${clipped}-copy-${n}`
+  }
+  return candidate
+}
+
 /**
  * 将本地私有树中不存在于远端共享树的脚本/文件夹合并进去。
  * 用于首次切换到共享树时，避免丢失各用户已有的本地脚本。

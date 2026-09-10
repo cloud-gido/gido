@@ -1073,6 +1073,21 @@ export default function StudioPage() {
     message.success('删除成功')
   }
 
+  const handleCopyLeaf = async (leaf: { id: number; name: string }) => {
+    if (!canWrite) {
+      message.warning('当前角色无数据开发编辑权限')
+      return
+    }
+    try {
+      const created: any = await studioApi.copyNode(leaf.id)
+      message.success(`已复制为「${created.name}」`)
+      await load()
+      await openNode(created)
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '复制失败')
+    }
+  }
+
   // SQL 格式化
   const handleFormat = async () => {
     if (!activeNode || activeNode.node_type !== 'SQL') return
@@ -1428,6 +1443,7 @@ export default function StudioPage() {
                 onOk: () => handleDelete(leaf.id),
               })
             }}
+            onCopyLeaf={canWrite ? leaf => { void handleCopyLeaf(leaf) } : undefined}
             onMoveAndReorder={async ({ leafId, targetFolderId, orderedLeafIds, folderChanged }) => {
               if (!wsId) return
               if (folderChanged) await studioApi.moveNodeFolder(leafId, targetFolderId)

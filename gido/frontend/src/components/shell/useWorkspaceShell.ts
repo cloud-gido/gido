@@ -4,32 +4,67 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Form, message } from 'antd'
 import { workspaceApi, authApi } from '../../api'
 import { useAppStore } from '../../store'
 import { pickDefaultWorkspace } from '../../workspacePick'
 import { workspaceSwitcherLabel } from '../../utils/roleLabels'
 
+/** 模块级：同一 SPA 会话内空间列表 / me 只主动拉一次（切子产品不再重复） */
+let workspacesFetchStarted = false
+let meFetchStarted = false
+
+export function __resetWorkspaceShellFetchGuardsForTests() {
+  workspacesFetchStarted = false
+  meFetchStarted = false
+}
+
 export function useWorkspaceShell() {
-  const { user, currentWorkspace, setCurrentWorkspace, setUser } = useAppStore()
-  const [workspaces, setWorkspaces] = useState<any[]>([])
+  const {
+    user,
+    currentWorkspace,
+    setCurrentWorkspace,
+    setUser,
+    workspaces,
+    setWorkspaces,
+  } = useAppStore()
   const [tzModal, setTzModal] = useState(false)
   const [tzForm] = Form.useForm()
   const [createWsOpen, setCreateWsOpen] = useState(false)
   const [wsForm] = Form.useForm()
+  const mounted = useRef(true)
 
-  const loadWorkspaces = async () => {
-    const res: any[] = await workspaceApi.list() as any
-    setWorkspaces(res)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
+
+  const loadWorkspaces = async (force = false) => {
+    if (!force && workspacesFetchStarted && workspaces.length > 0) return
+    workspacesFetchStarted = true
+    try {
+      const res: any[] = await workspaceApi.list() as any
+      if (mounted.current) setWorkspaces(res)
+    } catch {
+      workspacesFetchStarted = false
+    }
   }
 
   useEffect(() => {
-    loadWorkspaces()
+    void loadWorkspaces()
+    // 仅挂载时拉列表；统一壳下切子产品不 remount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
-    authApi.me().then((u: any) => setUser(u)).catch(() => {})
+    if (meFetchStarted) return
+    meFetchStarted = true
+    authApi.me().then((u: any) => {
+      if (mounted.current) setUser(u)
+    }).catch(() => {
+      meFetchStarted = false
+    })
   }, [setUser])
 
   useEffect(() => {
@@ -51,7 +86,7 @@ export function useWorkspaceShell() {
     const { timezone } = await tzForm.validateFields()
     await workspaceApi.update(currentWorkspace!.id, { ...currentWorkspace, timezone })
     setCurrentWorkspace({ ...currentWorkspace, timezone })
-    setWorkspaces(prev => prev.map(w => w.id === currentWorkspace!.id ? { ...w, timezone } : w))
+    setWorkspaces(workspaces.map(w => w.id === currentWorkspace!.id ? { ...w, timezone } : w))
     setTzModal(false)
     message.success(`时区已设置为 ${timezone}`)
   }
@@ -66,7 +101,7 @@ export function useWorkspaceShell() {
     message.success('工作空间已创建')
     setCreateWsOpen(false)
     wsForm.resetFields()
-    await loadWorkspaces()
+    await loadWorkspaces(true)
     setCurrentWorkspace(created)
   }
 

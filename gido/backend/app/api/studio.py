@@ -429,6 +429,69 @@ def get_node(node_id: int, db: Session = Depends(get_db), current_user: User = D
     return _serialize_task_node(db, node)
 
 
+class NodeCopyBody(BaseModel):
+    name: Optional[str] = None
+
+
+def _unique_studio_node_copy_name(db: Session, workspace_id: int, base_name: str) -> str:
+    root = (base_name or "node").strip() or "node"
+    root = root[:110].rstrip("-_ ") or "node"
+    candidate = f"{root}-copy"
+    n = 1
+    while (
+        db.query(TaskNode)
+        .filter(TaskNode.workspace_id == workspace_id, TaskNode.name == candidate)
+        .first()
+    ):
+        n += 1
+        candidate = f"{root}-copy-{n}"
+    return candidate
+
+
+@router.post("/nodes/{node_id}/copy")
+def copy_node(
+    node_id: int,
+    body: NodeCopyBody = Body(default_factory=NodeCopyBody),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """复制为新草稿节点（同目录；不含发布锁 / 编辑锁 / 依赖边）。"""
+    src = db.query(TaskNode).filter(TaskNode.id == node_id).first()
+    if not src:
+        raise HTTPException(status_code=404, detail="节点不存在")
+    assert_workspace_data_capability(db, current_user, src.workspace_id, "developer", PC.GIDO_BATCH_STUDIO_WRITE)
+    name = (body.name or "").strip() or _unique_studio_node_copy_name(db, int(src.workspace_id), src.name)
+    if (
+        db.query(TaskNode)
+        .filter(TaskNode.workspace_id == src.workspace_id, TaskNode.name == name)
+        .first()
+    ):
+        raise HTTPException(status_code=400, detail="节点名称已存在")
+    node = TaskNode(
+        workspace_id=src.workspace_id,
+        name=name,
+        node_type=src.node_type,
+        script_content=src.script_content,
+        datasource_id=src.datasource_id,
+        params=src.params,
+        folder_id=src.folder_id,
+        timeout_seconds=src.timeout_seconds or 3600,
+        retry_times=src.retry_times or 0,
+        sort_order=_next_sort_order(db, src.workspace_id, src.folder_id),
+        is_published=False,
+        is_locked=False,
+        edit_lock_user_id=None,
+        edit_lock_at=None,
+        created_by=current_user.id,
+        owner_id=current_user.id,
+    )
+    db.add(node)
+    db.commit()
+    db.refresh(node)
+    log_action(db, current_user.id, "create", "node", node.id, node.name, src.workspace_id)
+    return _serialize_task_node(db, node)
+
+
 class NodeFolderPatch(BaseModel):
     folder_id: Optional[int] = None
 
