@@ -411,8 +411,9 @@ def test_test_channel_card_is_not_plain_dump(db):
     )
     db.add(event)
     db.flush()
-    with patch("app.services.alert_notification._post_json") as post:
-        notify_alert_event(db, event, force=True)
+    with patch("app.services.alert_notification.gido_public_url", return_value="https://gido.example.com"):
+        with patch("app.services.alert_notification._post_json") as post:
+            notify_alert_event(db, event, force=True)
     payload = post.call_args[0][1]
     assert payload["msg_type"] == "interactive"
     title = payload["card"]["header"]["title"]["content"]
@@ -420,3 +421,182 @@ def test_test_channel_card_is_not_plain_dump(db):
     blob = str(payload)
     assert "告警级别：info" not in blob
     assert "工作流实例：#-" not in blob
+    actions = [el for el in payload["card"]["elements"] if el.get("tag") == "action"]
+    assert actions
+    assert actions[0]["actions"][0]["text"]["content"] == "打开告警中心"
+    assert "/gido/batch/alert?workspace_id=" in actions[0]["actions"][0]["url"]
+
+
+def test_workspace_alert_coverage_hints_wrong_space_and_missing_site(db):
+    from app.services.alert_center import workspace_alert_coverage
+
+    ws = db.query(Workspace).first()
+    empty = workspace_alert_coverage(db, ws.id)
+    assert empty["published_workflow_count"] == 0
+    assert any("没有已发布" in h for h in empty["hints"])
+
+    db.add(
+        Workflow(
+            workspace_id=ws.id,
+            name="体育线-风控",
+            dag_config={"nodes": []},
+            scheduler_definition_id="90001",
+            status="published",
+        )
+    )
+    db.commit()
+    with patch("app.services.alert_notification.gido_public_url", return_value=""):
+        cov = workspace_alert_coverage(db, ws.id)
+    assert cov["published_workflow_count"] == 1
+    assert cov["lark_enabled"] is False
+    assert cov["site_url_configured"] is False
+    assert any("飞书渠道未打开" in h for h in cov["hints"])
+    assert any("站点入口" in h for h in cov["hints"])
+    assert "体育线-风控" in cov["published_workflow_names"]
+
+
+def test_list_alerts_hides_pre_arm_skipped_and_filters_workflow_name(db):
+    from app.api.alert import list_alerts
+
+    ws = db.query(Workspace).first()
+    user = db.query(User).first()
+    armed = datetime.utcnow()
+    db.add(
+        AlertNotificationConfig(
+            workspace_id=ws.id,
+            lark_enabled=True,
+            lark_webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/x",
+            notify_armed_at=armed,
+        )
+    )
+    wf = Workflow(
+        workspace_id=ws.id,
+        name="体育线-风控",
+        dag_config={"nodes": []},
+        scheduler_definition_id="22",
+        status="published",
+    )
+    other = Workflow(
+        workspace_id=ws.id,
+        name="其它作业",
+        dag_config={"nodes": []},
+        scheduler_definition_id="23",
+        status="published",
+    )
+    db.add_all([wf, other])
+    db.flush()
+    old_inst = WorkflowInstance(
+        workflow_id=wf.id,
+        status="failed",
+        finished_at=datetime.utcnow() - timedelta(days=3),
+    )
+    new_inst = WorkflowInstance(
+        workflow_id=wf.id,
+        status="failed",
+        finished_at=datetime.utcnow(),
+    )
+    other_inst = WorkflowInstance(
+        workflow_id=other.id,
+        status="failed",
+        finished_at=datetime.utcnow(),
+    )
+    db.add_all([old_inst, new_inst, other_inst])
+    db.flush()
+    db.add_all(
+        [
+            AlertEvent(
+                workspace_id=ws.id,
+                workflow_id=wf.id,
+                workflow_instance_id=old_inst.id,
+                alert_type="failed",
+                level="error",
+                severity="error",
+                status="open",
+                message="old",
+                notification_status="skipped",
+            ),
+            AlertEvent(
+                workspace_id=ws.id,
+                workflow_id=wf.id,
+                workflow_instance_id=new_inst.id,
+                alert_type="failed",
+                level="error",
+                severity="error",
+                status="open",
+                message="new",
+                notification_status="sent",
+            ),
+            AlertEvent(
+                workspace_id=ws.id,
+                workflow_id=other.id,
+                workflow_instance_id=other_inst.id,
+                alert_type="failed",
+                level="error",
+                severity="error",
+                status="open",
+                message="other",
+                notification_status="sent",
+            ),
+        ]
+    )
+    db.commit()
+
+    default = list_alerts(
+        workspace_id=ws.id,
+        status="open",
+        page=1,
+        page_size=50,
+        include_all_workspaces=False,
+        q=None,
+        notification_status=None,
+        after_armed=True,
+        db=db,
+        current_user=user,
+    )
+    assert default["total"] == 2
+    assert {row["message"] for row in default["items"]} == {"new", "other"}
+    assert default["coverage"]["published_workflow_count"] == 2
+
+    historic = list_alerts(
+        workspace_id=ws.id,
+        status="open",
+        page=1,
+        page_size=50,
+        include_all_workspaces=False,
+        q=None,
+        notification_status=None,
+        after_armed=False,
+        db=db,
+        current_user=user,
+    )
+    assert historic["total"] == 3
+
+    named = list_alerts(
+        workspace_id=ws.id,
+        status="open",
+        page=1,
+        page_size=50,
+        include_all_workspaces=False,
+        q="风控",
+        notification_status=None,
+        after_armed=True,
+        db=db,
+        current_user=user,
+    )
+    assert named["total"] == 1
+    assert named["items"][0]["workflow_name"] == "体育线-风控"
+
+    skipped = list_alerts(
+        workspace_id=ws.id,
+        status="open",
+        page=1,
+        page_size=50,
+        include_all_workspaces=False,
+        q=None,
+        notification_status="skipped",
+        after_armed=False,
+        db=db,
+        current_user=user,
+    )
+    assert skipped["total"] == 1
+    assert skipped["items"][0]["notification_status"] == "skipped"

@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -13,6 +14,7 @@ from app.core.security import get_current_user
 from app.core.access import is_platform_admin
 from app.models.workspace import AlertEvent, AlertNotificationConfig, NodeInstance, TaskNode, Workflow, WorkflowInstance, Workspace
 from app.services.rbac import assert_workspace_access, check_workspace_permission
+from app.services.alert_center import workspace_alert_coverage
 from app.services.alert_notification import (
     notify_alert_event,
     serialize_alert_notification_config,
@@ -29,6 +31,9 @@ def list_alerts(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     include_all_workspaces: bool = Query(False, description="平台管理员：跨工作空间查看"),
+    q: Optional[str] = Query(None, description="工作流名称"),
+    notification_status: Optional[str] = Query(None, description="通知状态 sent/skipped/failed/pending/partial"),
+    after_armed: bool = Query(True, description="默认隐藏推送起点之前、且未实际推送的历史入库"),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -37,13 +42,44 @@ def list_alerts(
             raise HTTPException(status_code=403, detail="仅平台管理员可查看全部工作空间")
     else:
         assert_workspace_access(db, current_user, workspace_id)
-    q = db.query(AlertEvent)
+    stmt = db.query(AlertEvent)
     if not include_all_workspaces:
-        q = q.filter(AlertEvent.workspace_id == workspace_id)
+        stmt = stmt.filter(AlertEvent.workspace_id == workspace_id)
     if status:
-        q = q.filter(AlertEvent.status == status)
-    total = q.count()
-    rows = q.order_by(AlertEvent.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+        stmt = stmt.filter(AlertEvent.status == status)
+    keyword = (q or "").strip()
+    if keyword:
+        stmt = stmt.filter(
+            AlertEvent.workflow_id.in_(
+                db.query(Workflow.id).filter(Workflow.name.ilike(f"%{keyword}%"))
+            )
+        )
+    notify_status = (notification_status or "").strip()
+    if notify_status:
+        stmt = stmt.filter(AlertEvent.notification_status == notify_status)
+    if after_armed:
+        armed_at = (
+            db.query(AlertNotificationConfig.notify_armed_at)
+            .filter(AlertNotificationConfig.workspace_id == AlertEvent.workspace_id)
+            .correlate(AlertEvent)
+            .scalar_subquery()
+        )
+        inst_occurred = (
+            db.query(func.coalesce(WorkflowInstance.finished_at, WorkflowInstance.started_at))
+            .filter(WorkflowInstance.id == AlertEvent.workflow_instance_id)
+            .correlate(AlertEvent)
+            .scalar_subquery()
+        )
+        occurred = func.coalesce(inst_occurred, AlertEvent.created_at)
+        stmt = stmt.filter(
+            or_(
+                armed_at.is_(None),
+                occurred >= armed_at,
+                AlertEvent.notification_status.in_(("sent", "partial")),
+            )
+        )
+    total = stmt.count()
+    rows = stmt.order_by(AlertEvent.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
     workspace_names = {
         ws.id: ws.name
         for ws in db.query(Workspace).filter(Workspace.id.in_([r.workspace_id for r in rows if r.workspace_id])).all()
@@ -123,6 +159,8 @@ def list_alerts(
         "page": page,
         "page_size": page_size,
         "items": items,
+        "after_armed": after_armed,
+        "coverage": workspace_alert_coverage(db, workspace_id),
     }
 
 
@@ -206,7 +244,9 @@ def get_notification_config(
 ):
     assert_workspace_access(db, current_user, workspace_id)
     cfg = db.query(AlertNotificationConfig).filter(AlertNotificationConfig.workspace_id == workspace_id).first()
-    return serialize_alert_notification_config(cfg)
+    body = serialize_alert_notification_config(cfg)
+    body["coverage"] = workspace_alert_coverage(db, workspace_id)
+    return body
 
 
 @router.put("/notification/config")
@@ -220,7 +260,9 @@ def put_notification_config(
     cfg = upsert_alert_notification_config(db, workspace_id, payload or {}, getattr(current_user, "id", None))
     db.commit()
     db.refresh(cfg)
-    return serialize_alert_notification_config(cfg)
+    body = serialize_alert_notification_config(cfg)
+    body["coverage"] = workspace_alert_coverage(db, workspace_id)
+    return body
 
 
 @router.post("/notification/test")
@@ -245,5 +287,11 @@ def test_notification_config(
     db.add(event)
     db.flush()
     result = notify_alert_event(db, event, force=True)
+    coverage = workspace_alert_coverage(db, workspace_id)
     db.rollback()
-    return {"message": "测试完成", "notification_status": event.notification_status, **result}
+    return {
+        "message": "测试完成",
+        "notification_status": event.notification_status,
+        "coverage": coverage,
+        **result,
+    }

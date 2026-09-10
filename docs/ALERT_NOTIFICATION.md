@@ -10,7 +10,7 @@ GIDO Batch **告警中心**聚合工作流失败与运维事件，支持多渠�
 
 | 能力 | 说明 |
 |------|------|
-| 告警列表 | 默认看未处理；展示工作流、失败节点、业务日期、日志摘要 |
+| 告警列表 | 默认看未处理、且隐藏推送起点之前的历史入库；可按工作流名、通知状态检索 |
 | 状态管理 | 打开 / 已确认 / 已关闭 |
 | 自动通知 | 工作流失败入库后立刻按渠道推送（飞书为交互卡片） |
 | 增量推送 | 保存通知配置时默认把推送起点设为现在；更早结束的失败只进告警中心，不刷群 |
@@ -18,10 +18,11 @@ GIDO Batch **告警中心**聚合工作流失败与运维事件，支持多渠�
 | 静默 | 可设 N 小时不推送；恢复通知仍会推（`force`） |
 | 恢复 | 同一实例从失败变为成功时关闭未处理失败告警，并推一条绿色恢复卡片 |
 | 手动通知 | 对单条告警强制再推 |
-| 测试通知 | 管理员发送测试消息验证通道 |
-| 深链 | 平台集成「站点入口」或环境变量 `GIDO_PUBLIC_URL` 后，飞书卡片可打开实例中心 |
+| 测试通知 | 管理员发送测试消息验证通道；卡片可打开告警中心 |
+| 覆盖检查 | 无已发布工作流、飞书未开、未配站点入口时，告警中心与通知配置会提示 |
+| 深链 | 平台集成「站点入口」或环境变量 `GIDO_PUBLIC_URL` 后，飞书卡片可打开实例中心或告警中心 |
 
-入口：**GIDO Batch → 告警中心**（`/gido/batch/alerts`）。
+入口：**GIDO Batch → 告警中心**（`/gido/batch/alert?workspace_id=`）。
 
 飞书必须配置在**发布该工作流的工作空间**（不是随便一个 `infras` 空间）。从未经过 GIDO 发布的 Dolphin 作业不会出现在本页。
 
@@ -54,10 +55,10 @@ GIDO_PUBLIC_URL=https://gido.example.com
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/alerts` | 分页列表。平台管理员可加 `include_all_workspaces=true` |
-| `GET` | `/alerts/notification/config` | 读取通知配置（敏感字段脱敏；含 `notify_cooldown_minutes`、`muted_until`） |
+| `GET` | `/alerts` | 分页列表。`q` 工作流名；`notification_status`；`after_armed` 默认 `true` 隐藏历史入库。返回 `coverage`。平台管理员可加 `include_all_workspaces=true` |
+| `GET` | `/alerts/notification/config` | 读取通知配置（敏感字段脱敏；含 `notify_cooldown_minutes`、`muted_until`、`coverage`） |
 | `PUT` | `/alerts/notification/config` | 更新通知配置（需 `admin`）。`mute_hours` 为写入项：`>0` 静默，`0` 解除 |
-| `POST` | `/alerts/notification/test` | 发送测试通知 |
+| `POST` | `/alerts/notification/test` | 发送测试通知；响应含 `coverage` |
 | `POST` | `/alerts/{id}/notify` | 对指定告警立即通知 |
 
 配置写入与测试接口通过 `check_workspace_permission(..., "admin")` 限制为工作空间管理员。

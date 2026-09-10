@@ -262,6 +262,13 @@ def instance_ops_url(
     return f"{base}/gido/batch/operation?workspace_id={int(workspace_id)}&instance={int(instance_id)}"
 
 
+def alerts_center_url(workspace_id: Optional[int], db: Optional[Session] = None) -> Optional[str]:
+    base = gido_public_url(db)
+    if not base or not workspace_id:
+        return None
+    return f"{base}/gido/batch/alert?workspace_id={int(workspace_id)}"
+
+
 def _fmt_local(dt: Optional[datetime], tz_name: str) -> str:
     if not dt:
         return "—"
@@ -319,7 +326,12 @@ def _lark_card_payload(db: Session, event: AlertEvent, title: str, content: str)
     ws = db.query(Workspace).filter(Workspace.id == event.workspace_id).first() if event.workspace_id else None
     tz = (getattr(ws, "timezone", None) or "Asia/Shanghai")
     wf_name = (wf.name if wf and wf.name else "") or "—"
-    url = instance_ops_url(event.workspace_id, event.workflow_instance_id, db) if kind != "test" else None
+    if kind == "test":
+        url = alerts_center_url(event.workspace_id, db)
+        button_label = "打开告警中心"
+    else:
+        url = instance_ops_url(event.workspace_id, event.workflow_instance_id, db)
+        button_label = "查看详情"
 
     if kind == "test":
         header_title = f"{BRAND_SUITE} · 通道测试"
@@ -394,10 +406,15 @@ def _lark_card_payload(db: Session, event: AlertEvent, title: str, content: str)
             "tag": "action",
             "actions": [{
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "查看详情"},
+                "text": {"tag": "plain_text", "content": button_label},
                 "type": "primary",
                 "url": url,
             }],
+        })
+    elif kind == "test":
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "未配置站点入口，测试卡没有跳转按钮。请到 **平台集成 → 站点入口** 填写浏览器地址后再测。"},
         })
     note = f"{BRAND_SUITE} · {(ws.name if ws else '') or '告警'}"
     if kind != "test":

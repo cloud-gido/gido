@@ -7,7 +7,7 @@
 import { useEffect, useState } from 'react'
 import { Alert, Button, Drawer, Form, Input, InputNumber, message, Select, Space, Switch, Table, Tag, Tooltip } from 'antd'
 import { CheckCircleOutlined, FileTextOutlined, NotificationOutlined, ReloadOutlined, SettingOutlined, UnorderedListOutlined } from '@ant-design/icons'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { alertApi, operationApi } from '../api'
 import { useAppStore } from '../store'
 import { formatInTimeZone } from '../utils/datetime'
@@ -41,8 +41,9 @@ const ALERT_TYPE_COLOR: Record<string, string> = {
 }
 
 export default function AlertCenterPage() {
-  const { currentWorkspace, user } = useAppStore()
+  const { currentWorkspace, user, workspaces, setCurrentWorkspace } = useAppStore()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const wsId = currentWorkspace?.id
   const displayTz = currentWorkspace?.timezone || 'Asia/Shanghai'
   const platformAdmin = isPlatformAdmin(user)
@@ -50,6 +51,11 @@ export default function AlertCenterPage() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState<string>('open')
+  const [keyword, setKeyword] = useState('')
+  const [keywordDraft, setKeywordDraft] = useState('')
+  const [notifyStatus, setNotifyStatus] = useState<string>('all')
+  const [afterArmed, setAfterArmed] = useState(true)
+  const [coverage, setCoverage] = useState<any>(null)
   const [loading, setLoading] = useState(false)
   const [logDrawer, setLogDrawer] = useState(false)
   const [logContent, setLogContent] = useState('')
@@ -61,6 +67,15 @@ export default function AlertCenterPage() {
   const mutedUntil = Form.useWatch('muted_until', configForm)
   const notifyArmedAt = Form.useWatch('notify_armed_at', configForm)
 
+  useEffect(() => {
+    const urlWs = Number(searchParams.get('workspace_id') || 0)
+    if (!urlWs || !Array.isArray(workspaces) || !workspaces.length) return
+    const hit = workspaces.find((w: any) => Number(w.id) === urlWs)
+    if (hit && Number(currentWorkspace?.id) !== urlWs) {
+      setCurrentWorkspace(hit)
+    }
+  }, [searchParams, workspaces, currentWorkspace, setCurrentWorkspace])
+
   const load = async () => {
     if (!wsId) return
     setLoading(true)
@@ -70,15 +85,19 @@ export default function AlertCenterPage() {
         page,
         page_size: 20,
         include_all_workspaces: includeAllWorkspaces || undefined,
+        q: keyword.trim() || undefined,
+        notification_status: notifyStatus === 'all' ? undefined : notifyStatus,
+        after_armed: afterArmed,
       })
       setRows(res.items || [])
       setTotal(res.total || 0)
+      setCoverage(res.coverage || null)
     } finally {
       setLoading(false)
     }
   }
 
-  useEffect(() => { load() }, [wsId, status, page, includeAllWorkspaces])
+  useEffect(() => { load() }, [wsId, status, page, includeAllWorkspaces, keyword, notifyStatus, afterArmed])
 
   const ack = async (id: number) => {
     await alertApi.ack(id)
@@ -109,6 +128,7 @@ export default function AlertCenterPage() {
     try {
       const cfg: any = await alertApi.getNotificationConfig(wsId)
       configForm.setFieldsValue({ ...cfg, arm_from_now: true, mute_hours: undefined })
+      if (cfg.coverage) setCoverage(cfg.coverage)
     } finally {
       setConfigLoading(false)
     }
@@ -125,6 +145,7 @@ export default function AlertCenterPage() {
     delete payload.notify_armed_at
     const cfg: any = await alertApi.putNotificationConfig(wsId, payload)
     configForm.setFieldsValue({ ...cfg, mute_hours: undefined, arm_from_now: true })
+    if (cfg.coverage) setCoverage(cfg.coverage)
     message.success('告警通知配置已保存；飞书只推送这一刻之后的失败')
   }
 
@@ -150,10 +171,15 @@ export default function AlertCenterPage() {
     if (!wsId) return
     const values = await configForm.validateFields()
     const res: any = await alertApi.testNotificationConfig(wsId, values)
+    if (res.coverage) setCoverage(res.coverage)
     if ((res.failed || []).length) {
       message.warning(`测试部分失败：${res.failed.map((x: any) => `${x.channel}: ${x.error}`).join('；')}`)
     } else {
       message.success('测试通知已发送')
+    }
+    const hints = res.coverage?.hints || []
+    if (hints.length) {
+      message.warning(hints[0])
     }
   }
 
@@ -251,6 +277,27 @@ export default function AlertCenterPage() {
         message="工作流失败推一张飞书卡片，只报这一刻之后的"
         description="打开或保存通知配置后，历史失败只留在告警中心，不再刷群。节点失败不单独推送。卡片可跳回实例中心（平台集成 → 站点入口）。"
       />
+      {(coverage?.hints || []).length > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="当前空间可能配错或未配齐"
+          description={
+            <div>
+              {(coverage.hints as string[]).map((h) => <div key={h}>{h}</div>)}
+              {coverage.published_workflow_count > 0 && (
+                <div style={{ marginTop: 8, color: '#666' }}>
+                  已发布：{(coverage.published_workflow_names || []).join('、') || '—'}
+                  {coverage.published_workflow_count > (coverage.published_workflow_names || []).length
+                    ? ` 等 ${coverage.published_workflow_count} 条`
+                    : ''}
+                </div>
+              )}
+            </div>
+          }
+        />
+      )}
 
       <div style={{ marginBottom: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <Select
@@ -264,6 +311,33 @@ export default function AlertCenterPage() {
             { value: 'all', label: '全部' },
           ]}
         />
+        <Input.Search
+          allowClear
+          placeholder="工作流名称"
+          style={{ width: 220 }}
+          value={keywordDraft}
+          onChange={(e) => setKeywordDraft(e.target.value)}
+          onSearch={(v) => { setKeyword(v); setPage(1) }}
+        />
+        <Select
+          style={{ width: 160 }}
+          value={notifyStatus}
+          onChange={(v) => { setNotifyStatus(v); setPage(1) }}
+          options={[
+            { value: 'all', label: '全部通知状态' },
+            { value: 'sent', label: '已推送' },
+            { value: 'partial', label: '部分推送' },
+            { value: 'skipped', label: '未推送' },
+            { value: 'failed', label: '推送失败' },
+            { value: 'pending', label: '待推送' },
+          ]}
+        />
+        <Tooltip title="默认隐藏推送起点之前、当时未推群的历史失败。打开后可检索这些入库记录。">
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <Switch checked={!afterArmed} onChange={(v) => { setAfterArmed(!v); setPage(1) }} />
+            <span style={{ color: '#666' }}>含历史入库</span>
+          </span>
+        </Tooltip>
         <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>刷新</Button>
         <Button icon={<CheckCircleOutlined />} onClick={() => { setStatus('open'); setPage(1) }}>查看未处理</Button>
         <Button icon={<SettingOutlined />} onClick={openConfig}>通知配置</Button>
@@ -307,6 +381,15 @@ export default function AlertCenterPage() {
           message="支持多渠道同时推送"
           description="Webhook 地址和 SMTP 密码只写不读。同一工作流失败默认 15 分钟内只推一张飞书卡片。保存配置默认从当前时刻起推送，不会把历史上已失败的实例再报一遍。"
         />
+        {(coverage?.hints || []).length > 0 && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="飞书可能推不到你以为的那条作业"
+            description={(coverage.hints as string[]).join(' ')}
+          />
+        )}
         <Form
           form={configForm}
           layout="vertical"

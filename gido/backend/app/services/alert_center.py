@@ -6,8 +6,16 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 
-from app.models.workspace import AlertEvent, NodeInstance, TaskNode, Workflow, WorkflowInstance
+from app.models.workspace import (
+    AlertEvent,
+    AlertNotificationConfig,
+    NodeInstance,
+    TaskNode,
+    Workflow,
+    WorkflowInstance,
+)
 
 
 def failed_node_names(db: Session, workflow_instance: WorkflowInstance) -> list[str]:
@@ -131,3 +139,41 @@ def resolve_instance_alerts_on_recovery(db: Session, workflow_instance: Workflow
         notify=True,
         force_notify=True,
     )
+
+
+def workspace_alert_coverage(db: Session, workspace_id: int) -> dict:
+    """值班配置是否能覆盖本空间已发布工作流（配错空间、未配站点入口等）。"""
+    from app.services.alert_notification import gido_public_url
+
+    cfg = db.query(AlertNotificationConfig).filter(AlertNotificationConfig.workspace_id == workspace_id).first()
+    published = (
+        db.query(Workflow)
+        .filter(
+            Workflow.workspace_id == workspace_id,
+            or_(
+                Workflow.scheduler_definition_id.isnot(None),
+                Workflow.status == "published",
+            ),
+        )
+        .order_by(Workflow.name)
+        .all()
+    )
+    names = [(w.name or "").strip() or f"#{w.id}" for w in published]
+    lark_on = bool(cfg and cfg.lark_enabled)
+    site = bool((gido_public_url(db) or "").strip())
+    hints: list[str] = []
+    if not published:
+        hints.append("本空间没有已发布到调度的工作流。Dolphin 上的失败不会进本空间告警中心，请确认工作流是从哪个空间发布的，并在该空间配置飞书。")
+    elif not lark_on:
+        sample = "、".join(names[:4])
+        suffix = f" 等共 {len(names)} 条" if len(names) > 4 else ""
+        hints.append(f"本空间已发布 {len(names)} 条调度工作流（{sample}{suffix}），但飞书渠道未打开。失败会进告警中心，不会推值班群。")
+    if not site:
+        hints.append("尚未配置站点入口（系统管理 → 平台集成）。飞书卡片无法跳转实例中心或告警中心。")
+    return {
+        "published_workflow_count": len(published),
+        "published_workflow_names": names[:8],
+        "lark_enabled": lark_on,
+        "site_url_configured": site,
+        "hints": hints,
+    }
