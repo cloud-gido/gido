@@ -11,7 +11,7 @@ export const STREAM_JOB_FOCUS_STATES = new Set(['active', 'ready_to_deploy'])
 /** 状态下拉默认值：关注中 */
 export const DEFAULT_STREAM_JOB_STATE_FILTER = 'focus'
 
-export const STREAM_JOB_STATE_FILTER_OPTIONS = [
+export const STREAM_JOB_STATE_FILTER_OPTIONS: { value: string; label: string }[] = [
   { value: 'focus', label: '关注中（运行/待部署）' },
   { value: 'active', label: '运行中' },
   { value: 'ready_to_deploy', label: '已批准待部署' },
@@ -19,7 +19,7 @@ export const STREAM_JOB_STATE_FILTER_OPTIONS = [
   { value: 'stopped', label: '已停止' },
   { value: 'draft', label: '草稿' },
   { value: 'terminal', label: '已结束' },
-] as const
+]
 
 /**
  * 是否通过「运行状态」筛选。
