@@ -167,7 +167,7 @@ def _poll_scheduler_instances_job():
     from app.services.distributed_lock import try_distributed_lock
     from app.services.shared_state import claim_once
 
-    bucket = int(datetime.utcnow().timestamp() // 30)
+    bucket = int(datetime.utcnow().timestamp() // 15)
     claimed = claim_once(f"scheduler-instance-poll:{bucket}", 60)
     if claimed is False:
         return
@@ -203,13 +203,13 @@ def reload_scheduler_instance_polling():
             job.remove()
     scheduler.add_job(
         _poll_scheduler_instances_job,
-        IntervalTrigger(seconds=30),
+        IntervalTrigger(seconds=15),
         id="scheduler_instance_poll",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
-    logger.info("已注册生产调度实例轮询补偿任务：30s")
+    logger.info("已注册生产调度实例轮询补偿任务：15s")
 
 
 def reload_integration_schedules():

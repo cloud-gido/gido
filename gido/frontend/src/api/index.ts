@@ -337,7 +337,10 @@ export const qualityApi = {
 
 // 调度器（Dolphin 元数据同步等）
 export const schedulerApi = {
-  syncDolphinInstances: () => request.post('/scheduler/ds/sync-instances'),
+  syncDolphinInstances: (workspaceId?: number) =>
+    request.post('/scheduler/ds/sync-instances', null, {
+      params: workspaceId != null ? { workspace_id: workspaceId } : {},
+    }),
   previewCron: (cron: string, count = 5) =>
     request.get('/scheduler/cron/preview', { params: { cron, count } }),
 }
@@ -444,6 +447,9 @@ export const adminApi = {
   putCopilotIntegration: (data: Record<string, unknown>) => request.put('/admin/integration/copilot', data),
   testCopilotIntegration: () => request.post('/admin/integration/copilot/test'),
   resetCopilotIntegration: () => request.post('/admin/integration/copilot/reset-overrides'),
+  getSiteIntegration: () => request.get('/admin/integration/site'),
+  putSiteIntegration: (data: Record<string, unknown>) => request.put('/admin/integration/site', data),
+  resetSiteIntegration: () => request.post('/admin/integration/site/reset-overrides'),
   /** 拦截器返回 res.data；responseType text 时实为 string，此处断言供 tsc 通过 */
   flinkSqlGatewayK8sYml: (): Promise<string> =>
     request.get('/admin/integration/flink/sql-gateway-k8s-yml', { responseType: 'text' as const }) as Promise<string>,

@@ -230,6 +230,24 @@ def _name_to_node_id(db: Session, wf: Workflow) -> Dict[str, int]:
     return m
 
 
+def _alert_workflow_failed(db: Session, inst: WorkflowInstance) -> None:
+    try:
+        from app.services.alert_center import open_instance_alert
+
+        open_instance_alert(db, workflow_instance=inst, notify=True)
+    except Exception:
+        logger.debug("open workflow alert failed", exc_info=True)
+
+
+def _alert_workflow_recovered(db: Session, inst: WorkflowInstance) -> None:
+    try:
+        from app.services.alert_center import resolve_instance_alerts_on_recovery
+
+        resolve_instance_alerts_on_recovery(db, inst)
+    except Exception:
+        logger.debug("open recovery alert failed", exc_info=True)
+
+
 def _upsert_node_instances_from_ds_tasks(
     db: Session,
     inst: WorkflowInstance,
@@ -318,6 +336,7 @@ def _upsert_node_instances_from_ds_tasks(
                 last_synced_at=sync_now,
             )
             db.add(ni)
+            db.flush()
             changed = True
         if t_dw == "failed":
             try:
@@ -328,6 +347,7 @@ def _upsert_node_instances_from_ds_tasks(
                     workflow_instance=inst,
                     node_instance=ni,
                     message=f"节点 {tname or node_id} 执行失败",
+                    notify=False,
                 )
             except Exception:
                 logger.debug("open node alert failed", exc_info=True)
@@ -352,7 +372,9 @@ def _business_date_from_row(row: dict, tz_name: str) -> Optional[str]:
     return None
 
 
-def sync_from_dolphin_definitions(db: Session, ds_client: Any) -> Dict[str, int]:
+def sync_from_dolphin_definitions(
+    db: Session, ds_client: Any, *, workspace_id: Optional[int] = None, page_size: int = 100
+) -> Dict[str, int]:
     """
     对每个已发布到生产调度的工作流，从执行引擎拉最近流程实例并 upsert WorkflowInstance；
     再拉任务实例填充 NodeInstance。
@@ -363,7 +385,10 @@ def sync_from_dolphin_definitions(db: Session, ds_client: Any) -> Dict[str, int]
     cmd_filled = 0
     definitions_scanned = 0
 
-    workflows = db.query(Workflow).order_by(Workflow.id.asc()).all()
+    workflows_q = db.query(Workflow).order_by(Workflow.id.asc())
+    if workspace_id is not None:
+        workflows_q = workflows_q.filter(Workflow.workspace_id == int(workspace_id))
+    workflows = workflows_q.all()
     for wf in workflows:
         pc, pcode = _workflow_scheduler_refs(wf)
         if not pc or not pcode:
@@ -373,7 +398,7 @@ def sync_from_dolphin_definitions(db: Session, ds_client: Any) -> Dict[str, int]
         name_map = _name_to_node_id(db, wf)
         tz_w = _workspace_tz_for_wf(db, wf)
         try:
-            rows = ds_client.list_process_instances(pc, process_definition_code=pcode, page_size=100)
+            rows = ds_client.list_process_instances(pc, process_definition_code=pcode, page_size=page_size)
         except Exception as e:
             logger.warning("DS list_process_instances failed wf_id=%s project=%s process=%s: %s", wf.id, pc, pcode, e)
             continue
@@ -428,6 +453,8 @@ def sync_from_dolphin_definitions(db: Session, ds_client: Any) -> Dict[str, int]
                 active_version_no = getattr(active_ver, "version_no", None)
                 run_key = _scheduler_run_key("dolphin", pc, pcode, ds_pi_id)
                 sync_now = datetime.utcnow()
+                became_failed = False
+                recovered = False
 
                 if inst is None:
                     inst = WorkflowInstance(
@@ -453,6 +480,7 @@ def sync_from_dolphin_definitions(db: Session, ds_client: Any) -> Dict[str, int]
                     ingested += 1
                     if ct_str:
                         cmd_filled += 1
+                    became_failed = dw_status == "failed"
                 else:
                     changed = False
                     if ct_str and (inst.dolphin_command_type or "") != ct_str:
@@ -487,15 +515,10 @@ def sync_from_dolphin_definitions(db: Session, ds_client: Any) -> Dict[str, int]
                             inst.job_version_id = vid
                             changed = True
                     if inst.status != dw_status:
+                        recovered = inst.status == "failed" and dw_status == "success"
                         inst.status = dw_status
                         changed = True
-                        if dw_status == "failed":
-                            try:
-                                from app.services.alert_center import open_instance_alert
-
-                                open_instance_alert(db, workflow_instance=inst, message=f"实例 #{inst.id} 执行失败")
-                            except Exception:
-                                logger.debug("open workflow alert failed", exc_info=True)
+                        became_failed = dw_status == "failed"
                     if started and inst.started_at != started:
                         inst.started_at = started
                         changed = True
@@ -520,6 +543,10 @@ def sync_from_dolphin_definitions(db: Session, ds_client: Any) -> Dict[str, int]
 
                 _, n_touched = _upsert_node_instances_from_ds_tasks(db, inst, tasks, name_map, tz_w)
                 node_upserted += n_touched
+                if became_failed:
+                    _alert_workflow_failed(db, inst)
+                if recovered:
+                    _alert_workflow_recovered(db, inst)
 
                 db.commit()
             except Exception as e:
@@ -608,16 +635,10 @@ def patch_instances_from_ds_detail(
         if getattr(inst, "scheduler_instance_id", None) != str(ds_instance_id):
             inst.scheduler_instance_id = str(ds_instance_id)
         dw_status = ds_info.get("state_dw") or map_dolphin_process_instance_state(ds_info.get("state"))
+        prev_status = inst.status
         if inst.status != dw_status:
             inst.status = dw_status
             synced += 1
-            if dw_status == "failed":
-                try:
-                    from app.services.alert_center import open_instance_alert
-
-                    open_instance_alert(db, workflow_instance=inst, message=f"实例 #{inst.id} 执行失败")
-                except Exception:
-                    logger.debug("open workflow alert failed", exc_info=True)
         tz_w = _workspace_tz_for_wf(db, wf)
         st_t = _parse_dolphin_api_time(ds_info.get("startTime") or ds_info.get("start_time"), tz_w)
         if st_t and (not inst.started_at or inst.started_at != st_t):
@@ -636,6 +657,10 @@ def patch_instances_from_ds_detail(
         except Exception:
             tasks = []
         _upsert_node_instances_from_ds_tasks(db, inst, tasks, name_map, tz_w)
+        if dw_status == "failed" and prev_status != "failed":
+            _alert_workflow_failed(db, inst)
+        if prev_status == "failed" and dw_status == "success":
+            _alert_workflow_recovered(db, inst)
         try:
             db.commit()
         except Exception:
@@ -702,16 +727,10 @@ def _apply_ds_poll_to_instance(db: Session, inst: WorkflowInstance, wf: Workflow
             inst.job_version_id = vid
             changed = True
     dw_status = ds_info.get("state_dw") or map_dolphin_process_instance_state(ds_info.get("state"))
+    prev_status = inst.status
     if inst.status != dw_status:
         inst.status = dw_status
         changed = True
-        if dw_status == "failed":
-            try:
-                from app.services.alert_center import open_instance_alert
-
-                open_instance_alert(db, workflow_instance=inst, message=f"实例 #{inst.id} 执行失败")
-            except Exception:
-                logger.debug("open workflow alert failed", exc_info=True)
     tz_w = _workspace_tz_for_wf(db, wf)
     st_t = _parse_dolphin_api_time(ds_info.get("startTime") or ds_info.get("start_time"), tz_w)
     if st_t and (not inst.started_at or inst.started_at != st_t):
@@ -734,6 +753,10 @@ def _apply_ds_poll_to_instance(db: Session, inst: WorkflowInstance, wf: Workflow
     except Exception:
         tasks = []
     node_changed, _ = _upsert_node_instances_from_ds_tasks(db, inst, tasks, name_map, tz_w)
+    if dw_status == "failed" and prev_status != "failed":
+        _alert_workflow_failed(db, inst)
+    if prev_status == "failed" and dw_status == "success":
+        _alert_workflow_recovered(db, inst)
     return changed or node_changed
 
 
@@ -848,3 +871,94 @@ def refresh_running_ds_instances_for_workflow(db: Session, wf_id: int, *, limit:
         except Exception:
             db.rollback()
     return touched
+
+
+def find_published_workflow_for_ds(
+    db: Session, *, project_id: Any = None, definition_id: Any = None
+) -> Optional[Workflow]:
+    """按 DS process definition code（及可选 project）找到已发布到该定义的 GIDO 工作流。"""
+    if definition_id is None or not str(definition_id).strip():
+        return None
+    rows = (
+        db.query(Workflow)
+        .filter(Workflow.scheduler_definition_id == str(definition_id).strip())
+        .order_by(Workflow.id.asc())
+        .all()
+    )
+    if not rows:
+        return None
+    if project_id is None or not str(project_id).strip():
+        return rows[-1]
+    pid = str(project_id).strip()
+    matched = [w for w in rows if (getattr(w, "scheduler_project_id", None) or "") in ("", pid)]
+    return (matched or rows)[-1]
+
+
+def ingest_ds_instance_from_callback(
+    db: Session,
+    *,
+    scheduler_instance_id: str,
+    dw_status: str,
+    raw_state: Any = None,
+    project_id: Any = None,
+    definition_id: Any = None,
+) -> Optional[WorkflowInstance]:
+    """
+    DS 回调时库里还没有该流程实例：按已发布工作流绑定立刻入库。
+    失败状态当场写告警并推送，不必等轮询。
+    """
+    wf = find_published_workflow_for_ds(db, project_id=project_id, definition_id=definition_id)
+    if not wf:
+        return None
+    existing = (
+        db.query(WorkflowInstance)
+        .filter(
+            WorkflowInstance.workflow_id == wf.id,
+            WorkflowInstance.scheduler_instance_id == str(scheduler_instance_id),
+        )
+        .first()
+    )
+    if existing:
+        return existing
+    pc, pcode = _workflow_scheduler_refs(wf)
+    active_vid = _active_version_id(db, wf)
+    proj = str(project_id).strip() if project_id is not None and str(project_id).strip() else (str(pc) if pc else None)
+    defn = str(definition_id).strip() if definition_id is not None else (str(pcode) if pcode else None)
+    inst = WorkflowInstance(
+        workflow_id=wf.id,
+        job_version_id=active_vid,
+        status=dw_status or "failed",
+        trigger_type=f"schedule|ds:{scheduler_instance_id}"[:128],
+        scheduler_engine="dolphin",
+        scheduler_project_id=proj,
+        scheduler_definition_id=defn,
+        scheduler_instance_id=str(scheduler_instance_id),
+        scheduler_run_key=_scheduler_run_key("dolphin", proj or pc, defn or pcode, scheduler_instance_id),
+        scheduler_state_raw=str(raw_state)[:128] if raw_state is not None else None,
+        last_synced_at=datetime.utcnow(),
+        started_at=datetime.utcnow(),
+        finished_at=datetime.utcnow() if (dw_status or "failed") != "running" else None,
+    )
+    db.add(inst)
+    db.flush()
+    if inst.status == "failed":
+        _alert_workflow_failed(db, inst)
+    return inst
+
+
+def sync_workspace_ds_instances(db: Session, workspace_id: int, *, page_size: int = 30) -> Dict[str, int]:
+    """打开实例中心时：只同步当前工作空间已发布工作流的最近 DS 实例（含已失败）。"""
+    from app.services.ds_runtime import get_dolphin_runtime, refresh_ds_client
+    from app.services.dolphin import ds_client
+
+    empty = {
+        "definitions_scanned": 0,
+        "ingested": 0,
+        "updated_from_ds": 0,
+        "command_types_filled": 0,
+        "node_rows_touched": 0,
+    }
+    if not get_dolphin_runtime(db).enabled:
+        return empty
+    refresh_ds_client(db)
+    return sync_from_dolphin_definitions(db, ds_client, workspace_id=workspace_id, page_size=page_size)

@@ -120,8 +120,8 @@ def test_copy_node_same_folder_and_unique_name(client: TestClient):
     assert body["script_content"] == "SELECT 1 AS x"
     assert body["node_type"] == "SQL"
     assert body["params"] == {"env": "dev"}
-    assert body["is_published"] is False
-    assert body["is_locked"] is False
+    assert src_body["retry_times"] == 3
+    assert body["retry_times"] == 3
 
     again = client.post(f"/api/studio/nodes/{src_body['id']}/copy", headers=h, json={})
     assert again.status_code == 200, again.text

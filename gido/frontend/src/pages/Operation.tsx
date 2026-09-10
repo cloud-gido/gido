@@ -4,16 +4,16 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useState, useEffect, type ReactNode } from 'react'
-import { Table, Tag, Button, Space, Drawer, Row, Col, Statistic, Select, message, Alert, Tooltip, Card, Descriptions } from 'antd'
+import { useState, useEffect, useRef, type ReactNode } from 'react'
+import { Table, Tag, Button, Space, Drawer, Row, Col, Statistic, Select, message, Alert, Tooltip, Card, Descriptions, Switch } from 'antd'
 import { ReloadOutlined, StopOutlined, FileTextOutlined, UnorderedListOutlined, AuditOutlined } from '@ant-design/icons'
-import { useNavigate, Link } from 'react-router-dom'
+import { useNavigate, Link, useSearchParams } from 'react-router-dom'
 import { operationApi, schedulerApi } from '../api'
 import { useAppStore } from '../store'
 import { formatInTimeZone } from '../utils/datetime'
 import OpsDashboardCharts from '../components/OpsDashboardCharts'
 import { R } from '../routes'
-import { isWorkspaceAdmin } from '../perm'
+import { isPlatformAdmin, isWorkspaceAdmin } from '../perm'
 
 const STATUS_COLOR: Record<string, string> = {
   success: 'green', failed: 'red', running: 'blue', pending: 'orange', killed: 'default'
@@ -22,10 +22,12 @@ const STATUS_COLOR: Record<string, string> = {
 type ListMode = 'nodes' | 'workflows'
 
 export default function OperationPage() {
-  const { currentWorkspace, user } = useAppStore()
+  const { currentWorkspace, user, workspaces, setCurrentWorkspace } = useAppStore()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const wsId = currentWorkspace?.id
   const displayTz = currentWorkspace?.timezone || 'Asia/Shanghai'
+  const platformAdmin = isPlatformAdmin(user)
   const [overview, setOverview] = useState<any>({})
   const [instances, setInstances] = useState<any[]>([])
   const [total, setTotal] = useState(0)
@@ -47,10 +49,17 @@ export default function OperationPage() {
   /** 节点表：仅某工作流实例 */
   const [workflowInstanceScope, setWorkflowInstanceScope] = useState<number | undefined>()
   const [drilldownContext, setDrilldownContext] = useState<any>(null)
+  const [includeAllWorkspaces, setIncludeAllWorkspaces] = useState(false)
+  const [drillWorkspaceId, setDrillWorkspaceId] = useState<number | undefined>()
+  const appliedDeepLink = useRef('')
+
+  const listParams = {
+    include_all_workspaces: includeAllWorkspaces || undefined,
+  }
 
   const load = async () => {
     if (!wsId) return
-    const ov: any = await operationApi.overview(wsId)
+    const ov: any = await operationApi.overview(wsId, listParams)
     setOverview(ov)
     let inst: any
     if (listMode === 'workflows') {
@@ -59,9 +68,11 @@ export default function OperationPage() {
         page_size: 20,
         status: statusFilter || undefined,
         today_only: todayOnlyWorkflows ? true : undefined,
+        ...listParams,
       })
       setDrilldownContext(null)
     } else {
+      const nodeWs = drillWorkspaceId || wsId
       const nparams: Record<string, unknown> = {
         status: statusFilter,
         page,
@@ -70,14 +81,35 @@ export default function OperationPage() {
       if (workflowInstanceScope != null) {
         nparams.workflow_instance_id = workflowInstanceScope
       }
-      inst = await operationApi.nodeInstances(wsId, nparams)
+      inst = await operationApi.nodeInstances(nodeWs, nparams)
       setDrilldownContext(inst.context || null)
     }
     setInstances(inst.items)
     setTotal(inst.total)
   }
 
-  useEffect(() => { load() }, [wsId, statusFilter, page, listMode, todayOnlyWorkflows, workflowInstanceScope])
+  useEffect(() => { load() }, [wsId, statusFilter, page, listMode, todayOnlyWorkflows, workflowInstanceScope, includeAllWorkspaces, drillWorkspaceId])
+
+  useEffect(() => {
+    const inst = Number(searchParams.get('instance') || 0)
+    if (!inst) return
+    const urlWs = Number(searchParams.get('workspace_id') || 0)
+    if (urlWs && Array.isArray(workspaces) && workspaces.length) {
+      const hit = workspaces.find((w: any) => Number(w.id) === urlWs)
+      if (hit && Number(currentWorkspace?.id) !== urlWs) {
+        setCurrentWorkspace(hit)
+      }
+    }
+    const key = `${urlWs || ''}:${inst}`
+    if (appliedDeepLink.current === key) return
+    appliedDeepLink.current = key
+    setDrillWorkspaceId(urlWs || undefined)
+    setListMode('nodes')
+    setWorkflowInstanceScope(inst)
+    setTodayOnlyWorkflows(false)
+    setStatusFilter(undefined)
+    setPage(1)
+  }, [searchParams, workspaces, currentWorkspace, setCurrentWorkspace])
 
   const showLog = async (niId: number) => {
     const res: any = await operationApi.getLog(niId)
@@ -104,29 +136,33 @@ export default function OperationPage() {
   }
 
   const handleWorkflowStop = async (row: any) => {
-    if (!wsId || !row.workflow_id) return
-    await operationApi.stopWorkflowInstance(wsId, row.workflow_id, row.id)
+    const targetWs = row.workspace_id || wsId
+    if (!targetWs || !row.workflow_id) return
+    await operationApi.stopWorkflowInstance(targetWs, row.workflow_id, row.id)
     message.success('已停止工作流实例')
     load()
   }
 
   const handleWorkflowRefresh = async (row: any) => {
-    if (!wsId || !row.workflow_id) return
-    await operationApi.refreshWorkflowInstance(wsId, row.workflow_id, row.id)
+    const targetWs = row.workspace_id || wsId
+    if (!targetWs || !row.workflow_id) return
+    await operationApi.refreshWorkflowInstance(targetWs, row.workflow_id, row.id)
     message.success('实例状态已刷新')
     load()
   }
 
   const handleWorkflowRerun = async (row: any) => {
-    if (!wsId || !row.workflow_id) return
-    await operationApi.rerunWorkflowInstance(wsId, row.workflow_id, row.id)
+    const targetWs = row.workspace_id || wsId
+    if (!targetWs || !row.workflow_id) return
+    await operationApi.rerunWorkflowInstance(targetWs, row.workflow_id, row.id)
     message.success('已提交重跑')
     load()
   }
 
   const handleRetryFailedNodes = async (row: any) => {
-    if (!wsId || !row.workflow_id) return
-    await operationApi.retryFailedNodes(wsId, row.workflow_id, row.id)
+    const targetWs = row.workspace_id || wsId
+    if (!targetWs || !row.workflow_id) return
+    await operationApi.retryFailedNodes(targetWs, row.workflow_id, row.id)
     message.success('已提交失败节点重试')
     load()
   }
@@ -135,7 +171,8 @@ export default function OperationPage() {
   const handleSyncSchedulerMeta = async () => {
     setSyncingSchedulerMeta(true)
     try {
-      const res: any = await schedulerApi.syncDolphinInstances()
+      const syncWs = includeAllWorkspaces && platformAdmin ? undefined : wsId
+      const res: any = await schedulerApi.syncDolphinInstances(syncWs)
       message.success(
         `调度实例已同步：扫描流程定义 ${res?.definitions_scanned ?? 0} 个，新入库实例 ${res?.ingested ?? 0}，` +
           `节点行 ${res?.node_rows_touched ?? 0}，commandType 更新 ${res?.command_types_filled ?? 0}，` +
@@ -168,13 +205,15 @@ export default function OperationPage() {
     setTodayOnlyWorkflows(false)
     setWorkflowInstanceScope(undefined)
     setDrilldownContext(null)
+    setDrillWorkspaceId(undefined)
     setStatusFilter(undefined)
     setPage(1)
   }
 
-  const openNodesForWorkflowInstance = (wfInstId: number) => {
+  const openNodesForWorkflowInstance = (wfInstId: number, rowWsId?: number) => {
     setListMode('nodes')
     setWorkflowInstanceScope(wfInstId)
+    setDrillWorkspaceId(rowWsId || wsId)
     setTodayOnlyWorkflows(false)
     setStatusFilter(undefined)
     setPage(1)
@@ -272,6 +311,9 @@ export default function OperationPage() {
   ]
 
   const workflowColumns = [
+    ...(includeAllWorkspaces
+      ? [{ title: '工作空间', dataIndex: 'workspace_name', width: 140, ellipsis: true }]
+      : []),
     { title: '工作流实例', dataIndex: 'id', width: 110 },
     { title: '工作流', dataIndex: 'workflow_name', width: 160, ellipsis: true },
     { title: '状态', dataIndex: 'status', width: 100, render: (s: string) => <Tag color={STATUS_COLOR[s]}>{s}</Tag> },
@@ -335,7 +377,7 @@ export default function OperationPage() {
       width: 300,
       render: (_: unknown, row: any) => (
         <Space>
-          <Button type="link" size="small" icon={<UnorderedListOutlined />} onClick={() => openNodesForWorkflowInstance(row.id)}>
+          <Button type="link" size="small" icon={<UnorderedListOutlined />} onClick={() => openNodesForWorkflowInstance(row.id, row.workspace_id)}>
             节点明细
           </Button>
           <Button size="small" icon={<ReloadOutlined />} onClick={() => handleWorkflowRefresh(row)}>
@@ -380,7 +422,7 @@ export default function OperationPage() {
         message="仅展示已上线工作流的生产运行实例"
         description={
           <span>
-            调度、补数与运维重跑请在本页查看。数据开发试跑与数据探查查询请到{' '}
+            打开本页会同步当前工作空间最近的调度实例（含失败）。调度、补数与运维重跑请在本页查看。数据开发试跑与数据探查查询请到{' '}
             <Link to={R.batch.runHistory}>运行历史</Link>。
           </span>
         }
@@ -480,6 +522,22 @@ export default function OperationPage() {
         />
         <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
         <Button loading={syncingSchedulerMeta} onClick={handleSyncSchedulerMeta}>同步调度实例</Button>
+        {platformAdmin && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <Switch
+              checked={includeAllWorkspaces}
+              onChange={(v) => {
+                setIncludeAllWorkspaces(v)
+                setPage(1)
+                setListMode('workflows')
+                setWorkflowInstanceScope(undefined)
+                setDrillWorkspaceId(undefined)
+                setDrilldownContext(null)
+              }}
+            />
+            <span style={{ color: '#666' }}>全部工作空间</span>
+          </span>
+        )}
       </div>
 
       <div style={{ marginBottom: 8, color: '#666', fontSize: 13 }}>{tableTitle}</div>

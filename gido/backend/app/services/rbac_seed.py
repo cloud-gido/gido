@@ -82,7 +82,14 @@ def migrate_scheduler_engine_fields(engine: Engine) -> None:
         add_column(conn, "dw_alert_events", "dedupe_key", "VARCHAR(256)")
         add_column(conn, "dw_alert_events", "assignee_id", "INTEGER")
         add_column(conn, "dw_alert_events", "assignee_group", "VARCHAR(128)")
-        add_column(conn, "dw_alert_events", "notification_status", "VARCHAR(32)")
+        add_column(conn, "dw_alert_notification_configs", "notify_cooldown_minutes", "INTEGER DEFAULT 15")
+        add_column(conn, "dw_alert_notification_configs", "muted_until", "TIMESTAMP")
+        add_column(conn, "dw_alert_notification_configs", "notify_armed_at", "TIMESTAMP")
+        if insp.has_table("dw_alert_notification_configs"):
+            conn.execute(text(
+                "UPDATE dw_alert_notification_configs SET notify_armed_at = CURRENT_TIMESTAMP "
+                "WHERE notify_armed_at IS NULL"
+            ))
         if not insp.has_table("dw_alert_notification_configs"):
             conn.execute(text(
                 "CREATE TABLE dw_alert_notification_configs ("
@@ -103,6 +110,9 @@ def migrate_scheduler_engine_fields(engine: Engine) -> None:
                 "lark_webhook_url TEXT, "
                 "wecom_enabled BOOLEAN DEFAULT FALSE NOT NULL, "
                 "wecom_webhook_url TEXT, "
+                "notify_cooldown_minutes INTEGER DEFAULT 15, "
+                "muted_until TIMESTAMP, "
+                "notify_armed_at TIMESTAMP, "
                 "updated_at TIMESTAMP, "
                 "updated_by INTEGER"
                 ")"
@@ -349,6 +359,21 @@ def migrate_platform_integration_aps_schedule(engine: Engine) -> None:
         return
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE dw_platform_integration ADD COLUMN aps_workflow_schedule_enabled BOOLEAN"))
+
+
+def migrate_platform_integration_public_url(engine: Engine) -> None:
+    """平台集成为飞书/浏览器深链补齐 gido_public_url（幂等）。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_platform_integration"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_platform_integration")}
+    if "gido_public_url" in cols:
+        return
+    with engine.begin() as conn:
+        if engine.dialect.name == "mysql":
+            conn.execute(text("ALTER TABLE dw_platform_integration ADD COLUMN gido_public_url VARCHAR(512) NULL"))
+        else:
+            conn.execute(text("ALTER TABLE dw_platform_integration ADD COLUMN gido_public_url VARCHAR(512)"))
 
 
 def migrate_platform_integration_copilot(engine: Engine) -> None:

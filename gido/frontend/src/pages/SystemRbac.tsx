@@ -10,7 +10,7 @@ import {
 } from 'antd'
 import {
   PlusOutlined, ReloadOutlined, EditOutlined, DeleteOutlined, UserAddOutlined, ApiOutlined, ExperimentOutlined,
-  ThunderboltOutlined, FileTextOutlined, TeamOutlined, DownloadOutlined, CommentOutlined,
+  ThunderboltOutlined, FileTextOutlined, TeamOutlined, DownloadOutlined, CommentOutlined, LinkOutlined,
 } from '@ant-design/icons'
 import { adminApi, authApi, workspaceApi } from '../api'
 import { useAppStore } from '../store'
@@ -57,6 +57,9 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
   const [copilotForm] = Form.useForm()
   const [copilotLoading, setCopilotLoading] = useState(false)
   const [copilotMeta, setCopilotMeta] = useState<any>(null)
+  const [siteForm] = Form.useForm()
+  const [siteLoading, setSiteLoading] = useState(false)
+  const [siteMeta, setSiteMeta] = useState<any>(null)
   const [deployModal, setDeployModal] = useState(false)
   const [deployHint, setDeployHint] = useState<any>(null)
 
@@ -282,6 +285,49 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
   useEffect(() => {
     if (canIntegrationRead) loadCopilot()
   }, [canIntegrationRead])
+
+  const loadSite = async () => {
+    if (!canIntegrationRead) return
+    setSiteLoading(true)
+    try {
+      const s: any = await adminApi.getSiteIntegration()
+      setSiteMeta(s)
+      siteForm.setFieldsValue({ gido_public_url: s.override_url ?? '' })
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '加载站点入口失败')
+    } finally {
+      setSiteLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (canIntegrationRead) loadSite()
+  }, [canIntegrationRead])
+
+  const saveSite = async () => {
+    const v = await siteForm.validateFields()
+    try {
+      const r: any = await adminApi.putSiteIntegration({
+        gido_public_url: v.gido_public_url ? String(v.gido_public_url).trim() : '',
+      })
+      setSiteMeta(r)
+      siteForm.setFieldsValue({ gido_public_url: r.override_url ?? '' })
+      message.success(r.effective_url ? '已保存，飞书卡片将带上「打开实例中心」' : '已清空库覆盖，卡片按钮取决于环境变量')
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '保存失败')
+    }
+  }
+
+  const resetSite = async () => {
+    try {
+      const r: any = await adminApi.resetSiteIntegration()
+      setSiteMeta(r)
+      siteForm.setFieldsValue({ gido_public_url: '' })
+      message.success('已回退环境变量')
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '清空失败')
+    }
+  }
 
   const saveDolphin = async () => {
     const v = await dolphinForm.validateFields()
@@ -685,6 +731,56 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
     return <Card>无权访问系统管理</Card>
   }
 
+  const sitePanel = (
+    <div style={{ maxWidth: 720 }}>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="浏览器入口（飞书卡片深链）"
+        description="这是全站配置，不是某个工作空间的。填你平时打开 GIDO 的地址，例如 http://127.0.0.1:8080 或 https://gido.example.com。留空并保存即拔掉库覆盖，回退环境变量 GIDO_PUBLIC_URL。不配则飞书失败卡片照发，只是没有「打开实例中心」按钮。"
+      />
+      <Descriptions size="small" bordered column={1} style={{ marginBottom: 16 }}>
+        <Descriptions.Item label="当前生效">
+          {siteMeta?.effective_url || '未配置'}
+          {siteMeta?.effective_source === 'database'
+            ? '（来自本页）'
+            : siteMeta?.effective_source === 'environment'
+              ? '（来自环境变量）'
+              : ''}
+        </Descriptions.Item>
+        <Descriptions.Item label="环境变量基线">
+          {siteMeta?.env_url || '未设置 GIDO_PUBLIC_URL'}
+        </Descriptions.Item>
+        <Descriptions.Item label="卡片链接示例">
+          {siteMeta?.deep_link_example || '配置后才会生成'}
+        </Descriptions.Item>
+      </Descriptions>
+      <Form form={siteForm} layout="vertical" disabled={!canIntegrationWrite}>
+        <Form.Item
+          name="gido_public_url"
+          label="GIDO 浏览器地址"
+          extra="须 http:// 或 https:// 开头，不要末尾斜杠"
+        >
+          <Input placeholder="https://gido.example.com" />
+        </Form.Item>
+      </Form>
+      <Space wrap>
+        {canIntegrationWrite && (
+          <Button type="primary" icon={<LinkOutlined />} onClick={saveSite} loading={siteLoading}>
+            保存
+          </Button>
+        )}
+        {canIntegrationWrite && (
+          <Popconfirm title="清空本页覆盖，回退环境变量？" onConfirm={resetSite}>
+            <Button danger loading={siteLoading}>清空覆盖（回退 .env）</Button>
+          </Popconfirm>
+        )}
+        <Button onClick={loadSite} loading={siteLoading}>刷新</Button>
+      </Space>
+    </div>
+  )
+
   const dolphinPanel = (
     <div style={{ maxWidth: 720 }}>
       <Alert
@@ -1023,6 +1119,7 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
       <div style={{ maxWidth: 1280 }}>
         <Tabs
           items={[
+            { key: 'site', label: '站点入口', children: sitePanel },
             { key: 'dolphin', label: 'DolphinScheduler', children: dolphinPanel },
             { key: 'flink', label: 'Apache Flink', children: flinkPanel },
             { key: 'copilot', label: '玑渡 Copilot', children: copilotPanel },
@@ -1254,6 +1351,7 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
       children: (
         <Tabs
           items={[
+            { key: 'site', label: '站点入口', children: sitePanel },
             { key: 'dolphin', label: 'DolphinScheduler', children: dolphinPanel },
             { key: 'flink', label: 'Apache Flink', children: flinkPanel },
             { key: 'copilot', label: '玑渡 Copilot', children: copilotPanel },

@@ -41,7 +41,7 @@
 | 运行时配置 | `gido/backend/app/services/ds_runtime.py` | 环境变量 / 平台集成 / 工作空间 Token 合并 |
 | 调度引擎接口 | `gido/backend/app/services/scheduler_engine/base.py` | `SchedulerEngine` 协议：发布、上下线、暂停/恢复、触发、停止、重试、日志 |
 | DS 引擎实现 | `gido/backend/app/services/scheduler_engine/dolphin.py` | 将 GIDO 工作流映射为 DS 流程定义 |
-| 实例同步 | `gido/backend/app/services/dolphin_instance_sync.py` | 工作流/节点实例与 DS 对齐，处理 `scheduler_lost` |
+| 实例同步 | `gido/backend/app/services/dolphin_instance_sync.py` | 工作流/节点实例与 DS 对齐；打开实例中心同步本空间最近实例（含失败） |
 | 运维操作 | `gido/backend/app/services/scheduler_ops.py` | 停止、刷新、重跑、失败节点重试、结构化日志 |
 | 发布 | `gido/backend/app/services/workflow_ds_publish.py` | 发布到 DS、Cron、上线状态 |
 | API | `workflow.py` · `operation.py` · `scheduler.py` | 生命周期、运维、回调与诊断 |
@@ -90,7 +90,10 @@ GIDO 工作流在业务侧有明确状态，与 DS 定义/调度状态对应：
 
 ### 4.3 同步与回调
 
-- 后台轮询 + DS 回调（`POST /scheduler/callback/dolphin`）更新实例状态  
+- 后台轮询（约 15s）+ DS 回调（`POST /scheduler/callback/dolphin`）更新实例状态；失败时立刻写告警并推飞书（工作流级一张卡片）
+- 打开实例中心会同步当前工作空间已发布工作流的最近实例（含失败），无需先点「同步」
+- `POST /scheduler/ds/sync-instances?workspace_id=`：空间开发者可同步本空间；不传 `workspace_id` 时仅平台管理员可全量同步
+- 发布默认：任务 `failRetryTimes=3`（显式 0 表示不重试）、`timeoutFlag=OPEN`  
 - 匹配策略：项目 + 流程定义 + 实例 ID，降低误匹配  
 - DS 侧实例消失时标记 `scheduler_lost`，提示运维刷新或核对 Token
 
@@ -123,6 +126,7 @@ GIDO 工作流在业务侧有明确状态，与 DS 定义/调度状态对应：
 | `GIDO_DS_API_URL` | DS API 根路径（不含 `/ui`） |
 | `GIDO_DS_TOKEN` | API 令牌 |
 | `GIDO_DS_ENABLED` / `DS_ENABLED` | 是否启用调度集成 |
+| `GIDO_PUBLIC_URL` | 浏览器入口回退值；优先使用「平台集成 → 站点入口」 |
 
 完整列表见根目录 `.env.example` 与 `gido/backend/.env.example`。
 
@@ -136,7 +140,7 @@ GIDO 工作流在业务侧有明确状态，与 DS 定义/调度状态对应：
 | 数据来源 | GIDO 实例同步、任务失败事件 | DS 内部 |
 | 通知 | 邮件 / Webhook / 飞书 / 企微（可配置） | DS 插件配置 |
 
-GIDO 告警以**工作空间业务语义**呈现（工作流名、节点名、业务日期、日志摘要）。通知配置见 [ALERT_NOTIFICATION.md](./ALERT_NOTIFICATION.md)。
+GIDO 告警以**工作空间业务语义**呈现（工作流名、失败节点、业务日期、日志摘要）。同一工作流失败默认 15 分钟冷却；节点告警不单独推飞书。通知配置见 [ALERT_NOTIFICATION.md](./ALERT_NOTIFICATION.md)。
 
 ---
 

@@ -352,8 +352,8 @@ export default function NodeConfigModal({
     if (values.timeout_seconds === '' || values.timeout_seconds === undefined) {
       values.timeout_seconds = null
     }
-    if (values.retry_times === '' || values.retry_times === undefined) {
-      values.retry_times = null
+    if (values.retry_times === '' || values.retry_times === undefined || values.retry_times === null) {
+      values.retry_times = 3
     }
     if (node.node_type === 'SYNC') {
       if (!values.sync_task_id) {
@@ -705,11 +705,15 @@ export default function NodeConfigModal({
                 label: '运行参数',
                 children: (
                   <div>
-                    <Form.Item name="timeout_seconds" label="超时时间（秒）">
+                    <Form.Item name="timeout_seconds" label="超时时间（秒）" extra="默认 3600 秒；发布到调度后会打开任务超时。">
                       <Input type="number" />
                     </Form.Item>
-                    <Form.Item name="retry_times" label="失败重试次数">
-                      <Input type="number" />
+                    <Form.Item
+                      name="retry_times"
+                      label="失败重试次数"
+                      extra="发布到调度后生效。默认 3 次；填 0 表示失败不重试。"
+                    >
+                      <Input type="number" min={0} />
                     </Form.Item>
                     {SCRIPT_NODE_TYPES.has(node?.node_type) && (
                       <Form.Item

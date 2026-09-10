@@ -11,13 +11,15 @@ from datetime import datetime, timedelta
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.core import perm_codes as PC
-from app.models.workspace import WorkflowInstance, NodeInstance, TaskNode, Workflow, User
+from app.core.access import is_platform_admin
+from app.models.workspace import WorkflowInstance, NodeInstance, TaskNode, Workflow, User, Workspace
 from app.services.rbac import assert_workspace_data_capability, require_node_instance
 from app.services.workflow_trigger_display import format_trigger_type_label, parse_dolphin_process_instance_id
 from app.services.ds_runtime import get_dolphin_runtime
 from app.services.dolphin_instance_sync import (
     refresh_ds_workflow_instance_from_dolphin,
     refresh_running_ds_instances_for_workspace,
+    sync_workspace_ds_instances,
 )
 
 router = APIRouter(prefix="/operation", tags=["运维中心"])
@@ -26,12 +28,35 @@ _log = logging.getLogger(__name__)
 # 仅统计/展示「工作流提交」产生的实例：NodeInstance 必须挂 WorkflowInstance（排除数据开发里单节点试跑）
 
 
-def _safe_refresh_ds_running(db: Session, workspace_id: int) -> None:
-    """Dolphin 不可达时不阻断运维列表。"""
+def _safe_refresh_ds_running(db: Session, workspace_id: int, *, include_all: bool = False) -> None:
+    """打开实例中心时同步本空间最近实例（含已失败），再刷新仍在运行的。"""
     try:
-        refresh_running_ds_instances_for_workspace(db, workspace_id, limit=35)
+        if include_all:
+            from app.services.ds_runtime import refresh_ds_client
+            from app.services.dolphin import ds_client
+            from app.services.dolphin_instance_sync import sync_from_dolphin_definitions
+
+            if get_dolphin_runtime(db).enabled:
+                refresh_ds_client(db)
+                sync_from_dolphin_definitions(db, ds_client, page_size=30)
+        else:
+            sync_workspace_ds_instances(db, workspace_id)
+    except Exception:
+        _log.warning("sync workspace ds instances failed ws=%s", workspace_id, exc_info=True)
+    try:
+        if not include_all:
+            refresh_running_ds_instances_for_workspace(db, workspace_id, limit=35)
     except Exception:
         _log.warning("refresh_running_ds_instances_for_workspace failed ws=%s", workspace_id, exc_info=True)
+
+
+def _assert_ops_list_scope(db: Session, current_user: User, workspace_id: int, include_all: bool) -> bool:
+    if include_all:
+        if not is_platform_admin(current_user):
+            raise HTTPException(status_code=403, detail="仅平台管理员可查看全部工作空间")
+        return True
+    assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_BATCH_OPERATION_READ)
+    return False
 
 
 def _require_workflow_instance(
@@ -64,6 +89,7 @@ def get_overview(
         description="已废弃：实例中心仅展示生产工作流实例；开发/探查请到运行历史",
         deprecated=True,
     ),
+    include_all_workspaces: bool = Query(False, description="平台管理员：跨工作空间查看"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -73,10 +99,12 @@ def get_overview(
     - 运行中 / 成功 / 失败：按工作流实例的 `status` 计数
     - 成功率：成功 / (成功 + 失败)，无失败且无成功时为 N/A
     """
-    assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_BATCH_OPERATION_READ)
-    _safe_refresh_ds_running(db, workspace_id)
+    all_ws = _assert_ops_list_scope(db, current_user, workspace_id, include_all_workspaces)
+    _safe_refresh_ds_running(db, workspace_id, include_all=all_ws)
     today_start = datetime.combine(datetime.utcnow().date(), datetime.min.time())
-    q = db.query(WorkflowInstance).join(Workflow).filter(Workflow.workspace_id == workspace_id)
+    q = db.query(WorkflowInstance).join(Workflow)
+    if not all_ws:
+        q = q.filter(Workflow.workspace_id == workspace_id)
     total = q.count()
     today = q.filter(WorkflowInstance.created_at >= today_start).count()
     running = q.filter(WorkflowInstance.status == "running").count()
@@ -143,14 +171,17 @@ def list_all_instances(
         description="已废弃：实例中心仅展示生产工作流实例",
         deprecated=True,
     ),
+    include_all_workspaces: bool = Query(False, description="平台管理员：跨工作空间查看"),
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_BATCH_OPERATION_READ)
-    _safe_refresh_ds_running(db, workspace_id)
-    q = db.query(WorkflowInstance).join(Workflow).filter(Workflow.workspace_id == workspace_id)
+    all_ws = _assert_ops_list_scope(db, current_user, workspace_id, include_all_workspaces)
+    _safe_refresh_ds_running(db, workspace_id, include_all=all_ws)
+    q = db.query(WorkflowInstance).join(Workflow)
+    if not all_ws:
+        q = q.filter(Workflow.workspace_id == workspace_id)
     if status:
         q = q.filter(WorkflowInstance.status == status)
     if business_date:
@@ -188,9 +219,12 @@ def list_all_instances(
         duration_seconds = None
         if inst.started_at and inst.finished_at:
             duration_seconds = int((inst.finished_at - inst.started_at).total_seconds())
+        ws_row = db.query(Workspace).filter(Workspace.id == wf.workspace_id).first() if wf else None
         result.append({
             "id": inst.id,
             "workflow_id": wf.id if wf else None,
+            "workspace_id": wf.workspace_id if wf else None,
+            "workspace_name": (ws_row.name if ws_row else "") or "",
             "workflow_name": wf.name if wf else "",
             "status": inst.status,
             "trigger_type": tt,

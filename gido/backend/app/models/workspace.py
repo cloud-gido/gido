@@ -109,7 +109,7 @@ class TaskNode(Base):
     folder_id = Column(Integer, ForeignKey("dw_node_folders.id"), nullable=True)
     sort_order = Column(Integer, default=0)  # 0=字典序；>0=用户拖拽手工序（同目录内）
     timeout_seconds = Column(Integer, default=3600)
-    retry_times = Column(Integer, default=0)
+    retry_times = Column(Integer, default=3)
     is_published = Column(Boolean, default=False)  # 是否已提交到工作流
     owner_id = Column(Integer, ForeignKey("dw_users.id"), nullable=True)  # 脚本负责人（默认同创建人）
     is_locked = Column(Boolean, default=False)  # 提交发布后锁定，需显式解锁才可改脚本
@@ -309,6 +309,10 @@ class AlertNotificationConfig(Base):
     lark_webhook_url = Column(Text, nullable=True)
     wecom_enabled = Column(Boolean, default=False, nullable=False)
     wecom_webhook_url = Column(Text, nullable=True)
+    notify_cooldown_minutes = Column(Integer, default=15, nullable=False)
+    muted_until = Column(DateTime, nullable=True)
+    # 自动推送起点：实例结束时间早于此刻的失败只入库，不推飞书（避免打开配置后刷历史）
+    notify_armed_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     updated_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
 
@@ -549,6 +553,8 @@ class PlatformIntegration(Base):
     copilot_llm_base_url = Column(String(512), nullable=True)
     copilot_llm_model = Column(String(128), nullable=True)
     copilot_llm_api_key = Column(Text, nullable=True)
+    # 浏览器访问 GIDO 的入口（飞书卡片深链）；NULL 表示沿用环境变量 GIDO_PUBLIC_URL
+    gido_public_url = Column(String(512), nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 

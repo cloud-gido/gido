@@ -2,15 +2,19 @@
 # SPDX-License-Identifier: Apache-2.0
 # @author felixzhu
 # @date 2026-06-05
-from fastapi import APIRouter, Depends, Header, HTTPException
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.core.access import require_platform_manager
+from app.core.access import is_platform_admin, require_platform_manager
+from app.core import perm_codes as PC
 from app.models.workspace import User
 from app.core.config import settings
 from app.services.ds_runtime import get_dolphin_runtime, refresh_ds_client
+from app.services.rbac import assert_workspace_data_capability
 
 router = APIRouter(prefix="/scheduler", tags=["调度器"])
 
@@ -122,26 +126,30 @@ def ds_status(db: Session = Depends(get_db), _: None = Depends(require_platform_
 
 
 @router.post("/ds/sync-instances")
-def sync_ds_instances(_: None = Depends(require_platform_manager)):
+def sync_ds_instances(
+    workspace_id: Optional[int] = Query(None, description="不传则同步全部已发布工作流（仅平台管理员）"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """
-    主动同步 DS 流程实例：
-    1) 按已发布工作流（dag 内 ds_process_code）从 Dolphin 拉最近流程实例入库/更新（含定时调度、未经过 GIDO /run 的运行）；
-    2) 拉任务实例填充运维节点明细；
-    3) 对库内最近含 ds: 的实例调详情 API 补 commandType / 终态。
-    建议由定时任务分钟级调用；运维页「同步 Dolphin 触发类型」亦调用本接口。
-    仅平台管理员。
+    主动同步 DS 流程实例。带 workspace_id 时空间开发者即可同步本空间。
     """
     from app.core.database import SessionLocal
     from app.services.dolphin import ds_client
     from app.services.dolphin_instance_sync import patch_instances_from_ds_detail, sync_from_dolphin_definitions
 
-    db = SessionLocal()
+    if workspace_id is not None:
+        assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_BATCH_OPERATION_READ)
+    elif not is_platform_admin(current_user):
+        raise HTTPException(status_code=403, detail="同步全部工作空间需要平台管理员，或传入 workspace_id")
+
+    own = SessionLocal()
     try:
-        if not get_dolphin_runtime(db).enabled:
+        if not get_dolphin_runtime(own).enabled:
             return {"message": "DS 未启用", "synced": 0, "command_types_filled": 0}
-        refresh_ds_client(db)
-        ing = sync_from_dolphin_definitions(db, ds_client)
-        checked, synced, cmd_detail = patch_instances_from_ds_detail(db, ds_client, limit=100)
+        refresh_ds_client(own)
+        ing = sync_from_dolphin_definitions(own, ds_client, workspace_id=workspace_id)
+        checked, synced, cmd_detail = patch_instances_from_ds_detail(own, ds_client, limit=100)
         return {
             "message": "同步完成",
             "definitions_scanned": ing["definitions_scanned"],
@@ -153,7 +161,7 @@ def sync_ds_instances(_: None = Depends(require_platform_manager)):
             "command_types_filled": ing["command_types_filled"] + cmd_detail,
         }
     finally:
-        db.close()
+        own.close()
 
 
 @router.post("/ds/webhook")
@@ -188,10 +196,31 @@ def ds_webhook(payload: dict, current_user: User = Depends(get_current_user)):
         if inst:
             inst.scheduler_engine = "dolphin"
             inst.scheduler_instance_id = str(ds_instance_id)
+            old_status = inst.status
             inst.status = dw_status
             inst.finished_at = datetime.utcnow()
+            if dw_status == "failed" and old_status != "failed":
+                try:
+                    from app.services.alert_center import open_instance_alert
+
+                    open_instance_alert(db, workflow_instance=inst)
+                except Exception:
+                    pass
             db.commit()
             return {"message": "updated", "instance_id": inst.id, "status": dw_status}
+        from app.services.dolphin_instance_sync import ingest_ds_instance_from_callback
+
+        inst = ingest_ds_instance_from_callback(
+            db,
+            scheduler_instance_id=str(ds_instance_id),
+            dw_status=dw_status,
+            raw_state=ds_state,
+            project_id=payload.get("projectCode") or payload.get("project_code"),
+            definition_id=payload.get("processDefinitionCode") or payload.get("process_definition_code"),
+        )
+        if inst:
+            db.commit()
+            return {"message": "ingested", "instance_id": inst.id, "status": inst.status}
         return {"message": "instance not found"}
     finally:
         db.close()
@@ -261,7 +290,18 @@ def dolphin_scheduler_callback(payload: dict, x_internal_token: str = Header(def
             )
         inst = q.order_by(WorkflowInstance.id.desc()).first()
         if not inst:
-            return {"message": "instance not found", "scheduler_instance_id": scheduler_instance_id}
+            from app.services.dolphin_instance_sync import ingest_ds_instance_from_callback
+
+            inst = ingest_ds_instance_from_callback(
+                db,
+                scheduler_instance_id=scheduler_instance_id,
+                dw_status=dw_status,
+                raw_state=raw_state,
+                project_id=project_id,
+                definition_id=definition_id,
+            )
+            if not inst:
+                return {"message": "instance not found", "scheduler_instance_id": scheduler_instance_id}
         inst.scheduler_engine = "dolphin"
         if project_id is not None and str(project_id).strip():
             inst.scheduler_project_id = str(project_id).strip()

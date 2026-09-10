@@ -39,7 +39,25 @@ def _node_timeout_minutes(node: dict, *, default_seconds: int = 3600) -> int:
         seconds = int(raw)
     except (TypeError, ValueError):
         seconds = default_seconds
-    return max(seconds, 0) // 60
+    return max(1, seconds // 60)
+
+
+DEFAULT_FAIL_RETRY_TIMES = 3
+
+
+def _fail_retry_times(node: dict) -> int:
+    """未配置时默认重试 3 次；显式 0 表示不重试。"""
+    raw = node.get("retry_times") if isinstance(node, dict) else None
+    if raw is None or raw == "":
+        return DEFAULT_FAIL_RETRY_TIMES
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_FAIL_RETRY_TIMES
+
+
+def _timeout_flag(node: dict) -> str:
+    return "OPEN" if _node_timeout_minutes(node) > 0 else "CLOSE"
 
 
 def ds_callback_base_url() -> str:
@@ -501,9 +519,9 @@ class DSClient:
                             "taskPriority": "MEDIUM",
                             "workerGroup": "default",
                             "environmentCode": -1,
-                            "failRetryTimes": n.get("retry_times", 0),
+                            "failRetryTimes": _fail_retry_times(n),
                             "failRetryInterval": 1,
-                            "timeoutFlag": "CLOSE",
+                            "timeoutFlag": _timeout_flag(n),
                             "timeout": _node_timeout_minutes(n),
                             "delayTime": 0,
                             "cpuQuota": -1,
@@ -603,9 +621,9 @@ class DSClient:
                     "taskPriority": "MEDIUM",
                     "workerGroup": "default",
                     "environmentCode": -1,
-                    "failRetryTimes": n.get("retry_times", 0),
+                    "failRetryTimes": _fail_retry_times(n),
                     "failRetryInterval": 1,
-                    "timeoutFlag": "CLOSE",
+                    "timeoutFlag": _timeout_flag(n),
                     "timeout": _node_timeout_minutes(n),
                     "delayTime": 0,
                     "cpuQuota": -1,
@@ -651,9 +669,9 @@ class DSClient:
                 "taskPriority": "MEDIUM",
                 "workerGroup": "default",
                 "environmentCode": -1,
-                "failRetryTimes": n.get("retry_times", 0),
+                "failRetryTimes": _fail_retry_times(n),
                 "failRetryInterval": 1,
-                "timeoutFlag": "CLOSE",
+                "timeoutFlag": _timeout_flag(n),
                 "timeout": _node_timeout_minutes(n),
                 "delayTime": 0,
                 "cpuQuota": -1,

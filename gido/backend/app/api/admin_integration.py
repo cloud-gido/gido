@@ -634,3 +634,76 @@ def reset_copilot_overrides(db: Session = Depends(get_db), _: User = Depends(get
     db.add(row)
     db.commit()
     return _copilot_integration_out(db)
+
+
+class SiteIntegrationOut(BaseModel):
+    effective_url: str
+    effective_source: str  # database | environment | empty
+    override_url: Optional[str] = None
+    env_url: str
+    deep_link_example: Optional[str] = None
+
+
+class SiteIntegrationUpdate(BaseModel):
+    gido_public_url: Optional[str] = Field(
+        default=None,
+        description="浏览器打开 GIDO 的地址；空串清空库覆盖，回退环境变量",
+    )
+
+
+def _site_integration_out(db: Session) -> SiteIntegrationOut:
+    from app.core.config import settings
+    from app.services.alert_notification import gido_public_url, instance_ops_url, normalize_gido_public_url
+
+    row = ensure_platform_integration_row(db)
+    override = normalize_gido_public_url(getattr(row, "gido_public_url", None))
+    env_url = normalize_gido_public_url(getattr(settings, "GIDO_PUBLIC_URL", None)) or ""
+    effective = gido_public_url(db)
+    if override:
+        source = "database"
+    elif env_url:
+        source = "environment"
+    else:
+        source = "empty"
+    return SiteIntegrationOut(
+        effective_url=effective,
+        effective_source=source,
+        override_url=override,
+        env_url=env_url,
+        deep_link_example=instance_ops_url(1, 1, db) if effective else None,
+    )
+
+
+@router.get("/site", response_model=SiteIntegrationOut, dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_READ))])
+def get_site_integration(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    return _site_integration_out(db)
+
+
+@router.put("/site", response_model=SiteIntegrationOut, dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_WRITE))])
+def put_site_integration(
+    body: SiteIntegrationUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from app.services.alert_notification import normalize_gido_public_url
+
+    row = ensure_platform_integration_row(db)
+    data = body.model_dump(exclude_unset=True)
+    if "gido_public_url" in data:
+        try:
+            row.gido_public_url = normalize_gido_public_url(data.get("gido_public_url"), require_http=True)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+    db.add(row)
+    db.commit()
+    return _site_integration_out(db)
+
+
+@router.post("/site/reset-overrides", response_model=SiteIntegrationOut, dependencies=[Depends(RequireAnyPerm(PC.SYSTEM_INTEGRATION_WRITE))])
+def reset_site_overrides(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    row = ensure_platform_integration_row(db)
+    row.gido_public_url = None
+    db.add(row)
+    db.commit()
+    return _site_integration_out(db)
+

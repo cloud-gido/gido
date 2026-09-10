@@ -6,10 +6,13 @@
  */
 import { useEffect, useState } from 'react'
 import { Alert, Button, Drawer, Form, Input, InputNumber, message, Select, Space, Switch, Table, Tag, Tooltip } from 'antd'
-import { CheckCircleOutlined, FileTextOutlined, NotificationOutlined, ReloadOutlined, SettingOutlined } from '@ant-design/icons'
+import { CheckCircleOutlined, FileTextOutlined, NotificationOutlined, ReloadOutlined, SettingOutlined, UnorderedListOutlined } from '@ant-design/icons'
+import { useNavigate } from 'react-router-dom'
 import { alertApi, operationApi } from '../api'
 import { useAppStore } from '../store'
 import { formatInTimeZone } from '../utils/datetime'
+import { R } from '../routes'
+import { isPlatformAdmin } from '../perm'
 
 const LEVEL_COLOR: Record<string, string> = {
   error: 'red',
@@ -31,10 +34,18 @@ const NOTIFY_COLOR: Record<string, string> = {
   skipped: 'default',
 }
 
+const ALERT_TYPE_COLOR: Record<string, string> = {
+  failed: 'red',
+  recovered: 'green',
+  test: 'blue',
+}
+
 export default function AlertCenterPage() {
-  const { currentWorkspace } = useAppStore()
+  const { currentWorkspace, user } = useAppStore()
+  const navigate = useNavigate()
   const wsId = currentWorkspace?.id
   const displayTz = currentWorkspace?.timezone || 'Asia/Shanghai'
+  const platformAdmin = isPlatformAdmin(user)
   const [rows, setRows] = useState<any[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -45,13 +56,21 @@ export default function AlertCenterPage() {
   const [logHint, setLogHint] = useState('')
   const [configOpen, setConfigOpen] = useState(false)
   const [configLoading, setConfigLoading] = useState(false)
+  const [includeAllWorkspaces, setIncludeAllWorkspaces] = useState(false)
   const [configForm] = Form.useForm()
+  const mutedUntil = Form.useWatch('muted_until', configForm)
+  const notifyArmedAt = Form.useWatch('notify_armed_at', configForm)
 
   const load = async () => {
     if (!wsId) return
     setLoading(true)
     try {
-      const res: any = await alertApi.list(wsId, { status: status === 'all' ? undefined : status, page, page_size: 20 })
+      const res: any = await alertApi.list(wsId, {
+        status: status === 'all' ? undefined : status,
+        page,
+        page_size: 20,
+        include_all_workspaces: includeAllWorkspaces || undefined,
+      })
       setRows(res.items || [])
       setTotal(res.total || 0)
     } finally {
@@ -59,7 +78,7 @@ export default function AlertCenterPage() {
     }
   }
 
-  useEffect(() => { load() }, [wsId, status, page])
+  useEffect(() => { load() }, [wsId, status, page, includeAllWorkspaces])
 
   const ack = async (id: number) => {
     await alertApi.ack(id)
@@ -89,7 +108,7 @@ export default function AlertCenterPage() {
     setConfigLoading(true)
     try {
       const cfg: any = await alertApi.getNotificationConfig(wsId)
-      configForm.setFieldsValue(cfg)
+      configForm.setFieldsValue({ ...cfg, arm_from_now: true, mute_hours: undefined })
     } finally {
       setConfigLoading(false)
     }
@@ -98,9 +117,33 @@ export default function AlertCenterPage() {
   const saveConfig = async () => {
     if (!wsId) return
     const values = await configForm.validateFields()
-    const cfg: any = await alertApi.putNotificationConfig(wsId, values)
-    configForm.setFieldsValue(cfg)
-    message.success('告警通知配置已保存')
+    const payload: Record<string, unknown> = { ...values }
+    if (payload.mute_hours == null || payload.mute_hours === '') {
+      delete payload.mute_hours
+    }
+    delete payload.muted_until
+    delete payload.notify_armed_at
+    const cfg: any = await alertApi.putNotificationConfig(wsId, payload)
+    configForm.setFieldsValue({ ...cfg, mute_hours: undefined, arm_from_now: true })
+    message.success('告警通知配置已保存；飞书只推送这一刻之后的失败')
+  }
+
+  const unmute = async () => {
+    if (!wsId) return
+    const cfg: any = await alertApi.putNotificationConfig(wsId, { mute_hours: 0 })
+    configForm.setFieldsValue({ ...cfg, mute_hours: undefined })
+    message.success('已解除静默')
+  }
+
+  const openInstance = (row: any) => {
+    if (!row.workflow_instance_id) {
+      message.info('这条告警没有关联工作流实例')
+      return
+    }
+    const params = new URLSearchParams()
+    if (row.workspace_id) params.set('workspace_id', String(row.workspace_id))
+    params.set('instance', String(row.workflow_instance_id))
+    navigate(`${R.batch.operation}?${params.toString()}`)
   }
 
   const testConfig = async () => {
@@ -127,6 +170,12 @@ export default function AlertCenterPage() {
 
   const columns = [
     { title: '告警', dataIndex: 'id', width: 86, render: (id: number) => `#${id}` },
+    {
+      title: '类型',
+      dataIndex: 'alert_type',
+      width: 90,
+      render: (v: string) => <Tag color={ALERT_TYPE_COLOR[v] || 'default'}>{v || 'failed'}</Tag>,
+    },
     { title: '级别', dataIndex: 'level', width: 90, render: (v: string) => <Tag color={LEVEL_COLOR[v] || 'default'}>{v}</Tag> },
     { title: '状态', dataIndex: 'status', width: 120, render: (v: string) => <Tag color={STATUS_COLOR[v] || 'default'}>{v}</Tag> },
     {
@@ -142,6 +191,7 @@ export default function AlertCenterPage() {
         <div>
           <div>{row.workflow_name || '-'}</div>
           <div style={{ color: '#888', fontSize: 12 }}>
+            {includeAllWorkspaces && row.workspace_name ? `${row.workspace_name} · ` : ''}
             实例 #{row.workflow_instance_id || '-'}
             {row.business_date ? ` · 业务日期 ${row.business_date}` : ''}
           </div>
@@ -178,9 +228,10 @@ export default function AlertCenterPage() {
     },
     {
       title: '操作',
-      width: 150,
+      width: 220,
       render: (_: any, row: any) => (
         <Space>
+          <Button size="small" icon={<UnorderedListOutlined />} onClick={() => openInstance(row)}>实例</Button>
           <Button size="small" icon={<FileTextOutlined />} onClick={() => showLog(row.node_instance_id)}>日志</Button>
           <Button size="small" icon={<NotificationOutlined />} onClick={() => sendNotify(row.id)}>通知</Button>
           {row.status === 'open' && <Button size="small" onClick={() => ack(row.id)}>确认</Button>}
@@ -197,8 +248,8 @@ export default function AlertCenterPage() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="告警由 GIDO 实例和节点实例状态驱动"
-        description="这里展示的是 GIDO 平台告警，不等同于调度引擎自身的 Alert 插件告警。发生时间优先取节点/实例结束时间；没有结束时间时才取告警入库时间。"
+        message="工作流失败推一张飞书卡片，只报这一刻之后的"
+        description="打开或保存通知配置后，历史失败只留在告警中心，不再刷群。节点失败不单独推送。卡片可跳回实例中心（平台集成 → 站点入口）。"
       />
 
       <div style={{ marginBottom: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -216,6 +267,12 @@ export default function AlertCenterPage() {
         <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>刷新</Button>
         <Button icon={<CheckCircleOutlined />} onClick={() => { setStatus('open'); setPage(1) }}>查看未处理</Button>
         <Button icon={<SettingOutlined />} onClick={openConfig}>通知配置</Button>
+        {platformAdmin && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <Switch checked={includeAllWorkspaces} onChange={(v) => { setIncludeAllWorkspaces(v); setPage(1) }} />
+            <span style={{ color: '#666' }}>全部工作空间</span>
+          </span>
+        )}
       </div>
 
       <Table
@@ -248,10 +305,20 @@ export default function AlertCenterPage() {
           showIcon
           style={{ marginBottom: 16 }}
           message="支持多渠道同时推送"
-          description="Webhook 地址和 SMTP 密码只写不读；保存后页面仅显示脱敏值。飞书/Lark 与企业微信均使用机器人 Webhook。"
+          description="Webhook 地址和 SMTP 密码只写不读。同一工作流失败默认 15 分钟内只推一张飞书卡片。保存配置默认从当前时刻起推送，不会把历史上已失败的实例再报一遍。"
         />
-        <Form form={configForm} layout="vertical" disabled={configLoading} initialValues={{ enabled: false, min_severity: 'error', smtp_port: 25 }}>
-          <Form.Item name="enabled" label="启用通知" valuePropName="checked">
+        <Form
+          form={configForm}
+          layout="vertical"
+          disabled={configLoading}
+          initialValues={{ enabled: false, min_severity: 'error', smtp_port: 25, notify_cooldown_minutes: 15, arm_from_now: true }}
+          onValuesChange={(changed, all) => {
+            if (changed.lark_enabled === true && !all.enabled) {
+              configForm.setFieldsValue({ enabled: true })
+            }
+          }}
+        >
+          <Form.Item name="enabled" label="启用通知" valuePropName="checked" extra="打开飞书/邮件等渠道后会自动打开；关掉对应渠道才会停推。">
             <Switch />
           </Form.Item>
           <Form.Item name="min_severity" label="最低推送级别">
@@ -263,6 +330,43 @@ export default function AlertCenterPage() {
                 { value: 'critical', label: 'critical' },
               ]}
             />
+          </Form.Item>
+          <Form.Item
+            name="notify_cooldown_minutes"
+            label="相同工作流冷却（分钟）"
+            extra="同一工作流在冷却期内再次失败不会重复推飞书；恢复通知不受冷却限制。"
+          >
+            <InputNumber min={0} max={1440} style={{ width: 160 }} />
+          </Form.Item>
+          <Form.Item
+            name="arm_from_now"
+            label="从当前时刻起推送"
+            valuePropName="checked"
+            extra={
+              notifyArmedAt
+                ? `当前推送起点 ${formatInTimeZone(notifyArmedAt, displayTz)}。打开此项并保存，会把起点改成现在，历史失败不再推群。`
+                : "打开并保存后，只推送这一刻之后结束的失败；历史失败不补报。"
+            }
+          >
+            <Switch />
+          </Form.Item>
+          <Form.Item name="notify_armed_at" hidden>
+            <Input />
+          </Form.Item>
+          <Form.Item
+            name="mute_hours"
+            label="静默时长（小时）"
+            extra={mutedUntil ? `当前静默至 ${formatInTimeZone(mutedUntil, displayTz)}` : '填写后保存即静默；留空表示不改当前静默状态。'}
+          >
+            <InputNumber min={0} max={168} placeholder="例如 2" style={{ width: 160 }} />
+          </Form.Item>
+          {mutedUntil ? (
+            <Form.Item>
+              <Button onClick={unmute}>解除静默</Button>
+            </Form.Item>
+          ) : null}
+          <Form.Item name="muted_until" hidden>
+            <Input />
           </Form.Item>
 
           <Form.Item name="email_enabled" label="邮件通知" valuePropName="checked">
@@ -304,7 +408,7 @@ export default function AlertCenterPage() {
             <Input.Password placeholder="留空表示不修改已有地址；POST JSON {title, content, severity, alert_id}" />
           </Form.Item>
 
-          <Form.Item name="lark_enabled" label="飞书 / Lark 机器人" valuePropName="checked">
+          <Form.Item name="lark_enabled" label="飞书 / Lark 机器人" valuePropName="checked" extra="打开后，工作流失败会立刻推一张交互卡片（含失败节点）。">
             <Switch />
           </Form.Item>
           <Form.Item name="lark_webhook_url" label="飞书 / Lark Webhook URL">

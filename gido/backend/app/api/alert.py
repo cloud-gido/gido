@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models.workspace import AlertEvent, AlertNotificationConfig, NodeInstance, TaskNode, Workflow, WorkflowInstance
+from app.core.access import is_platform_admin
+from app.models.workspace import AlertEvent, AlertNotificationConfig, NodeInstance, TaskNode, Workflow, WorkflowInstance, Workspace
 from app.services.rbac import assert_workspace_access, check_workspace_permission
 from app.services.alert_notification import (
     notify_alert_event,
@@ -27,15 +28,26 @@ def list_alerts(
     status: Optional[str] = Query("open"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
+    include_all_workspaces: bool = Query(False, description="平台管理员：跨工作空间查看"),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    assert_workspace_access(db, current_user, workspace_id)
-    q = db.query(AlertEvent).filter(AlertEvent.workspace_id == workspace_id)
+    if include_all_workspaces:
+        if not is_platform_admin(current_user):
+            raise HTTPException(status_code=403, detail="仅平台管理员可查看全部工作空间")
+    else:
+        assert_workspace_access(db, current_user, workspace_id)
+    q = db.query(AlertEvent)
+    if not include_all_workspaces:
+        q = q.filter(AlertEvent.workspace_id == workspace_id)
     if status:
         q = q.filter(AlertEvent.status == status)
     total = q.count()
     rows = q.order_by(AlertEvent.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    workspace_names = {
+        ws.id: ws.name
+        for ws in db.query(Workspace).filter(Workspace.id.in_([r.workspace_id for r in rows if r.workspace_id])).all()
+    }
     workflow_names = {
         wf.id: wf.name
         for wf in db.query(Workflow).filter(Workflow.id.in_([r.workflow_id for r in rows if r.workflow_id])).all()
@@ -76,6 +88,7 @@ def list_alerts(
         items.append({
             "id": r.id,
             "workspace_id": r.workspace_id,
+            "workspace_name": workspace_names.get(r.workspace_id),
             "workflow_id": r.workflow_id,
             "workflow_name": workflow_names.get(r.workflow_id),
             "workflow_instance_id": r.workflow_instance_id,

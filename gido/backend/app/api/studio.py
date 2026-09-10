@@ -323,7 +323,7 @@ class NodeCreate(BaseModel):
     datasource_id: Optional[int] = None
     folder_id: Optional[int] = None
     timeout_seconds: Optional[int] = 3600
-    retry_times: Optional[int] = 0
+    retry_times: Optional[int] = 3
     params: Optional[Dict[str, Any]] = None  # 自定义变量，如 {"env": "prod"}
 
     @field_validator("params", mode="before")
@@ -476,7 +476,7 @@ def copy_node(
         params=src.params,
         folder_id=src.folder_id,
         timeout_seconds=src.timeout_seconds or 3600,
-        retry_times=src.retry_times or 0,
+        retry_times=src.retry_times if src.retry_times is not None else 3,
         sort_order=_next_sort_order(db, src.workspace_id, src.folder_id),
         is_published=False,
         is_locked=False,

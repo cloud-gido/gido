@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     SMTP_PORT: int = 25
     SMTP_FROM: str = "gido@example.com"
     ALERT_EMAIL: Optional[str] = None
+    # 浏览器访问 GIDO 的入口（飞书卡片「打开实例中心」）。例如 https://gido.example.com
+    GIDO_PUBLIC_URL: Optional[str] = None
     # Stream Pipeline 指标查询端点；为空时继续使用 Kafka Admin/Flink REST 直读快照。
     STREAM_PROMETHEUS_URL: Optional[str] = None
 
