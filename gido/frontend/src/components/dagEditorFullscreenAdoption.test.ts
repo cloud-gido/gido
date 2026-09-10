@@ -47,6 +47,9 @@ describe('DAG fullscreen overlay adoption', () => {
     expect(src).toContain('is_published')
     expect(src).toContain('publishedNodes')
     expect(src).toContain('只能添加已提交的脚本')
+    expect(src).toContain('mode="multiple"')
+    expect(src).toContain('添加到画布')
+    expect(src).toContain('pendingAddIds')
   })
 
   it('NodeConfigModal uses shared overlay z-index above fullscreen shell', () => {

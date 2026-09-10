@@ -107,7 +107,13 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
   const wrapRef = useRef<HTMLDivElement>(null)
   const graphRef = useRef<Graph | null>(null)
   const [selectedCell, setSelectedCell] = useState<string | null>(null)
+  /** 脚本下拉多选：待批量加到画布的已提交脚本 id */
+  const [pendingAddIds, setPendingAddIds] = useState<number[]>([])
   const [fullscreen, setFullscreen] = useState(false)
+  /** 画布上已有节点（用于下拉禁用「已在画布」） */
+  const [onCanvasIds, setOnCanvasIds] = useState<Set<number>>(
+    () => new Set((value?.nodes || []).map((n: any) => Number(n.node_id)).filter((id: number) => Number.isFinite(id))),
+  )
   /** 画布节点 / 全屏与小窗统一：hover 或点击显示全名 */
   const [nodeTip, setNodeTip] = useState<{
     name: string
@@ -132,6 +138,12 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
     () => nodes.filter(n => Boolean(n.is_published)),
     [nodes],
   )
+
+  useEffect(() => {
+    setOnCanvasIds(new Set(
+      (value?.nodes || []).map((n: any) => Number(n.node_id)).filter((id: number) => Number.isFinite(id)),
+    ))
+  }, [value])
 
   const _readDAG = useCallback((): DagGraph => {
     const graph = graphRef.current
@@ -360,26 +372,63 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
     return () => ro.disconnect()
   }, [resizeGraph, fullscreen])
 
-  const handleAddNode = (id: number) => {
+  const handleAddNodes = (ids: number[]) => {
     const graph = graphRef.current
-    if (!graph) return
-    if (graph.getCellById(String(id))) return
-    const info = nodesRef.current.find(n => n.id === id)
-    if (!info) return
-    if (!info.is_published) {
-      message.warning('只能添加已提交的脚本，请先在数据开发中提交')
-      return
+    if (!graph || !ids.length) return
+    let added = 0
+    let skippedDup = 0
+    let skippedUnpub = 0
+    let slot = graph.getNodes().length
+    const newly: number[] = []
+    for (const id of ids) {
+      if (graph.getCellById(String(id))) {
+        skippedDup += 1
+        continue
+      }
+      const info = nodesRef.current.find(n => n.id === id)
+      if (!info) continue
+      if (!info.is_published) {
+        skippedUnpub += 1
+        continue
+      }
+      graph.addNode(makeNode(id, info, 80 + (slot % 4) * 180, 60 + Math.floor(slot / 4) * 110))
+      slot += 1
+      added += 1
+      newly.push(id)
     }
-    const n = graph.getNodes().length
-    graph.addNode(makeNode(id, info, 80 + (n % 4) * 180, 60 + Math.floor(n / 4) * 110))
-    scheduleSync()
+    setPendingAddIds([])
+    if (newly.length) {
+      setOnCanvasIds(prev => {
+        const next = new Set(prev)
+        newly.forEach(id => next.add(id))
+        return next
+      })
+    }
+    if (added) {
+      scheduleSync()
+      message.success(added === 1 ? '已添加到画布' : `已添加 ${added} 个脚本到画布`)
+    } else if (skippedUnpub && !skippedDup) {
+      message.warning('只能添加已提交的脚本，请先在数据开发中提交')
+    } else if (skippedDup) {
+      message.info('所选脚本已在画布上')
+    }
   }
 
   const handleDeleteSelected = () => {
     const graph = graphRef.current
     if (!graph || !selectedCell) return
     const cell = graph.getCellById(selectedCell)
-    if (cell) graph.removeCell(cell)
+    if (cell) {
+      const nid = Number(selectedCell)
+      graph.removeCell(cell)
+      if (Number.isFinite(nid)) {
+        setOnCanvasIds(prev => {
+          const next = new Set(prev)
+          next.delete(nid)
+          return next
+        })
+      }
+    }
     setSelectedCell(null)
     setNodeTip(null)
     scheduleSync()
@@ -447,6 +496,9 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
   const popupContainer = () => document.body
   const popupZ = dagPopupZIndex(fullscreen)
   const popupBase = dagPopupBase(fullscreen)
+  const selectWidth: CSSProperties = fullscreen
+    ? { width: '48vw', minWidth: 360, maxWidth: 640, flex: '1 1 360px' }
+    : { width: 320, minWidth: 280, maxWidth: 420 }
 
   const editor = (
     <ConfigProvider
@@ -460,11 +512,15 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
     <div ref={wrapRef} style={shellStyle}>
       <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flexShrink: 0 }}>
         <Select
-          placeholder={publishedNodes.length ? '添加已提交脚本到画布' : '暂无已提交脚本可添加'}
+          mode="multiple"
+          allowClear
+          maxTagCount={fullscreen ? 4 : 2}
+          placeholder={publishedNodes.length ? '搜索并多选已提交脚本' : '暂无已提交脚本可添加'}
           options={publishedNodes.map(n => ({
             value: n.id,
             // antd Option 原生 title：下拉项 hover 显示全名（小窗/全屏一致）
             title: n.name,
+            disabled: onCanvasIds.has(n.id),
             label: (
               <span title={n.name} style={{ display: 'inline-flex', alignItems: 'center', maxWidth: '100%' }}>
                 <Tag color={TYPE_COLOR[n.node_type]} style={{ fontSize: 11, flexShrink: 0 }}>{n.node_type}</Tag>
@@ -476,26 +532,36 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
                   }}
                 >
                   {n.name}
+                  {onCanvasIds.has(n.id) ? '（已在画布）' : ''}
                 </span>
               </span>
             ),
           }))}
-          style={{ width: 280 }}
-          onChange={handleAddNode}
-          value={null}
+          style={selectWidth}
+          value={pendingAddIds}
+          onChange={(ids: number[]) => setPendingAddIds(ids)}
           showSearch
           optionFilterProp="title"
           disabled={!publishedNodes.length}
           // 挂 body：小窗不被 Modal overflow 裁切；全屏靠抬高 zIndex 盖过壳
           getPopupContainer={popupContainer}
           styles={popupZ != null ? { popup: { root: { zIndex: popupZ } } } : undefined}
-          listHeight={360}
+          listHeight={fullscreen ? 420 : 360}
+          popupMatchSelectWidth={fullscreen ? false : true}
           filterOption={(input: string, opt: any) => {
             const name = String(opt?.title || publishedNodes.find(n => n.id === opt?.value)?.name || '')
             return filterPublishedScriptOption(input, name)
           }}
           notFoundContent={publishedNodes.length ? '无匹配脚本' : '请先在数据开发中提交脚本'}
         />
+        <Button
+          type="primary"
+          size="small"
+          disabled={!pendingAddIds.length}
+          onClick={() => handleAddNodes(pendingAddIds)}
+        >
+          添加到画布{pendingAddIds.length ? ` (${pendingAddIds.length})` : ''}
+        </Button>
         <Button
           danger
           size="small"
@@ -521,7 +587,7 @@ const DAGEditor = forwardRef<DAGEditorRef, DAGEditorProps>(function DAGEditor({ 
           {fullscreen ? '退出全屏' : '全屏'}
         </Button>
         <span style={{ color: '#94a3b8', fontSize: 12, lineHeight: 1.5 }}>
-          仅可添加已提交脚本 · 从右侧圆点拖到目标节点表示依赖 · 悬停/单击节点可看全名 · 双击打开配置
+          可多选脚本后点「添加到画布」 · 仅已提交 · 右侧圆点拖依赖 · 悬停/单击看全名 · 双击配置
           {fullscreen ? ' · Esc 退出全屏' : ''}
           <Tooltip
             title="Shift 拖动画布 · Ctrl 滚轮缩放；「整理布局」按依赖分层；配置与数据开发共用同一节点与编辑锁"

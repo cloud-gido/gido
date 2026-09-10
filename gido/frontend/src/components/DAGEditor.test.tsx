@@ -107,4 +107,28 @@ describe('DAGEditor fullscreen script select', () => {
     expect(screen.getByRole('combobox')).toBeDisabled()
     expect(screen.getByText('暂无已提交脚本可添加')).toBeInTheDocument()
   })
+
+  it('supports multi-select then batch add to canvas', async () => {
+    const user = userEvent.setup()
+    render(
+      <DAGEditor
+        nodes={published}
+        value={{ nodes: [], edges: [] }}
+      />,
+    )
+
+    const addBtn = screen.getByRole('button', { name: /^添加到画布$/ })
+    expect(addBtn).toBeDisabled()
+
+    await user.click(screen.getByRole('combobox'))
+    await user.click(await screen.findByText('import_dim_goods_daily'))
+    await user.click(screen.getByText('ads_order_summary'))
+
+    const batchBtn = screen.getByRole('button', { name: /添加到画布 \(2\)/ })
+    expect(batchBtn).toBeEnabled()
+    await user.click(batchBtn)
+
+    expect(graphApi.addNode).toHaveBeenCalledTimes(2)
+    expect(screen.getByRole('button', { name: /^添加到画布$/ })).toBeDisabled()
+  })
 })
