@@ -924,20 +924,70 @@ class DSClient:
         process_definition_code: Optional[int] = None,
         page_no: int = 1,
         page_size: int = 100,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        state_type: Optional[str] = None,
     ) -> List[dict]:
         """
         分页查询流程实例列表（含 Dolphin 定时调度产生、未经过 GIDO /run 的实例）。
         DS 3.x 列表接口按流程定义过滤的参数名为 **processDefineCode**（不是 processDefinitionCode）。
-        Dolphin 3.2.x 默认按 start_time desc 排序。
+        部分版本默认 start_time 升序，只拉第一页会永远停在最早的实例上。
         """
+        page = self.list_process_instances_page(
+            project_code,
+            process_definition_code=process_definition_code,
+            page_no=page_no,
+            page_size=page_size,
+            start_date=start_date,
+            end_date=end_date,
+            state_type=state_type,
+        )
+        return list(page.get("rows") or [])
+
+    def list_process_instances_page(
+        self,
+        project_code: int,
+        *,
+        process_definition_code: Optional[int] = None,
+        page_no: int = 1,
+        page_size: int = 100,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        state_type: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """带 totalPage 的流程实例分页。升序时末页才是最近失败，同步必须能翻到末页。"""
         params: dict[str, Any] = {"pageNo": page_no, "pageSize": page_size}
         if process_definition_code is not None:
             params["processDefineCode"] = int(process_definition_code)
+        if start_date:
+            wall = str(start_date)
+            params["startDate"] = wall
+            params["startTime"] = wall
+        if end_date:
+            wall = str(end_date)
+            params["endDate"] = wall
+            params["endTime"] = wall
+        if state_type:
+            params["stateType"] = str(state_type)
         resp = self._get(f"/projects/{project_code}/process-instances", params=params)
         data = resp.get("data")
-        if isinstance(data, dict):
-            return list(data.get("totalList") or [])
-        return []
+        if not isinstance(data, dict):
+            return {"rows": [], "total": 0, "total_page": 1, "current_page": page_no}
+        rows = list(data.get("totalList") or [])
+        try:
+            total_page = int(data.get("totalPage") or data.get("totalPageCount") or 1)
+        except (TypeError, ValueError):
+            total_page = 1
+        try:
+            total = int(data.get("total") or 0)
+        except (TypeError, ValueError):
+            total = 0
+        return {
+            "rows": rows,
+            "total": total,
+            "total_page": max(total_page, 1),
+            "current_page": page_no,
+        }
 
     def list_task_instances(
         self,

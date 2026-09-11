@@ -24,7 +24,9 @@ from app.models.workspace import (
     TaskNode,
     User,
 )
+from app.services.alert_center import resolve_alerts
 from app.services.ds_runtime import get_dolphin_runtime, refresh_ds_client
+from app.services.instance_override import OVERRIDE_STATUSES, apply_override, clear_override
 from app.services.rbac import assert_workspace_data_capability, require_workflow, workspace_data_full_control
 from app.services.publish_approval import assert_can_publish_production
 from app.services.workflow_dag_validate import assert_cron_when_scheduled, mark_ds_needs_republish
@@ -851,30 +853,117 @@ def rerun_instance(wf_id: int, inst_id: int, db: Session = Depends(get_db), curr
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"生产调度重跑失败: {e}")
-        inst.status = "running"
-        inst.job_version_id = version.id
-        inst.scheduler_engine = ref.engine
-        inst.scheduler_project_id = str(project_code)
-        inst.scheduler_definition_id = str(process_code)
-        inst.scheduler_definition_version = version.version_no
-        inst.scheduler_instance_id = ref.instance_id
-        inst.scheduler_run_key = f"{ref.engine}:{project_code}:{process_code}:{ref.instance_id}"[:128]
-        inst.trigger_type = "rerun"
-        inst.started_at = datetime.utcnow()
-        inst.finished_at = None
-        inst.submitted_by = current_user.id
+        # 重跑是一次新的运行：另开一行，原实例保留它自己的引擎运行号与结果
+        rerun = WorkflowInstance(
+            workflow_id=wf_id,
+            parent_instance_id=inst.id,
+            job_version_id=version.id,
+            backfill_request_id=inst.backfill_request_id,
+            status="running",
+            trigger_type="rerun",
+            business_date=inst.business_date,
+            scheduler_engine=ref.engine,
+            scheduler_project_id=str(project_code),
+            scheduler_definition_id=str(process_code),
+            scheduler_definition_version=version.version_no,
+            scheduler_instance_id=ref.instance_id,
+            scheduler_run_key=f"{ref.engine}:{project_code}:{process_code}:{ref.instance_id}"[:128],
+            started_at=datetime.utcnow(),
+            submitted_by=current_user.id,
+        )
+        db.add(rerun)
         db.commit()
+        db.refresh(rerun)
         return {
             "message": "已向生产调度提交重跑",
-            "instance_id": inst.id,
+            "instance_id": rerun.id,
+            "parent_instance_id": inst.id,
             "scheduler_instance_id": ref.instance_id,
             "ds_instance_id": ref.instance_id,
         }
-    inst.status = "pending"
-    inst.trigger_type = "rerun"
-    inst.submitted_by = current_user.id
+    rerun = WorkflowInstance(
+        workflow_id=wf_id,
+        parent_instance_id=inst.id,
+        job_version_id=inst.job_version_id,
+        backfill_request_id=inst.backfill_request_id,
+        status="pending",
+        trigger_type="rerun",
+        business_date=inst.business_date,
+        submitted_by=current_user.id,
+    )
+    db.add(rerun)
     db.commit()
-    return {"message": "已提交重跑（本地执行器将消费）", "instance_id": inst_id}
+    db.refresh(rerun)
+    return {
+        "message": "已提交重跑（本地执行器将消费）",
+        "instance_id": rerun.id,
+        "parent_instance_id": inst.id,
+    }
+
+
+class InstanceStatusOverrideIn(BaseModel):
+    status: str = "success"
+    reason: Optional[str] = None
+
+
+@router.post("/{wf_id}/instances/{inst_id}/override-status")
+def override_instance_status(
+    wf_id: int,
+    inst_id: int,
+    payload: InstanceStatusOverrideIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    人工置成功/置失败：数据已被旁路修复时，让下游依赖不必再等这次运行真的跑通。
+    只改 GIDO 的运行台账，不回写调度引擎；置过之后采集不再覆盖这条实例的状态。
+    """
+    wf = require_workflow(db, current_user, wf_id, "developer", PC.GIDO_BATCH_WORKFLOW_RUN)
+    status = (payload.status or "").strip().lower()
+    if status not in OVERRIDE_STATUSES:
+        raise HTTPException(status_code=400, detail=f"状态须为 {'/'.join(OVERRIDE_STATUSES)} 之一")
+    inst = db.query(WorkflowInstance).filter(
+        WorkflowInstance.id == inst_id,
+        WorkflowInstance.workflow_id == wf_id,
+    ).first()
+    if not inst:
+        raise HTTPException(status_code=404, detail="实例不存在")
+    if inst.status in ("running", "pending"):
+        raise HTTPException(status_code=400, detail="实例仍在运行，请先终止再置状态")
+    apply_override(inst, status, user_id=current_user.id, reason=payload.reason)
+    if status == "success":
+        # 置成功相当于人工判定这次运行不再是故障，挂着的告警应当一并关闭
+        try:
+            resolve_alerts(db, workflow_instance_id=inst.id, alert_types=("failed", "timeout", "sla"))
+        except Exception:
+            logger.warning("置成功关闭告警失败 instance_id=%s", inst.id, exc_info=True)
+    db.commit()
+    return {
+        "message": "已置成功" if status == "success" else "已置失败",
+        "instance_id": inst.id,
+        "status": inst.status,
+        "status_override": inst.status_override,
+    }
+
+
+@router.delete("/{wf_id}/instances/{inst_id}/override-status")
+def clear_instance_status_override(
+    wf_id: int,
+    inst_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """撤销人工状态，恢复以调度引擎回报为准。"""
+    require_workflow(db, current_user, wf_id, "developer", PC.GIDO_BATCH_WORKFLOW_RUN)
+    inst = db.query(WorkflowInstance).filter(
+        WorkflowInstance.id == inst_id,
+        WorkflowInstance.workflow_id == wf_id,
+    ).first()
+    if not inst:
+        raise HTTPException(status_code=404, detail="实例不存在")
+    clear_override(inst)
+    db.commit()
+    return {"message": "已撤销人工状态", "instance_id": inst.id, "status": inst.status}
 
 
 @router.post("/{wf_id}/batch-run")

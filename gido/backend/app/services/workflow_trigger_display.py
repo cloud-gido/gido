@@ -20,6 +20,52 @@ def is_manual_development_workflow_run(trigger_type: Optional[str]) -> bool:
     return s.startswith("manual|")
 
 
+# 运行类型：周期 / 补数据 / 重跑 / 手动。引擎的 commandType 更可信，优先看它。
+RUN_TYPES = ("schedule", "backfill", "rerun", "manual")
+
+RUN_TYPE_LABELS = {
+    "schedule": "周期实例",
+    "backfill": "补数据实例",
+    "rerun": "重跑实例",
+    "manual": "手动实例",
+}
+
+# commandType 关键字 → 运行类型
+_COMMAND_KEYWORDS = {
+    "backfill": ("COMPLEMENT",),
+    "rerun": ("REPEAT_RUNNING", "RECOVER", "RECOVERY"),
+    "schedule": ("SCHEDULER", "START_TIMER", "TIMER"),
+    "manual": ("START_PROCESS", "START_CURRENT", "EXECUTE"),
+}
+
+# trigger_type 前缀 → 运行类型（引擎没回填 commandType 时的依据）
+_TRIGGER_PREFIXES = {
+    "backfill": ("backfill", "batch"),
+    "rerun": ("rerun",),
+    "schedule": ("schedule",),
+    "manual": ("manual", "local"),
+}
+
+
+def classify_run_type(
+    trigger_type: Optional[str], dolphin_command_type: Optional[str] = None
+) -> str:
+    """
+    归一化运行类型，供实例中心按「周期/补数据/重跑/手动」分开看。
+    无法判定时归到 manual：宁可把未知归进手动视图，也不要污染周期运维视图。
+    """
+    cmd = (dolphin_command_type or "").upper().replace(" ", "_")
+    if cmd:
+        for run_type, keywords in _COMMAND_KEYWORDS.items():
+            if any(k in cmd for k in keywords):
+                return run_type
+    base = (str(trigger_type or "").strip().split("|")[0]).lower()
+    for run_type, prefixes in _TRIGGER_PREFIXES.items():
+        if base in prefixes:
+            return run_type
+    return "manual"
+
+
 def parse_dolphin_process_instance_id(trigger_type: Optional[str]) -> Optional[int]:
     if not trigger_type or "|ds:" not in str(trigger_type):
         return None

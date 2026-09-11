@@ -168,6 +168,11 @@ export const workflowApi = {
     request.post('/workflows/bulk-publish-to-ds', { workspace_id: workspaceId }),
   instances: (id: number) => request.get(`/workflows/${id}/instances`),
   rerun: (wfId: number, instId: number) => request.post(`/workflows/${wfId}/instances/${instId}/rerun`),
+  /** 人工置成功/置失败：置过之后调度采集不再覆盖该实例状态 */
+  overrideInstanceStatus: (wfId: number, instId: number, status: 'success' | 'failed', reason?: string) =>
+    request.post(`/workflows/${wfId}/instances/${instId}/override-status`, { status, reason }),
+  clearInstanceStatusOverride: (wfId: number, instId: number) =>
+    request.delete(`/workflows/${wfId}/instances/${instId}/override-status`),
   batchRun: (id: number, startDate: string, endDate: string) =>
     request.post(`/workflows/${id}/batch-run`, null, { params: { start_date: startDate, end_date: endDate } }),
 }
@@ -335,9 +340,9 @@ export const qualityApi = {
   workspaceTrend: (workspaceId: number, days?: number) => request.get('/quality/workspace-trend', { params: { workspace_id: workspaceId, days } }),
 }
 
-// 调度器（Dolphin 元数据同步等）
+// 生产运行数据采集（后台常驻采集之外的手动触发，用于排障）
 export const schedulerApi = {
-  syncDolphinInstances: (workspaceId?: number) =>
+  collectRuns: (workspaceId?: number) =>
     request.post('/scheduler/ds/sync-instances', null, {
       params: workspaceId != null ? { workspace_id: workspaceId } : {},
     }),
@@ -351,6 +356,9 @@ export const operationApi = {
     request.get('/operation/overview', { params: { workspace_id: workspaceId, ...params } }),
   instances: (workspaceId: number, params?: any) => request.get('/operation/instances', { params: { workspace_id: workspaceId, ...params } }),
   nodeInstances: (workspaceId: number, params?: any) => request.get('/operation/node-instances', { params: { workspace_id: workspaceId, ...params } }),
+  /** 实例 DAG：这次运行当时的图 + 每个节点的状态 */
+  instanceDag: (workspaceId: number, wfId: number, instId: number) =>
+    request.get(`/operation/workflows/${wfId}/instances/${instId}/dag`, { params: { workspace_id: workspaceId } }),
   getLog: (niId: number) => request.get(`/operation/node-instances/${niId}/log`),
   kill: (niId: number) => request.post(`/operation/node-instances/${niId}/kill`),
   retry: (niId: number) => request.post(`/operation/node-instances/${niId}/retry`),
@@ -363,6 +371,11 @@ export const operationApi = {
   retryFailedNodes: (workspaceId: number, wfId: number, instId: number) =>
     request.post(`/operation/workflows/${wfId}/instances/${instId}/retry-failed-nodes`, null, { params: { workspace_id: workspaceId } }),
   alerts: (workspaceId: number) => request.get('/operation/alerts', { params: { workspace_id: workspaceId } }),
+  /** 运行诊断：为什么这次没跑 / 还没跑完 */
+  diagnose: (workspaceId: number, workflowId: number, businessDate?: string) =>
+    request.get('/operation/diagnose', {
+      params: { workspace_id: workspaceId, workflow_id: workflowId, business_date: businessDate },
+    }),
 }
 
 // 运行历史（数据开发试跑 / 数据探查）
@@ -385,6 +398,20 @@ export const alertApi = {
     request.put('/alerts/notification/config', data, { params: { workspace_id: workspaceId } }),
   testNotificationConfig: (workspaceId: number, data: Record<string, unknown>) =>
     request.post('/alerts/notification/test', data, { params: { workspace_id: workspaceId } }),
+  listOncallShifts: (workspaceId: number) =>
+    request.get('/alerts/oncall/shifts', { params: { workspace_id: workspaceId } }),
+  createOncallShift: (workspaceId: number, data: Record<string, unknown>) =>
+    request.post('/alerts/oncall/shifts', data, { params: { workspace_id: workspaceId } }),
+  updateOncallShift: (workspaceId: number, shiftId: number, data: Record<string, unknown>) =>
+    request.put(`/alerts/oncall/shifts/${shiftId}`, data, { params: { workspace_id: workspaceId } }),
+  deleteOncallShift: (workspaceId: number, shiftId: number) =>
+    request.delete(`/alerts/oncall/shifts/${shiftId}`, { params: { workspace_id: workspaceId } }),
+  listSlaRules: (workspaceId: number) =>
+    request.get('/alerts/sla/rules', { params: { workspace_id: workspaceId } }),
+  putSlaRule: (workspaceId: number, workflowId: number, data: Record<string, unknown>) =>
+    request.put(`/alerts/sla/rules/${workflowId}`, data, { params: { workspace_id: workspaceId } }),
+  deleteSlaRule: (workspaceId: number, workflowId: number) =>
+    request.delete(`/alerts/sla/rules/${workflowId}`, { params: { workspace_id: workspaceId } }),
 }
 
 // 发布审批

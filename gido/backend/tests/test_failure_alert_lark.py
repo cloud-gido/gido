@@ -23,6 +23,7 @@ from app.models import rbac_models  # noqa: F401
 from app.models.workspace import (
     AlertEvent,
     AlertNotificationConfig,
+    JobVersion,
     User,
     Workflow,
     WorkflowInstance,
@@ -440,6 +441,7 @@ def test_workspace_alert_coverage_hints_wrong_space_and_missing_site(db):
             workspace_id=ws.id,
             name="体育线-风控",
             dag_config={"nodes": []},
+            scheduler_project_id="11",
             scheduler_definition_id="90001",
             status="published",
         )
@@ -600,3 +602,300 @@ def test_list_alerts_hides_pre_arm_skipped_and_filters_workflow_name(db):
     )
     assert skipped["total"] == 1
     assert skipped["items"][0]["notification_status"] == "skipped"
+
+
+def test_workspace_alert_coverage_hints_unbound_definition(db):
+    from app.services.alert_center import workspace_alert_coverage
+
+    ws = db.query(Workspace).first()
+    db.add(
+        Workflow(
+            workspace_id=ws.id,
+            name="未绑定流程",
+            dag_config={"nodes": []},
+            status="published",
+        )
+    )
+    db.commit()
+    with patch("app.services.alert_notification.gido_public_url", return_value="https://gido.example"):
+        cov = workspace_alert_coverage(db, ws.id)
+    assert any("没有生效的生产调度绑定" in h for h in cov["hints"])
+
+
+def test_list_process_instances_sends_date_window_and_failure_state():
+    from app.services.dolphin import DSClient
+
+    client = DSClient.__new__(DSClient)
+    client._get = MagicMock(return_value={"code": 0, "data": {"totalList": [{"id": 9}]}})
+    rows = client.list_process_instances(
+        1001,
+        process_definition_code=22,
+        page_size=50,
+        start_date="2026-09-01 00:00:00",
+        end_date="2026-09-11 23:59:59",
+        state_type="FAILURE",
+    )
+    assert rows[0]["id"] == 9
+    params = client._get.call_args.kwargs["params"]
+    assert params["processDefineCode"] == 22
+    assert params["startDate"] == "2026-09-01 00:00:00"
+    assert params["endDate"] == "2026-09-11 23:59:59"
+    assert params["stateType"] == "FAILURE"
+
+
+def test_list_process_instances_page_reads_total_page():
+    from app.services.dolphin import DSClient
+
+    client = DSClient.__new__(DSClient)
+    client._get = MagicMock(
+        return_value={
+            "code": 0,
+            "data": {"totalList": [{"id": 1}], "total": 4800, "totalPage": 48, "currentPage": 1},
+        }
+    )
+    page = client.list_process_instances_page(1001, process_definition_code=22, page_no=1)
+    assert page["total_page"] == 48
+    assert page["rows"][0]["id"] == 1
+
+
+def test_sync_ingests_failure_from_last_page_when_first_page_is_old(db):
+    from zoneinfo import ZoneInfo
+
+    ws = db.query(Workspace).first()
+    wf = Workflow(
+        workspace_id=ws.id,
+        name="last-page-fail",
+        dag_config={"nodes": []},
+        scheduler_project_id="11",
+        scheduler_definition_id="22",
+        status="published",
+    )
+    db.add(wf)
+    db.add(
+        AlertNotificationConfig(
+            workspace_id=ws.id,
+            enabled=True,
+            min_severity="error",
+            lark_enabled=True,
+            lark_webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/lastpage",
+            notify_armed_at=datetime.utcnow() - timedelta(hours=1),
+        )
+    )
+    db.commit()
+    now_sh = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+
+    def list_page(_project, process_definition_code=None, page_no=1, page_size=100, state_type=None, **_kw):
+        if state_type != "FAILURE":
+            return {"rows": [], "total_page": 1}
+        if page_no == 1:
+            return {
+                "rows": [{
+                    "id": 1,
+                    "state": "FAILURE",
+                    "commandType": "SCHEDULER",
+                    "startTime": "2026-08-06 16:00:00",
+                    "endTime": "2026-08-06 16:08:00",
+                }],
+                "total_page": 48,
+            }
+        if page_no == 48:
+            return {
+                "rows": [{
+                    "id": 252045,
+                    "state": "FAILURE",
+                    "commandType": "SCHEDULER",
+                    "startTime": now_sh,
+                    "endTime": now_sh,
+                }],
+                "total_page": 48,
+            }
+        return {"rows": [], "total_page": 48}
+
+    ds = SimpleNamespace()
+    ds.list_process_instances_page = list_page
+    ds.list_task_instances_all = MagicMock(return_value=[])
+    with patch("app.services.alert_notification._post_json") as post:
+        stats = sync_from_dolphin_definitions(db, ds)
+        db.commit()
+    ids = {row.scheduler_instance_id for row in db.query(WorkflowInstance).all()}
+    assert "252045" in ids
+    assert stats["ingested"] >= 1
+    assert db.query(AlertEvent).filter(AlertEvent.alert_type == "failed").count() >= 1
+    assert post.call_count >= 1
+
+
+
+def test_sync_ingests_failure_even_if_recent_page_is_all_success(db):
+    from zoneinfo import ZoneInfo
+
+    ws = db.query(Workspace).first()
+    wf = Workflow(
+        workspace_id=ws.id,
+        name="buried-fail",
+        dag_config={"nodes": []},
+        scheduler_project_id="11",
+        scheduler_definition_id="22",
+        status="published",
+    )
+    db.add(wf)
+    db.add(
+        AlertNotificationConfig(
+            workspace_id=ws.id,
+            enabled=True,
+            min_severity="error",
+            lark_enabled=True,
+            lark_webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/buried",
+            notify_armed_at=datetime.utcnow() - timedelta(hours=1),
+        )
+    )
+    db.commit()
+    now_sh = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+
+    def list_pi(_project, process_definition_code=None, page_size=100, start_date=None, end_date=None, state_type=None, **_kw):
+        if state_type == "FAILURE":
+            return [{
+                "id": 42,
+                "state": "FAILURE",
+                "commandType": "SCHEDULER",
+                "startTime": now_sh,
+                "endTime": now_sh,
+            }]
+        return [{
+            "id": 41,
+            "state": "SUCCESS",
+            "commandType": "SCHEDULER",
+            "startTime": now_sh,
+            "endTime": now_sh,
+        }]
+
+    ds = SimpleNamespace()
+    ds.list_process_instances = list_pi
+    ds.list_task_instances_all = MagicMock(return_value=[])
+    with patch("app.services.alert_notification._post_json") as post:
+        stats = sync_from_dolphin_definitions(db, ds)
+        db.commit()
+    ids = {row.scheduler_instance_id for row in db.query(WorkflowInstance).all()}
+    assert "42" in ids
+    assert stats["ingested"] >= 1
+    assert db.query(AlertEvent).filter(AlertEvent.alert_type == "failed").count() == 1
+    assert post.call_count == 1
+
+
+def test_sync_alerts_when_instance_bound_to_old_job_version(db):
+    from zoneinfo import ZoneInfo
+
+    ws = db.query(Workspace).first()
+    wf = Workflow(
+        workspace_id=ws.id,
+        name="version-mismatch",
+        dag_config={"nodes": []},
+        scheduler_project_id="11",
+        scheduler_definition_id="22",
+        status="published",
+    )
+    db.add(wf)
+    db.flush()
+    old_ver = JobVersion(workflow_id=wf.id, version_no=1, status="archived", dag_snapshot={})
+    new_ver = JobVersion(workflow_id=wf.id, version_no=2, status="active", dag_snapshot={})
+    db.add_all([old_ver, new_ver])
+    db.flush()
+    wf.active_version_id = new_ver.id
+    inst = WorkflowInstance(
+        workflow_id=wf.id,
+        job_version_id=old_ver.id,
+        status="success",
+        scheduler_instance_id="9001",
+        trigger_type="schedule|ds:9001",
+        started_at=datetime.utcnow() - timedelta(minutes=5),
+        finished_at=datetime.utcnow() - timedelta(minutes=4),
+    )
+    db.add(inst)
+    db.add(
+        AlertNotificationConfig(
+            workspace_id=ws.id,
+            enabled=True,
+            min_severity="error",
+            lark_enabled=True,
+            lark_webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/ver",
+            notify_armed_at=datetime.utcnow() - timedelta(hours=1),
+        )
+    )
+    db.commit()
+    now_sh = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+    ds = SimpleNamespace()
+    ds.list_process_instances = MagicMock(
+        return_value=[{
+            "id": 9001,
+            "state": "FAILURE",
+            "commandType": "SCHEDULER",
+            "startTime": now_sh,
+            "endTime": now_sh,
+        }]
+    )
+    ds.list_task_instances_all = MagicMock(return_value=[])
+    with patch("app.services.alert_notification._post_json") as post:
+        stats = sync_from_dolphin_definitions(db, ds)
+        db.commit()
+    assert stats["ingested"] == 0
+    db.refresh(inst)
+    assert inst.status == "failed"
+    ev = db.query(AlertEvent).filter(AlertEvent.workflow_instance_id == inst.id).one()
+    assert ev.status == "open"
+    assert post.call_count == 1
+
+
+def test_sync_project_level_failure_when_definition_list_is_empty(db):
+    from zoneinfo import ZoneInfo
+
+    ws = db.query(Workspace).first()
+    wf = Workflow(
+        workspace_id=ws.id,
+        name="project-fail",
+        dag_config={"nodes": []},
+        scheduler_project_id="11",
+        scheduler_definition_id="22",
+        status="published",
+    )
+    db.add(wf)
+    db.add(
+        AlertNotificationConfig(
+            workspace_id=ws.id,
+            enabled=True,
+            min_severity="error",
+            lark_enabled=True,
+            lark_webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/proj",
+            notify_armed_at=datetime.utcnow() - timedelta(hours=1),
+        )
+    )
+    db.commit()
+    now_sh = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+
+    def list_page(_project, process_definition_code=None, page_no=1, state_type=None, **_kw):
+        if process_definition_code:
+            return {"rows": [], "total_page": 1}
+        if state_type == "FAILURE":
+            return {
+                "rows": [{
+                    "id": 88801,
+                    "processDefinitionCode": 22,
+                    "state": "FAILURE",
+                    "commandType": "SCHEDULER",
+                    "startTime": now_sh,
+                    "endTime": now_sh,
+                }],
+                "total_page": 1,
+            }
+        return {"rows": [], "total_page": 1}
+
+    ds = SimpleNamespace()
+    ds.list_process_instances_page = list_page
+    ds.list_task_instances_all = MagicMock(return_value=[])
+    with patch("app.services.alert_notification._post_json") as post:
+        stats = sync_from_dolphin_definitions(db, ds)
+        db.commit()
+    ids = {row.scheduler_instance_id for row in db.query(WorkflowInstance).all()}
+    assert "88801" in ids
+    assert stats["ingested"] >= 1
+    assert db.query(AlertEvent).filter(AlertEvent.alert_type == "failed").count() == 1
+    assert post.call_count == 1
+

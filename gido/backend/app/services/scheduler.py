@@ -14,6 +14,11 @@ import logging
 logger = logging.getLogger(__name__)
 scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
+# 告警通知重投间隔；实际退避节奏由 alert_notification._next_retry_at 决定
+_NOTIFY_RETRY_INTERVAL_SEC = 60
+# 基线巡检间隔：承诺时间与最长运行时长都以分钟计，60s 足够
+_SLA_CHECK_INTERVAL_SEC = 60
+
 
 def _run_workflow_job(workflow_id: int):
     from app.services.distributed_lock import try_distributed_lock
@@ -112,9 +117,28 @@ def _run_workflow_job_unlocked(workflow_id: int):
         instance.status = "failed" if errors else "success"
         instance.finished_at = datetime.utcnow()
         db.commit()
+        # 告警是 GIDO 自己的能力，不能只在外部调度引擎路径上成立
+        _raise_or_clear_instance_alert(db, instance, errors)
         logger.info(f"工作流 {wf.name} 调度执行完成: {instance.status}")
     finally:
         db.close()
+
+
+def _raise_or_clear_instance_alert(db, instance, errors: list) -> None:
+    """本地/APS 执行完成后的告警闭环，与引擎采集路径共用同一套告警表与推送策略。"""
+    from app.services.alert_center import open_instance_alert, resolve_instance_alerts_on_recovery
+
+    try:
+        if errors:
+            detail = "；".join(errors[:3])
+            suffix = f" 等 {len(errors)} 个节点失败" if len(errors) > 3 else ""
+            open_instance_alert(db, workflow_instance=instance, message=f"{detail}{suffix}")
+        else:
+            resolve_instance_alerts_on_recovery(db, instance)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning("工作流实例告警处理失败 instance_id=%s", getattr(instance, "id", None), exc_info=True)
 
 
 def _topo_sort(dag: dict) -> list:
@@ -163,11 +187,12 @@ def _run_sync_task_job(task_id: int):
 
 
 def _poll_scheduler_instances_job():
-    """生产调度实例轮询补偿：回调丢失时仍能把实例状态写回 GIDO。"""
+    """生产运行采集：不依赖用户打开页面，也不依赖引擎回调。"""
     from app.services.distributed_lock import try_distributed_lock
+    from app.services.run_collector import COLLECT_INTERVAL_SEC
     from app.services.shared_state import claim_once
 
-    bucket = int(datetime.utcnow().timestamp() // 15)
+    bucket = int(datetime.utcnow().timestamp() // COLLECT_INTERVAL_SEC)
     claimed = claim_once(f"scheduler-instance-poll:{bucket}", 60)
     if claimed is False:
         return
@@ -179,37 +204,117 @@ def _poll_scheduler_instances_job():
 
 def _poll_scheduler_instances_unlocked():
     from app.core.database import SessionLocal
-    from app.services.ds_runtime import get_dolphin_runtime, refresh_ds_client
-    from app.services.dolphin import ds_client
-    from app.services.dolphin_instance_sync import patch_instances_from_ds_detail, sync_from_dolphin_definitions
+    from app.services.run_collector import collect_runs
 
     db = SessionLocal()
     try:
-        if not get_dolphin_runtime(db).enabled:
-            return
-        refresh_ds_client(db)
-        sync_from_dolphin_definitions(db, ds_client)
-        patch_instances_from_ds_detail(db, ds_client, limit=120)
+        stats = collect_runs(db)
+        if stats.get("ingested") or stats.get("updated_from_ds"):
+            logger.info("生产运行采集完成 %s", stats)
     except Exception as e:
-        logger.warning("生产调度实例轮询同步失败: %s", e, exc_info=True)
+        logger.warning("生产运行采集失败: %s", e, exc_info=True)
     finally:
         db.close()
 
 
+def _retry_alert_notifications_job():
+    """重投失败的告警通知：值班不能因为一次 Webhook 抖动就漏掉。"""
+    from app.core.database import SessionLocal
+    from app.services.distributed_lock import try_distributed_lock
+    from app.services.shared_state import claim_once
+
+    bucket = int(datetime.utcnow().timestamp() // _NOTIFY_RETRY_INTERVAL_SEC)
+    if claim_once(f"alert-notify-retry:{bucket}", 120) is False:
+        return
+    with try_distributed_lock("alert-notify-retry") as acquired:
+        if not acquired:
+            return
+        from app.services.alert_notification import retry_pending_notifications
+
+        db = SessionLocal()
+        try:
+            stats = retry_pending_notifications(db)
+            if stats.get("due"):
+                logger.info("告警通知重投完成 %s", stats)
+        except Exception as e:
+            logger.warning("告警通知重投失败: %s", e, exc_info=True)
+        finally:
+            db.close()
+
+
+def reload_alert_notification_retry():
+    """注册告警通知重投任务。"""
+    for job in list(scheduler.get_jobs()):
+        if job.id == "alert_notification_retry":
+            job.remove()
+    scheduler.add_job(
+        _retry_alert_notifications_job,
+        IntervalTrigger(seconds=_NOTIFY_RETRY_INTERVAL_SEC),
+        id="alert_notification_retry",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info("已注册告警通知重投任务：%ss", _NOTIFY_RETRY_INTERVAL_SEC)
+
+
+def _evaluate_sla_job():
+    """基线巡检：未按时完成与运行超时。"""
+    from app.core.database import SessionLocal
+    from app.services.distributed_lock import try_distributed_lock
+    from app.services.shared_state import claim_once
+
+    bucket = int(datetime.utcnow().timestamp() // _SLA_CHECK_INTERVAL_SEC)
+    if claim_once(f"sla-check:{bucket}", 120) is False:
+        return
+    with try_distributed_lock("sla-check") as acquired:
+        if not acquired:
+            return
+        from app.services.sla_monitor import evaluate_sla
+
+        db = SessionLocal()
+        try:
+            stats = evaluate_sla(db)
+            if stats.get("missed_deadline") or stats.get("long_running"):
+                logger.info("基线巡检完成 %s", stats)
+        except Exception as e:
+            logger.warning("基线巡检失败: %s", e, exc_info=True)
+        finally:
+            db.close()
+
+
+def reload_sla_monitoring():
+    """注册基线巡检任务。"""
+    for job in list(scheduler.get_jobs()):
+        if job.id == "sla_check":
+            job.remove()
+    scheduler.add_job(
+        _evaluate_sla_job,
+        IntervalTrigger(seconds=_SLA_CHECK_INTERVAL_SEC),
+        id="sla_check",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info("已注册基线巡检任务：%ss", _SLA_CHECK_INTERVAL_SEC)
+
+
 def reload_scheduler_instance_polling():
-    """注册实例中心的调度引擎状态轮询补偿任务。"""
+    """注册生产运行采集任务：把执行引擎上的运行持续写回 GIDO 实例事实表。"""
+    from app.services.run_collector import COLLECT_INTERVAL_SEC
+
     for job in list(scheduler.get_jobs()):
         if job.id == "scheduler_instance_poll":
             job.remove()
     scheduler.add_job(
         _poll_scheduler_instances_job,
-        IntervalTrigger(seconds=15),
+        IntervalTrigger(seconds=COLLECT_INTERVAL_SEC),
         id="scheduler_instance_poll",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
-    logger.info("已注册生产调度实例轮询补偿任务：15s")
+    logger.info("已注册生产运行采集任务：%ss", COLLECT_INTERVAL_SEC)
 
 
 def reload_integration_schedules():
@@ -249,6 +354,8 @@ def reload_integration_schedules():
     finally:
         db.close()
     reload_scheduler_instance_polling()
+    reload_alert_notification_retry()
+    reload_sla_monitoring()
 
 
 def reload_schedules():

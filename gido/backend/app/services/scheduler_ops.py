@@ -216,8 +216,10 @@ def retry_node_via_scheduler(db: Session, ni: NodeInstance, *, workspace_id: Opt
         return
     node = db.query(TaskNode).filter(TaskNode.id == ni.node_id).first()
     if node:
-        dag = wf.dag_config or {}
-        for n in dag.get("nodes", []) or []:
+        # 用这次运行所属版本的快照：重新发布会换掉 task code，按当前定义找会重试到别的任务
+        from app.services.dolphin_instance_sync import _instance_dag_nodes
+
+        for n in _instance_dag_nodes(db, wf_inst, wf):
             if int(n.get("node_id") or 0) == int(node.id):
                 for key in ("ds_task_code", "task_code"):
                     if n.get(key) is not None and str(n.get(key)).strip().lstrip("-").isdigit():

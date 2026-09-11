@@ -1,0 +1,171 @@
+# Copyright 2026 玑渡 GIDO Contributors
+# SPDX-License-Identifier: Apache-2.0
+# @author felixzhu
+# @date 2026-09-11
+"""
+生产运行采集：把执行引擎上的工作流运行持续写回 GIDO 自己的实例事实表。
+
+GIDO 是运行事实的来源，执行引擎（当前 dolphin，后续可接 airflow 等）只是实现细节：
+- 采集由后台常驻任务驱动，不依赖用户打开页面
+- 采集健康度对产品可见（最近采集时间、是否落后、失败原因），而不是让用户去点「同步」
+- 失败运行在采集时即写入告警中心并按值班配置推送
+"""
+from __future__ import annotations
+
+import logging
+import threading
+from datetime import datetime
+from typing import Any, Dict, Optional
+
+from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
+
+# 后台采集间隔 15s；超过该阈值未成功采集即视为「采集落后」
+COLLECT_INTERVAL_SEC = 15
+STALE_AFTER_SEC = 90
+
+_HEALTH_CACHE_KEY = "run-collector:health"
+_HEALTH_TTL_SEC = 24 * 3600
+
+_local_health: Dict[str, Any] = {}
+_local_lock = threading.Lock()
+
+
+def _utc_iso(dt: Optional[datetime]) -> Optional[str]:
+    return dt.replace(microsecond=0).isoformat() if dt else None
+
+
+def _parse_iso(raw: Any) -> Optional[datetime]:
+    if not raw:
+        return None
+    if isinstance(raw, datetime):
+        return raw
+    try:
+        return datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+
+
+def _read_health() -> Dict[str, Any]:
+    try:
+        from app.services.shared_state import cache_get
+
+        shared = cache_get(_HEALTH_CACHE_KEY)
+        if isinstance(shared, dict):
+            return dict(shared)
+    except Exception:
+        logger.debug("read collector health from shared state failed", exc_info=True)
+    with _local_lock:
+        return dict(_local_health)
+
+
+def _write_health(payload: Dict[str, Any]) -> None:
+    with _local_lock:
+        _local_health.clear()
+        _local_health.update(payload)
+    try:
+        from app.services.shared_state import cache_set
+
+        cache_set(_HEALTH_CACHE_KEY, payload, _HEALTH_TTL_SEC)
+    except Exception:
+        logger.debug("persist collector health to shared state failed", exc_info=True)
+
+
+def _record(
+    *,
+    engine: str,
+    enabled: bool,
+    stats: Optional[Dict[str, Any]] = None,
+    error: Optional[str] = None,
+) -> Dict[str, Any]:
+    prev = _read_health()
+    now = datetime.utcnow()
+    payload: Dict[str, Any] = {
+        "engine": engine,
+        "enabled": bool(enabled),
+        "last_attempt_at": _utc_iso(now),
+        "last_success_at": prev.get("last_success_at"),
+        "last_error": None,
+        "interval_seconds": COLLECT_INTERVAL_SEC,
+    }
+    if error:
+        payload["last_error"] = str(error)[:500]
+    else:
+        payload["last_success_at"] = _utc_iso(now)
+        if stats:
+            payload["definitions_scanned"] = int(stats.get("definitions_scanned") or 0)
+            payload["runs_ingested"] = int(stats.get("ingested") or 0)
+            payload["runs_updated"] = int(stats.get("updated_from_ds") or 0)
+            payload["unbound_workflows"] = int(stats.get("skipped_unbound") or 0)
+    _write_health(payload)
+    return payload
+
+
+def collector_health(db: Optional[Session] = None) -> Dict[str, Any]:
+    """供实例中心/告警中心展示：运行数据是否在持续采集，落后多久。"""
+    health = _read_health()
+    engine = health.get("engine") or "dolphin"
+    enabled = health.get("enabled")
+    if enabled is None and db is not None:
+        try:
+            from app.services.ds_runtime import get_dolphin_runtime
+
+            enabled = bool(get_dolphin_runtime(db).enabled)
+        except Exception:
+            enabled = None
+    last_success = _parse_iso(health.get("last_success_at"))
+    lag_seconds: Optional[int] = None
+    if last_success:
+        lag_seconds = max(int((datetime.utcnow() - last_success).total_seconds()), 0)
+    stale = bool(enabled) and (lag_seconds is None or lag_seconds > STALE_AFTER_SEC)
+    return {
+        "engine": engine,
+        "enabled": bool(enabled) if enabled is not None else None,
+        "interval_seconds": COLLECT_INTERVAL_SEC,
+        "last_attempt_at": health.get("last_attempt_at"),
+        "last_success_at": health.get("last_success_at"),
+        "lag_seconds": lag_seconds,
+        "stale": stale,
+        "last_error": health.get("last_error"),
+        "definitions_scanned": health.get("definitions_scanned"),
+        "runs_ingested": health.get("runs_ingested"),
+        "unbound_workflows": health.get("unbound_workflows"),
+    }
+
+
+def collect_runs(db: Session, *, workspace_id: Optional[int] = None, page_size: int = 100) -> Dict[str, Any]:
+    """
+    采集一轮运行数据：拉取引擎上的最近运行与失败，写回实例事实表并触发告警。
+    返回带 `collected` 标记的统计；引擎未启用时 `collected=False`。
+    """
+    from app.services.ds_runtime import get_dolphin_runtime, refresh_ds_client
+    from app.services.dolphin import ds_client
+    from app.services.dolphin_instance_sync import (
+        patch_instances_from_ds_detail,
+        sync_from_dolphin_definitions,
+    )
+
+    if not get_dolphin_runtime(db).enabled:
+        _record(engine="dolphin", enabled=False)
+        return {"collected": False, "engine": "dolphin", "reason": "scheduler_disabled"}
+
+    try:
+        refresh_ds_client(db)
+        stats = sync_from_dolphin_definitions(
+            db, ds_client, workspace_id=workspace_id, page_size=page_size
+        )
+        checked, synced, cmd_filled = patch_instances_from_ds_detail(db, ds_client, limit=120)
+    except Exception as e:
+        _record(engine="dolphin", enabled=True, error=str(e))
+        logger.warning("运行采集失败 ws=%s: %s", workspace_id, e, exc_info=True)
+        raise
+
+    # 单空间采集不代表全局健康，仅全量采集才刷新健康度
+    if workspace_id is None:
+        _record(engine="dolphin", enabled=True, stats=stats)
+    out: Dict[str, Any] = {"collected": True, "engine": "dolphin", **stats}
+    out["detail_checked"] = checked
+    out["finalized_from_detail"] = synced
+    out["command_types_filled"] = int(stats.get("command_types_filled") or 0) + cmd_filled
+    return out

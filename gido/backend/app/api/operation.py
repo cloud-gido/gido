@@ -3,51 +3,146 @@
 # @author felixzhu
 # @date 2026-06-05
 import logging
+import re
+import time
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, func
+from sqlalchemy import and_, desc, func, or_
 from typing import Optional
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.core import perm_codes as PC
 from app.core.access import is_platform_admin
 from app.models.workspace import WorkflowInstance, NodeInstance, TaskNode, Workflow, User, Workspace
 from app.services.rbac import assert_workspace_data_capability, require_node_instance
-from app.services.workflow_trigger_display import format_trigger_type_label, parse_dolphin_process_instance_id
+from app.services.workflow_trigger_display import (
+    RUN_TYPES,
+    classify_run_type,
+    format_trigger_type_label,
+    parse_dolphin_process_instance_id,
+)
 from app.services.ds_runtime import get_dolphin_runtime
+from app.services.run_diagnosis import diagnose_workflow_run
 from app.services.dolphin_instance_sync import (
     refresh_ds_workflow_instance_from_dolphin,
     refresh_running_ds_instances_for_workspace,
-    sync_workspace_ds_instances,
 )
+from app.services.run_collector import collect_runs, collector_health
 
 router = APIRouter(prefix="/operation", tags=["运维中心"])
 _log = logging.getLogger(__name__)
+_UI_DS_SYNC_COOLDOWN_SEC = 20.0
+_last_ui_ds_sync: dict[str, float] = {}
 
 # 仅统计/展示「工作流提交」产生的实例：NodeInstance 必须挂 WorkflowInstance（排除数据开发里单节点试跑）
 
 
-def _safe_refresh_ds_running(db: Session, workspace_id: int, *, include_all: bool = False) -> None:
-    """打开实例中心时同步本空间最近实例（含已失败），再刷新仍在运行的。"""
-    try:
-        if include_all:
-            from app.services.ds_runtime import refresh_ds_client
-            from app.services.dolphin import ds_client
-            from app.services.dolphin_instance_sync import sync_from_dolphin_definitions
+def _run_type_condition(run_type: str):
+    """
+    把 classify_run_type 的判定翻成 SQL，保证分页和计数与列表展示一致。
+    引擎回填的 commandType 优先；没有时才看 trigger_type 前缀。
+    """
+    from app.services.workflow_trigger_display import _COMMAND_KEYWORDS, _TRIGGER_PREFIXES
 
-            if get_dolphin_runtime(db).enabled:
-                refresh_ds_client(db)
-                sync_from_dolphin_definitions(db, ds_client, page_size=30)
-        else:
-            sync_workspace_ds_instances(db, workspace_id)
+    cmd = WorkflowInstance.dolphin_command_type
+    tt = WorkflowInstance.trigger_type
+    has_cmd = and_(cmd.isnot(None), cmd != "")
+
+    def cmd_matches(target: str):
+        return or_(*[cmd.ilike(f"%{k}%") for k in _COMMAND_KEYWORDS[target]])
+
+    def trigger_matches(target: str):
+        prefixes = _TRIGGER_PREFIXES[target]
+        return or_(*[or_(tt == p, tt.like(f"{p}|%")) for p in prefixes])
+
+    by_cmd = and_(has_cmd, cmd_matches(run_type))
+    # commandType 认不出来时才轮到 trigger_type，和 classify_run_type 的顺序一致
+    cmd_known = or_(*[cmd_matches(t) for t in _COMMAND_KEYWORDS])
+    fallback = or_(~has_cmd, ~cmd_known)
+    if run_type == "manual":
+        known_trigger = or_(*[trigger_matches(t) for t in _TRIGGER_PREFIXES if t != "manual"])
+        # 认不出的一律进手动视图，避免它们从所有标签页里消失
+        by_trigger = and_(fallback, or_(trigger_matches("manual"), tt.is_(None), ~known_trigger))
+    else:
+        by_trigger = and_(fallback, trigger_matches(run_type))
+    return or_(by_cmd, by_trigger)
+
+
+def _error_ranking(base_query, since: datetime, limit: int = 5) -> list[dict]:
+    """近 7 日出错排行：先看谁一直在红，而不是逐条翻实例。"""
+    rows = (
+        base_query.filter(
+            WorkflowInstance.created_at >= since,
+            WorkflowInstance.status == "failed",
+        )
+        .with_entities(Workflow.id, Workflow.name, func.count(WorkflowInstance.id).label("cnt"))
+        .group_by(Workflow.id, Workflow.name)
+        .order_by(func.count(WorkflowInstance.id).desc())
+        .limit(limit)
+        .all()
+    )
+    return [{"workflow_id": wid, "workflow_name": name or "", "failed_count": int(cnt)} for wid, name, cnt in rows]
+
+
+def _duration_ranking(base_query, since: datetime, limit: int = 5) -> list[dict]:
+    """近 7 日耗时排行：找出最可能顶到基线的作业。"""
+    rows = (
+        base_query.filter(
+            WorkflowInstance.created_at >= since,
+            WorkflowInstance.started_at.isnot(None),
+            WorkflowInstance.finished_at.isnot(None),
+        )
+        .with_entities(
+            Workflow.id,
+            Workflow.name,
+            WorkflowInstance.started_at,
+            WorkflowInstance.finished_at,
+        )
+        .all()
+    )
+    agg: dict[int, dict] = {}
+    for wid, name, started, finished in rows:
+        seconds = int((finished - started).total_seconds())
+        if seconds < 0:
+            continue
+        item = agg.setdefault(wid, {"workflow_id": wid, "workflow_name": name or "", "runs": 0, "total": 0, "max_seconds": 0})
+        item["runs"] += 1
+        item["total"] += seconds
+        item["max_seconds"] = max(item["max_seconds"], seconds)
+    out = []
+    for item in agg.values():
+        out.append({
+            "workflow_id": item["workflow_id"],
+            "workflow_name": item["workflow_name"],
+            "runs": item["runs"],
+            "avg_seconds": int(item["total"] / item["runs"]) if item["runs"] else 0,
+            "max_seconds": item["max_seconds"],
+        })
+    out.sort(key=lambda x: x["avg_seconds"], reverse=True)
+    return out[:limit]
+
+
+def _safe_refresh_ds_running(db: Session, workspace_id: int, *, include_all: bool = False) -> None:
+    """
+    页面兜底采集：后台采集任务是主路径，这里只在其落后时补一轮，避免每次翻页都打执行引擎。
+    """
+    key = "all" if include_all else str(int(workspace_id))
+    now = time.monotonic()
+    if now - _last_ui_ds_sync.get(key, 0.0) < _UI_DS_SYNC_COOLDOWN_SEC:
+        return
+    try:
+        stats = collect_runs(db, workspace_id=None if include_all else workspace_id, page_size=30)
+        _log.info("ui run collection ws=%s %s", "all" if include_all else workspace_id, stats)
+        _last_ui_ds_sync[key] = time.monotonic()
     except Exception:
-        _log.warning("sync workspace ds instances failed ws=%s", workspace_id, exc_info=True)
+        _log.warning("ui run collection failed ws=%s", workspace_id, exc_info=True)
     try:
         if not include_all:
             refresh_running_ds_instances_for_workspace(db, workspace_id, limit=35)
     except Exception:
-        _log.warning("refresh_running_ds_instances_for_workspace failed ws=%s", workspace_id, exc_info=True)
+        _log.warning("refresh running instances failed ws=%s", workspace_id, exc_info=True)
 
 
 def _assert_ops_list_scope(db: Session, current_user: User, workspace_id: int, include_all: bool) -> bool:
@@ -81,27 +176,35 @@ def _require_workflow_instance(
     return inst, wf
 
 
+def _local_day_start_utc(db: Session, workspace_id: int) -> datetime:
+    """
+    工作空间时区「今天 0 点」对应的 UTC 时刻。
+    用 UTC 日界线会让上海的用户在早上八点前看到的「今日」还是昨天，对不上任何人的直觉。
+    """
+    from app.services.alert_oncall import workspace_tz
+
+    tz = workspace_tz(db, workspace_id)
+    local_now = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC")).astimezone(tz)
+    local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return local_midnight.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+
+
 @router.get("/overview")
 def get_overview(
     workspace_id: int,
-    include_manual_development_runs: bool = Query(
-        False,
-        description="已废弃：实例中心仅展示生产工作流实例；开发/探查请到运行历史",
-        deprecated=True,
-    ),
     include_all_workspaces: bool = Query(False, description="平台管理员：跨工作空间查看"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     工作流级运行概况（`WorkflowInstance` × 当前工作区），不含数据开发单节点试跑。
-    - 今日实例：`created_at` 为当日 0 点（UTC）起新建的工作流实例条数
+    - 今日实例：工作空间时区的「今天」新建的工作流实例条数
     - 运行中 / 成功 / 失败：按工作流实例的 `status` 计数
     - 成功率：成功 / (成功 + 失败)，无失败且无成功时为 N/A
     """
     all_ws = _assert_ops_list_scope(db, current_user, workspace_id, include_all_workspaces)
     _safe_refresh_ds_running(db, workspace_id, include_all=all_ws)
-    today_start = datetime.combine(datetime.utcnow().date(), datetime.min.time())
+    today_start = _local_day_start_utc(db, workspace_id)
     q = db.query(WorkflowInstance).join(Workflow)
     if not all_ws:
         q = q.filter(Workflow.workspace_id == workspace_id)
@@ -148,6 +251,8 @@ def get_overview(
     from app.services.publish_approval import pending_approval_count
 
     return {
+        "error_ranking": _error_ranking(q, trend_start),
+        "duration_ranking": _duration_ranking(q, trend_start),
         "total_instances": total,
         "today_instances": today,
         "running": running,
@@ -157,6 +262,7 @@ def get_overview(
         "daily_trend": daily_trend,
         "status_distribution": status_distribution,
         "pending_approvals": pending_approval_count(db, workspace_id),
+        "collector": collector_health(db),
     }
 
 
@@ -165,12 +271,9 @@ def list_all_instances(
     workspace_id: int,
     status: Optional[str] = None,
     business_date: Optional[str] = None,
-    today_only: bool = Query(False, description="仅 created_at ≥ 当日 0 点(UTC) 的实例，与概览「今日实例」一致"),
-    include_manual_development_runs: bool = Query(
-        False,
-        description="已废弃：实例中心仅展示生产工作流实例",
-        deprecated=True,
-    ),
+    workflow_id: Optional[int] = Query(None, description="只看某个工作流（概览排行下钻）"),
+    run_type: Optional[str] = Query(None, description="运行类型：schedule/backfill/rerun/manual"),
+    today_only: bool = Query(False, description="仅工作空间时区「今天」新建的实例，与概览「今日实例」一致"),
     include_all_workspaces: bool = Query(False, description="平台管理员：跨工作空间查看"),
     page: int = 1,
     page_size: int = 20,
@@ -186,9 +289,16 @@ def list_all_instances(
         q = q.filter(WorkflowInstance.status == status)
     if business_date:
         q = q.filter(WorkflowInstance.business_date == business_date)
+    if workflow_id is not None:
+        q = q.filter(WorkflowInstance.workflow_id == int(workflow_id))
     if today_only:
-        today_start = datetime.combine(datetime.utcnow().date(), datetime.min.time())
-        q = q.filter(WorkflowInstance.created_at >= today_start)
+        q = q.filter(WorkflowInstance.created_at >= _local_day_start_utc(db, workspace_id))
+    # 标签页计数用「除运行类型外的同一批过滤条件」，否则切标签时数字会跳
+    scoped = q
+    if run_type:
+        if run_type not in RUN_TYPES:
+            raise HTTPException(status_code=400, detail=f"运行类型须为 {'/'.join(RUN_TYPES)} 之一")
+        q = q.filter(_run_type_condition(run_type))
     total = q.count()
     # 排序用 coalesce，避免各方言对 NULLS FIRST/LAST 差异（MySQL 无 NULLS LAST）
     instances = (
@@ -232,7 +342,11 @@ def list_all_instances(
             "scheduler_engine": getattr(inst, "scheduler_engine", None) or "dolphin",
             "scheduler_instance_id": getattr(inst, "scheduler_instance_id", None),
             "trigger_label": format_trigger_type_label(tt, dct, getattr(inst, "scheduler_instance_id", None)),
-            "dolphin_process_instance_id": parse_dolphin_process_instance_id(tt),
+            "run_type": classify_run_type(tt, dct),
+            "status_override": getattr(inst, "status_override", None),
+            "override_reason": getattr(inst, "override_reason", None),
+            "override_at": inst.override_at.isoformat() if getattr(inst, "override_at", None) else None,
+            "parent_instance_id": getattr(inst, "parent_instance_id", None),
             "business_date": inst.business_date,
             "started_at": inst.started_at,
             "finished_at": inst.finished_at,
@@ -246,7 +360,18 @@ def list_all_instances(
             "failed_nodes": [node_names.get(ni.node_id, f"节点#{ni.node_id}") for ni in failed_nodes[:5]],
             "duration_seconds": duration_seconds,
         })
-    return {"total": total, "page": page, "page_size": page_size, "items": result}
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": result,
+        "run_type_counts": _run_type_counts(scoped),
+    }
+
+
+def _run_type_counts(scoped_query) -> dict:
+    """各标签页的条数。scoped_query 是已应用除 run_type 外全部过滤条件的查询。"""
+    return {rt: scoped_query.filter(_run_type_condition(rt)).count() for rt in RUN_TYPES}
 
 
 @router.get("/node-instances")
@@ -355,7 +480,6 @@ def list_node_instances(
             "scheduler_task_instance_id": getattr(ni, "scheduler_task_instance_id", None),
             "scheduler_task_code": getattr(ni, "scheduler_task_code", None),
             "trigger_label": format_trigger_type_label(tt, dct, getattr(wf_inst, "scheduler_instance_id", None)) if wf_inst else "数据开发试跑",
-            "dolphin_process_instance_id": parse_dolphin_process_instance_id(tt) if wf_inst else None,
             "node_name": node.name if node else "",
             "node_type": node.node_type if node else "",
             "status": ni.status,
@@ -397,8 +521,6 @@ def get_node_log(ni_id: int, db: Session = Depends(get_db), current_user: User =
         "log_source": payload.get("source"),
         "log_status": payload.get("status"),
         "scheduler_instance_id": scheduler_instance_id,
-        "dolphin_process_instance_id": scheduler_instance_id,
-        "dolphin_process_instance_url": None,
         "scheduler_task_instance_id": getattr(ni, "scheduler_task_instance_id", None),
         "scheduler_task_code": getattr(ni, "scheduler_task_code", None),
     }
@@ -452,6 +574,98 @@ def refresh_workflow_instance(
         "last_synced_at": getattr(inst, "last_synced_at", None),
         "scheduler_error": getattr(inst, "scheduler_error", None),
     }
+
+
+@router.get("/workflows/{workflow_id}/instances/{inst_id}/dag")
+def workflow_instance_dag(
+    workflow_id: int,
+    inst_id: int,
+    workspace_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    实例 DAG：这次运行当时的图，每个节点带上自己的运行状态。
+    图取实例所属版本的快照而不是当前定义——否则改过图之后回看历史实例会串。
+    """
+    inst, wf = _require_workflow_instance(db, current_user, workspace_id, inst_id, PC.GIDO_BATCH_OPERATION_READ)
+    if int(inst.workflow_id) != int(workflow_id):
+        raise HTTPException(status_code=404, detail="工作流实例不存在")
+
+    snapshot = _instance_dag_snapshot(db, inst, wf)
+    dag_nodes = snapshot.get("nodes") or []
+    edges = [
+        {"source": int(e["source"]), "target": int(e["target"])}
+        for e in (snapshot.get("edges") or [])
+        if e.get("source") is not None and e.get("target") is not None
+    ]
+    node_ids = [int(n["node_id"]) for n in dag_nodes if n.get("node_id") is not None]
+    catalog = {
+        t.id: t for t in db.query(TaskNode).filter(TaskNode.id.in_(node_ids)).all()
+    } if node_ids else {}
+    node_instances = {
+        ni.node_id: ni
+        for ni in db.query(NodeInstance).filter(NodeInstance.workflow_instance_id == inst.id).all()
+        if ni.node_id
+    }
+
+    nodes = []
+    for n in dag_nodes:
+        nid = n.get("node_id")
+        if nid is None:
+            continue
+        nid = int(nid)
+        task = catalog.get(nid)
+        ni = node_instances.get(nid)
+        duration = None
+        if ni is not None and ni.started_at and ni.finished_at:
+            duration = int((ni.finished_at - ni.started_at).total_seconds())
+        log_text = str(getattr(ni, "log_content", None) or "").strip()
+        nodes.append({
+            "node_id": nid,
+            # 图上用快照里的名字：改名后回看历史实例，显示当时那个名字才对得上引擎日志
+            "name": (n.get("name") or getattr(task, "name", None) or f"节点#{nid}"),
+            "current_name": getattr(task, "name", None),
+            "node_type": (n.get("node_type") or getattr(task, "node_type", None) or "SQL"),
+            # 快照里有节点但这次运行没跑到它，状态按 not_run 显示，不要伪装成 pending
+            "status": getattr(ni, "status", None) or "not_run",
+            "node_instance_id": getattr(ni, "id", None),
+            "started_at": getattr(ni, "started_at", None),
+            "finished_at": getattr(ni, "finished_at", None),
+            "duration_seconds": duration,
+            "retry_count": getattr(ni, "retry_count", None),
+            "scheduler_task_instance_id": getattr(ni, "scheduler_task_instance_id", None),
+            "log_summary": log_text.splitlines()[0][:300] if log_text else "",
+        })
+
+    return {
+        "instance": {
+            "id": inst.id,
+            "workflow_id": wf.id,
+            "workflow_name": wf.name,
+            "workspace_id": wf.workspace_id,
+            "status": inst.status,
+            "status_override": getattr(inst, "status_override", None),
+            "business_date": inst.business_date,
+            "started_at": inst.started_at,
+            "finished_at": inst.finished_at,
+            "version_no": snapshot.get("version_no"),
+        },
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
+def _instance_dag_snapshot(db: Session, inst: WorkflowInstance, wf: Workflow) -> dict:
+    from app.models.workspace import JobVersion
+
+    vid = getattr(inst, "job_version_id", None)
+    if vid:
+        ver = db.query(JobVersion).filter(JobVersion.id == vid).first()
+        snap = getattr(ver, "dag_snapshot", None) or {}
+        if snap.get("nodes"):
+            return {**snap, "version_no": getattr(ver, "version_no", None)}
+    return {**(wf.dag_config or {}), "version_no": None}
 
 
 @router.post("/workflows/{workflow_id}/instances/{inst_id}/rerun")
@@ -545,6 +759,27 @@ def retry_node_instance(ni_id: int, db: Session = Depends(get_db), current_user:
             wf_inst.finished_at = None
     db.commit()
     return {"message": "已提交重试", "retry_count": ni.retry_count}
+
+
+@router.get("/diagnose")
+def diagnose_run(
+    workspace_id: int,
+    workflow_id: int,
+    business_date: Optional[str] = Query(None, description="业务日期 YYYY-MM-DD；留空取最近一次运行"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """运行诊断：为什么这次没跑 / 还没跑完。只读 GIDO 自己的事实，不向执行引擎发请求。"""
+    assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_BATCH_OPERATION_READ)
+    wf = db.query(Workflow).filter(
+        Workflow.id == workflow_id,
+        Workflow.workspace_id == workspace_id,
+    ).first()
+    if not wf:
+        raise HTTPException(status_code=404, detail="工作流不存在")
+    if business_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", business_date.strip()):
+        raise HTTPException(status_code=400, detail="业务日期格式须为 YYYY-MM-DD")
+    return diagnose_workflow_run(db, workflow=wf, business_date=business_date)
 
 
 @router.get("/alerts")

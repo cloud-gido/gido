@@ -9,14 +9,24 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.workspace import JobVersion, NodeInstance, TaskNode, Workflow, WorkflowInstance, Workspace
+from app.models.workspace import (
+    JobVersion,
+    NodeInstance,
+    SchedulerSyncCursor,
+    TaskNode,
+    Workflow,
+    WorkflowInstance,
+    Workspace,
+)
 from app.services.dolphin import map_dolphin_process_instance_state
+from app.services.instance_override import is_status_pinned
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +185,8 @@ def _row_raw_state(row: dict) -> Optional[str]:
 
 
 def _mark_instance_scheduler_lost(inst: WorkflowInstance, reason: str) -> bool:
+    if is_status_pinned(inst):
+        return False
     if inst.status not in ("running", "pending"):
         return False
     inst.status = "failed"
@@ -214,20 +226,55 @@ def _task_code_from_row(row: dict) -> Optional[str]:
     return None
 
 
-def _name_to_node_id(db: Session, wf: Workflow) -> Dict[str, int]:
-    dag = wf.dag_config or {}
-    m: Dict[str, int] = {}
-    for n in dag.get("nodes", []) or []:
+class _NodeResolver:
+    """
+    把引擎任务行对回 GIDO 节点。优先用发布时写下的 task code：节点改名后引擎里还是旧名字，
+    只按名字匹配会整片丢掉节点明细。名字仅作为老实例（发布时还没有 task code）的兜底。
+    """
+
+    def __init__(self, by_code: Dict[str, int], by_name: Dict[str, int]):
+        self.by_code = by_code
+        self.by_name = by_name
+
+    def resolve(self, task_row: dict) -> Optional[int]:
+        code = _task_code_from_row(task_row)
+        if code and code in self.by_code:
+            return self.by_code[code]
+        name = (task_row.get("name") or "").strip()
+        if name and name in self.by_name:
+            return self.by_name[name]
+        return None
+
+
+def _instance_dag_nodes(db: Session, inst: WorkflowInstance, wf: Workflow) -> List[dict]:
+    """用这次运行所属版本的 DAG 快照，而不是可能已被改过的当前定义。"""
+    vid = getattr(inst, "job_version_id", None)
+    if vid:
+        ver = db.query(JobVersion).filter(JobVersion.id == vid).first()
+        snapshot = getattr(ver, "dag_snapshot", None) or {}
+        nodes = snapshot.get("nodes") or []
+        if nodes:
+            return nodes
+    return (wf.dag_config or {}).get("nodes") or []
+
+
+def _node_resolver(db: Session, inst: WorkflowInstance, wf: Workflow) -> _NodeResolver:
+    by_code: Dict[str, int] = {}
+    by_name: Dict[str, int] = {}
+    for n in _instance_dag_nodes(db, inst, wf):
         nid = n.get("node_id")
         if not nid:
             continue
+        code = n.get("ds_task_code")
+        if code is not None and str(code).strip():
+            by_code[str(code).strip()] = int(nid)
         nm = (n.get("name") or "").strip()
         if nm:
-            m[nm] = int(nid)
+            by_name[nm] = int(nid)
         node = db.query(TaskNode).filter(TaskNode.id == int(nid)).first()
         if node and (node.name or "").strip():
-            m[node.name.strip()] = int(nid)
-    return m
+            by_name[node.name.strip()] = int(nid)
+    return _NodeResolver(by_code, by_name)
 
 
 def _alert_workflow_failed(db: Session, inst: WorkflowInstance) -> None:
@@ -236,7 +283,7 @@ def _alert_workflow_failed(db: Session, inst: WorkflowInstance) -> None:
 
         open_instance_alert(db, workflow_instance=inst, notify=True)
     except Exception:
-        logger.debug("open workflow alert failed", exc_info=True)
+        logger.warning("open workflow alert failed inst=%s", getattr(inst, "id", None), exc_info=True)
 
 
 def _alert_workflow_recovered(db: Session, inst: WorkflowInstance) -> None:
@@ -252,7 +299,7 @@ def _upsert_node_instances_from_ds_tasks(
     db: Session,
     inst: WorkflowInstance,
     tasks: List[dict],
-    name_map: Dict[str, int],
+    resolver: "_NodeResolver",
     tz_w: str,
 ) -> Tuple[bool, int]:
     """
@@ -262,8 +309,7 @@ def _upsert_node_instances_from_ds_tasks(
     changed = False
     touched = 0
     for t in tasks:
-        tname = (t.get("name") or "").strip()
-        node_id = name_map.get(tname)
+        node_id = resolver.resolve(t)
         if not node_id:
             continue
         t_dw = map_dolphin_process_instance_state(
@@ -372,6 +418,335 @@ def _business_date_from_row(row: dict, tz_name: str) -> Optional[str]:
     return None
 
 
+def _get_sync_cursor(db: Session, engine: str, project_code: Any, definition_code: Any) -> SchedulerSyncCursor:
+    """取（或建）某个流程定义的采集水位线。"""
+    proj, defn = str(project_code), str(definition_code)
+    cursor = (
+        db.query(SchedulerSyncCursor)
+        .filter(
+            SchedulerSyncCursor.scheduler_engine == engine,
+            SchedulerSyncCursor.project_id == proj,
+            SchedulerSyncCursor.definition_id == defn,
+        )
+        .first()
+    )
+    if cursor is not None:
+        return cursor
+    cursor = SchedulerSyncCursor(
+        scheduler_engine=engine, project_id=proj, definition_id=defn, last_instance_id=0
+    )
+    savepoint = db.begin_nested()
+    try:
+        db.add(cursor)
+        db.flush()
+        savepoint.commit()
+        return cursor
+    except IntegrityError:
+        savepoint.rollback()
+        return (
+            db.query(SchedulerSyncCursor)
+            .filter(
+                SchedulerSyncCursor.scheduler_engine == engine,
+                SchedulerSyncCursor.project_id == proj,
+                SchedulerSyncCursor.definition_id == defn,
+            )
+            .one()
+        )
+
+
+def _advance_sync_cursor(cursor: SchedulerSyncCursor, highest_seen: int) -> None:
+    """水位线只进不退：采集失败或漏页时宁可下轮重扫，也不能跳过未入库的实例。"""
+    if highest_seen > (cursor.last_instance_id or 0):
+        cursor.last_instance_id = highest_seen
+    cursor.last_synced_at = datetime.utcnow()
+
+
+def _find_existing_ds_instance(db: Session, wf: Workflow, ds_pi_id: int) -> Optional[WorkflowInstance]:
+    """同一 Dolphin 实例只对应一行，不按当前 active_version 过滤。"""
+    inst = (
+        db.query(WorkflowInstance)
+        .filter(
+            WorkflowInstance.workflow_id == wf.id,
+            WorkflowInstance.scheduler_instance_id == str(ds_pi_id),
+        )
+        .order_by(WorkflowInstance.id.desc())
+        .first()
+    )
+    if inst is not None:
+        return inst
+    candidates = (
+        db.query(WorkflowInstance)
+        .filter(
+            WorkflowInstance.workflow_id == wf.id,
+            WorkflowInstance.trigger_type.like(f"%ds:{ds_pi_id}%"),
+        )
+        .order_by(WorkflowInstance.id.desc())
+        .limit(8)
+        .all()
+    )
+    for cand in candidates:
+        if _scheduler_instance_id_from_inst(cand) == ds_pi_id:
+            return cand
+    return None
+
+
+def _add_instance_idempotent(db: Session, inst: WorkflowInstance) -> tuple[WorkflowInstance, bool]:
+    """
+    一次引擎运行只落一行。scheduler_run_key 有唯一索引，采集与回调并发时
+    后写的一方让位给已存在的那行，而不是抛错中断整轮采集。
+    返回 (实例, 是否本次新建)。
+    """
+    savepoint = db.begin_nested()
+    try:
+        db.add(inst)
+        db.flush()
+        savepoint.commit()
+        return inst, True
+    except IntegrityError:
+        savepoint.rollback()
+        run_key = getattr(inst, "scheduler_run_key", None)
+        existing = (
+            db.query(WorkflowInstance).filter(WorkflowInstance.scheduler_run_key == run_key).first()
+            if run_key
+            else None
+        )
+        if existing is None:
+            raise
+        return existing, False
+
+
+def _call_list_process_instances_page(
+    ds_client: Any, project_code: int, process_code: Optional[int], **kwargs: Any
+) -> Dict[str, Any]:
+    call_kw = dict(kwargs)
+    if process_code:
+        call_kw["process_definition_code"] = int(process_code)
+    page_fn = getattr(ds_client, "list_process_instances_page", None)
+    if callable(page_fn):
+        try:
+            out = page_fn(project_code, **call_kw)
+        except TypeError:
+            out = None
+        if isinstance(out, dict) and "rows" in out:
+            try:
+                total_page = int(out.get("total_page") or 1)
+            except (TypeError, ValueError):
+                total_page = 1
+            return {"rows": list(out.get("rows") or []), "total_page": max(total_page, 1)}
+    try:
+        rows = ds_client.list_process_instances(project_code, **call_kw)
+    except TypeError:
+        rows = ds_client.list_process_instances(
+            project_code,
+            page_size=int(call_kw.get("page_size") or 100),
+        )
+    return {"rows": list(rows or []), "total_page": 1}
+
+
+def _append_instance_rows(rows: List[dict], seen: set[int], merged: List[dict]) -> None:
+    for row in rows:
+        pid = _process_instance_id_from_row(row)
+        if pid is None or pid in seen:
+            continue
+        seen.add(pid)
+        merged.append(row)
+
+
+def _paged_instance_rows(
+    ds_client: Any,
+    project_code: int,
+    process_code: Optional[int],
+    **kwargs: Any,
+) -> List[dict]:
+    merged: List[dict] = []
+    seen: set[int] = set()
+    try:
+        first = _call_list_process_instances_page(
+            ds_client, project_code, process_code, page_no=1, **kwargs
+        )
+    except Exception as e:
+        logger.warning(
+            "DS list_process_instances failed project=%s process=%s params=%s: %s",
+            project_code,
+            process_code,
+            kwargs,
+            e,
+        )
+        return merged
+    _append_instance_rows(first["rows"], seen, merged)
+    last_page = int(first.get("total_page") or 1)
+    extra = [p for p in (last_page, last_page - 1) if p > 1]
+    for page_no in extra:
+        try:
+            more = _call_list_process_instances_page(
+                ds_client, project_code, process_code, page_no=page_no, **kwargs
+            )
+        except Exception as e:
+            logger.warning(
+                "DS list_process_instances page=%s failed project=%s process=%s: %s",
+                page_no,
+                project_code,
+                process_code,
+                e,
+            )
+            continue
+        _append_instance_rows(more["rows"], seen, merged)
+    return merged
+
+
+def _definition_code_from_row(row: dict) -> Optional[int]:
+    for key in (
+        "processDefinitionCode",
+        "processDefineCode",
+        "process_definition_code",
+        "process_define_code",
+    ):
+        v = row.get(key)
+        if v is None or str(v).strip() == "":
+            continue
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _list_project_failure_rows(ds_client: Any, project_code: int, tz_name: str) -> List[dict]:
+    """项目级最近失败：不按流程定义过滤，末页即 Dolphin 上最新红的那些。"""
+    now = datetime.now(_safe_zoneinfo(tz_name))
+    start = (now - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+    end = (now + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+    return _paged_instance_rows(
+        ds_client,
+        project_code,
+        None,
+        page_size=100,
+        start_date=start,
+        end_date=end,
+        state_type="FAILURE",
+    )
+
+
+# 单个定义单轮最多翻的页数：水位线追平前的兜底，防止首次接入时一次拉爆
+_MAX_CATCHUP_PAGES = 25
+
+
+def _max_instance_id(rows: List[dict]) -> int:
+    ids = [pid for pid in (_process_instance_id_from_row(r) for r in rows) if pid is not None]
+    return max(ids) if ids else 0
+
+
+def _walk_pages_until_watermark(
+    ds_client: Any,
+    project_code: int,
+    process_code: Optional[int],
+    *,
+    watermark: int,
+    page_size: int,
+    max_pages: int = _MAX_CATCHUP_PAGES,
+    **kwargs: Any,
+) -> List[dict]:
+    """
+    从最新的一侧开始翻页，直到整页实例号都不高于水位线为止。
+
+    Dolphin 不同版本的列表排序不一致（有的 start_time 升序，有的降序），
+    所以先比较首页与末页的最大实例号来判断方向，再朝「新」的方向走。
+    这样中间页不会像固定窗口那样被永久跳过。
+    """
+    merged: List[dict] = []
+    seen: set[int] = set()
+
+    def fetch(page_no: int) -> Optional[Dict[str, Any]]:
+        try:
+            return _call_list_process_instances_page(
+                ds_client, project_code, process_code, page_no=page_no, page_size=page_size, **kwargs
+            )
+        except Exception as e:
+            logger.warning(
+                "DS 实例分页拉取失败 project=%s process=%s page=%s: %s",
+                project_code, process_code, page_no, e,
+            )
+            return None
+
+    first = fetch(1)
+    if first is None:
+        return merged
+    total_page = max(int(first.get("total_page") or 1), 1)
+    _append_instance_rows(first["rows"], seen, merged)
+    if total_page == 1:
+        return merged
+
+    last = fetch(total_page)
+    last_rows = last["rows"] if last else []
+    _append_instance_rows(last_rows, seen, merged)
+
+    ascending = _max_instance_id(last_rows) > _max_instance_id(first["rows"])
+    pages = range(total_page - 1, 0, -1) if ascending else range(2, total_page + 1)
+
+    walked = 0
+    for page_no in pages:
+        if walked >= max_pages:
+            logger.info(
+                "追平水位线前达到翻页上限 project=%s process=%s watermark=%s",
+                project_code, process_code, watermark,
+            )
+            break
+        page = fetch(page_no)
+        if page is None:
+            continue
+        walked += 1
+        rows = page["rows"]
+        _append_instance_rows(rows, seen, merged)
+        if not rows or _max_instance_id(rows) <= watermark:
+            break
+    return merged
+
+
+def _list_ds_process_instance_rows(
+    ds_client: Any,
+    project_code: int,
+    process_code: int,
+    *,
+    page_size: int,
+    tz_name: str,
+    watermark: int = 0,
+) -> List[dict]:
+    """
+    增量采集一个流程定义：从水位线往新的方向翻页追平，再补一段 FAILURE 兜底。
+    FAILURE 单独扫是因为失败实例可能早于水位线才被引擎标红（如长时间运行后失败）。
+    """
+    merged: List[dict] = []
+    seen: set[int] = set()
+    _append_instance_rows(
+        _walk_pages_until_watermark(
+            ds_client,
+            project_code,
+            process_code,
+            watermark=watermark,
+            page_size=max(int(page_size), 50),
+        ),
+        seen,
+        merged,
+    )
+    now = datetime.now(_safe_zoneinfo(tz_name))
+    fail_start = (now - timedelta(days=14)).strftime("%Y-%m-%d %H:%M:%S")
+    fail_end = (now + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+    _append_instance_rows(
+        _paged_instance_rows(
+            ds_client,
+            project_code,
+            process_code,
+            page_size=max(int(page_size), 100),
+            start_date=fail_start,
+            end_date=fail_end,
+            state_type="FAILURE",
+        ),
+        seen,
+        merged,
+    )
+    return merged
+
+
 def sync_from_dolphin_definitions(
     db: Session, ds_client: Any, *, workspace_id: Optional[int] = None, page_size: int = 100
 ) -> Dict[str, int]:
@@ -384,49 +759,63 @@ def sync_from_dolphin_definitions(
     node_upserted = 0
     cmd_filled = 0
     definitions_scanned = 0
+    skipped_unbound = 0
 
     workflows_q = db.query(Workflow).order_by(Workflow.id.asc())
     if workspace_id is not None:
         workflows_q = workflows_q.filter(Workflow.workspace_id == int(workspace_id))
     workflows = workflows_q.all()
+
+    wf_by_def: Dict[tuple[int, int], Workflow] = {}
+    projects: set[int] = set()
+    for wf in workflows:
+        pc, pcode = _workflow_scheduler_refs(wf)
+        if pc and pcode:
+            wf_by_def[(pc, pcode)] = wf
+            projects.add(pc)
+    project_fail_by_def: Dict[tuple[int, int], List[dict]] = {}
+    for pc in projects:
+        tz_name = "Asia/Shanghai"
+        for wf in wf_by_def.values():
+            wpc, _ = _workflow_scheduler_refs(wf)
+            if wpc == pc:
+                tz_name = _workspace_tz_for_wf(db, wf)
+                break
+        for row in _list_project_failure_rows(ds_client, pc, tz_name):
+            dcode = _definition_code_from_row(row)
+            if not dcode:
+                continue
+            project_fail_by_def.setdefault((pc, dcode), []).append(row)
+
     for wf in workflows:
         pc, pcode = _workflow_scheduler_refs(wf)
         if not pc or not pcode:
+            if (wf.status == "published") or getattr(wf, "scheduler_definition_id", None) or getattr(
+                wf, "scheduler_project_id", None
+            ):
+                skipped_unbound += 1
             continue
         active_vid = _active_version_id(db, wf)
         definitions_scanned += 1
-        name_map = _name_to_node_id(db, wf)
         tz_w = _workspace_tz_for_wf(db, wf)
-        try:
-            rows = ds_client.list_process_instances(pc, process_definition_code=pcode, page_size=page_size)
-        except Exception as e:
-            logger.warning("DS list_process_instances failed wf_id=%s project=%s process=%s: %s", wf.id, pc, pcode, e)
-            continue
+        watermark = _get_sync_cursor(db, "dolphin", pc, pcode).last_instance_id or 0
+        db.commit()
+        rows = _list_ds_process_instance_rows(
+            ds_client, pc, pcode, page_size=page_size, tz_name=tz_w, watermark=watermark
+        )
+        extra_fail = project_fail_by_def.get((pc, pcode), [])
+        if extra_fail:
+            seen_ids = {pid for pid in (_process_instance_id_from_row(r) for r in rows) if pid is not None}
+            _append_instance_rows(extra_fail, seen_ids, rows)
+        highest_seen = _max_instance_id(rows)
+        row_failures = 0
 
         for row in rows:
             ds_pi_id = _process_instance_id_from_row(row)
             if ds_pi_id is None:
                 continue
             try:
-                inst = (
-                    db.query(WorkflowInstance)
-                    .filter(
-                        WorkflowInstance.workflow_id == wf.id,
-                        WorkflowInstance.scheduler_instance_id == str(ds_pi_id),
-                        WorkflowInstance.job_version_id == active_vid,
-                    )
-                    .first()
-                )
-                if inst is None:
-                    inst = (
-                        db.query(WorkflowInstance)
-                        .filter(
-                            WorkflowInstance.workflow_id == wf.id,
-                            WorkflowInstance.trigger_type.like(f"%ds:{ds_pi_id}%"),
-                            WorkflowInstance.job_version_id == active_vid,
-                        )
-                        .first()
-                    )
+                inst = _find_existing_ds_instance(db, wf, ds_pi_id)
                 cmd_type = _row_command_type(row)
                 raw_pi_state = row.get("state")
                 if raw_pi_state is None or raw_pi_state == "":
@@ -475,12 +864,12 @@ def sync_from_dolphin_definitions(
                         started_at=started or datetime.utcnow(),
                         finished_at=ended if dw_status != "running" else None,
                     )
-                    db.add(inst)
-                    db.flush()
-                    ingested += 1
-                    if ct_str:
-                        cmd_filled += 1
-                    became_failed = dw_status == "failed"
+                    inst, created = _add_instance_idempotent(db, inst)
+                    if created:
+                        ingested += 1
+                        if ct_str:
+                            cmd_filled += 1
+                        became_failed = dw_status == "failed"
                 else:
                     changed = False
                     if ct_str and (inst.dolphin_command_type or "") != ct_str:
@@ -514,7 +903,7 @@ def sync_from_dolphin_definitions(
                         if vid:
                             inst.job_version_id = vid
                             changed = True
-                    if inst.status != dw_status:
+                    if inst.status != dw_status and not is_status_pinned(inst):
                         recovered = inst.status == "failed" and dw_status == "success"
                         inst.status = dw_status
                         changed = True
@@ -535,21 +924,32 @@ def sync_from_dolphin_definitions(
                     if changed:
                         updated += 1
 
-                try:
-                    tasks = ds_client.list_task_instances_all(pc, ds_pi_id)
-                except Exception as e:
-                    logger.debug("DS list_task_instances wf_id=%s pi=%s: %s", wf.id, ds_pi_id, e)
-                    tasks = []
-
-                _, n_touched = _upsert_node_instances_from_ds_tasks(db, inst, tasks, name_map, tz_w)
-                node_upserted += n_touched
+                need_tasks = became_failed or recovered or dw_status in ("failed", "running", "pending")
+                if need_tasks:
+                    try:
+                        tasks = ds_client.list_task_instances_all(pc, ds_pi_id)
+                    except Exception as e:
+                        logger.debug("DS list_task_instances wf_id=%s pi=%s: %s", wf.id, ds_pi_id, e)
+                        tasks = []
+                    # 解析器按实例所属版本建，不能在工作流层面复用：同一工作流的不同实例可能跑的是不同版本
+                    _, n_touched = _upsert_node_instances_from_ds_tasks(
+                        db, inst, tasks, _node_resolver(db, inst, wf), tz_w
+                    )
+                    node_upserted += n_touched
                 if became_failed:
+                    logger.info(
+                        "ds workflow failed wf_id=%s ds_pi=%s gido_inst=%s, opening alert",
+                        wf.id,
+                        ds_pi_id,
+                        inst.id,
+                    )
                     _alert_workflow_failed(db, inst)
                 if recovered:
                     _alert_workflow_recovered(db, inst)
 
                 db.commit()
             except Exception as e:
+                row_failures += 1
                 logger.warning(
                     "sync_from_dolphin_definitions row failed wf_id=%s process_instance=%s: %s",
                     wf.id,
@@ -558,12 +958,22 @@ def sync_from_dolphin_definitions(
                 )
                 db.rollback()
 
+        # 有行没写进去就不推进水位线，下一轮重新扫这一段
+        if row_failures == 0 and highest_seen:
+            try:
+                _advance_sync_cursor(_get_sync_cursor(db, "dolphin", pc, pcode), highest_seen)
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                logger.warning("推进采集水位线失败 project=%s process=%s: %s", pc, pcode, e)
+
     return {
         "definitions_scanned": definitions_scanned,
         "ingested": ingested,
         "updated_from_ds": updated,
         "command_types_filled": cmd_filled,
         "node_rows_touched": node_upserted,
+        "skipped_unbound": skipped_unbound,
     }
 
 
@@ -636,7 +1046,7 @@ def patch_instances_from_ds_detail(
             inst.scheduler_instance_id = str(ds_instance_id)
         dw_status = ds_info.get("state_dw") or map_dolphin_process_instance_state(ds_info.get("state"))
         prev_status = inst.status
-        if inst.status != dw_status:
+        if inst.status != dw_status and not is_status_pinned(inst):
             inst.status = dw_status
             synced += 1
         tz_w = _workspace_tz_for_wf(db, wf)
@@ -651,16 +1061,17 @@ def patch_instances_from_ds_detail(
                 inst.finished_at = datetime.utcnow()
         elif inst.finished_at is not None:
             inst.finished_at = None
-        name_map = _name_to_node_id(db, wf)
         try:
             tasks = ds_client.list_task_instances_all(int(project_code), ds_instance_id)
         except Exception:
             tasks = []
-        _upsert_node_instances_from_ds_tasks(db, inst, tasks, name_map, tz_w)
-        if dw_status == "failed" and prev_status != "failed":
-            _alert_workflow_failed(db, inst)
-        if prev_status == "failed" and dw_status == "success":
-            _alert_workflow_recovered(db, inst)
+        _upsert_node_instances_from_ds_tasks(db, inst, tasks, _node_resolver(db, inst, wf), tz_w)
+        # 人工置过状态的实例不再按引擎状态开/关告警，否则置成功后下一轮采集就会把告警重新推出来
+        if not is_status_pinned(inst):
+            if dw_status == "failed" and prev_status != "failed":
+                _alert_workflow_failed(db, inst)
+            if prev_status == "failed" and dw_status == "success":
+                _alert_workflow_recovered(db, inst)
         try:
             db.commit()
         except Exception:
@@ -728,7 +1139,7 @@ def _apply_ds_poll_to_instance(db: Session, inst: WorkflowInstance, wf: Workflow
             changed = True
     dw_status = ds_info.get("state_dw") or map_dolphin_process_instance_state(ds_info.get("state"))
     prev_status = inst.status
-    if inst.status != dw_status:
+    if inst.status != dw_status and not is_status_pinned(inst):
         inst.status = dw_status
         changed = True
     tz_w = _workspace_tz_for_wf(db, wf)
@@ -747,16 +1158,16 @@ def _apply_ds_poll_to_instance(db: Session, inst: WorkflowInstance, wf: Workflow
     elif dw_status == "running" and inst.finished_at is not None:
         inst.finished_at = None
         changed = True
-    name_map = _name_to_node_id(db, wf)
     try:
         tasks = ds_client.list_task_instances_all(int(project_code), ds_instance_id)
     except Exception:
         tasks = []
-    node_changed, _ = _upsert_node_instances_from_ds_tasks(db, inst, tasks, name_map, tz_w)
-    if dw_status == "failed" and prev_status != "failed":
-        _alert_workflow_failed(db, inst)
-    if prev_status == "failed" and dw_status == "success":
-        _alert_workflow_recovered(db, inst)
+    node_changed, _ = _upsert_node_instances_from_ds_tasks(db, inst, tasks, _node_resolver(db, inst, wf), tz_w)
+    if not is_status_pinned(inst):
+        if dw_status == "failed" and prev_status != "failed":
+            _alert_workflow_failed(db, inst)
+        if prev_status == "failed" and dw_status == "success":
+            _alert_workflow_recovered(db, inst)
     return changed or node_changed
 
 
@@ -939,9 +1350,8 @@ def ingest_ds_instance_from_callback(
         started_at=datetime.utcnow(),
         finished_at=datetime.utcnow() if (dw_status or "failed") != "running" else None,
     )
-    db.add(inst)
-    db.flush()
-    if inst.status == "failed":
+    inst, created = _add_instance_idempotent(db, inst)
+    if created and inst.status == "failed":
         _alert_workflow_failed(db, inst)
     return inst
 
@@ -957,6 +1367,7 @@ def sync_workspace_ds_instances(db: Session, workspace_id: int, *, page_size: in
         "updated_from_ds": 0,
         "command_types_filled": 0,
         "node_rows_touched": 0,
+        "skipped_unbound": 0,
     }
     if not get_dolphin_runtime(db).enabled:
         return empty

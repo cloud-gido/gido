@@ -2,8 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import logging
+import re
+import time
 from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import func, or_
@@ -12,7 +16,19 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.core.access import is_platform_admin
-from app.models.workspace import AlertEvent, AlertNotificationConfig, NodeInstance, TaskNode, Workflow, WorkflowInstance, Workspace
+from app.models.workspace import (
+    AlertEvent,
+    AlertNotificationConfig,
+    AlertOnCallShift,
+    NodeInstance,
+    TaskNode,
+    User,
+    Workflow,
+    WorkflowInstance,
+    WorkflowSlaRule,
+    Workspace,
+    WorkspaceMember,
+)
 from app.services.rbac import assert_workspace_access, check_workspace_permission
 from app.services.alert_center import workspace_alert_coverage
 from app.services.alert_notification import (
@@ -20,8 +36,34 @@ from app.services.alert_notification import (
     serialize_alert_notification_config,
     upsert_alert_notification_config,
 )
+from app.services.alert_oncall import on_call_label, parse_hhmm, parse_weekdays, shift_covers
+from app.services.run_collector import collect_runs, collector_health
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
+_log = logging.getLogger(__name__)
+_COLLECT_COOLDOWN_SEC = 20.0
+_last_collect: dict[str, float] = {}
+
+
+def _business_date_from_dedupe_key(dedupe_key: Optional[str]) -> Optional[str]:
+    """基线去重键形如 sla:workflow:12:biz:2026-09-10。"""
+    m = re.search(r":biz:(\d{4}-\d{2}-\d{2})$", str(dedupe_key or ""))
+    return m.group(1) if m else None
+
+
+def _collect_runs_if_stale(db: Session, workspace_id: int, *, include_all: bool = False) -> None:
+    """
+    打开告警中心时兜底采集一轮失败运行：后台采集是主路径，这里只防它掉线时告警中心空白。
+    """
+    key = "all" if include_all else str(int(workspace_id))
+    now = time.monotonic()
+    if now - _last_collect.get(key, 0.0) < _COLLECT_COOLDOWN_SEC:
+        return
+    try:
+        collect_runs(db, workspace_id=None if include_all else workspace_id, page_size=30)
+        _last_collect[key] = time.monotonic()
+    except Exception:
+        _log.warning("alert center run collection failed ws=%s", workspace_id, exc_info=True)
 
 
 @router.get("")
@@ -42,6 +84,7 @@ def list_alerts(
             raise HTTPException(status_code=403, detail="仅平台管理员可查看全部工作空间")
     else:
         assert_workspace_access(db, current_user, workspace_id)
+    _collect_runs_if_stale(db, workspace_id, include_all=include_all_workspaces)
     stmt = db.query(AlertEvent)
     if not include_all_workspaces:
         stmt = stmt.filter(AlertEvent.workspace_id == workspace_id)
@@ -129,7 +172,8 @@ def list_alerts(
             "workflow_name": workflow_names.get(r.workflow_id),
             "workflow_instance_id": r.workflow_instance_id,
             "workflow_instance_status": getattr(wf_inst, "status", None),
-            "business_date": getattr(wf_inst, "business_date", None),
+            # 基线告警没有实例可挂，业务日期只存在去重键里，取出来诊断才能定到正确的那天
+            "business_date": getattr(wf_inst, "business_date", None) or _business_date_from_dedupe_key(r.dedupe_key),
             "trigger_type": getattr(wf_inst, "trigger_type", None),
             "scheduler_instance_id": getattr(wf_inst, "scheduler_instance_id", None),
             "node_instance_id": r.node_instance_id,
@@ -146,6 +190,10 @@ def list_alerts(
             "assignee_id": getattr(r, "assignee_id", None),
             "assignee_group": getattr(r, "assignee_group", None),
             "notification_status": getattr(r, "notification_status", None),
+            "notify_attempts": getattr(r, "notify_attempts", None),
+            "notify_pending_channels": getattr(r, "notify_pending_channels", None),
+            "notify_next_retry_at": getattr(r, "notify_next_retry_at", None),
+            "notify_last_error": getattr(r, "notify_last_error", None),
             "status": r.status,
             "message": r.message,
             "occurred_at": occurred_at,
@@ -161,6 +209,7 @@ def list_alerts(
         "items": items,
         "after_armed": after_armed,
         "coverage": workspace_alert_coverage(db, workspace_id),
+        "collector": collector_health(db),
     }
 
 
@@ -236,6 +285,262 @@ def notify_alert(
     return {"message": "已发送告警通知", "id": row.id, "notification_status": row.notification_status, **result}
 
 
+def _serialize_shift(shift: AlertOnCallShift, username: str = "", on_call_now: bool = False) -> dict:
+    return {
+        "id": shift.id,
+        "user_id": shift.user_id,
+        "username": username,
+        "weekdays": shift.weekdays or "*",
+        "start_time": shift.start_time or "00:00",
+        "end_time": shift.end_time or "24:00",
+        "enabled": bool(shift.enabled),
+        "note": shift.note,
+        "on_call_now": on_call_now,
+    }
+
+
+@router.get("/oncall/shifts")
+def list_oncall_shifts(
+    workspace_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """值班表。on_call_now 标出此刻在班的班次，排错时一眼看出配的时段对不对。"""
+    assert_workspace_access(db, current_user, workspace_id)
+    shifts = (
+        db.query(AlertOnCallShift)
+        .filter(AlertOnCallShift.workspace_id == workspace_id)
+        .order_by(AlertOnCallShift.id.asc())
+        .all()
+    )
+    usernames = {}
+    if shifts:
+        ids = [s.user_id for s in shifts]
+        usernames = {u.id: u.username for u in db.query(User).filter(User.id.in_(ids)).all()}
+    local_now = _local_now(db, workspace_id)
+    return {
+        "items": [
+            _serialize_shift(s, usernames.get(s.user_id, ""), shift_covers(s, local_now))
+            for s in shifts
+        ],
+        "on_call_now": on_call_label(db, workspace_id),
+        "local_now": local_now.strftime("%Y-%m-%d %H:%M"),
+    }
+
+
+def _local_now(db: Session, workspace_id: int) -> datetime:
+    from app.services.alert_oncall import workspace_tz
+
+    return datetime.utcnow().replace(tzinfo=ZoneInfo("UTC")).astimezone(workspace_tz(db, workspace_id))
+
+
+def _validated_shift_payload(db: Session, workspace_id: int, data: dict) -> dict:
+    user_id = data.get("user_id")
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="请选择值班人")
+    member = (
+        db.query(WorkspaceMember)
+        .filter(WorkspaceMember.workspace_id == workspace_id, WorkspaceMember.user_id == user_id)
+        .first()
+    )
+    if not member:
+        raise HTTPException(status_code=400, detail="值班人必须是本工作空间成员")
+    start = str(data.get("start_time") or "00:00").strip()
+    end = str(data.get("end_time") or "24:00").strip()
+    if parse_hhmm(start) is None or parse_hhmm(end) is None:
+        raise HTTPException(status_code=400, detail="值班起止时间须为 HH:MM")
+    if start == end:
+        raise HTTPException(status_code=400, detail="值班起止时间不能相同")
+    weekdays = str(data.get("weekdays") or "*").strip() or "*"
+    if weekdays != "*":
+        parsed = parse_weekdays(weekdays)
+        if not parsed:
+            raise HTTPException(status_code=400, detail="星期须为 * 或 1-7 的逗号分隔值（1=周一）")
+        weekdays = ",".join(str(d) for d in sorted(parsed))
+    return {
+        "user_id": user_id,
+        "weekdays": weekdays,
+        "start_time": start,
+        "end_time": end,
+        "enabled": bool(data.get("enabled", True)),
+        "note": (str(data.get("note") or "").strip() or None),
+    }
+
+
+@router.post("/oncall/shifts")
+def create_oncall_shift(
+    workspace_id: int,
+    payload: Optional[dict] = Body(default=None),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    check_workspace_permission(db, current_user, workspace_id, "admin")
+    fields = _validated_shift_payload(db, workspace_id, payload or {})
+    shift = AlertOnCallShift(workspace_id=workspace_id, **fields)
+    db.add(shift)
+    db.commit()
+    db.refresh(shift)
+    user = db.query(User).filter(User.id == shift.user_id).first()
+    return _serialize_shift(shift, getattr(user, "username", ""), shift_covers(shift, _local_now(db, workspace_id)))
+
+
+@router.put("/oncall/shifts/{shift_id}")
+def update_oncall_shift(
+    shift_id: int,
+    workspace_id: int,
+    payload: Optional[dict] = Body(default=None),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    check_workspace_permission(db, current_user, workspace_id, "admin")
+    shift = db.query(AlertOnCallShift).filter(
+        AlertOnCallShift.id == shift_id,
+        AlertOnCallShift.workspace_id == workspace_id,
+    ).first()
+    if not shift:
+        raise HTTPException(status_code=404, detail="值班班次不存在")
+    for key, val in _validated_shift_payload(db, workspace_id, payload or {}).items():
+        setattr(shift, key, val)
+    db.commit()
+    db.refresh(shift)
+    user = db.query(User).filter(User.id == shift.user_id).first()
+    return _serialize_shift(shift, getattr(user, "username", ""), shift_covers(shift, _local_now(db, workspace_id)))
+
+
+@router.delete("/oncall/shifts/{shift_id}")
+def delete_oncall_shift(
+    shift_id: int,
+    workspace_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    check_workspace_permission(db, current_user, workspace_id, "admin")
+    shift = db.query(AlertOnCallShift).filter(
+        AlertOnCallShift.id == shift_id,
+        AlertOnCallShift.workspace_id == workspace_id,
+    ).first()
+    if not shift:
+        raise HTTPException(status_code=404, detail="值班班次不存在")
+    db.delete(shift)
+    db.commit()
+    return {"message": "已删除值班班次", "id": shift_id}
+
+
+def _serialize_sla_rule(rule: WorkflowSlaRule, workflow_name: str = "") -> dict:
+    return {
+        "id": rule.id,
+        "workflow_id": rule.workflow_id,
+        "workflow_name": workflow_name,
+        "enabled": bool(rule.enabled),
+        "expect_finish_time": rule.expect_finish_time,
+        "expect_finish_offset_days": rule.expect_finish_offset_days,
+        "max_duration_minutes": rule.max_duration_minutes,
+        "level": rule.level,
+        "updated_at": rule.updated_at,
+    }
+
+
+@router.get("/sla/rules")
+def list_sla_rules(
+    workspace_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """基线列表：已发布工作流都列出来，没配基线的返回 rule=null 以便前端直接编辑。"""
+    assert_workspace_access(db, current_user, workspace_id)
+    workflows = (
+        db.query(Workflow)
+        .filter(Workflow.workspace_id == workspace_id, Workflow.status == "published")
+        .order_by(Workflow.name.asc())
+        .all()
+    )
+    rules = {
+        r.workflow_id: r
+        for r in db.query(WorkflowSlaRule).filter(WorkflowSlaRule.workspace_id == workspace_id).all()
+    }
+    items = []
+    for wf in workflows:
+        rule = rules.get(wf.id)
+        items.append({
+            "workflow_id": wf.id,
+            "workflow_name": wf.name,
+            "rule": _serialize_sla_rule(rule, wf.name) if rule else None,
+        })
+    return {"items": items, "covered": sum(1 for i in items if i["rule"]), "total": len(items)}
+
+
+@router.put("/sla/rules/{workflow_id}")
+def upsert_sla_rule(
+    workflow_id: int,
+    workspace_id: int,
+    payload: Optional[dict] = Body(default=None),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """配置某个工作流的基线：承诺完成时间与最长运行时长。"""
+    check_workspace_permission(db, current_user, workspace_id, "developer")
+    wf = (
+        db.query(Workflow)
+        .filter(Workflow.id == workflow_id, Workflow.workspace_id == workspace_id)
+        .first()
+    )
+    if not wf:
+        raise HTTPException(status_code=404, detail="工作流不存在")
+    data = payload or {}
+    expect = (data.get("expect_finish_time") or "").strip() or None
+    if expect and not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", expect):
+        raise HTTPException(status_code=400, detail="承诺完成时间格式应为 HH:MM，例如 09:30")
+    max_minutes = data.get("max_duration_minutes")
+    if max_minutes is not None and str(max_minutes).strip() != "":
+        try:
+            max_minutes = int(max_minutes)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="最长运行时长须为整数分钟")
+        if max_minutes <= 0:
+            raise HTTPException(status_code=400, detail="最长运行时长须大于 0")
+    else:
+        max_minutes = None
+    if not expect and max_minutes is None:
+        raise HTTPException(status_code=400, detail="至少配置承诺完成时间或最长运行时长")
+
+    rule = db.query(WorkflowSlaRule).filter(WorkflowSlaRule.workflow_id == workflow_id).first()
+    if rule is None:
+        rule = WorkflowSlaRule(workspace_id=workspace_id, workflow_id=workflow_id)
+        db.add(rule)
+    rule.workspace_id = workspace_id
+    rule.enabled = bool(data.get("enabled", True))
+    rule.expect_finish_time = expect
+    rule.expect_finish_offset_days = int(data.get("expect_finish_offset_days", 1) or 0)
+    rule.max_duration_minutes = max_minutes
+    rule.level = data.get("level") or "error"
+    rule.updated_by = getattr(current_user, "id", None)
+    db.commit()
+    db.refresh(rule)
+    return _serialize_sla_rule(rule, wf.name)
+
+
+@router.delete("/sla/rules/{workflow_id}")
+def delete_sla_rule(
+    workflow_id: int,
+    workspace_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    check_workspace_permission(db, current_user, workspace_id, "developer")
+    rule = (
+        db.query(WorkflowSlaRule)
+        .filter(WorkflowSlaRule.workflow_id == workflow_id, WorkflowSlaRule.workspace_id == workspace_id)
+        .first()
+    )
+    if rule is None:
+        return {"message": "未配置基线"}
+    db.delete(rule)
+    db.commit()
+    return {"message": "已删除基线"}
+
+
 @router.get("/notification/config")
 def get_notification_config(
     workspace_id: int,
@@ -257,7 +562,11 @@ def put_notification_config(
     current_user=Depends(get_current_user),
 ):
     check_workspace_permission(db, current_user, workspace_id, "admin")
-    cfg = upsert_alert_notification_config(db, workspace_id, payload or {}, getattr(current_user, "id", None))
+    try:
+        cfg = upsert_alert_notification_config(db, workspace_id, payload or {}, getattr(current_user, "id", None))
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
     db.commit()
     db.refresh(cfg)
     body = serialize_alert_notification_config(cfg)
@@ -274,7 +583,11 @@ def test_notification_config(
 ):
     check_workspace_permission(db, current_user, workspace_id, "admin")
     data = payload or {}
-    cfg = upsert_alert_notification_config(db, workspace_id, data, getattr(current_user, "id", None))
+    try:
+        cfg = upsert_alert_notification_config(db, workspace_id, data, getattr(current_user, "id", None))
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
     event = AlertEvent(
         workspace_id=workspace_id,
         alert_type="test",

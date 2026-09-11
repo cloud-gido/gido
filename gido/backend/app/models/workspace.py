@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # @author felixzhu
 # @date 2026-06-05
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, Enum, JSON, Float, UniqueConstraint
+from sqlalchemy import BigInteger, Column, Index, Integer, String, Text, DateTime, Boolean, ForeignKey, Enum, JSON, Float, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.core.database import Base
@@ -200,7 +200,14 @@ class WorkflowInstance(Base):
     workflow_id = Column(Integer, ForeignKey("dw_workflows.id"))
     job_version_id = Column(Integer, ForeignKey("dw_job_versions.id"), nullable=True)
     backfill_request_id = Column(Integer, ForeignKey("dw_backfill_requests.id"), nullable=True)
+    # 重跑不覆盖原实例，而是新开一行指回被重跑的那次运行，保留完整运行台账
+    parent_instance_id = Column(Integer, ForeignKey("dw_workflow_instances.id"), nullable=True)
     status = Column(String(32), default="pending")  # pending/running/success/failed/killed
+    # 人工置成功/置失败后，引擎采集回来的状态不再覆盖这一行，人工结论是最终结论
+    status_override = Column(String(16), nullable=True)
+    override_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    override_at = Column(DateTime, nullable=True)
+    override_reason = Column(String(500), nullable=True)
     trigger_type = Column(String(128), default="manual")  # schedule/manual/backfill/rerun/local
     # Dolphin 流程实例详情中的 commandType（如 SCHEDULER）；用于运维展示，与 trigger_type 前缀解耦
     dolphin_command_type = Column(String(64), nullable=True)
@@ -209,6 +216,7 @@ class WorkflowInstance(Base):
     scheduler_definition_id = Column(String(128), nullable=True)
     scheduler_definition_version = Column(Integer, nullable=True)
     scheduler_instance_id = Column(String(128), nullable=True)
+    # 一次引擎运行对应一行；唯一索引防止采集与回调并发写出重复实例
     scheduler_run_key = Column(String(128), nullable=True)
     scheduler_state_raw = Column(String(128), nullable=True)
     scheduler_error = Column(Text, nullable=True)
@@ -221,6 +229,8 @@ class WorkflowInstance(Base):
     workflow = relationship("Workflow", back_populates="instances")
     node_instances = relationship("NodeInstance", back_populates="workflow_instance")
     version = relationship("JobVersion")
+    # 索引名与 rbac_seed._ensure_unique_run_key 保持一致，老库迁移后不会重复建
+    __table_args__ = (Index("uq_workflow_instance_run_key", "scheduler_run_key", unique=True),)
 
 
 class NodeInstance(Base):
@@ -265,6 +275,50 @@ class BackfillRequest(Base):
     finished_at = Column(DateTime, nullable=True)
 
 
+class WorkflowSlaRule(Base):
+    """
+    工作流基线：承诺完成时间与最长运行时长。
+
+    只有「失败告警」是不够的——生产上更常见的事故是任务没失败但也没按时出数据
+    （卡在等上游、跑了三小时还没结束、或者压根没被调度起来）。
+    基线读 GIDO 自己的实例事实，与执行引擎无关。
+    """
+    __tablename__ = "dw_workflow_sla_rules"
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("dw_workspaces.id"), nullable=False)
+    workflow_id = Column(Integer, ForeignKey("dw_workflows.id"), nullable=False)
+    enabled = Column(Boolean, default=True, nullable=False)
+    # 承诺完成时间：业务日期 D 须在 D + offset_days 的 expect_finish_time（空间时区）前跑成功
+    expect_finish_time = Column(String(8), nullable=True)  # "09:30"
+    expect_finish_offset_days = Column(Integer, default=1, nullable=False)
+    # 最长运行时长，超过即「变慢/超时」告警；为空表示不检查
+    max_duration_minutes = Column(Integer, nullable=True)
+    level = Column(String(16), default="error", nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    __table_args__ = (UniqueConstraint("workflow_id", name="uq_workflow_sla_rule_workflow"),)
+
+
+class SchedulerSyncCursor(Base):
+    """
+    运行采集水位线：记录每个流程定义已采集到的最大引擎实例号。
+    有了水位线才能从最新一侧往回翻页直到追平，而不是靠时间窗口猜要拉几天。
+    """
+    __tablename__ = "dw_scheduler_sync_cursors"
+    id = Column(Integer, primary_key=True, index=True)
+    scheduler_engine = Column(String(32), default="dolphin", nullable=False)
+    project_id = Column(String(128), nullable=False)
+    definition_id = Column(String(128), nullable=False)
+    last_instance_id = Column(BigInteger, default=0, nullable=False)
+    last_synced_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __table_args__ = (
+        UniqueConstraint(
+            "scheduler_engine", "project_id", "definition_id", name="uq_scheduler_sync_cursor"
+        ),
+    )
+
+
 class AlertEvent(Base):
     """GIDO 告警事件：由实例/节点状态驱动，不依赖具体调度引擎。"""
     __tablename__ = "dw_alert_events"
@@ -280,6 +334,11 @@ class AlertEvent(Base):
     assignee_id = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
     assignee_group = Column(String(128), nullable=True)
     notification_status = Column(String(32), default="pending")
+    # 投递重试：只重投失败的渠道，避免已送达的群被重复刷
+    notify_attempts = Column(Integer, default=0)
+    notify_pending_channels = Column(String(256), nullable=True)
+    notify_next_retry_at = Column(DateTime, nullable=True)
+    notify_last_error = Column(Text, nullable=True)
     status = Column(String(32), default="open")  # open/acknowledged/resolved
     message = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -313,8 +372,30 @@ class AlertNotificationConfig(Base):
     muted_until = Column(DateTime, nullable=True)
     # 自动推送起点：实例结束时间早于此刻的失败只入库，不推飞书（避免打开配置后刷历史）
     notify_armed_at = Column(DateTime, nullable=True)
+    # 静默时段：夜里只放过够严重的，其余压到时段结束再推，不丢告警也不半夜叫人
+    quiet_hours_enabled = Column(Boolean, default=False, nullable=False)
+    quiet_hours_start = Column(String(8), nullable=True)   # "23:00"，工作空间时区
+    quiet_hours_end = Column(String(8), nullable=True)     # "08:00"，可跨零点
+    quiet_hours_min_severity = Column(String(16), default="critical", nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     updated_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+
+
+class AlertOnCallShift(Base):
+    """值班表：按星期与时段排班，告警落到当班人名下并在卡片里点名。"""
+    __tablename__ = "dw_alert_oncall_shifts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("dw_workspaces.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("dw_users.id"), nullable=False)
+    # "*" 表示每天；否则逗号分隔的 ISO 星期（1=周一 … 7=周日）
+    weekdays = Column(String(32), default="*", nullable=False)
+    start_time = Column(String(8), default="00:00", nullable=False)
+    end_time = Column(String(8), default="24:00", nullable=False)
+    enabled = Column(Boolean, default=True, nullable=False)
+    note = Column(String(200), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 # ==================== 数据集成 ====================

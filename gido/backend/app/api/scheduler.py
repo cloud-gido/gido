@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # @author felixzhu
 # @date 2026-06-05
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -14,9 +15,11 @@ from app.core import perm_codes as PC
 from app.models.workspace import User
 from app.core.config import settings
 from app.services.ds_runtime import get_dolphin_runtime, refresh_ds_client
+from app.services.instance_override import is_status_pinned
 from app.services.rbac import assert_workspace_data_capability
 
 router = APIRouter(prefix="/scheduler", tags=["调度器"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/cron/preview")
@@ -132,98 +135,58 @@ def sync_ds_instances(
     current_user: User = Depends(get_current_user),
 ):
     """
-    主动同步 DS 流程实例。带 workspace_id 时空间开发者即可同步本空间。
+    立即采集一轮运行数据（后台采集任务之外的手动兜底）。带 workspace_id 时空间开发者即可采集本空间。
     """
     from app.core.database import SessionLocal
-    from app.services.dolphin import ds_client
-    from app.services.dolphin_instance_sync import patch_instances_from_ds_detail, sync_from_dolphin_definitions
+    from app.services.run_collector import collect_runs, collector_health
 
     if workspace_id is not None:
         assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_BATCH_OPERATION_READ)
     elif not is_platform_admin(current_user):
-        raise HTTPException(status_code=403, detail="同步全部工作空间需要平台管理员，或传入 workspace_id")
+        raise HTTPException(status_code=403, detail="采集全部工作空间需要平台管理员，或传入 workspace_id")
 
     own = SessionLocal()
     try:
-        if not get_dolphin_runtime(own).enabled:
-            return {"message": "DS 未启用", "synced": 0, "command_types_filled": 0}
-        refresh_ds_client(own)
-        ing = sync_from_dolphin_definitions(own, ds_client, workspace_id=workspace_id)
-        checked, synced, cmd_detail = patch_instances_from_ds_detail(own, ds_client, limit=100)
+        out = collect_runs(own, workspace_id=workspace_id)
+        if not out.get("collected"):
+            return {
+                "message": "生产调度未启用",
+                "collected": False,
+                "synced": 0,
+                "command_types_filled": 0,
+                "collector": collector_health(own),
+            }
         return {
-            "message": "同步完成",
-            "definitions_scanned": ing["definitions_scanned"],
-            "ingested": ing["ingested"],
-            "updated_from_ds": ing["updated_from_ds"],
-            "node_rows_touched": ing["node_rows_touched"],
-            "synced": synced,
-            "checked": checked,
-            "command_types_filled": ing["command_types_filled"] + cmd_detail,
+            "message": "采集完成",
+            "collected": True,
+            "definitions_scanned": out["definitions_scanned"],
+            "ingested": out["ingested"],
+            "updated_from_ds": out["updated_from_ds"],
+            "node_rows_touched": out["node_rows_touched"],
+            "skipped_unbound": out.get("skipped_unbound", 0),
+            "synced": out["finalized_from_detail"],
+            "checked": out["detail_checked"],
+            "command_types_filled": out["command_types_filled"],
+            "collector": collector_health(own),
         }
     finally:
         own.close()
 
 
 @router.post("/ds/webhook")
-def ds_webhook(payload: dict, current_user: User = Depends(get_current_user)):
+def ds_webhook(
+    payload: dict,
+    x_internal_token: str = Header(default=""),
+    authorization: str = Header(default=""),
+):
     """
-    接收 DolphinScheduler Alert Webhook 回调，自动更新实例状态
-    DS 告警配置: POST http://gido-backend:8001/api/scheduler/ds/webhook
-    payload 示例: {"processInstanceId": 123, "state": "SUCCESS"}
+    Dolphin HTTP 回调入口（与 /callback/dolphin 相同，不要求登录态）。
+    Header: X-Internal-Token 或 Authorization: Bearer <INTERNAL_TOKEN>。
     """
-    from app.core.database import SessionLocal
-    from app.models.workspace import WorkflowInstance
-    from app.services.dolphin import map_dolphin_process_instance_state
-    from datetime import datetime
-
-    ds_instance_id = payload.get("processInstanceId")
-    ds_state = payload.get("state", "")
-    if not ds_instance_id:
-        return {"message": "ignored"}
-
-    dw_status = map_dolphin_process_instance_state(ds_state)
-    if dw_status == "running":
-        return {"message": "still running"}
-
-    db = SessionLocal()
-    try:
-        inst = db.query(WorkflowInstance).filter(
-            or_(
-                WorkflowInstance.scheduler_instance_id == str(ds_instance_id),
-                WorkflowInstance.trigger_type.like(f"%ds:{ds_instance_id}%"),
-            )
-        ).first()
-        if inst:
-            inst.scheduler_engine = "dolphin"
-            inst.scheduler_instance_id = str(ds_instance_id)
-            old_status = inst.status
-            inst.status = dw_status
-            inst.finished_at = datetime.utcnow()
-            if dw_status == "failed" and old_status != "failed":
-                try:
-                    from app.services.alert_center import open_instance_alert
-
-                    open_instance_alert(db, workflow_instance=inst)
-                except Exception:
-                    pass
-            db.commit()
-            return {"message": "updated", "instance_id": inst.id, "status": dw_status}
-        from app.services.dolphin_instance_sync import ingest_ds_instance_from_callback
-
-        inst = ingest_ds_instance_from_callback(
-            db,
-            scheduler_instance_id=str(ds_instance_id),
-            dw_status=dw_status,
-            raw_state=ds_state,
-            project_id=payload.get("projectCode") or payload.get("project_code"),
-            definition_id=payload.get("processDefinitionCode") or payload.get("process_definition_code"),
-        )
-        if inst:
-            db.commit()
-            return {"message": "ingested", "instance_id": inst.id, "status": inst.status}
-        return {"message": "instance not found"}
-    finally:
-        db.close()
+    token = (x_internal_token or "").strip()
+    if not token and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+    return dolphin_scheduler_callback(payload, x_internal_token=token)
 
 
 @router.post("/callback/dolphin")
@@ -232,7 +195,10 @@ def dolphin_scheduler_callback(payload: dict, x_internal_token: str = Header(def
     调度引擎回调：Dolphin Alert/Webhook 可在实例结束时调用本接口。
     推荐地址：POST /api/scheduler/callback/dolphin，Header: X-Internal-Token。
     """
-    if settings.INTERNAL_TOKEN and x_internal_token != settings.INTERNAL_TOKEN:
+    # 未配置 INTERNAL_TOKEN 时必须拒绝：否则任何能连到后端的人都能伪造实例状态与告警
+    if not settings.INTERNAL_TOKEN:
+        raise HTTPException(status_code=503, detail="internal token not configured")
+    if x_internal_token != settings.INTERNAL_TOKEN:
         raise HTTPException(status_code=401, detail="invalid internal token")
 
     from app.core.database import SessionLocal
@@ -315,18 +281,28 @@ def dolphin_scheduler_callback(payload: dict, x_internal_token: str = Header(def
         inst.scheduler_error = None
         inst.last_synced_at = datetime.utcnow()
         old_status = inst.status
-        inst.status = dw_status
-        if dw_status != "running":
-            inst.finished_at = datetime.utcnow()
-        elif dw_status == "running":
-            inst.finished_at = None
-        if dw_status == "failed" and old_status != "failed":
-            try:
-                from app.services.alert_center import open_instance_alert
+        # 人工置过状态的实例只更新引擎快照，状态和告警都保持人工结论
+        if not is_status_pinned(inst):
+            inst.status = dw_status
+            if dw_status != "running":
+                inst.finished_at = datetime.utcnow()
+            elif dw_status == "running":
+                inst.finished_at = None
+            if dw_status == "failed" and old_status != "failed":
+                try:
+                    from app.services.alert_center import open_instance_alert
 
-                open_instance_alert(db, workflow_instance=inst, message=f"实例 #{inst.id} 执行失败")
-            except Exception:
-                pass
+                    open_instance_alert(db, workflow_instance=inst, message=f"实例 #{inst.id} 执行失败")
+                except Exception:
+                    logger.warning("回调开启失败告警异常 instance_id=%s", inst.id, exc_info=True)
+            elif dw_status == "success" and old_status == "failed":
+                # 轮询采集会做恢复闭环，回调路径此前漏了，重跑成功后告警一直挂着
+                try:
+                    from app.services.alert_center import resolve_instance_alerts_on_recovery
+
+                    resolve_instance_alerts_on_recovery(db, inst)
+                except Exception:
+                    logger.warning("回调关闭恢复告警异常 instance_id=%s", inst.id, exc_info=True)
         db.commit()
 
         wf = db.query(Workflow).filter(Workflow.id == inst.workflow_id).first()

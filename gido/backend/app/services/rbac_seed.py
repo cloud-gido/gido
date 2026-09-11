@@ -3,12 +3,16 @@
 # @author felixzhu
 # @date 2026-06-05
 """初始化权限与内置角色（幂等）。"""
+import logging
+
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from app.models.rbac_models import Role, Permission
 from app.core import perm_codes as P
 from app.models.workspace import User
+
+logger = logging.getLogger(__name__)
 
 
 def migrate_dw_users_avatar(engine: Engine) -> None:
@@ -54,6 +58,11 @@ def migrate_scheduler_engine_fields(engine: Engine) -> None:
         add_column(conn, "dw_workflows", "active_version_id", "INTEGER")
         add_column(conn, "dw_workflow_instances", "job_version_id", "INTEGER")
         add_column(conn, "dw_workflow_instances", "backfill_request_id", "INTEGER")
+        add_column(conn, "dw_workflow_instances", "parent_instance_id", "INTEGER")
+        add_column(conn, "dw_workflow_instances", "status_override", "VARCHAR(16)")
+        add_column(conn, "dw_workflow_instances", "override_by", "INTEGER")
+        add_column(conn, "dw_workflow_instances", "override_at", "TIMESTAMP")
+        add_column(conn, "dw_workflow_instances", "override_reason", "VARCHAR(500)")
         add_column(conn, "dw_workflow_instances", "scheduler_engine", "VARCHAR(32)")
         add_column(conn, "dw_workflow_instances", "scheduler_project_id", "VARCHAR(128)")
         add_column(conn, "dw_workflow_instances", "scheduler_definition_id", "VARCHAR(128)")
@@ -82,9 +91,17 @@ def migrate_scheduler_engine_fields(engine: Engine) -> None:
         add_column(conn, "dw_alert_events", "dedupe_key", "VARCHAR(256)")
         add_column(conn, "dw_alert_events", "assignee_id", "INTEGER")
         add_column(conn, "dw_alert_events", "assignee_group", "VARCHAR(128)")
+        add_column(conn, "dw_alert_events", "notify_attempts", "INTEGER DEFAULT 0")
+        add_column(conn, "dw_alert_events", "notify_pending_channels", "VARCHAR(256)")
+        add_column(conn, "dw_alert_events", "notify_next_retry_at", "TIMESTAMP")
+        add_column(conn, "dw_alert_events", "notify_last_error", "TEXT")
         add_column(conn, "dw_alert_notification_configs", "notify_cooldown_minutes", "INTEGER DEFAULT 15")
         add_column(conn, "dw_alert_notification_configs", "muted_until", "TIMESTAMP")
         add_column(conn, "dw_alert_notification_configs", "notify_armed_at", "TIMESTAMP")
+        add_column(conn, "dw_alert_notification_configs", "quiet_hours_enabled", "BOOLEAN DEFAULT FALSE")
+        add_column(conn, "dw_alert_notification_configs", "quiet_hours_start", "VARCHAR(8)")
+        add_column(conn, "dw_alert_notification_configs", "quiet_hours_end", "VARCHAR(8)")
+        add_column(conn, "dw_alert_notification_configs", "quiet_hours_min_severity", "VARCHAR(16)")
         if insp.has_table("dw_alert_notification_configs"):
             conn.execute(text(
                 "UPDATE dw_alert_notification_configs SET notify_armed_at = CURRENT_TIMESTAMP "
@@ -113,8 +130,27 @@ def migrate_scheduler_engine_fields(engine: Engine) -> None:
                 "notify_cooldown_minutes INTEGER DEFAULT 15, "
                 "muted_until TIMESTAMP, "
                 "notify_armed_at TIMESTAMP, "
+                "quiet_hours_enabled BOOLEAN DEFAULT FALSE, "
+                "quiet_hours_start VARCHAR(8), "
+                "quiet_hours_end VARCHAR(8), "
+                "quiet_hours_min_severity VARCHAR(16) DEFAULT 'critical', "
                 "updated_at TIMESTAMP, "
                 "updated_by INTEGER"
+                ")"
+            ))
+        if not insp.has_table("dw_alert_oncall_shifts"):
+            conn.execute(text(
+                "CREATE TABLE dw_alert_oncall_shifts ("
+                "id INTEGER PRIMARY KEY, "
+                "workspace_id INTEGER NOT NULL, "
+                "user_id INTEGER NOT NULL, "
+                "weekdays VARCHAR(32) DEFAULT '*' NOT NULL, "
+                "start_time VARCHAR(8) DEFAULT '00:00' NOT NULL, "
+                "end_time VARCHAR(8) DEFAULT '24:00' NOT NULL, "
+                "enabled BOOLEAN DEFAULT TRUE NOT NULL, "
+                "note VARCHAR(200), "
+                "created_at TIMESTAMP, "
+                "updated_at TIMESTAMP"
                 ")"
             ))
 
@@ -125,6 +161,37 @@ def migrate_scheduler_engine_fields(engine: Engine) -> None:
             conn.execute(text("UPDATE dw_workflow_instances SET scheduler_engine = 'dolphin' WHERE scheduler_engine IS NULL"))
         if insp.has_table("dw_node_instances"):
             conn.execute(text("UPDATE dw_node_instances SET scheduler_engine = 'dolphin' WHERE scheduler_engine IS NULL"))
+
+    _ensure_unique_run_key(engine)
+
+
+def _ensure_unique_run_key(engine: Engine) -> None:
+    """
+    scheduler_run_key 唯一：一次引擎运行只能落一行实例。
+    历史库里可能已有重跑覆盖产生的重复键，先清空重复值再建索引，建不上只记日志不拦启动。
+    """
+    insp = inspect(engine)
+    if not insp.has_table("dw_workflow_instances"):
+        return
+    if any(ix.get("name") == "uq_workflow_instance_run_key" for ix in insp.get_indexes("dw_workflow_instances")):
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "UPDATE dw_workflow_instances SET scheduler_run_key = NULL "
+                "WHERE scheduler_run_key IS NOT NULL AND id NOT IN ("
+                "  SELECT keep_id FROM ("
+                "    SELECT MAX(id) AS keep_id FROM dw_workflow_instances "
+                "    WHERE scheduler_run_key IS NOT NULL GROUP BY scheduler_run_key"
+                "  ) AS keepers"
+                ")"
+            ))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX uq_workflow_instance_run_key "
+                "ON dw_workflow_instances (scheduler_run_key)"
+            ))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("创建 scheduler_run_key 唯一索引失败，采集幂等仍依赖应用层查重：%s", e)
         if insp.has_table("dw_backfill_requests"):
             conn.execute(text("UPDATE dw_backfill_requests SET total_instances = 0 WHERE total_instances IS NULL"))
             conn.execute(text("UPDATE dw_backfill_requests SET succeeded_instances = 0 WHERE succeeded_instances IS NULL"))
