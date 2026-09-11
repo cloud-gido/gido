@@ -2191,51 +2191,51 @@ def migrate_workflow_instance_dolphin_command_type(engine: Engine) -> None:
 
 
 def migrate_instance_retention_indexes(engine: Engine) -> None:
-    """留存清理专用索引：小批 DELETE 必须走索引，不能全表扫。"""
+    """留存清理专用索引。大表建索引可能很久——带 statement_timeout，超时跳过，不堵启动。"""
     insp = inspect(engine)
     if not insp.has_table("dw_workflow_instances"):
         return
+
+    def _try_index(conn, name: str, ddl: str, existing: set[str]) -> None:
+        if name in existing:
+            return
+        try:
+            if engine.dialect.name == "postgresql":
+                conn.execute(text("SET LOCAL statement_timeout = '8s'"))
+            conn.execute(text(ddl))
+        except Exception:
+            logger.warning("startup skip index %s (will retry in background)", name, exc_info=True)
+
     with engine.begin() as conn:
         wi_idx = {i["name"] for i in insp.get_indexes("dw_workflow_instances")}
-        if "ix_wi_created_at" not in wi_idx and "ix_dw_workflow_instances_created_at" not in wi_idx:
-            try:
-                conn.execute(text("CREATE INDEX ix_wi_created_at ON dw_workflow_instances (created_at)"))
-            except Exception:
-                logger.debug("create ix_wi_created_at skipped", exc_info=True)
+        _try_index(
+            conn,
+            "ix_wi_created_at",
+            "CREATE INDEX ix_wi_created_at ON dw_workflow_instances (created_at)",
+            wi_idx | {"ix_dw_workflow_instances_created_at"},
+        )
         if insp.has_table("dw_node_instances"):
             ni_idx = {i["name"] for i in insp.get_indexes("dw_node_instances")}
-            if (
-                "ix_dw_node_instances_workflow_instance_id" not in ni_idx
-                and "ix_node_instances_workflow_instance_id" not in ni_idx
-            ):
-                try:
-                    conn.execute(
-                        text(
-                            "CREATE INDEX ix_dw_node_instances_workflow_instance_id "
-                            "ON dw_node_instances (workflow_instance_id)"
-                        )
-                    )
-                except Exception:
-                    logger.debug("create ix_dw_node_instances_workflow_instance_id skipped", exc_info=True)
+            _try_index(
+                conn,
+                "ix_dw_node_instances_workflow_instance_id",
+                "CREATE INDEX ix_dw_node_instances_workflow_instance_id "
+                "ON dw_node_instances (workflow_instance_id)",
+                ni_idx | {"ix_node_instances_workflow_instance_id"},
+            )
         if insp.has_table("dw_alert_events"):
             ae_idx = {i["name"] for i in insp.get_indexes("dw_alert_events")}
-            if (
-                "ix_dw_alert_events_workflow_instance_id" not in ae_idx
-                and "ix_alert_events_workflow_instance_id" not in ae_idx
-            ):
-                try:
-                    conn.execute(
-                        text(
-                            "CREATE INDEX ix_dw_alert_events_workflow_instance_id "
-                            "ON dw_alert_events (workflow_instance_id)"
-                        )
-                    )
-                except Exception:
-                    logger.debug("create ix_dw_alert_events_workflow_instance_id skipped", exc_info=True)
+            _try_index(
+                conn,
+                "ix_dw_alert_events_workflow_instance_id",
+                "CREATE INDEX ix_dw_alert_events_workflow_instance_id "
+                "ON dw_alert_events (workflow_instance_id)",
+                ae_idx | {"ix_alert_events_workflow_instance_id"},
+            )
 
 
 def migrate_alert_event_list_index(engine: Engine) -> None:
-    """告警列表 (workspace_id, status, created_at) 复合索引，避免 open 分页全表扫。"""
+    """告警列表复合索引；大表建索引超时则跳过，避免启动被杀。"""
     insp = inspect(engine)
     if not insp.has_table("dw_alert_events"):
         return
@@ -2244,6 +2244,8 @@ def migrate_alert_event_list_index(engine: Engine) -> None:
         return
     with engine.begin() as conn:
         try:
+            if engine.dialect.name == "postgresql":
+                conn.execute(text("SET LOCAL statement_timeout = '8s'"))
             conn.execute(
                 text(
                     "CREATE INDEX ix_alert_ws_status_created "
@@ -2251,18 +2253,16 @@ def migrate_alert_event_list_index(engine: Engine) -> None:
                 )
             )
         except Exception:
-            logger.debug("create ix_alert_ws_status_created skipped", exc_info=True)
+            logger.warning("startup skip ix_alert_ws_status_created", exc_info=True)
 
 
 def migrate_workflow_instance_run_type(engine: Engine) -> None:
     """
-    工作流实例落库 run_type，并回填历史行。
+    只做轻量 DDL：加 run_type 列。
 
-    运维列表按运行类型分页时，若每次用 OR/ILIKE 现算，实例一多就到数秒；
-    等值过滤 + (workflow_id, run_type) 索引才是分页该有的成本。
+    历史回填与复合索引绝不能堵在启动路径上——21 万行全量回填 / CREATE INDEX
+    经常超过 liveness，导致 CrashLoopBackOff。回填交给后台小批任务。
     """
-    from app.services.workflow_trigger_display import classify_run_type
-
     insp = inspect(engine)
     if not insp.has_table("dw_workflow_instances"):
         return
@@ -2273,10 +2273,11 @@ def migrate_workflow_instance_run_type(engine: Engine) -> None:
                 conn.execute(text("ALTER TABLE dw_workflow_instances ADD COLUMN run_type VARCHAR(16) NULL"))
             else:
                 conn.execute(text("ALTER TABLE dw_workflow_instances ADD COLUMN run_type VARCHAR(16)"))
-        # 索引：列表按空间 join 工作流后再按 run_type 过滤
         idx_names = {i["name"] for i in insp.get_indexes("dw_workflow_instances")}
         if "ix_wi_workflow_run_type" not in idx_names and "ix_dw_workflow_instances_run_type" not in idx_names:
             try:
+                if engine.dialect.name == "postgresql":
+                    conn.execute(text("SET LOCAL statement_timeout = '8s'"))
                 conn.execute(
                     text(
                         "CREATE INDEX ix_wi_workflow_run_type "
@@ -2284,28 +2285,69 @@ def migrate_workflow_instance_run_type(engine: Engine) -> None:
                     )
                 )
             except Exception:
-                logger.debug("create ix_wi_workflow_run_type skipped", exc_info=True)
+                logger.warning("startup skip ix_wi_workflow_run_type", exc_info=True)
 
-    # 回填：只处理 NULL，避免每次启动全表重写
+
+def backfill_workflow_instance_run_type(
+    engine: Engine,
+    *,
+    batch_size: int = 200,
+    max_batches: int = 10,
+    time_budget_ms: int = 2000,
+) -> dict:
+    """
+    温和回填 run_type：小批 + 墙钟预算，可反复跑。
+    启动后由后台任务调用，不阻塞 uvicorn 监听。
+    """
+    import time
+
     from sqlalchemy.orm import sessionmaker
 
     from app.models.workspace import WorkflowInstance
+    from app.services.workflow_trigger_display import classify_run_type
 
+    insp = inspect(engine)
+    if not insp.has_table("dw_workflow_instances"):
+        return {"updated": 0, "reason": "no_table"}
+    cols = {c["name"] for c in insp.get_columns("dw_workflow_instances")}
+    if "run_type" not in cols:
+        return {"updated": 0, "reason": "no_column"}
+
+    batch_size = max(20, min(int(batch_size), 500))
+    max_batches = max(1, min(int(max_batches), 50))
+    deadline = time.monotonic() + max(200, int(time_budget_ms)) / 1000.0
     Session = sessionmaker(bind=engine)
     db = Session()
+    updated = 0
+    batches = 0
+    stopped = "drained"
     try:
-        q = db.query(WorkflowInstance).filter(
-            (WorkflowInstance.run_type.is_(None)) | (WorkflowInstance.run_type == "")
-        )
-        batch = 0
-        for inst in q.yield_per(500):
-            inst.run_type = classify_run_type(inst.trigger_type, inst.dolphin_command_type)
-            batch += 1
-            if batch % 500 == 0:
-                db.commit()
-        db.commit()
+        while batches < max_batches:
+            if time.monotonic() >= deadline:
+                stopped = "time_budget"
+                break
+            rows = (
+                db.query(WorkflowInstance)
+                .filter((WorkflowInstance.run_type.is_(None)) | (WorkflowInstance.run_type == ""))
+                .order_by(WorkflowInstance.id.asc())
+                .limit(batch_size)
+                .all()
+            )
+            if not rows:
+                stopped = "drained"
+                break
+            for inst in rows:
+                inst.run_type = classify_run_type(inst.trigger_type, inst.dolphin_command_type)
+            db.commit()
+            updated += len(rows)
+            batches += 1
+            time.sleep(0.05)
     finally:
         db.close()
+    out = {"updated": updated, "batches": batches, "stopped_reason": stopped}
+    if updated:
+        logger.info("run_type backfill %s", out)
+    return out
 
 
 def seed_permissions(db: Session) -> dict[str, Permission]:

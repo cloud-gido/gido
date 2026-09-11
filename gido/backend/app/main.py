@@ -187,6 +187,22 @@ async def lifespan(app: FastAPI):
     # 自动生成内部 token（供 DS worker 回调使用）
     _ensure_internal_token()
     scheduler.start()
+    # 启动后再啃一口 run_type 回填，绝不堵在 migrations 里拖死 liveness
+    def _kick_run_type_backfill() -> None:
+        import time
+
+        time.sleep(2)
+        try:
+            from app.core.database import engine
+            from app.services.rbac_seed import backfill_workflow_instance_run_type
+
+            backfill_workflow_instance_run_type(engine)
+        except Exception:
+            logging.getLogger(__name__).debug("startup run_type backfill kick failed", exc_info=True)
+
+    import threading
+
+    threading.Thread(target=_kick_run_type_backfill, name="run-type-backfill", daemon=True).start()
     from app.services.integration_cdc import start_cdc_manager
     from app.services.sync_worker import start_sync_worker
 

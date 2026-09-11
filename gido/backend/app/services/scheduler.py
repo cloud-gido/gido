@@ -304,24 +304,41 @@ def reload_sla_monitoring():
 
 
 def _purge_expired_instances_job():
-    """热账本留存：小批短时清理，运维无感；清不完下个间隔继续。"""
+    """热账本留存 + run_type 温和回填：小批短时，运维无感。"""
     from app.core.config import settings
-    from app.core.database import SessionLocal
+    from app.core.database import SessionLocal, engine
     from app.services.distributed_lock import try_distributed_lock
     from app.services.shared_state import claim_or_proceed
 
-    if int(getattr(settings, "INSTANCE_RETENTION_DAYS", 0) or 0) <= 0:
-        return
     minutes = max(1, int(getattr(settings, "INSTANCE_RETENTION_INTERVAL_MINUTES", 15) or 15))
     bucket = int(datetime.utcnow().timestamp() // (minutes * 60))
-    # TTL 略大于间隔，避免双副本同桶各跑一轮
     if not claim_or_proceed(f"instance-retention:{bucket}", minutes * 60 + 30):
         return
     with try_distributed_lock("instance-retention") as acquired:
         if not acquired:
             return
+        from app.services.rbac_seed import (
+            backfill_workflow_instance_run_type,
+            migrate_alert_event_list_index,
+            migrate_instance_retention_indexes,
+            migrate_workflow_instance_run_type,
+        )
         from app.services.instance_retention import purge_expired_workflow_instances
 
+        # 索引若启动时超时跳过了，后台再试（仍带短 timeout）
+        try:
+            migrate_workflow_instance_run_type(engine)
+            migrate_alert_event_list_index(engine)
+            migrate_instance_retention_indexes(engine)
+        except Exception:
+            logger.debug("background retention indexes retry failed", exc_info=True)
+        try:
+            backfill_workflow_instance_run_type(engine)
+        except Exception:
+            logger.warning("run_type backfill failed", exc_info=True)
+
+        if int(getattr(settings, "INSTANCE_RETENTION_DAYS", 0) or 0) <= 0:
+            return
         db = SessionLocal()
         try:
             stats = purge_expired_workflow_instances(db)
@@ -334,16 +351,13 @@ def _purge_expired_instances_job():
 
 
 def reload_instance_retention():
-    """注册实例热账本留存清理任务（高频小批）。"""
+    """注册实例热账本留存 / run_type 回填任务（高频小批）。"""
     from app.core.config import settings
 
     for job in list(scheduler.get_jobs()):
         if job.id == "instance_retention_purge":
             job.remove()
-    days = int(getattr(settings, "INSTANCE_RETENTION_DAYS", 0) or 0)
-    if days <= 0:
-        logger.info("实例热账本留存已关闭（INSTANCE_RETENTION_DAYS=%s）", days)
-        return
+    # 即使关闭留存删除，仍要温和回填 run_type / 补索引，所以任务始终注册
     minutes = max(1, int(getattr(settings, "INSTANCE_RETENTION_INTERVAL_MINUTES", 15) or 15))
     scheduler.add_job(
         _purge_expired_instances_job,
@@ -353,11 +367,11 @@ def reload_instance_retention():
         max_instances=1,
         coalesce=True,
     )
+    days = int(getattr(settings, "INSTANCE_RETENTION_DAYS", 0) or 0)
     logger.info(
-        "已注册实例热账本留存：保留 %s 天，每 %s 分钟清理一小批（预算 %sms）",
-        days,
+        "已注册实例账本维护：留存=%s天，每 %s 分钟小批（含 run_type 回填）",
+        days if days > 0 else "关闭",
         minutes,
-        getattr(settings, "INSTANCE_RETENTION_TIME_BUDGET_MS", 2000),
     )
 
 
