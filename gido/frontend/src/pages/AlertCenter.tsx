@@ -6,7 +6,7 @@
  */
 import { useEffect, useState } from 'react'
 import { Alert, Button, Divider, Dropdown, Drawer, Form, Input, InputNumber, message, Select, Space, Switch, Table, Tag, Tooltip, type MenuProps } from 'antd'
-import { ClockCircleOutlined, DownOutlined, FileTextOutlined, NotificationOutlined, PlusOutlined, QuestionCircleOutlined, ReloadOutlined, SettingOutlined, TeamOutlined, UnorderedListOutlined } from '@ant-design/icons'
+import { ClockCircleOutlined, DownOutlined, FileTextOutlined, NotificationOutlined, PartitionOutlined, PlusOutlined, QuestionCircleOutlined, ReloadOutlined, SettingOutlined, TeamOutlined } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { alertApi, operationApi, workspaceApi } from '../api'
 import RunCollectorStatus from '../components/RunCollectorStatus'
@@ -337,6 +337,8 @@ export default function AlertCenterPage() {
     const params = new URLSearchParams()
     if (row.workspace_id) params.set('workspace_id', String(row.workspace_id))
     params.set('instance', String(row.workflow_instance_id))
+    // 带上工作流：实例中心凭这两个 id 直接把运行图打开，落地就能看到是哪个节点挂的
+    if (row.workflow_id) params.set('workflow', String(row.workflow_id))
     navigate(`${R.batch.operation}?${params.toString()}`)
   }
 
@@ -371,8 +373,8 @@ export default function AlertCenterPage() {
     const items: NonNullable<MenuProps['items']> = [
       {
         key: 'instance',
-        icon: <UnorderedListOutlined />,
-        label: '打开实例',
+        icon: <PartitionOutlined />,
+        label: '打开实例运行图',
         disabled: !row.workflow_instance_id,
         onClick: () => openInstance(row),
       },

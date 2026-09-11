@@ -81,12 +81,15 @@ GIDO 工作流在业务侧有明确状态，与 DS 定义/调度状态对应：
 - `scheduler_run_key` / `scheduler_state_raw` / `scheduler_error`
 - `last_synced_at`
 
-### 4.2 运维中心两层视图
+### 4.2 实例中心的两层视图
 
-1. **工作流实例列表**：节点总数、运行中/失败数、当前节点、耗时等聚合字段  
-2. **节点实例下钻**：展示所属工作流实例上下文，避免与外层列表重复
+1. **工作流实例列表**：节点总数、运行中/失败数、当前节点、耗时等聚合字段
+2. **实例运行图**：点「运行图」下钻到这次运行当时的 DAG，每个节点带状态、日志与重试/终止
 
-**API（节选）**：`/operation/workflow-instances`、`/operation/node-instances`、停止/刷新/重跑/重试失败节点等。
+节点明细原先还有一份表格视图，与运行图重复，已移除；告警里的「打开实例运行图」直接落到运行图。
+
+**API（节选）**：`/operation/workflow-instances`、`/operation/workflows/{wf}/instances/{id}/dag`、
+`/operation/node-instances/{id}/log|kill|retry`、停止/刷新/重跑/重试失败节点等。
 
 ### 4.3 同步与回调
 

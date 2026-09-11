@@ -228,3 +228,29 @@ def test_falls_back_to_current_definition_without_a_version():
     body = r.json()
     assert body["instance"]["version_no"] is None
     assert [n["name"] for n in body["nodes"]] == ["ods_load_v2"]
+
+
+def test_dag_carries_the_sync_signal():
+    """
+    节点明细表格被运行图取代后，原先只在表格上下文里的「最近同步 / 采集报错」必须跟过来：
+    图上的状态可不可信，全看这两个字段。
+    """
+    c, SessionLocal, ids = _client()
+    h = _auth(c)
+    db = SessionLocal()
+    inst = db.query(WorkflowInstance).filter(WorkflowInstance.id == ids["inst"]).first()
+    inst.last_synced_at = _NOW - timedelta(minutes=3)
+    inst.scheduler_error = "拉取任务列表超时"
+    db.commit()
+    db.close()
+
+    body = _dag(c, h, ids)
+    assert body["instance"]["last_synced_at"] is not None
+    assert body["instance"]["scheduler_error"] == "拉取任务列表超时"
+
+
+def test_node_instance_list_endpoint_is_gone():
+    """节点明细表格与运行图重复，列表接口已随之移除，别再留着没人用的入口。"""
+    c, _S, ids = _client()
+    r = c.get("/api/operation/node-instances", headers=_auth(c), params={"workspace_id": ids["ws"]})
+    assert r.status_code == 404

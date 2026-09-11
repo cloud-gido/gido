@@ -6,7 +6,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Drawer, Alert, Spin, Tag, Space, Button, Descriptions, Empty, message, Tooltip } from 'antd'
-import { ReloadOutlined, FileTextOutlined } from '@ant-design/icons'
+import { ReloadOutlined, FileTextOutlined, StopOutlined } from '@ant-design/icons'
 import { Graph } from '@antv/x6'
 import { operationApi } from '../api'
 import { formatInTimeZone } from '../utils/datetime'
@@ -69,6 +69,7 @@ export default function InstanceDagDrawer({
   const [selected, setSelected] = useState<any>(null)
   const [logOpen, setLogOpen] = useState(false)
   const [logContent, setLogContent] = useState('')
+  const [logHint, setLogHint] = useState('')
   const containerRef = useRef<HTMLDivElement>(null)
   const graphRef = useRef<Graph | null>(null)
 
@@ -168,7 +169,9 @@ export default function InstanceDagDrawer({
       return
     }
     const res: any = await operationApi.getLog(nodeInstanceId)
-    setLogContent(res?.log_content || res?.log || '（无日志内容）')
+    setLogContent(res?.log || '（无日志内容）')
+    // 日志可能来自引擎也可能只是 GIDO 本地记录，这个提示能说明看到的是哪一种
+    setLogHint(res?.log_source_hint || '')
     setLogOpen(true)
   }
 
@@ -181,6 +184,18 @@ export default function InstanceDagDrawer({
       load()
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '节点重试失败')
+    }
+  }
+
+  const killNode = async () => {
+    if (!target || !selected?.node_instance_id) return
+    try {
+      await operationApi.kill(selected.node_instance_id)
+      message.success('已终止节点')
+      onChanged?.()
+      load()
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '终止节点失败')
     }
   }
 
@@ -202,7 +217,7 @@ export default function InstanceDagDrawer({
         <>
           <Descriptions size="small" column={4} style={{ marginBottom: 12 }}>
             <Descriptions.Item label="状态">
-              <Tag color={styleOf(inst.status).stroke}>{inst.status}</Tag>
+              <Tag color={styleOf(inst.status).stroke}>{styleOf(inst.status).label}</Tag>
               {inst.status_override ? <Tag color="purple">人工</Tag> : null}
             </Descriptions.Item>
             <Descriptions.Item label="业务日期">{inst.business_date || '—'}</Descriptions.Item>
@@ -263,7 +278,10 @@ export default function InstanceDagDrawer({
                       日志
                     </Button>
                     {selected.status === 'failed' && selected.node_instance_id ? (
-                      <Button size="small" onClick={retryNode}>重试本节点</Button>
+                      <Button size="small" icon={<ReloadOutlined />} onClick={retryNode}>重试本节点</Button>
+                    ) : null}
+                    {selected.status === 'running' && selected.node_instance_id ? (
+                      <Button size="small" danger icon={<StopOutlined />} onClick={killNode}>终止本节点</Button>
                     ) : null}
                   </Space>
                 </>
@@ -278,6 +296,7 @@ export default function InstanceDagDrawer({
             onClose={() => setLogOpen(false)}
             width={700}
           >
+            {logHint ? <Alert type="info" showIcon style={{ marginBottom: 12 }} message={logHint} /> : null}
             <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>{logContent}</pre>
           </Drawer>
         </>

@@ -355,7 +355,6 @@ export const operationApi = {
   overview: (workspaceId: number, params?: Record<string, unknown>) =>
     request.get('/operation/overview', { params: { workspace_id: workspaceId, ...params } }),
   instances: (workspaceId: number, params?: any) => request.get('/operation/instances', { params: { workspace_id: workspaceId, ...params } }),
-  nodeInstances: (workspaceId: number, params?: any) => request.get('/operation/node-instances', { params: { workspace_id: workspaceId, ...params } }),
   /** 实例 DAG：这次运行当时的图 + 每个节点的状态 */
   instanceDag: (workspaceId: number, wfId: number, instId: number) =>
     request.get(`/operation/workflows/${wfId}/instances/${instId}/dag`, { params: { workspace_id: workspaceId } }),

@@ -5,8 +5,8 @@
  * @date 2026-06-05
  */
 import { useState, useEffect, useRef, type ReactNode } from 'react'
-import { Table, Tag, Button, Space, Drawer, Row, Col, Statistic, Select, message, Alert, Tooltip, Card, Descriptions, Switch, Tabs, Modal, Input, Dropdown, Collapse, type MenuProps } from 'antd'
-import { ReloadOutlined, StopOutlined, FileTextOutlined, UnorderedListOutlined, AuditOutlined, CheckCircleOutlined, QuestionCircleOutlined, PartitionOutlined, DownOutlined } from '@ant-design/icons'
+import { Table, Tag, Button, Space, Row, Col, Statistic, Select, message, Alert, Tooltip, Card, Switch, Tabs, Modal, Input, Dropdown, Collapse, type MenuProps } from 'antd'
+import { ReloadOutlined, StopOutlined, AuditOutlined, CheckCircleOutlined, QuestionCircleOutlined, PartitionOutlined, DownOutlined } from '@ant-design/icons'
 import { useNavigate, Link, useSearchParams } from 'react-router-dom'
 import { operationApi, schedulerApi, workflowApi } from '../api'
 import { useAppStore } from '../store'
@@ -22,7 +22,7 @@ const STATUS_COLOR: Record<string, string> = {
   success: 'green', failed: 'red', running: 'blue', pending: 'orange', killed: 'default'
 }
 
-/** 表格、筛选、下钻卡片都用这一份，避免同一页一处中文一处英文 */
+/** 表格与筛选都用这一份，避免同一页一处中文一处英文 */
 const STATUS_LABEL: Record<string, string> = {
   success: '成功', failed: '失败', running: '运行中', pending: '等待中', killed: '已终止',
 }
@@ -42,7 +42,6 @@ const RUN_TYPE_TABS: { key: RunType; label: string }[] = [
 ]
 
 type RunType = 'schedule' | 'backfill' | 'rerun' | 'manual'
-type ListMode = 'nodes' | 'workflows'
 
 export default function OperationPage() {
   const { currentWorkspace, user, workspaces, setCurrentWorkspace } = useAppStore()
@@ -55,18 +54,9 @@ export default function OperationPage() {
   const [instances, setInstances] = useState<any[]>([])
   const [total, setTotal] = useState(0)
   const [statusFilter, setStatusFilter] = useState<string | undefined>()
-  const [logDrawer, setLogDrawer] = useState(false)
-  const [logContent, setLogContent] = useState('')
-  const [activeLogNodeId, setActiveLogNodeId] = useState<number | undefined>()
-  const [logExtras, setLogExtras] = useState<{
-    hint?: string
-    schedulerId?: string | number | null
-  }>({})
   const [page, setPage] = useState(1)
   const [syncingSchedulerMeta, setSyncingSchedulerMeta] = useState(false)
-  /** 概览数字为工作流实例级；与下方节点表切换 */
-  const [listMode, setListMode] = useState<ListMode>('workflows')
-  /** 与概览「今日实例」一致：仅 created_at 为当日(UTC)的工作流实例 */
+  /** 与概览「今日实例」一致：仅 created_at 为当日（工作空间时区）的工作流实例 */
   const [todayOnlyWorkflows, setTodayOnlyWorkflows] = useState(false)
   /** 工作流表：仅某个工作流（概览排行下钻） */
   const [workflowFilter, setWorkflowFilter] = useState<number | undefined>()
@@ -75,11 +65,7 @@ export default function OperationPage() {
   const [runTypeCounts, setRunTypeCounts] = useState<Record<string, number>>({})
   const [diagnosisTarget, setDiagnosisTarget] = useState<DiagnosisTarget | null>(null)
   const [dagTarget, setDagTarget] = useState<InstanceDagTarget | null>(null)
-  /** 节点表：仅某工作流实例 */
-  const [workflowInstanceScope, setWorkflowInstanceScope] = useState<number | undefined>()
-  const [drilldownContext, setDrilldownContext] = useState<any>(null)
   const [includeAllWorkspaces, setIncludeAllWorkspaces] = useState(false)
-  const [drillWorkspaceId, setDrillWorkspaceId] = useState<number | undefined>()
   const appliedDeepLink = useRef('')
 
   const listParams = {
@@ -90,43 +76,27 @@ export default function OperationPage() {
     if (!wsId) return
     const ov: any = await operationApi.overview(wsId, listParams)
     setOverview(ov)
-    let inst: any
-    if (listMode === 'workflows') {
-      inst = await operationApi.instances(wsId, {
-        page,
-        page_size: 20,
-        status: statusFilter || undefined,
-        workflow_id: workflowFilter ?? undefined,
-        run_type: runTypeFilter || undefined,
-        today_only: todayOnlyWorkflows ? true : undefined,
-        ...listParams,
-      })
-      setRunTypeCounts(inst.run_type_counts || {})
-      setDrilldownContext(null)
-    } else {
-      const nodeWs = drillWorkspaceId || wsId
-      const nparams: Record<string, unknown> = {
-        status: statusFilter,
-        page,
-        page_size: 20,
-      }
-      if (workflowInstanceScope != null) {
-        nparams.workflow_instance_id = workflowInstanceScope
-      }
-      inst = await operationApi.nodeInstances(nodeWs, nparams)
-      setDrilldownContext(inst.context || null)
-    }
+    const inst: any = await operationApi.instances(wsId, {
+      page,
+      page_size: 20,
+      status: statusFilter || undefined,
+      workflow_id: workflowFilter ?? undefined,
+      run_type: runTypeFilter || undefined,
+      today_only: todayOnlyWorkflows ? true : undefined,
+      ...listParams,
+    })
+    setRunTypeCounts(inst.run_type_counts || {})
     setInstances(inst.items)
     setTotal(inst.total)
   }
 
-  useEffect(() => { load() }, [wsId, statusFilter, page, listMode, todayOnlyWorkflows, workflowInstanceScope, workflowFilter, runTypeFilter, includeAllWorkspaces, drillWorkspaceId])
+  useEffect(() => { load() }, [wsId, statusFilter, page, todayOnlyWorkflows, workflowFilter, runTypeFilter, includeAllWorkspaces])
 
   useEffect(() => {
     if (!wsId) return undefined
     const timer = window.setInterval(() => { load() }, 15000)
     return () => window.clearInterval(timer)
-  }, [wsId, statusFilter, page, listMode, todayOnlyWorkflows, workflowInstanceScope, workflowFilter, runTypeFilter, includeAllWorkspaces, drillWorkspaceId])
+  }, [wsId, statusFilter, page, todayOnlyWorkflows, workflowFilter, runTypeFilter, includeAllWorkspaces])
 
   useEffect(() => {
     const inst = Number(searchParams.get('instance') || 0)
@@ -138,39 +108,19 @@ export default function OperationPage() {
         setCurrentWorkspace(hit)
       }
     }
+    const urlWf = Number(searchParams.get('workflow') || 0)
     const key = `${urlWs || ''}:${inst}`
     if (appliedDeepLink.current === key) return
     appliedDeepLink.current = key
-    setDrillWorkspaceId(urlWs || undefined)
-    setListMode('nodes')
-    setWorkflowInstanceScope(inst)
+    // 告警里点进来是要看「这次运行哪个节点挂了」，直接开运行图，并把列表收窄到同一个工作流当上下文
     setTodayOnlyWorkflows(false)
     setStatusFilter(undefined)
+    setWorkflowFilter(urlWf || undefined)
     setPage(1)
-  }, [searchParams, workspaces, currentWorkspace, setCurrentWorkspace])
-
-  const showLog = async (niId: number) => {
-    const res: any = await operationApi.getLog(niId)
-    setActiveLogNodeId(niId)
-    setLogContent(res.log || '暂无日志')
-    setLogExtras({
-      hint: res.log_source_hint,
-      schedulerId: res.scheduler_instance_id ?? null,
-    })
-    setLogDrawer(true)
-  }
-
-  const handleKill = async (niId: number) => {
-    await operationApi.kill(niId)
-    message.success('已终止')
-    load()
-  }
-
-  const handleRetry = async (niId: number) => {
-    await operationApi.retry(niId)
-    message.success('已提交重试')
-    load()
-  }
+    if (urlWf) {
+      setDagTarget({ workspaceId: urlWs || wsId!, workflowId: urlWf, instanceId: inst })
+    }
+  }, [searchParams, workspaces, currentWorkspace, setCurrentWorkspace, wsId])
 
   const handleWorkflowStop = async (row: any) => {
     const targetWs = row.workspace_id || wsId
@@ -227,9 +177,6 @@ export default function OperationPage() {
 
   /** 排行下钻：只看这个工作流近期的失败实例 */
   const drillToWorkflowFailures = (workflowId: number) => {
-    setListMode('workflows')
-    setWorkflowInstanceScope(undefined)
-    setDrilldownContext(null)
     setTodayOnlyWorkflows(false)
     setStatusFilter('failed')
     setWorkflowFilter(workflowId)
@@ -237,8 +184,6 @@ export default function OperationPage() {
   }
 
   const drillFromOverview = (kind: 'today' | 'running' | 'success' | 'failed') => {
-    setListMode('workflows')
-    setWorkflowInstanceScope(undefined)
     setWorkflowFilter(undefined)
     setPage(1)
     if (kind === 'today') {
@@ -248,25 +193,6 @@ export default function OperationPage() {
       setTodayOnlyWorkflows(false)
       setStatusFilter(kind)
     }
-  }
-
-  const backToWorkflowList = () => {
-    setListMode('workflows')
-    setTodayOnlyWorkflows(false)
-    setWorkflowInstanceScope(undefined)
-    setDrilldownContext(null)
-    setDrillWorkspaceId(undefined)
-    setStatusFilter(undefined)
-    setPage(1)
-  }
-
-  const openNodesForWorkflowInstance = (wfInstId: number, rowWsId?: number) => {
-    setListMode('nodes')
-    setWorkflowInstanceScope(wfInstId)
-    setDrillWorkspaceId(rowWsId || wsId)
-    setTodayOnlyWorkflows(false)
-    setStatusFilter(undefined)
-    setPage(1)
   }
 
   const clickableStat = (inner: ReactNode, onClick: () => void, tip: string) => (
@@ -365,12 +291,6 @@ export default function OperationPage() {
     if (row.status === 'failed' || row.status === 'running') {
       items.push({ key: 'diagnose', icon: <QuestionCircleOutlined />, label: '诊断', onClick: () => openDiagnosis(row) })
     }
-    items.push({
-      key: 'nodes',
-      icon: <UnorderedListOutlined />,
-      label: '节点明细（表格）',
-      onClick: () => openNodesForWorkflowInstance(row.id, row.workspace_id),
-    })
     if (['failed', 'killed', 'success'].includes(row.status)) {
       items.push({ key: 'rerun', icon: <ReloadOutlined />, label: '整条重跑', onClick: () => handleWorkflowRerun(row) })
     }
@@ -405,67 +325,6 @@ export default function OperationPage() {
     const h = Math.floor(m / 60)
     return `${h}h ${m % 60}m`
   }
-
-  const nodeColumns = [
-    { title: '节点实例', dataIndex: 'id', width: 88 },
-    { title: '工作流实例', dataIndex: 'workflow_instance_id', width: 110 },
-    { title: '工作流', dataIndex: 'workflow_name', width: 140, ellipsis: true },
-    {
-      title: '触发来源',
-      dataIndex: 'trigger_label',
-      width: 220,
-      ellipsis: true,
-      render: (label: string, row: any) => (
-        <Tooltip
-          title={
-            [
-              row.parent_instance_id && `重跑自实例 #${row.parent_instance_id}`,
-              row.scheduler_instance_id && `运行编号：${row.scheduler_instance_id}`,
-              row.scheduler_task_instance_id && `节点运行编号：${row.scheduler_task_instance_id}`,
-              row.trigger_type && `触发方式：${row.trigger_type}`,
-            ]
-              .filter(Boolean)
-              .join('\n') || undefined
-          }
-        >
-          <span>{label || row.trigger_type || '—'}</span>
-        </Tooltip>
-      ),
-    },
-    { title: '节点名称', dataIndex: 'node_name' },
-    { title: '类型', dataIndex: 'node_type', render: (t: string) => <Tag>{t}</Tag> },
-    { title: '状态', dataIndex: 'status', render: (s: string) => statusTag(s) },
-    {
-      title: '失败原因 / 摘要',
-      dataIndex: 'log_content',
-      width: 220,
-      ellipsis: true,
-      render: (_: string, row: any) => {
-        const text = String(row.log_summary || row.log_content || '').trim()
-        return text ? <Tooltip title={text}><span>{text.slice(0, 80)}</span></Tooltip> : <span style={{ color: '#bbb' }}>—</span>
-      },
-    },
-    {
-      title: '开始时间',
-      dataIndex: 'started_at',
-      render: (v: string) => formatInTimeZone(v, displayTz),
-    },
-    {
-      title: '结束时间',
-      dataIndex: 'finished_at',
-      render: (v: string) => formatInTimeZone(v, displayTz),
-    },
-    { title: '重试次数', dataIndex: 'retry_count' },
-    {
-      title: '操作', render: (_: any, row: any) => (
-        <Space>
-          <Button size="small" icon={<FileTextOutlined />} onClick={() => showLog(row.id)}>日志</Button>
-          {row.status === 'running' && <Button size="small" danger icon={<StopOutlined />} onClick={() => handleKill(row.id)}>终止</Button>}
-          {row.status === 'failed' && <Button size="small" icon={<ReloadOutlined />} onClick={() => handleRetry(row.id)}>重试</Button>}
-        </Space>
-      )
-    }
-  ]
 
   const workflowColumns = [
     ...(includeAllWorkspaces
@@ -571,15 +430,9 @@ export default function OperationPage() {
     },
   ]
 
-  const tableTitle =
-    listMode === 'workflows'
-      ? `工作流实例列表${todayOnlyWorkflows ? '（今日创建）' : ''}${statusFilter ? `（状态：${STATUS_LABEL[statusFilter] || statusFilter}）` : ''}${
-          workflowFilter ? `（仅工作流 #${workflowFilter}，点上方统计卡可取消）` : ''
-        }`
-      : `工作流实例 #${workflowInstanceScope} 的节点明细`
-  const activeNodeColumns = workflowInstanceScope != null
-    ? nodeColumns.filter((c: any) => !['工作流实例', '工作流', '触发来源'].includes(String(c.title)))
-    : nodeColumns
+  const tableTitle = `工作流实例列表${todayOnlyWorkflows ? '（今日创建）' : ''}${
+    statusFilter ? `（状态：${STATUS_LABEL[statusFilter] || statusFilter}）` : ''
+  }${workflowFilter ? `（仅工作流 #${workflowFilter}，点上方统计卡可取消）` : ''}`
 
   return (
     <div>
@@ -704,38 +557,7 @@ export default function OperationPage() {
         }]}
       />
 
-      {listMode === 'nodes' && drilldownContext && (
-        <Card size="small" style={{ marginBottom: 12 }}>
-          <Descriptions size="small" column={4}>
-            <Descriptions.Item label="工作流">{drilldownContext.workflow_name}</Descriptions.Item>
-            <Descriptions.Item label="实例">#{drilldownContext.workflow_instance_id}</Descriptions.Item>
-            <Descriptions.Item label="状态">{statusTag(drilldownContext.status)}</Descriptions.Item>
-            <Descriptions.Item label="业务日期">{drilldownContext.business_date || '—'}</Descriptions.Item>
-            <Descriptions.Item label="触发来源">{drilldownContext.trigger_label || drilldownContext.trigger_type || '—'}</Descriptions.Item>
-            <Descriptions.Item label="开始时间">{formatInTimeZone(drilldownContext.started_at, displayTz)}</Descriptions.Item>
-            <Descriptions.Item label="结束时间">{formatInTimeZone(drilldownContext.finished_at, displayTz)}</Descriptions.Item>
-            <Descriptions.Item label="最近同步">{formatInTimeZone(drilldownContext.last_synced_at, displayTz)}</Descriptions.Item>
-          </Descriptions>
-          <div style={{ marginTop: 8 }}>
-            <Space size={6} wrap>
-              {(drilldownContext.node_status_distribution || []).map((x: any) => (
-                <Tag key={x.status} color={STATUS_COLOR[x.status] || 'default'}>{STATUS_LABEL[x.status] || x.status}: {x.count}</Tag>
-              ))}
-              {drilldownContext.scheduler_error ? <Tag color="red">同步异常</Tag> : null}
-            </Space>
-            {drilldownContext.scheduler_error ? (
-              <div style={{ marginTop: 6, color: '#ff4d4f' }}>{drilldownContext.scheduler_error}</div>
-            ) : null}
-          </div>
-        </Card>
-      )}
-
       <div style={{ marginBottom: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-        {listMode === 'nodes' && (
-          <Button type="primary" ghost onClick={backToWorkflowList}>
-            返回工作流实例
-          </Button>
-        )}
         <Select
           placeholder="状态筛选"
           allowClear
@@ -758,10 +580,8 @@ export default function OperationPage() {
               onChange={(v) => {
                 setIncludeAllWorkspaces(v)
                 setPage(1)
-                setListMode('workflows')
-                setWorkflowInstanceScope(undefined)
-                setDrillWorkspaceId(undefined)
-                setDrilldownContext(null)
+                // 跨空间看时单工作流的筛选没意义，顺手清掉
+                setWorkflowFilter(undefined)
               }}
             />
             <span style={{ color: '#666' }}>全部工作空间</span>
@@ -769,24 +589,22 @@ export default function OperationPage() {
         )}
       </div>
 
-      {listMode === 'workflows' && (
-        <Tabs
-          activeKey={runTypeFilter || 'all'}
-          onChange={(k) => { setRunTypeFilter(k === 'all' ? '' : (k as RunType)); setPage(1) }}
-          items={[
-            { key: 'all', label: '全部' },
-            ...RUN_TYPE_TABS.map(t => ({
-              key: t.key,
-              label: `${t.label}${runTypeCounts[t.key] != null ? ` (${runTypeCounts[t.key]})` : ''}`,
-            })),
-          ]}
-        />
-      )}
+      <Tabs
+        activeKey={runTypeFilter || 'all'}
+        onChange={(k) => { setRunTypeFilter(k === 'all' ? '' : (k as RunType)); setPage(1) }}
+        items={[
+          { key: 'all', label: '全部' },
+          ...RUN_TYPE_TABS.map(t => ({
+            key: t.key,
+            label: `${t.label}${runTypeCounts[t.key] != null ? ` (${runTypeCounts[t.key]})` : ''}`,
+          })),
+        ]}
+      />
 
       <div style={{ marginBottom: 8, color: '#666', fontSize: 13 }}>{tableTitle}</div>
       <Table
         dataSource={instances}
-        columns={listMode === 'workflows' ? workflowColumns : activeNodeColumns}
+        columns={workflowColumns}
         rowKey="id"
         pagination={{ total, pageSize: 20, current: page, onChange: setPage }}
       />
@@ -800,32 +618,6 @@ export default function OperationPage() {
         onChanged={load}
       />
 
-      <Drawer
-        title="运行日志"
-        open={logDrawer}
-        onClose={() => setLogDrawer(false)}
-        width={700}
-        extra={activeLogNodeId ? <Button icon={<ReloadOutlined />} onClick={() => showLog(activeLogNodeId)}>刷新日志</Button> : null}
-      >
-        {(logExtras.hint || logExtras.schedulerId != null) && (
-          <Alert
-            type="info"
-            showIcon
-            style={{ marginBottom: 12 }}
-            message={
-              <div>
-                {logExtras.hint && <div style={{ marginBottom: 8 }}>{logExtras.hint}</div>}
-                {logExtras.schedulerId != null && (
-                  <div>运行编号：<code>{logExtras.schedulerId}</code></div>
-                )}
-              </div>
-            }
-          />
-        )}
-        <pre style={{ background: '#1e1e1e', color: '#d4d4d4', padding: 16, borderRadius: 4, minHeight: 400, whiteSpace: 'pre-wrap', fontSize: 13 }}>
-          {logContent}
-        </pre>
-      </Drawer>
     </div>
   )
 }
