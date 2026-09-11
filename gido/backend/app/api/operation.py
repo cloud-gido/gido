@@ -381,12 +381,19 @@ def _run_type_counts(scoped_query, *, cache_key: str) -> dict:
 
     每个类型原先是一次带多层 OR/ILIKE 的 COUNT，切标签/轮询时连打 4 次，
     实例一多就到数秒。计数 15 秒内可复用（与页面轮询同量级），列表本身仍实时。
+
+    缓存键必须带数据指纹（条数 + max id），否则写入新实例后仍命中旧计数，
+    测试和线上切标签都会看到错的数字。
     """
     import time
 
     from app.services.shared_state import cache_get, cache_set
 
-    full_key = f"ops-run-type-counts:{cache_key}"
+    fingerprint = scoped_query.with_entities(
+        func.count(WorkflowInstance.id),
+        func.max(WorkflowInstance.id),
+    ).one()
+    full_key = f"ops-run-type-counts:{cache_key}|n={fingerprint[0]}|m={fingerprint[1] or 0}"
     now = time.monotonic()
     local = _run_type_count_local.get(full_key)
     if local and now - local[0] < 15:
