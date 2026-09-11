@@ -149,9 +149,13 @@ def sync_ds_instances(
     try:
         out = collect_runs(own, workspace_id=workspace_id)
         if not out.get("collected"):
+            # 连点几次「立即采集」不该把并发采集打出去：后面几次会拿不到锁而跳过，
+            # 这里要说清是「已在采集」而不是「调度没开」，否则用户会以为配置坏了
+            skipped = out.get("reason") == "already_running"
             return {
-                "message": "生产调度未启用",
+                "message": "已有一轮采集正在进行，本次跳过" if skipped else "生产调度未启用",
                 "collected": False,
+                "skipped": skipped,
                 "synced": 0,
                 "command_types_filled": 0,
                 "collector": collector_health(own),

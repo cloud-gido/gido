@@ -28,6 +28,10 @@ STALE_AFTER_SEC = 90
 _HEALTH_CACHE_KEY = "run-collector:health"
 _HEALTH_TTL_SEC = 24 * 3600
 
+# 采集互斥锁。与后台任务那把 "scheduler-instance-poll" 是不同的键，
+# 嵌套获取不会自锁；那把管「本轮该不该由我这个副本触发」，这把管「同时只能有一轮在采」。
+_COLLECT_LOCK_NAME = "run-collector"
+
 _local_health: Dict[str, Any] = {}
 _local_lock = threading.Lock()
 
@@ -136,9 +140,31 @@ def collector_health(db: Optional[Session] = None) -> Dict[str, Any]:
 
 def collect_runs(db: Session, *, workspace_id: Optional[int] = None, page_size: int = 100) -> Dict[str, Any]:
     """
-    采集一轮运行数据：拉取引擎上的最近运行与失败，写回实例事实表并触发告警。
-    返回带 `collected` 标记的统计；引擎未启用时 `collected=False`。
+    采集一轮运行数据。全局同一时刻只允许跑一轮，拿不到锁就直接跳过。
+
+    锁必须放在这里而不是调用方：`scheduler_run_key` 上有唯一索引，两轮采集并发时
+    后插入的一方会在 Postgres 里等先插入那个事务提交完才知道算不算冲突
+    （`wait_event = transactionid`）。而先插入那一方的事务里还夹着对引擎的 HTTP 调用，
+    于是等待方一路堆积、CPU 打满。之前锁只加在后台任务上，而 API 里的手动采集
+    和页面兜底采集都是直接调这个函数的，等于没锁——事故就是这么来的。
     """
+    from app.services.distributed_lock import try_distributed_lock
+
+    with try_distributed_lock(_COLLECT_LOCK_NAME) as acquired:
+        if not acquired:
+            logger.info("已有一轮采集在跑，本次跳过 ws=%s", workspace_id)
+            return {
+                "collected": False,
+                "engine": "dolphin",
+                "reason": "already_running",
+            }
+        return _collect_runs_unlocked(db, workspace_id=workspace_id, page_size=page_size)
+
+
+def _collect_runs_unlocked(
+    db: Session, *, workspace_id: Optional[int] = None, page_size: int = 100
+) -> Dict[str, Any]:
+    """真正干活的一轮采集。只应由 `collect_runs` 在持锁状态下调用。"""
     from app.services.ds_runtime import get_dolphin_runtime, refresh_ds_client
     from app.services.dolphin import ds_client
     from app.services.dolphin_instance_sync import (
