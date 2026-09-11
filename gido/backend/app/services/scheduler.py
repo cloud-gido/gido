@@ -178,6 +178,8 @@ def _run_sync_task_job(task_id: int):
         if claimed is False:
             logger.info("数据集成任务 %s 本周期已由其他 backend 副本触发", task_id)
             return
+        # claim_once 靠 Redis，没配 REDIS_URL 时返回 None，等于没有保护；
+        # 真正的入队互斥在 enqueue_sync_record 内部，重复触发会拿不到锁而抛 RuntimeError。
         start_sync_async(task_id, trigger_type="schedule")
         logger.info("数据集成任务 %s 定时触发已提交", task_id)
     except RuntimeError as e:
@@ -188,7 +190,6 @@ def _run_sync_task_job(task_id: int):
 
 def _poll_scheduler_instances_job():
     """生产运行采集：不依赖用户打开页面，也不依赖引擎回调。"""
-    from app.services.distributed_lock import try_distributed_lock
     from app.services.run_collector import COLLECT_INTERVAL_SEC
     from app.services.shared_state import claim_once
 
@@ -196,10 +197,9 @@ def _poll_scheduler_instances_job():
     claimed = claim_once(f"scheduler-instance-poll:{bucket}", 60)
     if claimed is False:
         return
-    with try_distributed_lock("scheduler-instance-poll") as acquired:
-        if not acquired:
-            return
-        _poll_scheduler_instances_unlocked()
+    # 互斥在 collect_runs 内部（拿不到锁会返回 collected=False）。这里不要再套一层锁：
+    # advisory 锁走 engine.raw_connection()，每层都占一个池连接。
+    _poll_scheduler_instances_unlocked()
 
 
 def _poll_scheduler_instances_unlocked():

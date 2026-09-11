@@ -493,8 +493,18 @@ def upsert_sla_rule(
 
     rule = db.query(WorkflowSlaRule).filter(WorkflowSlaRule.workflow_id == workflow_id).first()
     if rule is None:
-        rule = WorkflowSlaRule(workspace_id=workspace_id, workflow_id=workflow_id)
-        db.add(rule)
+        # workflow_id 上有唯一约束，两个人同时配同一条基线会让先查再插的那一方 500
+        from app.services.db_idempotent import insert_or_get
+
+        rule, _created = insert_or_get(
+            db,
+            WorkflowSlaRule(workspace_id=workspace_id, workflow_id=workflow_id),
+            lambda: (
+                db.query(WorkflowSlaRule)
+                .filter(WorkflowSlaRule.workflow_id == workflow_id)
+                .first()
+            ),
+        )
     rule.workspace_id = workspace_id
     rule.enabled = bool(data.get("enabled", True))
     rule.expect_finish_time = expect

@@ -98,13 +98,30 @@ def put_probe_tree(
         row.state = state
         row.updated_at = datetime.utcnow()
     else:
-        row = ProbeQueryTree(
-            workspace_id=body.workspace_id,
-            user_id=share_uid,
-            state=state,
-            updated_at=datetime.utcnow(),
+        # 自动保存会并发打进来（多标签页、连续保存），首次保存时两个请求都会查到「没有」。
+        # (workspace_id, user_id) 上有唯一约束，先查再插会让其中一个 500。
+        from app.services.db_idempotent import insert_or_get
+
+        row, created = insert_or_get(
+            db,
+            ProbeQueryTree(
+                workspace_id=body.workspace_id,
+                user_id=share_uid,
+                state=state,
+                updated_at=datetime.utcnow(),
+            ),
+            lambda: (
+                db.query(ProbeQueryTree)
+                .filter(
+                    ProbeQueryTree.workspace_id == body.workspace_id,
+                    ProbeQueryTree.user_id == share_uid,
+                )
+                .first()
+            ),
         )
-        db.add(row)
+        if not created:
+            row.state = state
+            row.updated_at = datetime.utcnow()
     db.commit()
     return state
 

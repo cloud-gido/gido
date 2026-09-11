@@ -45,6 +45,20 @@ class Settings(BaseSettings):
     SHARED_STATE_REQUIRED: bool = False
     SHARED_STATE_PREFIX: str = "gido"
 
+    # 数据库连接池。SQLAlchemy 默认的 5 + 10 溢出、**无获取超时**在生产上会放大故障：
+    # 试跑 SQL、数据集成同步这类请求在整个外部 I/O 期间都占着一个连接，池一满，
+    # 后面的请求会无限期等连接，连纯读接口一起卡死——这正是 524 那次的蔓延机制。
+    #
+    # 关键的是 DB_POOL_TIMEOUT 而不是把池开大：池上限每个 pod 最多
+    # DB_POOL_SIZE + DB_MAX_OVERFLOW 个连接，而 Postgres 默认 max_connections=100
+    # 且可能与 DolphinScheduler 共用实例，所以这里留足余量。扩副本前先核对
+    # 「副本数 × (pool_size + max_overflow)」是否还在 max_connections 之内。
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
+    # 拿不到连接就快速失败（500）而不是挂到网关超时——故障要局部化，不能蔓延
+    DB_POOL_TIMEOUT: int = 10
+    DB_POOL_RECYCLE: int = 3600
+
     # 告警配置
     ALERT_WEBHOOK_URL: Optional[str] = None
     SMTP_HOST: Optional[str] = None

@@ -3527,31 +3527,40 @@ def create_streaming_operation(
 ) -> StreamingOperation:
     """创建生命周期审计；相同 idempotency_key 返回原记录。"""
     key = (idempotency_key or "").strip() or None
-    if key:
-        existing = (
+    expected_request = (
+        json.dumps(request_payload, ensure_ascii=False, sort_keys=True)
+        if request_payload is not None
+        else None
+    )
+
+    def _find_by_key():
+        if not key:
+            return None
+        return (
             db.query(StreamingOperation)
             .filter(StreamingOperation.idempotency_key == key)
             .first()
         )
-        if existing:
-            if int(existing.job_id) != int(job.id):
-                raise HTTPException(status_code=409, detail="幂等键已被其他作业使用")
-            expected_request = (
-                json.dumps(request_payload, ensure_ascii=False, sort_keys=True)
-                if request_payload is not None
-                else None
+
+    def _assert_same_request(existing: StreamingOperation) -> StreamingOperation:
+        if int(existing.job_id) != int(job.id):
+            raise HTTPException(status_code=409, detail="幂等键已被其他作业使用")
+        if (
+            existing.operation_type != operation_type
+            or existing.release_id != release_id
+            or existing.restore_point_id != restore_point_id
+            or existing.request_json != expected_request
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="幂等键已用于不同的生命周期请求",
             )
-            if (
-                existing.operation_type != operation_type
-                or existing.release_id != release_id
-                or existing.restore_point_id != restore_point_id
-                or existing.request_json != expected_request
-            ):
-                raise HTTPException(
-                    status_code=409,
-                    detail="幂等键已用于不同的生命周期请求",
-                )
-            return existing
+        return existing
+
+    if key:
+        existing = _find_by_key()
+        if existing:
+            return _assert_same_request(existing)
     operation = StreamingOperation(
         job_id=job.id,
         release_id=release_id,
@@ -3560,15 +3569,18 @@ def create_streaming_operation(
         status="pending",
         idempotency_key=key,
         requested_by=requested_by,
-        request_json=(
-            json.dumps(request_payload, ensure_ascii=False, sort_keys=True)
-            if request_payload is not None
-            else None
-        ),
+        request_json=expected_request,
     )
-    db.add(operation)
-    db.flush()
-    return operation
+    if not key:
+        db.add(operation)
+        db.flush()
+        return operation
+    # 幂等键天生就是给并发重试用的：上面那次查询到这次插入之间，另一个请求
+    # 完全可能已经插进去了。让数据库裁决，撞了就退回它那一行。
+    from app.services.db_idempotent import insert_or_get
+
+    row, created = insert_or_get(db, operation, _find_by_key)
+    return row if created else _assert_same_request(row)
 
 
 def finish_streaming_operation(

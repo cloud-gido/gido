@@ -116,13 +116,30 @@ _db_url = _resolve_db_url(settings.resolved_database_url)
 _ensure_postgresql_database(_db_url)
 _ensure_mysql_database(_db_url)
 
-_engine_kwargs = {}
-if "sqlite" in _db_url:
-    _engine_kwargs["connect_args"] = {"check_same_thread": False}
-else:
-    _engine_kwargs["pool_pre_ping"] = True
-    if "mysql" in _db_url or "postgresql" in _db_url:
-        _engine_kwargs["pool_recycle"] = 3600
+def build_engine_kwargs(db_url: str) -> dict:
+    """
+    组装 create_engine 的连接池参数。
+
+    别吃 SQLAlchemy 默认的 5 + 10 无超时：试跑 SQL、数据集成同步这类请求
+    在整个外部 I/O 期间都占着连接，分布式锁也各自占一个
+    （pg advisory lock 走 raw_connection）。其中 `pool_timeout` 最关键——
+    没有它，池满之后请求会无限期等连接，一个慢东西就能把无关业务全拖住，
+    这正是 524 那次故障的蔓延机制。
+    """
+    if "sqlite" in db_url:
+        return {"connect_args": {"check_same_thread": False}}
+    kwargs = {
+        "pool_pre_ping": True,
+        "pool_size": max(1, int(settings.DB_POOL_SIZE)),
+        "max_overflow": max(0, int(settings.DB_MAX_OVERFLOW)),
+        "pool_timeout": max(1, int(settings.DB_POOL_TIMEOUT)),
+    }
+    if "mysql" in db_url or "postgresql" in db_url:
+        kwargs["pool_recycle"] = max(60, int(settings.DB_POOL_RECYCLE))
+    return kwargs
+
+
+_engine_kwargs = build_engine_kwargs(_db_url)
 
 engine = create_engine(_db_url, **_engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

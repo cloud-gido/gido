@@ -87,7 +87,41 @@ def enqueue_sync_record(
     version_id: Optional[int] = None,
     config_snapshot: Optional[dict] = None,
 ) -> SyncRecord:
-    """创建 pending 记录；由 worker 认领执行（不再直接起 daemon 线程跑业务）。"""
+    """
+    创建 pending 记录；由 worker 认领执行（不再直接起 daemon 线程跑业务）。
+
+    入队必须互斥。下面「同任务已有 pending/running 则拒绝」是先查再插，而
+    `execution_key` 上没有唯一索引兜底，两个并发触发（定时撞手动、连点两次、
+    多副本）都会查到「不忙」而双双入队，同一个同步任务就跑两遍、往目标表写两遍。
+    锁放在这里而不是调用方：入队有 8 个调用方，守调用方只能守住你记得的那几个。
+    """
+    from app.services.distributed_lock import try_distributed_lock
+
+    with try_distributed_lock(f"sync-enqueue:{int(task_id)}") as acquired:
+        if not acquired:
+            raise RuntimeError("该任务正在执行或排队中，请稍后再试")
+        return _enqueue_sync_record_locked(
+            task_id,
+            trigger_type=trigger_type,
+            triggered_by=triggered_by,
+            execution_key=execution_key,
+            retry_of=retry_of,
+            version_id=version_id,
+            config_snapshot=config_snapshot,
+        )
+
+
+def _enqueue_sync_record_locked(
+    task_id: int,
+    *,
+    trigger_type: str = "manual",
+    triggered_by: Optional[int] = None,
+    execution_key: Optional[str] = None,
+    retry_of: Optional[int] = None,
+    version_id: Optional[int] = None,
+    config_snapshot: Optional[dict] = None,
+) -> SyncRecord:
+    """真正入队。只应由 `enqueue_sync_record` 在持锁状态下调用。"""
     db = SessionLocal()
     try:
         task = db.query(SyncTask).filter(SyncTask.id == task_id).first()

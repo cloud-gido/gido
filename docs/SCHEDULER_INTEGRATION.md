@@ -147,7 +147,29 @@ GIDO 告警以**工作空间业务语义**呈现（工作流名、失败节点�
 
 ---
 
-## 7. 已知局限与路线图
+## 7. 并发与故障隔离（生产硬约束）
+
+线上出过一次 CPU 打满：`dw_workflow_instances.scheduler_run_key` 有唯一索引，多个并发采集插同一个 key，在 Postgres 上后插入的一方要**阻塞等前一个事务提交**才知道算不算冲突（`wait_event = transactionid`），而那个事务里还夹着对引擎的 HTTP 调用。请求连着 DB 会话一起堆积，连接池被吃干，最后连纯读的告警中心都打不开。
+
+由此定下四条硬约束，改这块代码时必须遵守：
+
+| 约束 | 原因 | 落点 |
+|------|------|------|
+| 互斥锁加在**被调方**，不加在调用方 | 守调用方只能守住你记得的那几个。`collect_runs` 有页面兜底、手动采集等多个入口，漏一个就等于没锁 | `run_collector.collect_runs`、`sync_worker.enqueue_sync_record` |
+| 拿不到锁**立即跳过/拒绝**，不排队 | 排队本身就是故障形态——积压的采集轮次会把池吃干 | 返回 `collected=False` / 抛 `RuntimeError` |
+| 带唯一约束的表**不许先查再插** | 先查再插在并发下必然双双命中，轻则 500 重则锁convoy。要让数据库裁决：插进去，撞了再退回已存在那行 | `services/db_idempotent.insert_or_get` |
+| 被前端轮询的接口**只读** | 引擎一慢就把请求和 DB 会话一起挂住，页面越刷越糟 | `/operation/overview`、`/operation/instances`、`/alerts` |
+
+另外两点容易踩：
+
+- **`claim_once` 靠 Redis**，没配 `REDIS_URL` 时它返回 `None`，调用方的 `if claimed is False` 不成立，等于**没有任何保护**。它只能当「多副本减少重复触发」的优化，真正的互斥必须另有 advisory 锁。
+- **advisory 锁走 `engine.raw_connection()`**，持锁期间占着一个池连接。别嵌套加锁，也别在持锁期间做长网络往返。
+
+连接池在 `core/config.py` 显式配置（`DB_POOL_SIZE` / `DB_MAX_OVERFLOW` / `DB_POOL_TIMEOUT`）。`pool_timeout` 是关键：没有它，池满之后请求**无限期**等连接，一个慢东西就能拖垮无关业务；有它则是快速失败，故障被局部化。扩副本前先核对「副本数 × (pool_size + max_overflow)」是否还在 Postgres `max_connections` 之内。
+
+---
+
+## 8. 已知局限与路线图
 
 | 项 | 现状 | 建议 |
 |----|------|------|
@@ -155,10 +177,12 @@ GIDO 告警以**工作空间业务语义**呈现（工作流名、失败节点�
 | 引擎抽象 | 仅 Dolphin 完整实现 | 可扩展 Airflow / 自研引擎 |
 | E2E 测试 | 单元测试为主 | CI 增加 DS Testcontainers 或 Mock |
 | 补数 | 模型与 API 演进中 | 与实例中心统一 UX |
+| 试跑占用池连接 | 试跑 SQL / 数据集成同步在请求内同步跑，整个外部 I/O 期间占着一个池连接，且用户 SQL 没有语句超时 | 改为后台任务 + 轮询进度；并给用户 SQL 加语句超时 |
+| 并发时序未覆盖 | `wait_event = transactionid` 的阻塞行为要真起并发打真库才能复现，现有单测只锁设计属性 | CI 增加 Postgres Testcontainers 并发用例 |
 
 ---
 
-## 8. 相关文档
+## 9. 相关文档
 
 | 文档 | 说明 |
 |------|------|

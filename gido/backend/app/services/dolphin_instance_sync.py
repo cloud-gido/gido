@@ -496,23 +496,20 @@ def _add_instance_idempotent(db: Session, inst: WorkflowInstance) -> tuple[Workf
     后写的一方让位给已存在的那行，而不是抛错中断整轮采集。
     返回 (实例, 是否本次新建)。
     """
-    savepoint = db.begin_nested()
-    try:
-        db.add(inst)
-        db.flush()
-        savepoint.commit()
-        return inst, True
-    except IntegrityError:
-        savepoint.rollback()
-        run_key = getattr(inst, "scheduler_run_key", None)
-        existing = (
-            db.query(WorkflowInstance).filter(WorkflowInstance.scheduler_run_key == run_key).first()
-            if run_key
-            else None
+    from app.services.db_idempotent import insert_or_get
+
+    run_key = getattr(inst, "scheduler_run_key", None)
+
+    def _existing():
+        if not run_key:
+            return None
+        return (
+            db.query(WorkflowInstance)
+            .filter(WorkflowInstance.scheduler_run_key == run_key)
+            .first()
         )
-        if existing is None:
-            raise
-        return existing, False
+
+    return insert_or_get(db, inst, _existing)
 
 
 def _call_list_process_instances_page(
