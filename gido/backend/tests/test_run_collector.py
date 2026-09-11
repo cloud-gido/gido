@@ -35,10 +35,14 @@ def db():
 def isolated_health():
     """健康度默认落在进程内；测试里屏蔽 Redis，避免跨用例串味。"""
     run_collector._local_health.clear()
+    run_collector._local_health_view.clear()
+    run_collector._attempt_started_at = None
     with patch("app.services.shared_state.cache_get", return_value=None), \
          patch("app.services.shared_state.cache_set", return_value=None):
         yield
     run_collector._local_health.clear()
+    run_collector._local_health_view.clear()
+    run_collector._attempt_started_at = None
 
 
 def test_collect_runs_reports_disabled_without_touching_engine(db):
@@ -51,6 +55,7 @@ def test_collect_runs_reports_disabled_without_touching_engine(db):
     assert health["enabled"] is False
     # 未启用不算「采集落后」，否则实例中心会一直挂红
     assert health["stale"] is False
+    assert health["in_progress"] is False
 
 
 def test_collect_runs_records_success_health(db):
@@ -76,10 +81,45 @@ def test_collect_runs_records_success_health(db):
     health = run_collector.collector_health(db)
     assert health["enabled"] is True
     assert health["stale"] is False
+    assert health["in_progress"] is False
     assert health["lag_seconds"] is not None and health["lag_seconds"] < 5
     assert health["runs_ingested"] == 2
     assert health["unbound_workflows"] == 1
     assert health["last_error"] is None
+
+
+def test_in_progress_collect_is_not_stale(db):
+    """长轮次进行中不能报红：否则实例中心会把正常采集吓成平台故障。"""
+    run_collector._mark_collect_started(engine="dolphin", enabled=True)
+    # 伪造「三分钟前成功过」，若按旧 90s 阈值会 stale
+    prev = run_collector._read_health()
+    from datetime import datetime, timedelta
+
+    prev["last_success_at"] = (datetime.utcnow() - timedelta(minutes=3)).replace(microsecond=0).isoformat()
+    run_collector._write_health(prev)
+
+    health = run_collector.collector_health(db=None)
+    assert health["in_progress"] is True
+    assert health["stale"] is False
+    assert health["lag_seconds"] is not None and health["lag_seconds"] >= 170
+
+
+def test_long_previous_round_raises_stale_threshold(db):
+    from datetime import datetime, timedelta
+
+    run_collector._write_health({
+        "engine": "dolphin",
+        "enabled": True,
+        "last_success_at": (datetime.utcnow() - timedelta(minutes=4)).replace(microsecond=0).isoformat(),
+        "last_attempt_at": (datetime.utcnow() - timedelta(minutes=4)).replace(microsecond=0).isoformat(),
+        "in_progress": False,
+        "last_duration_seconds": 180,
+        "interval_seconds": 15,
+    })
+    health = run_collector.collector_health(db=None)
+    # 阈值 = max(300, 180*2.5=450) = 450；4 分钟落后仍不算 stale
+    assert health["stale_after_seconds"] >= 450
+    assert health["stale"] is False
 
 
 def test_collect_runs_surfaces_failure_in_health(db):
@@ -95,9 +135,9 @@ def test_collect_runs_surfaces_failure_in_health(db):
     health = run_collector.collector_health(db)
     # 从未成功过不算「已落后」（那是吓用户的假故障）；但错误原因必须露出来
     assert health["stale"] is False
+    assert health["in_progress"] is False
     assert health["lag_seconds"] is None
     assert "token expired" in health["last_error"]
-
 
 def test_workspace_scoped_success_updates_collector_health(db):
     """本空间「立即采集」成功也要刷新健康度，否则页面一直黄/红像平台坏了。"""

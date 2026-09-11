@@ -62,6 +62,10 @@ def test_classify_run_type(trigger, cmd, expected):
 
 
 def _client():
+    from app.api import operation as operation_mod
+
+    operation_mod._run_type_count_local.clear()
+
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)

@@ -2190,6 +2190,124 @@ def migrate_workflow_instance_dolphin_command_type(engine: Engine) -> None:
             conn.execute(text("ALTER TABLE dw_workflow_instances ADD COLUMN dolphin_command_type VARCHAR(64)"))
 
 
+def migrate_instance_retention_indexes(engine: Engine) -> None:
+    """留存清理专用索引：小批 DELETE 必须走索引，不能全表扫。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_workflow_instances"):
+        return
+    with engine.begin() as conn:
+        wi_idx = {i["name"] for i in insp.get_indexes("dw_workflow_instances")}
+        if "ix_wi_created_at" not in wi_idx and "ix_dw_workflow_instances_created_at" not in wi_idx:
+            try:
+                conn.execute(text("CREATE INDEX ix_wi_created_at ON dw_workflow_instances (created_at)"))
+            except Exception:
+                logger.debug("create ix_wi_created_at skipped", exc_info=True)
+        if insp.has_table("dw_node_instances"):
+            ni_idx = {i["name"] for i in insp.get_indexes("dw_node_instances")}
+            if (
+                "ix_dw_node_instances_workflow_instance_id" not in ni_idx
+                and "ix_node_instances_workflow_instance_id" not in ni_idx
+            ):
+                try:
+                    conn.execute(
+                        text(
+                            "CREATE INDEX ix_dw_node_instances_workflow_instance_id "
+                            "ON dw_node_instances (workflow_instance_id)"
+                        )
+                    )
+                except Exception:
+                    logger.debug("create ix_dw_node_instances_workflow_instance_id skipped", exc_info=True)
+        if insp.has_table("dw_alert_events"):
+            ae_idx = {i["name"] for i in insp.get_indexes("dw_alert_events")}
+            if (
+                "ix_dw_alert_events_workflow_instance_id" not in ae_idx
+                and "ix_alert_events_workflow_instance_id" not in ae_idx
+            ):
+                try:
+                    conn.execute(
+                        text(
+                            "CREATE INDEX ix_dw_alert_events_workflow_instance_id "
+                            "ON dw_alert_events (workflow_instance_id)"
+                        )
+                    )
+                except Exception:
+                    logger.debug("create ix_dw_alert_events_workflow_instance_id skipped", exc_info=True)
+
+
+def migrate_alert_event_list_index(engine: Engine) -> None:
+    """告警列表 (workspace_id, status, created_at) 复合索引，避免 open 分页全表扫。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_alert_events"):
+        return
+    idx_names = {i["name"] for i in insp.get_indexes("dw_alert_events")}
+    if "ix_alert_ws_status_created" in idx_names:
+        return
+    with engine.begin() as conn:
+        try:
+            conn.execute(
+                text(
+                    "CREATE INDEX ix_alert_ws_status_created "
+                    "ON dw_alert_events (workspace_id, status, created_at)"
+                )
+            )
+        except Exception:
+            logger.debug("create ix_alert_ws_status_created skipped", exc_info=True)
+
+
+def migrate_workflow_instance_run_type(engine: Engine) -> None:
+    """
+    工作流实例落库 run_type，并回填历史行。
+
+    运维列表按运行类型分页时，若每次用 OR/ILIKE 现算，实例一多就到数秒；
+    等值过滤 + (workflow_id, run_type) 索引才是分页该有的成本。
+    """
+    from app.services.workflow_trigger_display import classify_run_type
+
+    insp = inspect(engine)
+    if not insp.has_table("dw_workflow_instances"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_workflow_instances")}
+    with engine.begin() as conn:
+        if "run_type" not in cols:
+            if engine.dialect.name == "mysql":
+                conn.execute(text("ALTER TABLE dw_workflow_instances ADD COLUMN run_type VARCHAR(16) NULL"))
+            else:
+                conn.execute(text("ALTER TABLE dw_workflow_instances ADD COLUMN run_type VARCHAR(16)"))
+        # 索引：列表按空间 join 工作流后再按 run_type 过滤
+        idx_names = {i["name"] for i in insp.get_indexes("dw_workflow_instances")}
+        if "ix_wi_workflow_run_type" not in idx_names and "ix_dw_workflow_instances_run_type" not in idx_names:
+            try:
+                conn.execute(
+                    text(
+                        "CREATE INDEX ix_wi_workflow_run_type "
+                        "ON dw_workflow_instances (workflow_id, run_type)"
+                    )
+                )
+            except Exception:
+                logger.debug("create ix_wi_workflow_run_type skipped", exc_info=True)
+
+    # 回填：只处理 NULL，避免每次启动全表重写
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models.workspace import WorkflowInstance
+
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    try:
+        q = db.query(WorkflowInstance).filter(
+            (WorkflowInstance.run_type.is_(None)) | (WorkflowInstance.run_type == "")
+        )
+        batch = 0
+        for inst in q.yield_per(500):
+            inst.run_type = classify_run_type(inst.trigger_type, inst.dolphin_command_type)
+            batch += 1
+            if batch % 500 == 0:
+                db.commit()
+        db.commit()
+    finally:
+        db.close()
+
+
 def seed_permissions(db: Session) -> dict[str, Permission]:
     by_code: dict[str, Permission] = {}
     for code in P.ALL_PERMISSIONS:

@@ -5,8 +5,8 @@
 import logging
 import re
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import and_, desc, func, or_
+from sqlalchemy.orm import Session, selectinload, load_only
+from sqlalchemy import and_, desc, func, or_, text
 from typing import Optional
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -83,7 +83,16 @@ def _error_ranking(base_query, since: datetime, limit: int = 5) -> list[dict]:
 
 
 def _duration_ranking(base_query, since: datetime, limit: int = 5) -> list[dict]:
-    """近 7 日耗时排行：找出最可能顶到基线的作业。"""
+    """近 7 日耗时排行：找出最可能顶到基线的作业。在 SQL 里聚合，禁止把 7 日全量实例拉进内存。"""
+    bind = base_query.session.get_bind() if hasattr(base_query, "session") else None
+    dialect = getattr(getattr(bind, "dialect", None), "name", "") or ""
+    if dialect == "postgresql":
+        sec = func.extract("epoch", WorkflowInstance.finished_at - WorkflowInstance.started_at)
+    elif dialect == "mysql":
+        sec = func.timestampdiff(text("SECOND"), WorkflowInstance.started_at, WorkflowInstance.finished_at)
+    else:
+        # SQLite / 其它：用 unixepoch 差值；测试库主要走这条
+        sec = func.strftime("%s", WorkflowInstance.finished_at) - func.strftime("%s", WorkflowInstance.started_at)
     rows = (
         base_query.filter(
             WorkflowInstance.created_at >= since,
@@ -93,31 +102,25 @@ def _duration_ranking(base_query, since: datetime, limit: int = 5) -> list[dict]
         .with_entities(
             Workflow.id,
             Workflow.name,
-            WorkflowInstance.started_at,
-            WorkflowInstance.finished_at,
+            func.count(WorkflowInstance.id).label("runs"),
+            func.avg(sec).label("avg_sec"),
+            func.max(sec).label("max_sec"),
         )
+        .group_by(Workflow.id, Workflow.name)
+        .order_by(func.avg(sec).desc())
+        .limit(limit)
         .all()
     )
-    agg: dict[int, dict] = {}
-    for wid, name, started, finished in rows:
-        seconds = int((finished - started).total_seconds())
-        if seconds < 0:
-            continue
-        item = agg.setdefault(wid, {"workflow_id": wid, "workflow_name": name or "", "runs": 0, "total": 0, "max_seconds": 0})
-        item["runs"] += 1
-        item["total"] += seconds
-        item["max_seconds"] = max(item["max_seconds"], seconds)
     out = []
-    for item in agg.values():
+    for wid, name, runs, avg_sec, max_sec in rows:
         out.append({
-            "workflow_id": item["workflow_id"],
-            "workflow_name": item["workflow_name"],
-            "runs": item["runs"],
-            "avg_seconds": int(item["total"] / item["runs"]) if item["runs"] else 0,
-            "max_seconds": item["max_seconds"],
+            "workflow_id": wid,
+            "workflow_name": name or "",
+            "runs": int(runs or 0),
+            "avg_seconds": int(avg_sec or 0),
+            "max_seconds": int(max_sec or 0),
         })
-    out.sort(key=lambda x: x["avg_seconds"], reverse=True)
-    return out[:limit]
+    return out
 
 
 def _assert_ops_list_scope(db: Session, current_user: User, workspace_id: int, include_all: bool) -> bool:
@@ -186,11 +189,21 @@ def get_overview(
     q = db.query(WorkflowInstance).join(Workflow)
     if not all_ws:
         q = q.filter(Workflow.workspace_id == workspace_id)
-    total = q.count()
-    today = q.filter(WorkflowInstance.created_at >= today_start).count()
-    running = q.filter(WorkflowInstance.status == "running").count()
-    failed = q.filter(WorkflowInstance.status == "failed").count()
-    success = q.filter(WorkflowInstance.status == "success").count()
+
+    # 状态分布一次 GROUP BY，避免 total/running/failed/success/pending/killed 连打 6 次 COUNT
+    status_rows = (
+        q.with_entities(WorkflowInstance.status, func.count(WorkflowInstance.id))
+        .group_by(WorkflowInstance.status)
+        .all()
+    )
+    by_status = {st: int(cnt) for st, cnt in status_rows}
+    total = sum(by_status.values())
+    running = by_status.get("running", 0)
+    failed = by_status.get("failed", 0)
+    success = by_status.get("success", 0)
+    today = q.filter(WorkflowInstance.created_at >= today_start).with_entities(
+        func.count(WorkflowInstance.id)
+    ).scalar() or 0
 
     # 近 7 日实例趋势（按 UTC 日期）
     trend_start = today_start - timedelta(days=6)
@@ -222,8 +235,8 @@ def get_overview(
         {"status": "success", "count": success},
         {"status": "failed", "count": failed},
         {"status": "running", "count": running},
-        {"status": "pending", "count": q.filter(WorkflowInstance.status == "pending").count()},
-        {"status": "killed", "count": q.filter(WorkflowInstance.status == "killed").count()},
+        {"status": "pending", "count": by_status.get("pending", 0)},
+        {"status": "killed", "count": by_status.get("killed", 0)},
     ]
 
     from app.services.publish_approval import pending_approval_count
@@ -275,12 +288,28 @@ def list_all_instances(
     if run_type:
         if run_type not in RUN_TYPES:
             raise HTTPException(status_code=400, detail=f"运行类型须为 {'/'.join(RUN_TYPES)} 之一")
-        q = q.filter(_run_type_condition(run_type))
-    total = q.count()
+        # 优先等值过滤落库的 run_type；历史 NULL 行回退旧判定，滚动发布期也不丢数据
+        q = q.filter(
+            or_(
+                WorkflowInstance.run_type == run_type,
+                and_(
+                    or_(WorkflowInstance.run_type.is_(None), WorkflowInstance.run_type == ""),
+                    _run_type_condition(run_type),
+                ),
+            )
+        )
+    total = q.with_entities(func.count(WorkflowInstance.id)).scalar() or 0
     # 排序用 coalesce，避免各方言对 NULLS FIRST/LAST 差异（MySQL 无 NULLS LAST）
-    # selectinload：一页 20 条不要再各自查一遍节点（以前是典型 N+1，列表轻松秒级）
+    # selectinload + load_only：一页只要节点状态/名称，禁止拖回 log_content 大字段
     instances = (
-        q.options(selectinload(WorkflowInstance.node_instances))
+        q.options(
+            selectinload(WorkflowInstance.node_instances).load_only(
+                NodeInstance.id,
+                NodeInstance.workflow_instance_id,
+                NodeInstance.node_id,
+                NodeInstance.status,
+            )
+        )
         .order_by(
             desc(func.coalesce(WorkflowInstance.started_at, WorkflowInstance.created_at)),
             desc(WorkflowInstance.id),
@@ -354,7 +383,7 @@ def _serialize_instance_rows(db: Session, instances: list) -> list:
             "scheduler_engine": getattr(inst, "scheduler_engine", None) or "dolphin",
             "scheduler_instance_id": getattr(inst, "scheduler_instance_id", None),
             "trigger_label": format_trigger_type_label(tt, dct, getattr(inst, "scheduler_instance_id", None)),
-            "run_type": classify_run_type(tt, dct),
+            "run_type": getattr(inst, "run_type", None) or classify_run_type(tt, dct),
             "status_override": getattr(inst, "status_override", None),
             "override_reason": getattr(inst, "override_reason", None),
             "override_at": inst.override_at.isoformat() if getattr(inst, "override_at", None) else None,
@@ -379,21 +408,14 @@ def _run_type_counts(scoped_query, *, cache_key: str) -> dict:
     """
     各标签页条数。
 
-    每个类型原先是一次带多层 OR/ILIKE 的 COUNT，切标签/轮询时连打 4 次，
-    实例一多就到数秒。计数 15 秒内可复用（与页面轮询同量级），列表本身仍实时。
-
-    缓存键必须带数据指纹（条数 + max id），否则写入新实例后仍命中旧计数，
-    测试和线上切标签都会看到错的数字。
+    专业 SaaS 做法：标签数字允许与列表差一个轮询周期（~15s），不要每次先扫
+    count+max 做指纹——那本身就和列表 count 一样贵。命中短缓存直接返回。
     """
     import time
 
     from app.services.shared_state import cache_get, cache_set
 
-    fingerprint = scoped_query.with_entities(
-        func.count(WorkflowInstance.id),
-        func.max(WorkflowInstance.id),
-    ).one()
-    full_key = f"ops-run-type-counts:{cache_key}|n={fingerprint[0]}|m={fingerprint[1] or 0}"
+    full_key = f"ops-run-type-counts:{cache_key}"
     now = time.monotonic()
     local = _run_type_count_local.get(full_key)
     if local and now - local[0] < 15:
@@ -405,16 +427,29 @@ def _run_type_counts(scoped_query, *, cache_key: str) -> dict:
         _run_type_count_local[full_key] = (now, counts)
         return counts
 
-    # 一次取出分类所需两列，在内存里归类——比 4 次 ILIKE COUNT 轻得多
-    rows = scoped_query.with_entities(
-        WorkflowInstance.dolphin_command_type,
-        WorkflowInstance.trigger_type,
-    ).all()
+    # 一次 GROUP BY 即可；run_type 已落库，不必再扫两列现算
+    rows = (
+        scoped_query.with_entities(
+            WorkflowInstance.run_type,
+            func.count(WorkflowInstance.id),
+        )
+        .group_by(WorkflowInstance.run_type)
+        .all()
+    )
     counts = {rt: 0 for rt in RUN_TYPES}
-    for dct, tt in rows:
-        rt = classify_run_type(tt, dct)
-        if rt in counts:
-            counts[rt] += 1
+    has_legacy = False
+    for stored, cnt in rows:
+        if stored in counts:
+            counts[stored] += int(cnt)
+        elif not stored:
+            has_legacy = True
+    if has_legacy:
+        # 尚未回填的历史行：退回旧路径一次，避免标签数字对不上，也避免 NULL/空串分组重复累加
+        legacy = scoped_query.filter(
+            or_(WorkflowInstance.run_type.is_(None), WorkflowInstance.run_type == "")
+        )
+        for rt in RUN_TYPES:
+            counts[rt] += legacy.filter(_run_type_condition(rt)).count()
     _run_type_count_local[full_key] = (now, counts)
     try:
         cache_set(full_key, counts, 15)

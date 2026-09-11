@@ -473,7 +473,7 @@ export default function OperationPage() {
         message="仅展示已上线工作流的生产运行实例"
         description={
           <span>
-            运行中与历史实例由 GIDO 持续采集，页面每 15 秒自动刷新。调度、补数与运维重跑请在本页查看。数据开发试跑与数据探查查询请到{' '}
+            运行中与近期实例由 GIDO 持续采集（热账本默认保留约 7 天，更早以生产调度为准），页面每 15 秒自动刷新。调度、补数与运维重跑请在本页查看。数据开发试跑与数据探查查询请到{' '}
             <Link to={R.batch.runHistory}>运行历史</Link>。
           </span>
         }

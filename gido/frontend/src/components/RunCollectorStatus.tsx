@@ -5,7 +5,7 @@
  * @date 2026-09-11
  */
 import { Alert, Tag, Tooltip } from 'antd'
-import { CheckCircleFilled } from '@ant-design/icons'
+import { CheckCircleFilled, SyncOutlined } from '@ant-design/icons'
 
 /**
  * 运行数据采集状态：实例中心与告警中心共用。
@@ -13,7 +13,8 @@ import { CheckCircleFilled } from '@ant-design/icons'
  *
  * 语义要分清，避免平台「看起来坏了」：
  * - 尚未首次成功：黄，等待中
- * - 曾经成功、现在超时未再成功：红，真的落后
+ * - 正在采集（长轮次常见）：蓝，进行中——不要报红
+ * - 曾经成功、现在超时且没在采：红，真的落后
  * - 未启用 / 状态未知：黄
  */
 export type RunCollector = {
@@ -21,7 +22,10 @@ export type RunCollector = {
   interval_seconds?: number
   lag_seconds?: number | null
   last_success_at?: string | null
+  last_duration_seconds?: number | null
   stale?: boolean
+  in_progress?: boolean
+  stuck?: boolean
   last_error?: string | null
 }
 
@@ -66,6 +70,21 @@ export default function RunCollectorStatus({ collector }: { collector?: RunColle
 
   const interval = collector.interval_seconds || 15
 
+  // 一轮还在跑：蓝条。工作流多时一轮几分钟很正常，不能挂成「已落后」
+  if (collector.in_progress && !collector.stale) {
+    const last = collector.lag_seconds != null ? `；上次成功 ${lagLabel(collector.lag_seconds)}` : ''
+    return (
+      <Alert
+        type="info"
+        showIcon
+        icon={<SyncOutlined spin />}
+        style={{ marginBottom: 16 }}
+        message="正在采集生产运行数据"
+        description={`后台正在从生产调度拉取实例，工作流较多时可能需要几分钟${last}。页面会自动刷新，一般无需手动干预。`}
+      />
+    )
+  }
+
   // 一次都没成功：黄，不要用「已落后」——那是「断了」的语义，会让人以为平台坏了
   if (collector.lag_seconds == null) {
     return (
@@ -83,7 +102,7 @@ export default function RunCollectorStatus({ collector }: { collector?: RunColle
     )
   }
 
-  // 真落后：曾经采到过，现在超时了
+  // 真落后：曾经采到过，现在超时了且没在采
   if (collector.stale) {
     return (
       <Alert
@@ -94,14 +113,16 @@ export default function RunCollectorStatus({ collector }: { collector?: RunColle
         description={
           collector.last_error
             ? `失败原因：${collector.last_error}`
-            : '实例与告警可能不是最新。请联系平台管理员检查生产调度连通性与凭证，或在实例中心点「立即采集」。'
+            : collector.stuck
+              ? '本轮采集长时间未结束，可能卡住。可点「立即采集」重试，或检查生产调度连通性与后端日志。'
+              : '实例与告警可能不是最新。若刚发布大量工作流，可稍等或点「立即采集」；持续落后请检查生产调度连通性与凭证。'
         }
       />
     )
   }
 
   return (
-    <Tooltip title={`GIDO 每 ${interval} 秒采集一次生产运行数据，无需手动同步`}>
+    <Tooltip title={`GIDO 每 ${interval} 秒尝试采集；工作流多时单轮可能超过间隔，以最近成功时间为准`}>
       <Tag icon={<CheckCircleFilled />} color="success" style={{ marginBottom: 12 }}>
         运行数据实时采集中 · 最近 {lagLabel(collector.lag_seconds)}
       </Tag>

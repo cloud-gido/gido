@@ -60,6 +60,17 @@ class Settings(BaseSettings):
     DB_POOL_TIMEOUT: int = 10
     DB_POOL_RECYCLE: int = 3600
 
+    # 实例热账本留存：只保留最近 N 天终态实例，更早的以 Dolphin 为准。0=关闭自动清理。
+    # 环境变量：INSTANCE_RETENTION_DAYS（backend 进程 / K8s Deployment env / .env）
+    INSTANCE_RETENTION_DAYS: int = 7
+    # 温和清理：小批 + 短时预算 + 高频触发；宁可多轮，也不要一次慢 SQL/长事务
+    INSTANCE_RETENTION_BATCH_SIZE: int = 100
+    INSTANCE_RETENTION_MAX_BATCHES: int = 5
+    INSTANCE_RETENTION_TIME_BUDGET_MS: int = 2000
+    INSTANCE_RETENTION_PAUSE_MS: int = 50
+    # 触发间隔（分钟）；默认每 15 分钟啃一小口
+    INSTANCE_RETENTION_INTERVAL_MINUTES: int = 15
+
     # 告警配置
     ALERT_WEBHOOK_URL: Optional[str] = None
     SMTP_HOST: Optional[str] = None

@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from app.core.database import get_db
 from app.core.security import get_current_user
@@ -40,6 +40,69 @@ from app.services.run_collector import collector_health
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 _log = logging.getLogger(__name__)
+# 覆盖率/采集健康是轮询附带字段，15s 内复用即可，别让每次翻页都扫一遍已发布工作流
+_meta_local: dict[str, tuple[float, dict]] = {}
+
+
+def _cached_list_meta(db: Session, workspace_id: int) -> tuple[dict, dict]:
+    import time
+
+    # 只做进程内短缓存：覆盖率提示允许落后一个轮询周期；不要写共享缓存，
+    # 否则多套测试库/多工作空间会串 key，线上也没必要跨副本强一致。
+    key = f"alert-list-meta:{workspace_id}"
+    now = time.monotonic()
+    local = _meta_local.get(key)
+    if local and now - local[0] < 15:
+        return dict(local[1]["coverage"]), dict(local[1]["collector"])
+    payload = {
+        "coverage": workspace_alert_coverage(db, workspace_id),
+        "collector": collector_health(db),
+    }
+    _meta_local[key] = (now, payload)
+    return dict(payload["coverage"]), dict(payload["collector"])
+
+
+def _apply_after_armed_filter(stmt, db: Session, *, workspace_id: int, include_all_workspaces: bool):
+    """
+    隐藏推送起点之前、且未实际推送的历史入库。
+
+    旧实现是逐行相关子查询（armed_at + 实例发生时间），open 告警一多就到数秒。
+    专业做法：一次 OUTER JOIN 实例表，单工作空间再把 armed_at 提成常量。
+    """
+    stmt = stmt.outerjoin(
+        WorkflowInstance,
+        WorkflowInstance.id == AlertEvent.workflow_instance_id,
+    )
+    occurred = func.coalesce(
+        WorkflowInstance.finished_at,
+        WorkflowInstance.started_at,
+        AlertEvent.created_at,
+    )
+    if not include_all_workspaces:
+        armed_at = (
+            db.query(AlertNotificationConfig.notify_armed_at)
+            .filter(AlertNotificationConfig.workspace_id == workspace_id)
+            .scalar()
+        )
+        if armed_at is None:
+            return stmt
+        return stmt.filter(
+            or_(
+                occurred >= armed_at,
+                AlertEvent.notification_status.in_(("sent", "partial")),
+            )
+        )
+    stmt = stmt.outerjoin(
+        AlertNotificationConfig,
+        AlertNotificationConfig.workspace_id == AlertEvent.workspace_id,
+    )
+    return stmt.filter(
+        or_(
+            AlertNotificationConfig.notify_armed_at.is_(None),
+            occurred >= AlertNotificationConfig.notify_armed_at,
+            AlertEvent.notification_status.in_(("sent", "partial")),
+        )
+    )
 
 
 def _business_date_from_dedupe_key(dedupe_key: Optional[str]) -> Optional[str]:
@@ -87,28 +150,17 @@ def list_alerts(
     if notify_status:
         stmt = stmt.filter(AlertEvent.notification_status == notify_status)
     if after_armed:
-        armed_at = (
-            db.query(AlertNotificationConfig.notify_armed_at)
-            .filter(AlertNotificationConfig.workspace_id == AlertEvent.workspace_id)
-            .correlate(AlertEvent)
-            .scalar_subquery()
+        stmt = _apply_after_armed_filter(
+            stmt, db, workspace_id=workspace_id, include_all_workspaces=include_all_workspaces
         )
-        inst_occurred = (
-            db.query(func.coalesce(WorkflowInstance.finished_at, WorkflowInstance.started_at))
-            .filter(WorkflowInstance.id == AlertEvent.workflow_instance_id)
-            .correlate(AlertEvent)
-            .scalar_subquery()
-        )
-        occurred = func.coalesce(inst_occurred, AlertEvent.created_at)
-        stmt = stmt.filter(
-            or_(
-                armed_at.is_(None),
-                occurred >= armed_at,
-                AlertEvent.notification_status.in_(("sent", "partial")),
-            )
-        )
-    total = stmt.count()
-    rows = stmt.order_by(AlertEvent.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    # with_entities 会改 SELECT；先 count 再分页时用独立链式调用，避免互相污染
+    total = stmt.with_entities(func.count(AlertEvent.id)).order_by(None).scalar() or 0
+    rows = (
+        stmt.order_by(AlertEvent.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
     workspace_names = {
         ws.id: ws.name
         for ws in db.query(Workspace).filter(Workspace.id.in_([r.workspace_id for r in rows if r.workspace_id])).all()
@@ -117,18 +169,60 @@ def list_alerts(
         wf.id: wf.name
         for wf in db.query(Workflow).filter(Workflow.id.in_([r.workflow_id for r in rows if r.workflow_id])).all()
     }
+    wi_ids = [r.workflow_instance_id for r in rows if r.workflow_instance_id]
     workflow_instances = {
         inst.id: inst
-        for inst in db.query(WorkflowInstance)
-        .filter(WorkflowInstance.id.in_([r.workflow_instance_id for r in rows if r.workflow_instance_id]))
-        .all()
+        for inst in (
+            db.query(WorkflowInstance)
+            .options(
+                load_only(
+                    WorkflowInstance.id,
+                    WorkflowInstance.status,
+                    WorkflowInstance.business_date,
+                    WorkflowInstance.trigger_type,
+                    WorkflowInstance.scheduler_instance_id,
+                    WorkflowInstance.started_at,
+                    WorkflowInstance.finished_at,
+                )
+            )
+            .filter(WorkflowInstance.id.in_(wi_ids))
+            .all()
+            if wi_ids
+            else []
+        )
     }
+    ni_ids = [r.node_instance_id for r in rows if r.node_instance_id]
     node_instances = {
         ni.id: ni
-        for ni in db.query(NodeInstance)
-        .filter(NodeInstance.id.in_([r.node_instance_id for r in rows if r.node_instance_id]))
-        .all()
+        for ni in (
+            db.query(NodeInstance)
+            .options(
+                load_only(
+                    NodeInstance.id,
+                    NodeInstance.node_id,
+                    NodeInstance.status,
+                    NodeInstance.started_at,
+                    NodeInstance.finished_at,
+                    NodeInstance.scheduler_task_instance_id,
+                    NodeInstance.scheduler_task_code,
+                )
+            )
+            .filter(NodeInstance.id.in_(ni_ids))
+            .all()
+            if ni_ids
+            else []
+        )
     }
+    # 列表只要日志首行摘要，禁止把整段 log_content TEXT 拉进应用
+    log_summaries: dict[int, str] = {}
+    if ni_ids:
+        for nid, snippet in (
+            db.query(NodeInstance.id, func.substr(NodeInstance.log_content, 1, 400))
+            .filter(NodeInstance.id.in_(ni_ids), NodeInstance.log_content.isnot(None))
+            .all()
+        ):
+            if snippet:
+                log_summaries[int(nid)] = str(snippet).strip().splitlines()[0][:300]
     task_nodes = {
         node.id: node
         for node in db.query(TaskNode)
@@ -147,9 +241,6 @@ def list_alerts(
             or getattr(wf_inst, "started_at", None)
             or r.created_at
         )
-        log_summary = ""
-        if node_inst and node_inst.log_content:
-            log_summary = str(node_inst.log_content).strip().splitlines()[0][:300]
         items.append({
             "id": r.id,
             "workspace_id": r.workspace_id,
@@ -168,7 +259,7 @@ def list_alerts(
             "node_type": getattr(node, "node_type", None),
             "scheduler_task_instance_id": getattr(node_inst, "scheduler_task_instance_id", None),
             "scheduler_task_code": getattr(node_inst, "scheduler_task_code", None),
-            "log_summary": log_summary,
+            "log_summary": log_summaries.get(r.node_instance_id or 0, ""),
             "alert_type": r.alert_type,
             "level": r.level,
             "severity": getattr(r, "severity", None) or r.level,
@@ -188,14 +279,15 @@ def list_alerts(
             "ack_at": r.ack_at,
             "resolved_at": r.resolved_at,
         })
+    coverage, collector = _cached_list_meta(db, workspace_id)
     return {
         "total": total,
         "page": page,
         "page_size": page_size,
         "items": items,
         "after_armed": after_armed,
-        "coverage": workspace_alert_coverage(db, workspace_id),
-        "collector": collector_health(db),
+        "coverage": coverage,
+        "collector": collector,
     }
 
 

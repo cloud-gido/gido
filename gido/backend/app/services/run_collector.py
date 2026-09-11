@@ -22,9 +22,12 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-# 后台采集间隔 15s；超过该阈值未成功采集即视为「采集落后」
+# 后台采集间隔 15s；「落后」阈值要大于常见一轮耗时。
+# 工作流一多，扫 Dolphin 定义+补详情经常要几分钟，90s 会把正常采集误报成红条。
 COLLECT_INTERVAL_SEC = 15
-STALE_AFTER_SEC = 90
+STALE_AFTER_SEC = 5 * 60
+# 持锁超过此时长仍未成功：才当成卡住
+STUCK_AFTER_SEC = 15 * 60
 
 _HEALTH_CACHE_KEY = "run-collector:health"
 _HEALTH_TTL_SEC = 24 * 3600
@@ -34,7 +37,9 @@ _HEALTH_TTL_SEC = 24 * 3600
 _COLLECT_LOCK_NAME = "run-collector"
 
 _local_health: Dict[str, Any] = {}
+_local_health_view: Dict[str, Any] = {}
 _local_lock = threading.Lock()
+_attempt_started_at: Optional[datetime] = None
 
 
 def _utc_iso(dt: Optional[datetime]) -> Optional[str]:
@@ -69,6 +74,8 @@ def _write_health(payload: Dict[str, Any]) -> None:
     with _local_lock:
         _local_health.clear()
         _local_health.update(payload)
+        # 写入后立刻失效读缓存，否则 5s 内页面还以为「未在采集」
+        _local_health_view.clear()
     try:
         from app.services.shared_state import cache_set
 
@@ -84,8 +91,12 @@ def _record(
     stats: Optional[Dict[str, Any]] = None,
     error: Optional[str] = None,
 ) -> Dict[str, Any]:
+    global _attempt_started_at
     prev = _read_health()
     now = datetime.utcnow()
+    duration: Optional[int] = None
+    if _attempt_started_at is not None:
+        duration = max(int((now - _attempt_started_at).total_seconds()), 0)
     payload: Dict[str, Any] = {
         "engine": engine,
         "enabled": bool(enabled),
@@ -93,6 +104,8 @@ def _record(
         "last_success_at": prev.get("last_success_at"),
         "last_error": None,
         "interval_seconds": COLLECT_INTERVAL_SEC,
+        "in_progress": False,
+        "last_duration_seconds": duration if duration is not None else prev.get("last_duration_seconds"),
     }
     if error:
         payload["last_error"] = str(error)[:500]
@@ -103,12 +116,52 @@ def _record(
             payload["runs_ingested"] = int(stats.get("ingested") or 0)
             payload["runs_updated"] = int(stats.get("updated_from_ds") or 0)
             payload["unbound_workflows"] = int(stats.get("skipped_unbound") or 0)
+    _attempt_started_at = None
     _write_health(payload)
     return payload
 
 
+def _mark_collect_started(*, engine: str = "dolphin", enabled: bool = True) -> None:
+    """拿到锁立刻心跳：页面显示「正在采集」，不要把长轮次误报成落后。"""
+    global _attempt_started_at
+    prev = _read_health()
+    now = datetime.utcnow()
+    _attempt_started_at = now
+    payload: Dict[str, Any] = {
+        **prev,
+        "engine": engine,
+        "enabled": bool(enabled),
+        "last_attempt_at": _utc_iso(now),
+        "in_progress": True,
+        "interval_seconds": COLLECT_INTERVAL_SEC,
+    }
+    # 新一轮开始时清掉上一轮错误，避免红条文案还挂着旧原因
+    payload["last_error"] = None
+    _write_health(payload)
+
+
+def _stale_threshold_sec(health: Dict[str, Any]) -> int:
+    last_dur = health.get("last_duration_seconds")
+    try:
+        last_dur_i = int(last_dur) if last_dur is not None else 0
+    except (TypeError, ValueError):
+        last_dur_i = 0
+    # 上一轮若跑了 3 分钟，阈值至少给到 ~7.5 分钟，避免「边采边红」
+    return max(STALE_AFTER_SEC, int(last_dur_i * 2.5) if last_dur_i > 0 else STALE_AFTER_SEC)
+
+
 def collector_health(db: Optional[Session] = None) -> Dict[str, Any]:
     """供实例中心/告警中心展示：运行数据是否在持续采集，落后多久。"""
+    # 页面每 15s 轮询；健康度本身也是 15s 粒度，短缓存避免反复打平台集成表
+    import time
+
+    now_mono = time.monotonic()
+    with _local_lock:
+        cached = _local_health_view.get("payload")
+        cached_at = float(_local_health_view.get("at") or 0)
+        if cached and now_mono - cached_at < 5:
+            return dict(cached)
+
     health = _read_health()
     engine = health.get("engine") or "dolphin"
     enabled = health.get("enabled")
@@ -120,13 +173,29 @@ def collector_health(db: Optional[Session] = None) -> Dict[str, Any]:
         except Exception:
             enabled = None
     last_success = _parse_iso(health.get("last_success_at"))
+    last_attempt = _parse_iso(health.get("last_attempt_at"))
     lag_seconds: Optional[int] = None
     if last_success:
         lag_seconds = max(int((datetime.utcnow() - last_success).total_seconds()), 0)
+    attempt_age: Optional[int] = None
+    if last_attempt:
+        attempt_age = max(int((datetime.utcnow() - last_attempt).total_seconds()), 0)
+    in_progress = bool(health.get("in_progress")) and (
+        attempt_age is None or attempt_age < STUCK_AFTER_SEC
+    )
+    stuck = bool(health.get("in_progress")) and attempt_age is not None and attempt_age >= STUCK_AFTER_SEC
+    threshold = _stale_threshold_sec(health)
     # 「尚未采集」≠「已落后」。落后是曾经采到过、现在超过阈值没再成功；
-    # 一次都没成功过只是首次等待，不该挂成红色故障。
-    stale = bool(enabled) and lag_seconds is not None and lag_seconds > STALE_AFTER_SEC
-    return {
+    # 一轮还在跑时只提示进行中，不要吓成平台故障。
+    stale = bool(enabled) and (
+        stuck
+        or (
+            lag_seconds is not None
+            and lag_seconds > threshold
+            and not in_progress
+        )
+    )
+    payload = {
         "engine": engine,
         "enabled": bool(enabled) if enabled is not None else None,
         "interval_seconds": COLLECT_INTERVAL_SEC,
@@ -134,11 +203,19 @@ def collector_health(db: Optional[Session] = None) -> Dict[str, Any]:
         "last_success_at": health.get("last_success_at"),
         "lag_seconds": lag_seconds,
         "stale": stale,
+        "in_progress": in_progress,
+        "stuck": stuck,
+        "stale_after_seconds": threshold,
+        "last_duration_seconds": health.get("last_duration_seconds"),
         "last_error": health.get("last_error"),
         "definitions_scanned": health.get("definitions_scanned"),
         "runs_ingested": health.get("runs_ingested"),
         "unbound_workflows": health.get("unbound_workflows"),
     }
+    with _local_lock:
+        _local_health_view["payload"] = dict(payload)
+        _local_health_view["at"] = now_mono
+    return payload
 
 
 def collect_runs(db: Session, *, workspace_id: Optional[int] = None, page_size: int = 100) -> Dict[str, Any]:
@@ -161,6 +238,7 @@ def collect_runs(db: Session, *, workspace_id: Optional[int] = None, page_size: 
                 "engine": "dolphin",
                 "reason": "already_running",
             }
+        _mark_collect_started(engine="dolphin", enabled=True)
         out = _collect_runs_unlocked(db, workspace_id=workspace_id, page_size=page_size)
     # 锁已释放：顺手扫一轮出站箱。失败反映延迟≈采集周期，而不是再等投递周期；
     # Webhook 抖动也只拖这一小段，不会占着采集锁。

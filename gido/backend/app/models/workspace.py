@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # @author felixzhu
 # @date 2026-06-05
-from sqlalchemy import BigInteger, Column, Index, Integer, String, Text, DateTime, Boolean, ForeignKey, Enum, JSON, Float, UniqueConstraint
+from sqlalchemy import BigInteger, Column, Index, Integer, String, Text, DateTime, Boolean, ForeignKey, Enum, JSON, Float, UniqueConstraint, event
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.core.database import Base
@@ -211,6 +211,8 @@ class WorkflowInstance(Base):
     trigger_type = Column(String(128), default="manual")  # schedule/manual/backfill/rerun/local
     # Dolphin 流程实例详情中的 commandType（如 SCHEDULER）；用于运维展示，与 trigger_type 前缀解耦
     dolphin_command_type = Column(String(64), nullable=True)
+    # 运行类型落库：列表按等值过滤，避免每次 OR/ILIKE 现算把分页拖到数秒
+    run_type = Column(String(16), nullable=True, index=True)
     scheduler_engine = Column(String(32), default="dolphin")
     scheduler_project_id = Column(String(128), nullable=True)
     scheduler_definition_id = Column(String(128), nullable=True)
@@ -230,13 +232,30 @@ class WorkflowInstance(Base):
     node_instances = relationship("NodeInstance", back_populates="workflow_instance")
     version = relationship("JobVersion")
     # 索引名与 rbac_seed._ensure_unique_run_key 保持一致，老库迁移后不会重复建
-    __table_args__ = (Index("uq_workflow_instance_run_key", "scheduler_run_key", unique=True),)
+    __table_args__ = (
+        Index("uq_workflow_instance_run_key", "scheduler_run_key", unique=True),
+        Index("ix_wi_workflow_run_type", "workflow_id", "run_type"),
+        # 留存清理：created_at < cutoff AND status IN (...) LIMIT n，必须能走索引
+        Index("ix_wi_created_at", "created_at"),
+    )
+
+
+@event.listens_for(WorkflowInstance, "before_insert")
+@event.listens_for(WorkflowInstance, "before_update")
+def _workflow_instance_sync_run_type(mapper, connection, target: "WorkflowInstance") -> None:
+    """写入/更新时同步 run_type，列表过滤不再每次现算。"""
+    from app.services.workflow_trigger_display import classify_run_type
+
+    target.run_type = classify_run_type(
+        getattr(target, "trigger_type", None),
+        getattr(target, "dolphin_command_type", None),
+    )
 
 
 class NodeInstance(Base):
     __tablename__ = "dw_node_instances"
     id = Column(Integer, primary_key=True, index=True)
-    workflow_instance_id = Column(Integer, ForeignKey("dw_workflow_instances.id"))
+    workflow_instance_id = Column(Integer, ForeignKey("dw_workflow_instances.id"), index=True)
     node_id = Column(Integer, ForeignKey("dw_task_nodes.id"))
     status = Column(String(32), default="pending")
     log_content = Column(Text)
@@ -325,7 +344,7 @@ class AlertEvent(Base):
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = Column(Integer, ForeignKey("dw_workspaces.id"), nullable=True)
     workflow_id = Column(Integer, ForeignKey("dw_workflows.id"), nullable=True)
-    workflow_instance_id = Column(Integer, ForeignKey("dw_workflow_instances.id"), nullable=True)
+    workflow_instance_id = Column(Integer, ForeignKey("dw_workflow_instances.id"), nullable=True, index=True)
     node_instance_id = Column(Integer, ForeignKey("dw_node_instances.id"), nullable=True)
     alert_type = Column(String(32), nullable=False)  # failed/timeout/sla
     level = Column(String(16), default="warning")
@@ -345,6 +364,10 @@ class AlertEvent(Base):
     ack_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
     ack_at = Column(DateTime, nullable=True)
     resolved_at = Column(DateTime, nullable=True)
+    # 告警中心默认按 (workspace, status, created_at) 翻页；没有复合索引就会全表扫到数秒
+    __table_args__ = (
+        Index("ix_alert_ws_status_created", "workspace_id", "status", "created_at"),
+    )
 
 
 class AlertNotificationConfig(Base):

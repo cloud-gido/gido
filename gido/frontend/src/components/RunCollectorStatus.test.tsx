@@ -18,6 +18,16 @@ describe('RunCollectorStatus', () => {
     expect(screen.getByText(/运行数据实时采集中/)).toBeTruthy()
   })
 
+  it('正在采集时长轮次时用蓝条，不说「已落后」', () => {
+    render(
+      <RunCollectorStatus
+        collector={{ enabled: true, in_progress: true, stale: false, lag_seconds: 180 }}
+      />,
+    )
+    expect(screen.queryByText(/采集已落后/)).toBeNull()
+    expect(screen.getByText(/正在采集生产运行数据/)).toBeTruthy()
+  })
+
   it('曾经成功过、现在超时才报「已落后」', () => {
     render(
       <RunCollectorStatus

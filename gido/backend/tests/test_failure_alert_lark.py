@@ -476,7 +476,10 @@ def test_workspace_alert_coverage_hints_wrong_space_and_missing_site(db):
 
 
 def test_list_alerts_hides_pre_arm_skipped_and_filters_workflow_name(db):
+    from app.api import alert as alert_mod
     from app.api.alert import list_alerts
+
+    alert_mod._meta_local.clear()
 
     ws = db.query(Workspace).first()
     user = db.query(User).first()

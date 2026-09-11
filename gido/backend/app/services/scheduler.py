@@ -303,6 +303,64 @@ def reload_sla_monitoring():
     logger.info("已注册基线巡检任务：%ss", _SLA_CHECK_INTERVAL_SEC)
 
 
+def _purge_expired_instances_job():
+    """热账本留存：小批短时清理，运维无感；清不完下个间隔继续。"""
+    from app.core.config import settings
+    from app.core.database import SessionLocal
+    from app.services.distributed_lock import try_distributed_lock
+    from app.services.shared_state import claim_or_proceed
+
+    if int(getattr(settings, "INSTANCE_RETENTION_DAYS", 0) or 0) <= 0:
+        return
+    minutes = max(1, int(getattr(settings, "INSTANCE_RETENTION_INTERVAL_MINUTES", 15) or 15))
+    bucket = int(datetime.utcnow().timestamp() // (minutes * 60))
+    # TTL 略大于间隔，避免双副本同桶各跑一轮
+    if not claim_or_proceed(f"instance-retention:{bucket}", minutes * 60 + 30):
+        return
+    with try_distributed_lock("instance-retention") as acquired:
+        if not acquired:
+            return
+        from app.services.instance_retention import purge_expired_workflow_instances
+
+        db = SessionLocal()
+        try:
+            stats = purge_expired_workflow_instances(db)
+            if stats.get("deleted_instances"):
+                logger.info("实例留存清理 %s", stats)
+        except Exception as e:
+            logger.warning("实例留存清理失败: %s", e, exc_info=True)
+        finally:
+            db.close()
+
+
+def reload_instance_retention():
+    """注册实例热账本留存清理任务（高频小批）。"""
+    from app.core.config import settings
+
+    for job in list(scheduler.get_jobs()):
+        if job.id == "instance_retention_purge":
+            job.remove()
+    days = int(getattr(settings, "INSTANCE_RETENTION_DAYS", 0) or 0)
+    if days <= 0:
+        logger.info("实例热账本留存已关闭（INSTANCE_RETENTION_DAYS=%s）", days)
+        return
+    minutes = max(1, int(getattr(settings, "INSTANCE_RETENTION_INTERVAL_MINUTES", 15) or 15))
+    scheduler.add_job(
+        _purge_expired_instances_job,
+        IntervalTrigger(minutes=minutes),
+        id="instance_retention_purge",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info(
+        "已注册实例热账本留存：保留 %s 天，每 %s 分钟清理一小批（预算 %sms）",
+        days,
+        minutes,
+        getattr(settings, "INSTANCE_RETENTION_TIME_BUDGET_MS", 2000),
+    )
+
+
 def reload_scheduler_instance_polling():
     """注册生产运行采集任务：把执行引擎上的运行持续写回 GIDO 实例事实表。"""
     from app.services.run_collector import COLLECT_INTERVAL_SEC
@@ -360,6 +418,7 @@ def reload_integration_schedules():
     reload_scheduler_instance_polling()
     reload_alert_notification_retry()
     reload_sla_monitoring()
+    reload_instance_retention()
 
 
 def reload_schedules():

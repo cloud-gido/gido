@@ -104,6 +104,9 @@ async def lifespan(app: FastAPI):
         migrate_workspace_space_settings,
         migrate_workflow_instance_trigger_type_widen,
         migrate_workflow_instance_dolphin_command_type,
+        migrate_workflow_instance_run_type,
+        migrate_alert_event_list_index,
+        migrate_instance_retention_indexes,
         migrate_dw_task_nodes_owner_lock,
         migrate_dw_task_nodes_edit_lock,
         migrate_dw_task_nodes_sort_order,
@@ -155,6 +158,9 @@ async def lifespan(app: FastAPI):
     migrate_workspace_space_settings(engine)
     migrate_workflow_instance_trigger_type_widen(engine)
     migrate_workflow_instance_dolphin_command_type(engine)
+    migrate_workflow_instance_run_type(engine)
+    migrate_alert_event_list_index(engine)
+    migrate_instance_retention_indexes(engine)
     migrate_default_workspace_to_infras(engine)
     migrate_workspace_owner_members(engine)
     migrate_platform_integration(engine)

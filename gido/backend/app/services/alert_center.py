@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 
 from app.models.workspace import (
     AlertEvent,
@@ -255,45 +255,70 @@ def workspace_alert_coverage(db: Session, workspace_id: int) -> dict:
     from app.services.alert_notification import gido_public_url
 
     cfg = db.query(AlertNotificationConfig).filter(AlertNotificationConfig.workspace_id == workspace_id).first()
-    published = (
-        db.query(Workflow)
-        .filter(
-            Workflow.workspace_id == workspace_id,
-            or_(
-                Workflow.scheduler_definition_id.isnot(None),
-                Workflow.status == "published",
-            ),
-        )
+    published_q = db.query(Workflow).filter(
+        Workflow.workspace_id == workspace_id,
+        or_(
+            Workflow.scheduler_definition_id.isnot(None),
+            Workflow.status == "published",
+        ),
+    )
+    published_count = published_q.with_entities(func.count(Workflow.id)).scalar() or 0
+    # 列表轮询只要样本名和未绑定提示，不要每次把全部已发布工作流实体拉进内存
+    name_rows = (
+        published_q.with_entities(Workflow.id, Workflow.name)
         .order_by(Workflow.name)
+        .limit(8)
         .all()
     )
-    names = [(w.name or "").strip() or f"#{w.id}" for w in published]
-    unbound = [
-        (w.name or "").strip() or f"#{w.id}"
-        for w in published
-        if not (getattr(w, "scheduler_definition_id", None) or "").strip()
-        or not (getattr(w, "scheduler_project_id", None) or "").strip()
-    ]
+    names = [(n or "").strip() or f"#{i}" for i, n in name_rows]
+    unbound_rows = (
+        published_q.with_entities(Workflow.id, Workflow.name)
+        .filter(
+            or_(
+                Workflow.scheduler_definition_id.is_(None),
+                Workflow.scheduler_definition_id == "",
+                Workflow.scheduler_project_id.is_(None),
+                Workflow.scheduler_project_id == "",
+            )
+        )
+        .order_by(Workflow.name)
+        .limit(8)
+        .all()
+    )
+    unbound_count = (
+        published_q.with_entities(func.count(Workflow.id))
+        .filter(
+            or_(
+                Workflow.scheduler_definition_id.is_(None),
+                Workflow.scheduler_definition_id == "",
+                Workflow.scheduler_project_id.is_(None),
+                Workflow.scheduler_project_id == "",
+            )
+        )
+        .scalar()
+        or 0
+    )
+    unbound = [(n or "").strip() or f"#{i}" for i, n in unbound_rows]
     lark_on = bool(cfg and cfg.lark_enabled)
     site = bool((gido_public_url(db) or "").strip())
     hints: list[str] = []
-    if not published:
+    if not published_count:
         hints.append("本空间没有已发布到生产调度的工作流。生产失败不会进本空间告警中心，请确认工作流是从哪个空间发布的，并在该空间配置飞书。")
-    elif unbound:
+    elif unbound_count:
         sample = "、".join(unbound[:4])
-        suffix = f" 等共 {len(unbound)} 条" if len(unbound) > 4 else ""
+        suffix = f" 等共 {unbound_count} 条" if unbound_count > 4 else ""
         hints.append(
-            f"有 {len(unbound)} 条工作流标记为已发布，但没有生效的生产调度绑定（{sample}{suffix}）。"
+            f"有 {unbound_count} 条工作流标记为已发布，但没有生效的生产调度绑定（{sample}{suffix}）。"
             "它们的运行与失败不会进入实例中心和告警中心，请重新发布。"
         )
-    if published and not lark_on:
+    if published_count and not lark_on:
         sample = "、".join(names[:4])
-        suffix = f" 等共 {len(names)} 条" if len(names) > 4 else ""
-        hints.append(f"本空间已发布 {len(names)} 条调度工作流（{sample}{suffix}），但飞书渠道未打开。失败会进告警中心，不会推值班群。")
+        suffix = f" 等共 {published_count} 条" if published_count > 4 else ""
+        hints.append(f"本空间已发布 {published_count} 条调度工作流（{sample}{suffix}），但飞书渠道未打开。失败会进告警中心，不会推值班群。")
     if not site:
         hints.append("尚未配置站点入口（系统管理 → 平台集成）。飞书卡片无法跳转实例中心或告警中心。")
     return {
-        "published_workflow_count": len(published),
+        "published_workflow_count": int(published_count),
         "published_workflow_names": names[:8],
         "lark_enabled": lark_on,
         "site_url_configured": site,
