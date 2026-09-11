@@ -58,7 +58,33 @@ export default function RunCollectorStatus({ collector }: { collector?: RunColle
     )
   }
 
+  // enabled 为 null 表示连「生产调度有没有启用」都没判断出来（后端探测抛异常了）。
+  // 这种情况下 stale 恒为 false，再往下走就会挂出绿色「采集中」——正好在最该报警时谎报正常。
+  if (collector.enabled == null) {
+    return (
+      <Alert
+        type="warning"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="无法确认运行数据采集状态"
+        description={
+          collector.last_error
+            ? `最近一次采集报错：${collector.last_error}`
+            : 'GIDO 没能判断生产调度是否启用，实例与告警可能不完整。请平台管理员检查「系统管理 → 平台集成」的生产调度配置。'
+        }
+      />
+    )
+  }
+
   const interval = collector.interval_seconds || 15
+  // 一次都没采集成功就别说「实时采集中」，否则会出现「实时采集中 · 最近尚未采集」这种自相矛盾的话
+  if (collector.lag_seconds == null) {
+    return (
+      <Tooltip title={`GIDO 每 ${interval} 秒采集一次生产运行数据；后端刚启动时稍等一轮即可`}>
+        <Tag color="warning" style={{ marginBottom: 12 }}>运行数据尚未完成首次采集</Tag>
+      </Tooltip>
+    )
+  }
   return (
     <Tooltip title={`GIDO 每 ${interval} 秒采集一次生产运行数据，无需手动同步`}>
       <Tag icon={<CheckCircleFilled />} color="success" style={{ marginBottom: 12 }}>

@@ -203,6 +203,14 @@ export default function OperationPage() {
     }
   }
 
+  /**
+   * 概览还没成功加载过时，统计值显示「—」而不是 0。
+   * 请求失败时 overview 停在初始的 {}，一排真实的 0 和「没有任何实例」长得一模一样，
+   * 之前就是这样让人以为是采集不到数据，其实是请求根本没回来。
+   */
+  const overviewLoaded = Object.keys(overview || {}).length > 0
+  const statValue = (v: unknown) => (overviewLoaded ? (Number(v) || 0) : '—')
+
   const clickableStat = (inner: ReactNode, onClick: () => void, tip: string) => (
     <Tooltip title={`${tip}（点击下钻）`}>
       <div
@@ -465,34 +473,34 @@ export default function OperationPage() {
       <Row gutter={16} style={{ marginBottom: 24 }}>
         <Col span={4}>
           {clickableStat(
-            <Statistic title="今日实例" value={overview.today_instances || 0} />,
+            <Statistic title="今日实例" value={statValue(overview.today_instances)} />,
             () => drillFromOverview('today'),
             `今天新建的工作流实例（按空间时区 ${displayTz}）`
           )}
         </Col>
         <Col span={4}>
           {clickableStat(
-            <Statistic title="运行中" value={overview.running || 0} valueStyle={{ color: '#1677ff' }} />,
+            <Statistic title="运行中" value={statValue(overview.running)} valueStyle={{ color: '#1677ff' }} />,
             () => drillFromOverview('running'),
             '状态为 running 的工作流实例'
           )}
         </Col>
         <Col span={4}>
           {clickableStat(
-            <Statistic title="成功" value={overview.success || 0} valueStyle={{ color: '#52c41a' }} />,
+            <Statistic title="成功" value={statValue(overview.success)} valueStyle={{ color: '#52c41a' }} />,
             () => drillFromOverview('success'),
             '状态为 success 的工作流实例'
           )}
         </Col>
         <Col span={4}>
           {clickableStat(
-            <Statistic title="失败" value={overview.failed || 0} valueStyle={{ color: '#ff4d4f' }} />,
+            <Statistic title="失败" value={statValue(overview.failed)} valueStyle={{ color: '#ff4d4f' }} />,
             () => drillFromOverview('failed'),
             '状态为 failed 的工作流实例'
           )}
         </Col>
         <Col span={4}>
-          <Statistic title="成功率" value={overview.success_rate || 'N/A'} />
+          <Statistic title="成功率" value={overviewLoaded ? (overview.success_rate || 'N/A') : '—'} />
         </Col>
         {(overview.pending_approvals ?? 0) > 0 && isWorkspaceAdmin(user, currentWorkspace) && (
           <Col span={4}>
