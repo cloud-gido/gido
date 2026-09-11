@@ -93,12 +93,14 @@ def test_collect_runs_surfaces_failure_in_health(db):
             run_collector.collect_runs(db)
 
     health = run_collector.collector_health(db)
-    # 从未成功过 + 引擎已启用 = 落后，实例中心和告警中心都要红出来
-    assert health["stale"] is True
+    # 从未成功过不算「已落后」（那是吓用户的假故障）；但错误原因必须露出来
+    assert health["stale"] is False
+    assert health["lag_seconds"] is None
     assert "token expired" in health["last_error"]
 
 
-def test_single_workspace_collection_does_not_claim_global_health(db):
+def test_workspace_scoped_success_updates_collector_health(db):
+    """本空间「立即采集」成功也要刷新健康度，否则页面一直黄/红像平台坏了。"""
     stats = {
         "definitions_scanned": 1,
         "ingested": 0,
@@ -113,4 +115,15 @@ def test_single_workspace_collection_does_not_claim_global_health(db):
          patch("app.services.dolphin_instance_sync.patch_instances_from_ds_detail", return_value=(0, 0, 0)):
         run_collector.collect_runs(db, workspace_id=7)
 
-    assert run_collector._read_health().get("last_success_at") is None
+    health = run_collector.collector_health(db)
+    assert health["last_success_at"] is not None
+    assert health["stale"] is False
+    assert health["lag_seconds"] is not None
+
+
+def test_never_collected_is_not_stale(db):
+    with patch("app.services.ds_runtime.get_dolphin_runtime", return_value=SimpleNamespace(enabled=True)):
+        health = run_collector.collector_health(db)
+    assert health["enabled"] is True
+    assert health["lag_seconds"] is None
+    assert health["stale"] is False

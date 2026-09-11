@@ -18,10 +18,23 @@ describe('RunCollectorStatus', () => {
     expect(screen.getByText(/运行数据实时采集中/)).toBeTruthy()
   })
 
-  it('落后时报错并带上失败原因', () => {
-    render(<RunCollectorStatus collector={{ enabled: true, stale: true, lag_seconds: 600, last_error: '连接被拒绝' }} />)
+  it('曾经成功过、现在超时才报「已落后」', () => {
+    render(
+      <RunCollectorStatus
+        collector={{ enabled: true, stale: true, lag_seconds: 600, last_error: '连接被拒绝' }}
+      />,
+    )
     expect(screen.getByText(/采集已落后/)).toBeTruthy()
     expect(screen.getByText(/连接被拒绝/)).toBeTruthy()
+  })
+
+  it('一次都没成功时用黄条，不说「已落后」', () => {
+    // 旧逻辑把 lag=null 也算 stale，红条「已落后 · 尚未采集」——平台看起来像坏了
+    render(
+      <RunCollectorStatus collector={{ enabled: true, stale: true, lag_seconds: null }} />,
+    )
+    expect(screen.queryByText(/采集已落后/)).toBeNull()
+    expect(screen.getByText(/尚未完成首次采集/)).toBeTruthy()
   })
 
   it('生产调度未启用时说清楚不会有实例和告警', () => {
@@ -30,17 +43,9 @@ describe('RunCollectorStatus', () => {
   })
 
   it('enabled 未知时不能谎报正常', () => {
-    // 后端探测不出引擎状态时 enabled=null，此时 stale 恒为 false，
-    // 旧实现会一路走到绿色「实时采集中」——正好在最该报警时说一切正常。
     render(<RunCollectorStatus collector={{ enabled: null, stale: false, lag_seconds: null }} />)
     expect(screen.queryByText(/运行数据实时采集中/)).toBeNull()
     expect(screen.getByText(/无法确认运行数据采集状态/)).toBeTruthy()
-  })
-
-  it('一次都没采集成功时不说「实时采集中」', () => {
-    render(<RunCollectorStatus collector={{ enabled: true, stale: false, lag_seconds: null }} />)
-    expect(screen.queryByText(/实时采集中/)).toBeNull()
-    expect(screen.getByText(/尚未完成首次采集/)).toBeTruthy()
   })
 
   it('后端没给采集信息时不渲染任何东西（兼容旧后端）', () => {

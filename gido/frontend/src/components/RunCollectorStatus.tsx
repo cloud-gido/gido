@@ -10,6 +10,11 @@ import { CheckCircleFilled } from '@ant-design/icons'
 /**
  * 运行数据采集状态：实例中心与告警中心共用。
  * 只讲「GIDO 是否在持续收生产运行数据」，不暴露底层执行引擎。
+ *
+ * 语义要分清，避免平台「看起来坏了」：
+ * - 尚未首次成功：黄，等待中
+ * - 曾经成功、现在超时未再成功：红，真的落后
+ * - 未启用 / 状态未知：黄
  */
 export type RunCollector = {
   enabled?: boolean | null
@@ -42,24 +47,7 @@ export default function RunCollectorStatus({ collector }: { collector?: RunColle
     )
   }
 
-  if (collector.stale) {
-    return (
-      <Alert
-        type="error"
-        showIcon
-        style={{ marginBottom: 16 }}
-        message={`运行数据采集已落后（最近一次成功：${lagLabel(collector.lag_seconds)}）`}
-        description={
-          collector.last_error
-            ? `失败原因：${collector.last_error}`
-            : '实例与告警可能不是最新。请联系平台管理员检查生产调度连通性与凭证。'
-        }
-      />
-    )
-  }
-
-  // enabled 为 null 表示连「生产调度有没有启用」都没判断出来（后端探测抛异常了）。
-  // 这种情况下 stale 恒为 false，再往下走就会挂出绿色「采集中」——正好在最该报警时谎报正常。
+  // enabled 为 null：探测失败，不能谎报绿
   if (collector.enabled == null) {
     return (
       <Alert
@@ -77,14 +65,41 @@ export default function RunCollectorStatus({ collector }: { collector?: RunColle
   }
 
   const interval = collector.interval_seconds || 15
-  // 一次都没采集成功就别说「实时采集中」，否则会出现「实时采集中 · 最近尚未采集」这种自相矛盾的话
+
+  // 一次都没成功：黄，不要用「已落后」——那是「断了」的语义，会让人以为平台坏了
   if (collector.lag_seconds == null) {
     return (
-      <Tooltip title={`GIDO 每 ${interval} 秒采集一次生产运行数据；后端刚启动时稍等一轮即可`}>
-        <Tag color="warning" style={{ marginBottom: 12 }}>运行数据尚未完成首次采集</Tag>
-      </Tooltip>
+      <Alert
+        type="warning"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="运行数据尚未完成首次采集"
+        description={
+          collector.last_error
+            ? `最近一次尝试失败：${collector.last_error}。可点实例中心的「立即采集」重试，或检查生产调度连通性与凭证。`
+            : `后台约每 ${interval} 秒自动采集一轮；也可在实例中心点「立即采集」。稍等一轮后应变为「实时采集中」。`
+        }
+      />
     )
   }
+
+  // 真落后：曾经采到过，现在超时了
+  if (collector.stale) {
+    return (
+      <Alert
+        type="error"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message={`运行数据采集已落后（最近一次成功：${lagLabel(collector.lag_seconds)}）`}
+        description={
+          collector.last_error
+            ? `失败原因：${collector.last_error}`
+            : '实例与告警可能不是最新。请联系平台管理员检查生产调度连通性与凭证，或在实例中心点「立即采集」。'
+        }
+      />
+    )
+  }
+
   return (
     <Tooltip title={`GIDO 每 ${interval} 秒采集一次生产运行数据，无需手动同步`}>
       <Tag icon={<CheckCircleFilled />} color="success" style={{ marginBottom: 12 }}>

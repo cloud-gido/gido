@@ -123,7 +123,9 @@ def collector_health(db: Optional[Session] = None) -> Dict[str, Any]:
     lag_seconds: Optional[int] = None
     if last_success:
         lag_seconds = max(int((datetime.utcnow() - last_success).total_seconds()), 0)
-    stale = bool(enabled) and (lag_seconds is None or lag_seconds > STALE_AFTER_SEC)
+    # 「尚未采集」≠「已落后」。落后是曾经采到过、现在超过阈值没再成功；
+    # 一次都没成功过只是首次等待，不该挂成红色故障。
+    stale = bool(enabled) and lag_seconds is not None and lag_seconds > STALE_AFTER_SEC
     return {
         "engine": engine,
         "enabled": bool(enabled) if enabled is not None else None,
@@ -195,9 +197,10 @@ def _collect_runs_unlocked(
         logger.warning("运行采集失败 ws=%s: %s", workspace_id, e, exc_info=True)
         raise
 
-    # 单空间采集不代表全局健康，仅全量采集才刷新健康度
-    if workspace_id is None:
-        _record(engine="dolphin", enabled=True, stats=stats)
+    # 本空间采成功也算健康：证明连通性和凭证没问题。
+    # 以前只在全量采集时写健康度，用户点「立即采集」采的是当前空间，
+    # 成功了红条还挂着「尚未采集」，体感像平台坏了。
+    _record(engine="dolphin", enabled=True, stats=stats)
     out: Dict[str, Any] = {"collected": True, "engine": "dolphin", **stats}
     out["detail_checked"] = checked
     out["finalized_from_detail"] = synced
