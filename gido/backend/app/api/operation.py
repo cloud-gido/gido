@@ -5,7 +5,7 @@
 import logging
 import re
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import and_, desc, func, or_
 from typing import Optional
 from datetime import datetime, timedelta
@@ -29,6 +29,8 @@ from app.services.run_collector import collector_health
 
 router = APIRouter(prefix="/operation", tags=["运维中心"])
 _log = logging.getLogger(__name__)
+# 运行类型标签计数的进程内短缓存（与 Redis 缓存同 TTL），无 Redis 时切标签也不该连打四次重查询
+_run_type_count_local: dict[str, tuple[float, dict]] = {}
 
 # 仅统计/展示「工作流提交」产生的实例：NodeInstance 必须挂 WorkflowInstance（排除数据开发里单节点试跑）
 
@@ -276,8 +278,10 @@ def list_all_instances(
         q = q.filter(_run_type_condition(run_type))
     total = q.count()
     # 排序用 coalesce，避免各方言对 NULLS FIRST/LAST 差异（MySQL 无 NULLS LAST）
+    # selectinload：一页 20 条不要再各自查一遍节点（以前是典型 N+1，列表轻松秒级）
     instances = (
-        q.order_by(
+        q.options(selectinload(WorkflowInstance.node_instances))
+        .order_by(
             desc(func.coalesce(WorkflowInstance.started_at, WorkflowInstance.created_at)),
             desc(WorkflowInstance.id),
         )
@@ -285,26 +289,59 @@ def list_all_instances(
         .limit(page_size)
         .all()
     )
+    items = _serialize_instance_rows(db, instances)
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": items,
+        "run_type_counts": _run_type_counts(
+            scoped,
+            cache_key=(
+                f"ws={workspace_id}|all={int(all_ws)}|st={status or ''}|bd={business_date or ''}"
+                f"|wf={workflow_id or ''}|today={int(today_only)}"
+            ),
+        ),
+    }
+
+
+def _serialize_instance_rows(db: Session, instances: list) -> list:
+    """批量拼列表行，禁止在循环里按条查库。"""
+    if not instances:
+        return []
+    wf_ids = {int(inst.workflow_id) for inst in instances if inst.workflow_id}
+    workflows = {
+        int(w.id): w
+        for w in db.query(Workflow).filter(Workflow.id.in_(wf_ids)).all()
+    } if wf_ids else {}
+    ws_ids = {int(w.workspace_id) for w in workflows.values() if w.workspace_id}
+    workspaces = {
+        int(w.id): w
+        for w in db.query(Workspace).filter(Workspace.id.in_(ws_ids)).all()
+    } if ws_ids else {}
+    node_ids = {
+        int(ni.node_id)
+        for inst in instances
+        for ni in (inst.node_instances or [])
+        if ni.node_id
+    }
+    node_names = {
+        int(n.id): n.name
+        for n in db.query(TaskNode).filter(TaskNode.id.in_(node_ids)).all()
+    } if node_ids else {}
+
     result = []
     for inst in instances:
-        wf = db.query(Workflow).filter(Workflow.id == inst.workflow_id).first()
+        wf = workflows.get(int(inst.workflow_id)) if inst.workflow_id else None
         tt = inst.trigger_type
         dct = getattr(inst, "dolphin_command_type", None)
-        node_rows = db.query(NodeInstance).filter(NodeInstance.workflow_instance_id == inst.id).all()
-        node_total = len(node_rows)
-        running_nodes = [
-            ni for ni in node_rows
-            if ni.status in ("running", "pending")
-        ]
+        node_rows = list(inst.node_instances or [])
+        running_nodes = [ni for ni in node_rows if ni.status in ("running", "pending")]
         failed_nodes = [ni for ni in node_rows if ni.status == "failed"]
-        node_names = {
-            node.id: node.name
-            for node in db.query(TaskNode).filter(TaskNode.id.in_([ni.node_id for ni in node_rows if ni.node_id])).all()
-        } if node_rows else {}
         duration_seconds = None
         if inst.started_at and inst.finished_at:
             duration_seconds = int((inst.finished_at - inst.started_at).total_seconds())
-        ws_row = db.query(Workspace).filter(Workspace.id == wf.workspace_id).first() if wf else None
+        ws_row = workspaces.get(int(wf.workspace_id)) if wf and wf.workspace_id else None
         result.append({
             "id": inst.id,
             "workflow_id": wf.id if wf else None,
@@ -328,25 +365,55 @@ def list_all_instances(
             "last_synced_at": getattr(inst, "last_synced_at", None),
             "scheduler_state_raw": getattr(inst, "scheduler_state_raw", None),
             "scheduler_error": getattr(inst, "scheduler_error", None),
-            "node_total": node_total,
+            "node_total": len(node_rows),
             "running_node_count": len(running_nodes),
             "failed_node_count": len(failed_nodes),
             "current_nodes": [node_names.get(ni.node_id, f"节点#{ni.node_id}") for ni in running_nodes[:5]],
             "failed_nodes": [node_names.get(ni.node_id, f"节点#{ni.node_id}") for ni in failed_nodes[:5]],
             "duration_seconds": duration_seconds,
         })
-    return {
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "items": result,
-        "run_type_counts": _run_type_counts(scoped),
-    }
+    return result
 
 
-def _run_type_counts(scoped_query) -> dict:
-    """各标签页的条数。scoped_query 是已应用除 run_type 外全部过滤条件的查询。"""
-    return {rt: scoped_query.filter(_run_type_condition(rt)).count() for rt in RUN_TYPES}
+def _run_type_counts(scoped_query, *, cache_key: str) -> dict:
+    """
+    各标签页条数。
+
+    每个类型原先是一次带多层 OR/ILIKE 的 COUNT，切标签/轮询时连打 4 次，
+    实例一多就到数秒。计数 15 秒内可复用（与页面轮询同量级），列表本身仍实时。
+    """
+    import time
+
+    from app.services.shared_state import cache_get, cache_set
+
+    full_key = f"ops-run-type-counts:{cache_key}"
+    now = time.monotonic()
+    local = _run_type_count_local.get(full_key)
+    if local and now - local[0] < 15:
+        return dict(local[1])
+
+    cached = cache_get(full_key)
+    if isinstance(cached, dict) and all(rt in cached for rt in RUN_TYPES):
+        counts = {rt: int(cached.get(rt) or 0) for rt in RUN_TYPES}
+        _run_type_count_local[full_key] = (now, counts)
+        return counts
+
+    # 一次取出分类所需两列，在内存里归类——比 4 次 ILIKE COUNT 轻得多
+    rows = scoped_query.with_entities(
+        WorkflowInstance.dolphin_command_type,
+        WorkflowInstance.trigger_type,
+    ).all()
+    counts = {rt: 0 for rt in RUN_TYPES}
+    for dct, tt in rows:
+        rt = classify_run_type(tt, dct)
+        if rt in counts:
+            counts[rt] += 1
+    _run_type_count_local[full_key] = (now, counts)
+    try:
+        cache_set(full_key, counts, 15)
+    except Exception:
+        _log.debug("cache run_type_counts failed", exc_info=True)
+    return counts
 
 
 @router.get("/node-instances/{ni_id}/log")
