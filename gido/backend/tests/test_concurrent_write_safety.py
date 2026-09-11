@@ -122,6 +122,52 @@ def test_pool_always_has_an_acquisition_timeout(url):
     assert kwargs.get("pool_pre_ping") is True
 
 
+def test_redis_outage_does_not_stop_scheduled_work(monkeypatch):
+    """
+    Redis 挂了不能让定时任务集体停摆。
+
+    生产 SHARED_STATE_REQUIRED=true，`claim_once` 在 Redis 不可用时是抛异常的。
+    后台任务直接调它、又没兜异常的话，Redis 一抖，定时工作流、实例采集、告警重投、
+    基线巡检会全部不跑——而这些的正确性靠的是 Postgres advisory 锁，跟 Redis 无关。
+    共享状态的故障不该扩散成核心功能的故障。
+    """
+    from app.services import shared_state
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("多副本共享状态已启用，禁止降级为进程内状态")
+
+    monkeypatch.setattr(shared_state, "claim_once", _boom)
+    assert shared_state.claim_or_proceed("whatever", 60) is True
+
+
+@pytest.mark.parametrize(
+    "claim_result, should_proceed",
+    [(True, True), (None, True), (False, False)],
+)
+def test_only_an_explicit_other_replica_claim_skips_the_round(
+    monkeypatch, claim_result, should_proceed
+):
+    """只有「明确被别的副本抢到」才跳过；没配 Redis（None）照常放行。"""
+    from app.services import shared_state
+
+    monkeypatch.setattr(shared_state, "claim_once", lambda *_a, **_kw: claim_result)
+    assert shared_state.claim_or_proceed("whatever", 60) is should_proceed
+
+
+def test_background_jobs_do_not_call_claim_once_directly():
+    """
+    定时任务必须走 claim_or_proceed。
+
+    直接调 claim_once 就等于把 Redis 变成定时调度的硬依赖——这条是防回归的。
+    """
+    import inspect
+
+    from app.services import scheduler
+
+    src = inspect.getsource(scheduler)
+    assert "claim_once" not in src, "scheduler 里不该直接用 claim_once，改用 claim_or_proceed"
+
+
 def test_sync_enqueue_is_mutually_exclusive_in_the_callee(monkeypatch):
     """
     入队互斥必须在 enqueue_sync_record 内部。

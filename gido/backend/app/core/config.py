@@ -49,11 +49,12 @@ class Settings(BaseSettings):
     # 试跑 SQL、数据集成同步这类请求在整个外部 I/O 期间都占着一个连接，池一满，
     # 后面的请求会无限期等连接，连纯读接口一起卡死——这正是 524 那次的蔓延机制。
     #
-    # 关键的是 DB_POOL_TIMEOUT 而不是把池开大：池上限每个 pod 最多
-    # DB_POOL_SIZE + DB_MAX_OVERFLOW 个连接，而 Postgres 默认 max_connections=100
-    # 且可能与 DolphinScheduler 共用实例，所以这里留足余量。扩副本前先核对
-    # 「副本数 × (pool_size + max_overflow)」是否还在 max_connections 之内。
-    DB_POOL_SIZE: int = 10
+    # 上限对齐 uvicorn 跑同步接口的线程池（anyio 默认 40 个线程）：让池不成为瓶颈，
+    # 真正的并发上限由线程池控制，池满就只可能是连接被长时间占着没还。
+    # 生产是 2 副本单进程 + 专用 RDS，总量 2 × 40 = 80，RDS 余量充足。
+    # 换部署形态前先核对「副本数 × worker 数 × (pool_size + max_overflow)」
+    # 是否还在 Postgres max_connections 之内（自建 PG 默认只有 100）。
+    DB_POOL_SIZE: int = 20
     DB_MAX_OVERFLOW: int = 20
     # 拿不到连接就快速失败（500）而不是挂到网关超时——故障要局部化，不能蔓延
     DB_POOL_TIMEOUT: int = 10

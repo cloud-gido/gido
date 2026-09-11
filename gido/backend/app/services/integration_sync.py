@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import logging
-import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -24,8 +23,6 @@ from app.services.integration_runtime import (
 
 logger = logging.getLogger(__name__)
 
-_running_tasks: set[int] = set()
-_run_lock = threading.Lock()
 
 MAX_ROWS_PER_RUN = 500_000
 
@@ -360,8 +357,6 @@ def run_sync_record(record_id: int, task_id: int, lock_handle: DistributedLockHa
     finally:
         db.close()
         lock_handle.release()
-        with _run_lock:
-            _running_tasks.discard(task_id)
 
 
 def start_sync_async(

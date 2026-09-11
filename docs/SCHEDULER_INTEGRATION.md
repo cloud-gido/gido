@@ -162,10 +162,10 @@ GIDO 告警以**工作空间业务语义**呈现（工作流名、失败节点�
 
 另外两点容易踩：
 
-- **`claim_once` 靠 Redis**，没配 `REDIS_URL` 时它返回 `None`，调用方的 `if claimed is False` 不成立，等于**没有任何保护**。它只能当「多副本减少重复触发」的优化，真正的互斥必须另有 advisory 锁。
+- **`claim_once` 只是优化，不是正确性保证。** 它靠 Redis：本地没配 `REDIS_URL` 时返回 `None`（等于没保护），而生产 `SHARED_STATE_REQUIRED=true` 时 Redis 不可用会**抛异常**。后台任务里直接调它且不兜异常，Redis 一抖就会让定时工作流、实例采集、告警重投、基线巡检**集体停摆**。所以定时任务统一走 `shared_state.claim_or_proceed`：只有明确被别的副本抢到才跳过，其余情况一律放行，由 advisory 锁保证互斥。共享状态的故障不该扩散成核心功能的故障。
 - **advisory 锁走 `engine.raw_connection()`**，持锁期间占着一个池连接。别嵌套加锁，也别在持锁期间做长网络往返。
 
-连接池在 `core/config.py` 显式配置（`DB_POOL_SIZE` / `DB_MAX_OVERFLOW` / `DB_POOL_TIMEOUT`）。`pool_timeout` 是关键：没有它，池满之后请求**无限期**等连接，一个慢东西就能拖垮无关业务；有它则是快速失败，故障被局部化。扩副本前先核对「副本数 × (pool_size + max_overflow)」是否还在 Postgres `max_connections` 之内。
+连接池在 `core/config.py` 显式配置（`DB_POOL_SIZE` / `DB_MAX_OVERFLOW` / `DB_POOL_TIMEOUT`）。`pool_timeout` 是关键：没有它，池满之后请求**无限期**等连接，一个慢东西就能拖垮无关业务；有它则是快速失败，故障被局部化。池上限对齐 uvicorn 跑同步接口的线程池（anyio 默认 40），让池不成为瓶颈。换部署形态前先核对「副本数 × worker 数 × (pool_size + max_overflow)」是否还在 Postgres `max_connections` 之内——生产是 2 副本单进程 + 专用 RDS（80 个连接，余量充足），自建 PG 默认只有 100。
 
 ---
 
@@ -178,6 +178,7 @@ GIDO 告警以**工作空间业务语义**呈现（工作流名、失败节点�
 | E2E 测试 | 单元测试为主 | CI 增加 DS Testcontainers 或 Mock |
 | 补数 | 模型与 API 演进中 | 与实例中心统一 UX |
 | 试跑占用池连接 | 试跑 SQL / 数据集成同步在请求内同步跑，整个外部 I/O 期间占着一个池连接，且用户 SQL 没有语句超时 | 改为后台任务 + 轮询进度；并给用户 SQL 加语句超时 |
+| **CDC worker 重复消费** | `integration_cdc._active_workers` 是**进程内**字典，靠 `is_alive()` 判断要不要起 worker。生产 2 副本下两个 pod 各起一个，同一个 CDC 任务被消费两遍 | 需要按任务做跨副本归属：租约 + 心跳续期（参考 `sync_worker` 的 `reclaim_stale_running`），或 per-task advisory 锁持有至 worker 结束 |
 | 并发时序未覆盖 | `wait_event = transactionid` 的阻塞行为要真起并发打真库才能复现，现有单测只锁设计属性 | CI 增加 Postgres Testcontainers 并发用例 |
 
 ---

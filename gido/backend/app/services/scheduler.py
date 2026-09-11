@@ -22,11 +22,12 @@ _SLA_CHECK_INTERVAL_SEC = 60
 
 def _run_workflow_job(workflow_id: int):
     from app.services.distributed_lock import try_distributed_lock
-    from app.services.shared_state import claim_once
+    from app.services.shared_state import claim_or_proceed
 
     fire_key = datetime.utcnow().strftime("%Y%m%d%H%M")
-    claimed = claim_once(f"workflow-schedule:{int(workflow_id)}:{fire_key}", 120)
-    if claimed is False:
+    # Redis 挂了也要照常触发：跨副本去重靠下面那把 advisory 锁兜底，
+    # 绝不能因为共享状态不可用就让所有定时工作流集体不跑。
+    if not claim_or_proceed(f"workflow-schedule:{int(workflow_id)}:{fire_key}", 120):
         logger.info("工作流 %s 本周期已由其他 backend 副本触发", workflow_id)
         return
     with try_distributed_lock(f"workflow-schedule:{int(workflow_id)}") as acquired:
@@ -170,15 +171,14 @@ def _topo_sort(dag: dict) -> list:
 
 def _run_sync_task_job(task_id: int):
     from app.services.integration_sync import start_sync_async
-    from app.services.shared_state import claim_once
+    from app.services.shared_state import claim_or_proceed
 
     try:
         fire_key = datetime.utcnow().strftime("%Y%m%d%H%M")
-        claimed = claim_once(f"integration-schedule:{int(task_id)}:{fire_key}", 120)
-        if claimed is False:
+        if not claim_or_proceed(f"integration-schedule:{int(task_id)}:{fire_key}", 120):
             logger.info("数据集成任务 %s 本周期已由其他 backend 副本触发", task_id)
             return
-        # claim_once 靠 Redis，没配 REDIS_URL 时返回 None，等于没有保护；
+        # Redis 只是跨副本去重的优化，挂了也照常往下走；
         # 真正的入队互斥在 enqueue_sync_record 内部，重复触发会拿不到锁而抛 RuntimeError。
         start_sync_async(task_id, trigger_type="schedule")
         logger.info("数据集成任务 %s 定时触发已提交", task_id)
@@ -191,11 +191,10 @@ def _run_sync_task_job(task_id: int):
 def _poll_scheduler_instances_job():
     """生产运行采集：不依赖用户打开页面，也不依赖引擎回调。"""
     from app.services.run_collector import COLLECT_INTERVAL_SEC
-    from app.services.shared_state import claim_once
+    from app.services.shared_state import claim_or_proceed
 
     bucket = int(datetime.utcnow().timestamp() // COLLECT_INTERVAL_SEC)
-    claimed = claim_once(f"scheduler-instance-poll:{bucket}", 60)
-    if claimed is False:
+    if not claim_or_proceed(f"scheduler-instance-poll:{bucket}", 60):
         return
     # 互斥在 collect_runs 内部（拿不到锁会返回 collected=False）。这里不要再套一层锁：
     # advisory 锁走 engine.raw_connection()，每层都占一个池连接。
@@ -221,10 +220,10 @@ def _retry_alert_notifications_job():
     """重投失败的告警通知：值班不能因为一次 Webhook 抖动就漏掉。"""
     from app.core.database import SessionLocal
     from app.services.distributed_lock import try_distributed_lock
-    from app.services.shared_state import claim_once
+    from app.services.shared_state import claim_or_proceed
 
     bucket = int(datetime.utcnow().timestamp() // _NOTIFY_RETRY_INTERVAL_SEC)
-    if claim_once(f"alert-notify-retry:{bucket}", 120) is False:
+    if not claim_or_proceed(f"alert-notify-retry:{bucket}", 120):
         return
     with try_distributed_lock("alert-notify-retry") as acquired:
         if not acquired:
@@ -262,10 +261,10 @@ def _evaluate_sla_job():
     """基线巡检：未按时完成与运行超时。"""
     from app.core.database import SessionLocal
     from app.services.distributed_lock import try_distributed_lock
-    from app.services.shared_state import claim_once
+    from app.services.shared_state import claim_or_proceed
 
     bucket = int(datetime.utcnow().timestamp() // _SLA_CHECK_INTERVAL_SEC)
-    if claim_once(f"sla-check:{bucket}", 120) is False:
+    if not claim_or_proceed(f"sla-check:{bucket}", 120):
         return
     with try_distributed_lock("sla-check") as acquired:
         if not acquired:

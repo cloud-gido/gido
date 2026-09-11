@@ -297,6 +297,27 @@ def claim_once(claim_key: str, ttl: int) -> Optional[bool]:
     return bool(client.set(key("claim", claim_key), "1", nx=True, ex=max(1, int(ttl))))
 
 
+def claim_or_proceed(claim_key: str, ttl: int) -> bool:
+    """
+    「这一轮该不该由我来干」——只是个省事的提示，不是正确性保证。
+
+    返回 False 只在明确被别的副本抢到时；其余情况（没配 Redis、Redis 挂了）
+    一律返回 True 放行。因为真正的互斥是 Postgres advisory 锁，Redis 只是让
+    两个副本别都白跑一趟。
+
+    这点很重要：生产 SHARED_STATE_REQUIRED=true，`claim_once` 在 Redis 不可用时
+    是**抛异常**的。后台任务里直接调它，异常会穿出任务函数，于是 Redis 一抖，
+    实例采集、告警重投、基线巡检全部停摆——而这三件事压根不需要 Redis。
+    共享状态的故障不该扩散成核心功能的故障。
+    """
+    try:
+        claimed = claim_once(claim_key, ttl)
+    except Exception as ex:
+        logger.warning("共享状态不可用，本轮不做跨副本去重（依赖分布式锁兜底）: %s", ex)
+        return True
+    return claimed is not False
+
+
 def cache_get(cache_key: str) -> Optional[Any]:
     client = redis_client(required=False)
     if client is None:
