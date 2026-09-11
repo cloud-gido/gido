@@ -177,6 +177,7 @@ GIDO 告警以**工作空间业务语义**呈现（工作流名、失败节点�
 | 引擎抽象 | 仅 Dolphin 完整实现 | 可扩展 Airflow / 自研引擎 |
 | E2E 测试 | 单元测试为主 | CI 增加 DS Testcontainers 或 Mock |
 | 补数 | 模型与 API 演进中 | 与实例中心统一 UX |
+| 通知出站箱与采集解耦 | 采集路径曾同步推飞书，Webhook 抖动会拖慢整轮采集 | 已改为 outbox：写入只标 pending，投递任务约 5s 一轮；采集/回调/SLA 释放锁后会 kick 一轮 |
 | 试跑占用池连接 | 试跑 SQL / 数据集成同步在请求内同步跑，整个外部 I/O 期间占着一个池连接，且用户 SQL 没有语句超时 | 改为后台任务 + 轮询进度；并给用户 SQL 加语句超时 |
 | CDC 长期占用池连接 | CDC 的跨副本互斥是正确的——`_cdc_worker_loop` 开头取 per-task advisory 锁（非阻塞），抢不到就退出，`_active_workers` 只是进程内记账。但锁持有到 worker 结束，**每个运行中的 CDC 任务在归属副本上长期占一个池连接**；非归属副本的管理器每 15 秒还会为每个任务白起一次线程 + 一次连接借还 | 任务数多起来后改成租约 + 心跳续期（参考 `sync_worker` 的 `reclaim_stale_running`），锁只在续期瞬间持有 |
 | 并发时序未覆盖 | `wait_event = transactionid` 的阻塞行为要真起并发打真库才能复现，现有单测只锁设计属性 | CI 增加 Postgres Testcontainers 并发用例 |

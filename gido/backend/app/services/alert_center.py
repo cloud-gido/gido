@@ -51,6 +51,31 @@ def failed_node_names(db: Session, workflow_instance: WorkflowInstance) -> list[
     return names
 
 
+def _enqueue_notification(event: AlertEvent, *, force: bool = False) -> None:
+    """
+    把告警放进投递 outbox，**不在这里打 Webhook/SMTP**。
+
+    业界成熟做法（出站箱）：写入路径只改账本状态，投递由独立后台任务负责。
+    采集、SLA 巡检都可能持着锁或 DB 会话，绝不能在里面同步等飞书。
+    force 用 pending_channels 哨兵标记，投递任务看到后按 force 调 notify。
+    """
+    from app.services.alert_notification import FORCE_NOTIFY_SENTINEL
+
+    event.notification_status = "pending"
+    event.notify_next_retry_at = datetime.utcnow()
+    event.notify_last_error = None
+    if force:
+        event.notify_pending_channels = FORCE_NOTIFY_SENTINEL
+    elif event.notify_pending_channels == FORCE_NOTIFY_SENTINEL:
+        event.notify_pending_channels = None
+    # 测试与部分路径会关 autoflush；状态必须立刻落库，否则出站箱扫不到
+    from sqlalchemy.orm import object_session
+
+    sess = object_session(event)
+    if sess is not None:
+        sess.flush()
+
+
 def open_instance_alert(
     db: Session,
     *,
@@ -62,7 +87,12 @@ def open_instance_alert(
     notify: bool = True,
     force_notify: bool = False,
 ) -> Optional[AlertEvent]:
-    """按实例/节点幂等打开告警。默认立刻按工作区配置推送；节点级可只入库不推送。"""
+    """
+    按实例/节点幂等打开告警。
+
+    notify=True 只表示「需要投递」，写入 pending 后由后台投递任务真正推送；
+    人工点「重新通知」仍走 API 里的同步 notify_alert_event。
+    """
     wf = db.query(Workflow).filter(Workflow.id == workflow_instance.workflow_id).first()
     if wf:
         wf_name = (wf.name or "").strip() or f"#{workflow_instance.id}"
@@ -93,13 +123,15 @@ def open_instance_alert(
         .first()
     )
     if exists:
-        if notify and exists.notification_status in (None, "pending", "skipped", "failed"):
-            try:
-                from app.services.alert_notification import notify_alert_event
-
-                notify_alert_event(db, exists, force=force_notify)
-            except Exception:
-                exists.notification_status = "failed"
+        if notify and exists.notification_status in (
+            None,
+            "pending",
+            "skipped",
+            "failed",
+            "deferred",
+            "partial",
+        ):
+            _enqueue_notification(exists, force=force_notify)
         return exists
     event = AlertEvent(
         workspace_id=wf.workspace_id if wf else None,
@@ -110,22 +142,15 @@ def open_instance_alert(
         level=level,
         severity=level,
         dedupe_key=dedupe_key,
-        notification_status="pending" if notify else "skipped",
+        notification_status="skipped",
         status="open",
         message=message or f"实例 #{workflow_instance.id} 执行失败",
         assignee_id=_on_call_assignee(db, wf.workspace_id if wf else None),
     )
     db.add(event)
     db.flush()
-    if not notify:
-        event.notification_status = "skipped"
-        return event
-    try:
-        from app.services.alert_notification import notify_alert_event
-
-        notify_alert_event(db, event, force=force_notify)
-    except Exception:
-        event.notification_status = "failed"
+    if notify:
+        _enqueue_notification(event, force=force_notify)
     return event
 
 
@@ -159,22 +184,15 @@ def open_workflow_alert(
         level=level,
         severity=level,
         dedupe_key=dedupe_key,
-        notification_status="pending" if notify else "skipped",
+        notification_status="skipped",
         status="open",
         message=message,
         assignee_id=_on_call_assignee(db, workflow.workspace_id),
     )
     db.add(event)
     db.flush()
-    if not notify:
-        event.notification_status = "skipped"
-        return event
-    try:
-        from app.services.alert_notification import notify_alert_event
-
-        notify_alert_event(db, event)
-    except Exception:
-        event.notification_status = "failed"
+    if notify:
+        _enqueue_notification(event)
     return event
 
 

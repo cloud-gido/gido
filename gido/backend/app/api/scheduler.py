@@ -308,6 +308,9 @@ def dolphin_scheduler_callback(payload: dict, x_internal_token: str = Header(def
                 except Exception:
                     logger.warning("回调关闭恢复告警异常 instance_id=%s", inst.id, exc_info=True)
         db.commit()
+        from app.services.alert_notification import kick_alert_dispatch
+
+        kick_alert_dispatch()
 
         wf = db.query(Workflow).filter(Workflow.id == inst.workflow_id).first()
         if wf:

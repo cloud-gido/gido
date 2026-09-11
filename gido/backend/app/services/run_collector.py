@@ -8,7 +8,8 @@
 GIDO 是运行事实的来源，执行引擎（当前 dolphin，后续可接 airflow 等）只是实现细节：
 - 采集由后台常驻任务驱动，不依赖用户打开页面
 - 采集健康度对产品可见（最近采集时间、是否落后、失败原因），而不是让用户去点「同步」
-- 失败运行在采集时即写入告警中心并按值班配置推送
+- 失败运行在采集时写入告警中心为 pending；真正推飞书由独立的出站箱任务负责，
+  不在采集持锁路径里打 Webhook（飞书抖动不能拖慢实例账本）
 """
 from __future__ import annotations
 
@@ -158,7 +159,14 @@ def collect_runs(db: Session, *, workspace_id: Optional[int] = None, page_size: 
                 "engine": "dolphin",
                 "reason": "already_running",
             }
-        return _collect_runs_unlocked(db, workspace_id=workspace_id, page_size=page_size)
+        out = _collect_runs_unlocked(db, workspace_id=workspace_id, page_size=page_size)
+    # 锁已释放：顺手扫一轮出站箱。失败反映延迟≈采集周期，而不是再等投递周期；
+    # Webhook 抖动也只拖这一小段，不会占着采集锁。
+    if out.get("collected"):
+        from app.services.alert_notification import kick_alert_dispatch
+
+        kick_alert_dispatch()
+    return out
 
 
 def _collect_runs_unlocked(

@@ -191,7 +191,7 @@ def test_retry_resends_only_failed_channel(db):
     with patch("app.services.alert_notification._post_json") as post:
         stats = retry_pending_notifications(db)
 
-    assert stats == {"due": 1, "recovered": 1, "still_failing": 0}
+    assert stats == {"due": 1, "first_delivery": 0, "recovered": 1, "still_failing": 0}
     assert post.call_count == 1
     db.refresh(ev)
     assert ev.notification_status == "sent"

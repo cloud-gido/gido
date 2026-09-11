@@ -121,7 +121,7 @@ GIDO_PUBLIC_URL=https://gido.example.com
 | 同一实例恢复成功 | 关闭未处理失败告警，推恢复卡片 |
 | 平台管理员 | 实例中心 / 告警中心可开「全部工作空间」 |
 
-运行数据由后台采集任务（`app/services/run_collector.py`）每 **15 秒**采一轮，不依赖用户打开页面：先拉执行引擎项目里最近 FAILURE（首页+末页），再按流程定义补近几天实例。生产一出现失败，一轮采集内应入库并推飞书。可选 HTTP 回调 `POST /api/scheduler/callback/dolphin`（`X-Internal-Token`）可在结束当秒入库。
+运行数据由后台采集任务（`app/services/run_collector.py`）每 **15 秒**采一轮，不依赖用户打开页面：先拉执行引擎项目里最近 FAILURE（首页+末页），再按流程定义补近几天实例。生产一出现失败，一轮采集内应入库为告警 `pending`；真正推飞书由出站箱投递任务负责（约 5 秒一轮），**不在采集持锁路径里打 Webhook**。可选 HTTP 回调 `POST /api/scheduler/callback/dolphin`（`X-Internal-Token`）可在结束当秒入库。
 
 告警闭环与引擎无关：执行引擎采集、引擎回调、以及 GIDO 内置 APScheduler 本地执行三条路径，失败都走 `open_instance_alert`、恢复都走 `resolve_instance_alerts_on_recovery`。回调接口在 `INTERNAL_TOKEN` 未配置时返回 503（拒绝而非放行）。
 
@@ -129,7 +129,7 @@ GIDO_PUBLIC_URL=https://gido.example.com
 
 **增量采集**：每个流程定义在 `dw_scheduler_sync_cursors` 里维护一条水位线（已采集到的最大引擎实例号）。采集时先判断引擎列表的排序方向，再从最新一侧往回翻页，直到整页实例号都不高于水位线为止（单轮最多 25 页）。中间页不会像固定时间窗口那样被永久跳过。水位线只进不退，且该定义这一轮有任何一行写库失败就不推进，下一轮重扫。
 
-**通知重投**：通知失败的渠道记进 `notify_pending_channels`，后台任务每 60 秒扫一次到期重投，退避 1/5/15/60 分钟，四次仍失败就停手并留在告警中心的「投递失败」里等人处理。只重投失败的渠道，已经送达的群不会被重复刷。
+**通知出站箱（outbox）**：`open_instance_alert(notify=True)` 只把事件标成 `pending` 并写入 `notify_next_retry_at`，**不**同步调用 Webhook/SMTP。后台 `dispatch_pending_notifications` 约每 5 秒扫一次：先投首次 pending，再投失败/静默到期的渠道。失败渠道记进 `notify_pending_channels`，退避 1/5/15/60 分钟，四次仍失败就停手并留在告警中心的「投递失败」里。只重投失败的渠道，已经送达的群不会被重复刷。人工点「重新通知」仍走同步投递。
 
 ---
 
@@ -234,7 +234,7 @@ GIDO_PUBLIC_URL=https://gido.example.com
 **静默时段**（通知配置里的「静默时段」）只压推送，不压记录：
 
 - 时段内，低于 `quiet_hours_min_severity` 的告警**不推群**，但照常进告警中心，`notification_status` 记为 `deferred`，`notify_next_retry_at` 设为时段结束那一刻。
-- 时段一结束，由已有的通知重投任务（每 60 秒一轮）自动补推，**不会丢**。界面上显示为「静默时段内暂缓」并在 tooltip 里给出补推时间。
+- 时段一结束，由已有的通知出站箱任务（约每 5 秒一轮）自动补推，**不会丢**。界面上显示为「静默时段内暂缓」并在 tooltip 里给出补推时间。
 - 够严重的（默认仅 `critical`）在时段内照常立刻推。
 - 起止必须成对且合法，否则接口返回 400——半配一半会静默得莫名其妙。
 

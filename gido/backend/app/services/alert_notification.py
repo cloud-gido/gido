@@ -9,6 +9,7 @@ from email.mime.text import MIMEText
 from typing import Iterable, Optional
 
 import httpx
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.brand import BRAND_SUITE
@@ -17,6 +18,9 @@ from app.models.workspace import AlertEvent, AlertNotificationConfig, NodeInstan
 from app.services.alert_oncall import on_call_label, quiet_hours_decision
 
 logger = logging.getLogger(__name__)
+
+# outbox 哨兵：写入路径标记「投递时 force」，真正推送后会被渠道列表覆盖
+FORCE_NOTIFY_SENTINEL = "__force__"
 
 _SEVERITY_ORDER = {"info": 0, "warning": 1, "error": 2, "critical": 3}
 
@@ -633,22 +637,60 @@ def _next_retry_at(attempts: int) -> Optional[datetime]:
     return datetime.utcnow() + timedelta(minutes=minutes) if minutes else None
 
 
-def retry_pending_notifications(db: Session, *, limit: int = 50) -> dict:
-    """重投到期的失败通知。由后台任务驱动，运维不需要手动补发。"""
+def dispatch_pending_notifications(db: Session, *, limit: int = 50) -> dict:
+    """
+    告警通知出站箱投递。
+
+    首次 pending 与失败重投、静默到期走同一条任务：写入路径（采集/SLA）只把事件
+    标成 pending，绝不在持锁路径里打 Webhook。这样飞书抖一下只会拖慢投递，
+    不会拖慢实例采集、更不会拖垮连接池。
+    """
     now = datetime.utcnow()
-    due = (
+    first = (
         db.query(AlertEvent)
         .filter(
-            # deferred 是静默时段压住的，到点和失败重投走同一条路
-            AlertEvent.notification_status.in_(("failed", "partial", "deferred")),
-            AlertEvent.notify_pending_channels.isnot(None),
-            AlertEvent.notify_next_retry_at.isnot(None),
-            AlertEvent.notify_next_retry_at <= now,
+            AlertEvent.notification_status == "pending",
+            or_(
+                AlertEvent.notify_next_retry_at.is_(None),
+                AlertEvent.notify_next_retry_at <= now,
+            ),
         )
-        .order_by(AlertEvent.notify_next_retry_at.asc())
+        .order_by(AlertEvent.id.asc())
         .limit(int(limit))
         .all()
     )
+    dispatched = 0
+    for event in first:
+        force = (event.notify_pending_channels or "") == FORCE_NOTIFY_SENTINEL
+        if force:
+            event.notify_pending_channels = None
+        try:
+            notify_alert_event(db, event, force=force)
+        except Exception as e:
+            logger.warning("告警首次投递失败 alert_id=%s: %s", event.id, e, exc_info=True)
+            event.notification_status = "failed"
+            event.notify_last_error = str(e)[:500]
+            event.notify_attempts = int(getattr(event, "notify_attempts", 0) or 0) + 1
+            event.notify_next_retry_at = _next_retry_at(event.notify_attempts)
+        db.flush()  # 下一事件的冷却检查必须能看到本事件的投递结果
+        dispatched += 1
+
+    remaining = max(0, int(limit) - len(first))
+    due = []
+    if remaining:
+        due = (
+            db.query(AlertEvent)
+            .filter(
+                # deferred 是静默时段压住的，到点和失败重投走同一条路
+                AlertEvent.notification_status.in_(("failed", "partial", "deferred")),
+                AlertEvent.notify_pending_channels.isnot(None),
+                AlertEvent.notify_next_retry_at.isnot(None),
+                AlertEvent.notify_next_retry_at <= now,
+            )
+            .order_by(AlertEvent.notify_next_retry_at.asc())
+            .limit(remaining)
+            .all()
+        )
     recovered = 0
     still_failing = 0
     for event in due:
@@ -676,6 +718,33 @@ def retry_pending_notifications(db: Session, *, limit: int = 50) -> dict:
             still_failing += 1
         else:
             recovered += 1
-    if due:
+    if first or due:
         db.commit()
-    return {"due": len(due), "recovered": recovered, "still_failing": still_failing}
+    return {
+        "due": len(first) + len(due),
+        "first_delivery": dispatched,
+        "recovered": recovered,
+        "still_failing": still_failing,
+    }
+
+
+def kick_alert_dispatch() -> None:
+    """
+    尽力投递一轮 outbox。采集/回调/SLA 在释放锁并提交后调用，
+    让失败反映延迟≈写入周期；失败本身不影响主路径。
+    """
+    try:
+        from app.core.database import SessionLocal
+
+        own = SessionLocal()
+        try:
+            dispatch_pending_notifications(own)
+        finally:
+            own.close()
+    except Exception:
+        logger.debug("alert outbox kick failed", exc_info=True)
+
+
+def retry_pending_notifications(db: Session, *, limit: int = 50) -> dict:
+    """兼容旧名：现为完整的出站箱投递（含首次 pending）。"""
+    return dispatch_pending_notifications(db, limit=limit)

@@ -1313,7 +1313,7 @@ def ingest_ds_instance_from_callback(
 ) -> Optional[WorkflowInstance]:
     """
     DS 回调时库里还没有该流程实例：按已发布工作流绑定立刻入库。
-    失败状态当场写告警并推送，不必等轮询。
+    失败状态当场写入告警中心为 pending；推送由出站箱负责，不必等轮询。
     """
     wf = find_published_workflow_for_ds(db, project_id=project_id, definition_id=definition_id)
     if not wf:

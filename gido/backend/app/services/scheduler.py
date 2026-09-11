@@ -14,8 +14,9 @@ import logging
 logger = logging.getLogger(__name__)
 scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
-# 告警通知重投间隔；实际退避节奏由 alert_notification._next_retry_at 决定
-_NOTIFY_RETRY_INTERVAL_SEC = 60
+# 告警出站箱投递间隔。首次推送与失败重投都走这里；实际失败退避仍由
+# alert_notification._next_retry_at 决定。5s 足够「准实时」，又不会和采集抢资源。
+_NOTIFY_RETRY_INTERVAL_SEC = 5
 # 基线巡检间隔：承诺时间与最长运行时长都以分钟计，60s 足够
 _SLA_CHECK_INTERVAL_SEC = 60
 
@@ -217,7 +218,7 @@ def _poll_scheduler_instances_unlocked():
 
 
 def _retry_alert_notifications_job():
-    """重投失败的告警通知：值班不能因为一次 Webhook 抖动就漏掉。"""
+    """告警出站箱投递：首次 pending + 失败重投 + 静默到期。与采集路径完全解耦。"""
     from app.core.database import SessionLocal
     from app.services.distributed_lock import try_distributed_lock
     from app.services.shared_state import claim_or_proceed
@@ -228,21 +229,21 @@ def _retry_alert_notifications_job():
     with try_distributed_lock("alert-notify-retry") as acquired:
         if not acquired:
             return
-        from app.services.alert_notification import retry_pending_notifications
+        from app.services.alert_notification import dispatch_pending_notifications
 
         db = SessionLocal()
         try:
-            stats = retry_pending_notifications(db)
+            stats = dispatch_pending_notifications(db)
             if stats.get("due"):
-                logger.info("告警通知重投完成 %s", stats)
+                logger.info("告警通知投递完成 %s", stats)
         except Exception as e:
-            logger.warning("告警通知重投失败: %s", e, exc_info=True)
+            logger.warning("告警通知投递失败: %s", e, exc_info=True)
         finally:
             db.close()
 
 
 def reload_alert_notification_retry():
-    """注册告警通知重投任务。"""
+    """注册告警通知出站箱投递任务。"""
     for job in list(scheduler.get_jobs()):
         if job.id == "alert_notification_retry":
             job.remove()
@@ -254,7 +255,7 @@ def reload_alert_notification_retry():
         max_instances=1,
         coalesce=True,
     )
-    logger.info("已注册告警通知重投任务：%ss", _NOTIFY_RETRY_INTERVAL_SEC)
+    logger.info("已注册告警通知投递任务：%ss", _NOTIFY_RETRY_INTERVAL_SEC)
 
 
 def _evaluate_sla_job():
@@ -280,6 +281,10 @@ def _evaluate_sla_job():
             logger.warning("基线巡检失败: %s", e, exc_info=True)
         finally:
             db.close()
+    # 锁已释放：把本轮基线告警推进出站箱
+    from app.services.alert_notification import kick_alert_dispatch
+
+    kick_alert_dispatch()
 
 
 def reload_sla_monitoring():

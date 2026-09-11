@@ -76,10 +76,10 @@ export default function OperationPage() {
 
   const load = async () => {
     if (!wsId) return
-    try {
-      const ov: any = await operationApi.overview(wsId, listParams)
-      setOverview(ov)
-      const inst: any = await operationApi.instances(wsId, {
+    // 概览与列表并行：一个挂了不该拖住另一个，也避免串行把轮询窗口拉长
+    const [ovSettled, instSettled] = await Promise.allSettled([
+      operationApi.overview(wsId, listParams),
+      operationApi.instances(wsId, {
         page,
         page_size: 20,
         status: statusFilter || undefined,
@@ -87,14 +87,26 @@ export default function OperationPage() {
         run_type: runTypeFilter || undefined,
         today_only: todayOnlyWorkflows ? true : undefined,
         ...listParams,
-      })
+      }),
+    ])
+    if (ovSettled.status === 'fulfilled') {
+      setOverview(ovSettled.value as any)
+    }
+    if (instSettled.status === 'fulfilled') {
+      const inst: any = instSettled.value
       setRunTypeCounts(inst.run_type_counts || {})
       setInstances(inst.items)
       setTotal(inst.total)
+    }
+    const firstErr =
+      (ovSettled.status === 'rejected' && ovSettled.reason) ||
+      (instSettled.status === 'rejected' && instSettled.reason) ||
+      null
+    // 每 15 秒轮一次，失败不能弹 toast——会把屏幕刷满。挂个横幅，下一轮成功自动消失
+    if (firstErr) {
+      setLoadError(describePollError(firstErr))
+    } else {
       setLoadError('')
-    } catch (e: any) {
-      // 每 15 秒轮一次，失败不能弹 toast——会把屏幕刷满。挂个横幅，下一轮成功自动消失
-      setLoadError(describePollError(e))
     }
   }
 

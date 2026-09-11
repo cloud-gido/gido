@@ -29,8 +29,13 @@ from app.models.workspace import (
     WorkflowInstance,
     Workspace,
 )
-from app.services.alert_notification import notify_alert_event
+from app.services.alert_notification import dispatch_pending_notifications, notify_alert_event
 from app.services.dolphin_instance_sync import ingest_ds_instance_from_callback, sync_from_dolphin_definitions
+
+
+def _flush_outbox(db):
+    """写入只进 pending；测试里显式跑一轮出站箱，模拟后台投递任务。"""
+    dispatch_pending_notifications(db)
 
 
 @pytest.fixture()
@@ -125,6 +130,7 @@ def test_ingest_failed_callback_opens_alert_and_posts_lark(db):
             project_id="1001",
             definition_id="90001",
         )
+        _flush_outbox(db)
         db.commit()
 
     assert inst is not None
@@ -173,6 +179,7 @@ def test_sync_ingests_already_failed_instance_and_alerts(db):
 
     with patch("app.services.alert_notification._post_json") as post:
         stats = sync_from_dolphin_definitions(db, ds)
+        _flush_outbox(db)
         db.commit()
 
     assert stats["ingested"] == 1
@@ -222,6 +229,7 @@ def test_recent_failed_instance_still_posts_lark(db):
     ds.list_task_instances_all = MagicMock(return_value=[])
     with patch("app.services.alert_notification._post_json") as post:
         sync_from_dolphin_definitions(db, ds)
+        _flush_outbox(db)
         db.commit()
     assert post.call_count == 1
     payload = post.call_args[0][1]
@@ -258,10 +266,15 @@ def test_second_failure_same_workflow_skips_lark_during_cooldown(db):
     db.flush()
 
     from app.services.alert_center import open_instance_alert
+    from app.services.alert_notification import dispatch_pending_notifications
 
     with patch("app.services.alert_notification._post_json") as post:
         e1 = open_instance_alert(db, workflow_instance=inst1, notify=True)
         e2 = open_instance_alert(db, workflow_instance=inst2, notify=True)
+        db.commit()
+        dispatch_pending_notifications(db)
+        db.refresh(e1)
+        db.refresh(e2)
 
     assert post.call_count == 1
     assert e1.notification_status == "sent"
@@ -305,9 +318,14 @@ def test_recovery_notifies_even_below_min_severity(db):
     db.flush()
 
     from app.services.alert_center import resolve_instance_alerts_on_recovery
+    from app.services.alert_notification import dispatch_pending_notifications
 
     with patch("app.services.alert_notification._post_json") as post:
         rec = resolve_instance_alerts_on_recovery(db, inst)
+        db.commit()
+        dispatch_pending_notifications(db)
+        if rec is not None:
+            db.refresh(rec)
 
     assert rec is not None
     assert rec.alert_type == "recovered"
@@ -716,6 +734,7 @@ def test_sync_ingests_failure_from_last_page_when_first_page_is_old(db):
     ds.list_task_instances_all = MagicMock(return_value=[])
     with patch("app.services.alert_notification._post_json") as post:
         stats = sync_from_dolphin_definitions(db, ds)
+        _flush_outbox(db)
         db.commit()
     ids = {row.scheduler_instance_id for row in db.query(WorkflowInstance).all()}
     assert "252045" in ids
@@ -773,6 +792,7 @@ def test_sync_ingests_failure_even_if_recent_page_is_all_success(db):
     ds.list_task_instances_all = MagicMock(return_value=[])
     with patch("app.services.alert_notification._post_json") as post:
         stats = sync_from_dolphin_definitions(db, ds)
+        _flush_outbox(db)
         db.commit()
     ids = {row.scheduler_instance_id for row in db.query(WorkflowInstance).all()}
     assert "42" in ids
@@ -835,6 +855,7 @@ def test_sync_alerts_when_instance_bound_to_old_job_version(db):
     ds.list_task_instances_all = MagicMock(return_value=[])
     with patch("app.services.alert_notification._post_json") as post:
         stats = sync_from_dolphin_definitions(db, ds)
+        _flush_outbox(db)
         db.commit()
     assert stats["ingested"] == 0
     db.refresh(inst)
@@ -892,6 +913,7 @@ def test_sync_project_level_failure_when_definition_list_is_empty(db):
     ds.list_task_instances_all = MagicMock(return_value=[])
     with patch("app.services.alert_notification._post_json") as post:
         stats = sync_from_dolphin_definitions(db, ds)
+        _flush_outbox(db)
         db.commit()
     ids = {row.scheduler_instance_id for row in db.query(WorkflowInstance).all()}
     assert "88801" in ids
