@@ -11,6 +11,7 @@ import { useNavigate, Link, useSearchParams } from 'react-router-dom'
 import { operationApi, schedulerApi, workflowApi } from '../api'
 import { useAppStore } from '../store'
 import { formatInTimeZone } from '../utils/datetime'
+import { describePollError } from '../utils/pollError'
 import OpsDashboardCharts from '../components/OpsDashboardCharts'
 import RunCollectorStatus from '../components/RunCollectorStatus'
 import RunDiagnosisDrawer, { type DiagnosisTarget } from '../components/RunDiagnosisDrawer'
@@ -66,6 +67,7 @@ export default function OperationPage() {
   const [diagnosisTarget, setDiagnosisTarget] = useState<DiagnosisTarget | null>(null)
   const [dagTarget, setDagTarget] = useState<InstanceDagTarget | null>(null)
   const [includeAllWorkspaces, setIncludeAllWorkspaces] = useState(false)
+  const [loadError, setLoadError] = useState('')
   const appliedDeepLink = useRef('')
 
   const listParams = {
@@ -74,20 +76,26 @@ export default function OperationPage() {
 
   const load = async () => {
     if (!wsId) return
-    const ov: any = await operationApi.overview(wsId, listParams)
-    setOverview(ov)
-    const inst: any = await operationApi.instances(wsId, {
-      page,
-      page_size: 20,
-      status: statusFilter || undefined,
-      workflow_id: workflowFilter ?? undefined,
-      run_type: runTypeFilter || undefined,
-      today_only: todayOnlyWorkflows ? true : undefined,
-      ...listParams,
-    })
-    setRunTypeCounts(inst.run_type_counts || {})
-    setInstances(inst.items)
-    setTotal(inst.total)
+    try {
+      const ov: any = await operationApi.overview(wsId, listParams)
+      setOverview(ov)
+      const inst: any = await operationApi.instances(wsId, {
+        page,
+        page_size: 20,
+        status: statusFilter || undefined,
+        workflow_id: workflowFilter ?? undefined,
+        run_type: runTypeFilter || undefined,
+        today_only: todayOnlyWorkflows ? true : undefined,
+        ...listParams,
+      })
+      setRunTypeCounts(inst.run_type_counts || {})
+      setInstances(inst.items)
+      setTotal(inst.total)
+      setLoadError('')
+    } catch (e: any) {
+      // 每 15 秒轮一次，失败不能弹 toast——会把屏幕刷满。挂个横幅，下一轮成功自动消失
+      setLoadError(describePollError(e))
+    }
   }
 
   useEffect(() => { load() }, [wsId, statusFilter, page, todayOnlyWorkflows, workflowFilter, runTypeFilter, includeAllWorkspaces])
@@ -450,6 +458,9 @@ export default function OperationPage() {
           </span>
         }
       />
+      {loadError ? (
+        <Alert type="error" showIcon closable style={{ marginBottom: 12 }} message={loadError} />
+      ) : null}
       <RunCollectorStatus collector={overview.collector} />
       <Row gutter={16} style={{ marginBottom: 24 }}>
         <Col span={4}>

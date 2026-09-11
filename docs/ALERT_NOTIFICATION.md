@@ -109,6 +109,7 @@ GIDO_PUBLIC_URL=https://gido.example.com
 | 打开实例中心 | 直接读 GIDO 实例事实表；停留在页面时约 15 秒刷新列表 |
 | 打开告警中心 | 直接读告警表；停留时约 15 秒刷新 |
 | 「立即采集」 | 后台采集之外的手动兜底，仅排障用。空间开发者可采集本空间；不传 `workspace_id` 时仅平台管理员可全量采集 |
+| 轮询接口只读 | `/operation/overview`、`/operation/instances`、`/alerts` **不**在请求里调执行引擎，见 §6.8 |
 | 工作流实例失败 | 写一条工作流级 `AlertEvent` 并推飞书卡片（含失败节点名） |
 | 概览排行 | 近 7 日出错排行与耗时排行；点失败次数下钻到该工作流的失败实例 |
 | 运行类型标签页 | 周期 / 补数据 / 重跑 / 手动分开看，见 §6.2 |
@@ -268,6 +269,30 @@ GIDO_PUBLIC_URL=https://gido.example.com
 - 业务日期留空时取最近一次运行的业务日期；基线告警没有实例可挂，业务日期从去重键 `sla:workflow:{id}:biz:{date}` 里取，才能定到正确的那天。
 
 接口：`GET /api/operation/diagnose?workspace_id=&workflow_id=&business_date=`。实现见 `app/services/run_diagnosis.py`。
+
+---
+
+## 6.8 轮询接口必须只读
+
+实例中心与告警中心每 15 秒轮询各自的列表。以下三个接口**不得**在请求里同步调用执行引擎：
+
+- `GET /operation/overview`
+- `GET /operation/instances`
+- `GET /alerts`
+
+原先它们都会「兜底采集一轮」，而冷却时间**只在采集成功时才记**。引擎一慢就会连锁成事故：
+
+1. 每一轮轮询都重新去打那个慢的引擎（冷却从未生效）；
+2. 请求各自占着一个 DB 会话挂到网关超时，前端报 **524**；
+3. 连接池被吃干之后，连纯读的告警中心也打不开——转圈但永远出不来。
+
+采集只由后台 `scheduler_instance_poll` 负责（15s 一轮，`max_instances=1` + `coalesce`，不会堆积）。
+采集是否落后由接口返回的 `collector` 字段告诉前端，页面顶部有状态条；平台管理员还有「立即采集」手动兜底。
+
+回归由 `tests/test_polled_endpoints_never_touch_engine.py` 守住：任何一次引擎调用都会让测试失败。
+
+前端两个页面的轮询失败统一走 `utils/pollError.ts`——挂一条横幅并说明会自动重试，
+既不弹 toast 把屏幕刷满，也不留下没人接的 promise 让控制台刷满 `Uncaught AxiosError`。
 
 ---
 

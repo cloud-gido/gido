@@ -4,7 +4,6 @@
 # @date 2026-06-05
 import logging
 import re
-import time
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, desc, func, or_
@@ -25,16 +24,11 @@ from app.services.workflow_trigger_display import (
 )
 from app.services.ds_runtime import get_dolphin_runtime
 from app.services.run_diagnosis import diagnose_workflow_run
-from app.services.dolphin_instance_sync import (
-    refresh_ds_workflow_instance_from_dolphin,
-    refresh_running_ds_instances_for_workspace,
-)
-from app.services.run_collector import collect_runs, collector_health
+from app.services.dolphin_instance_sync import refresh_ds_workflow_instance_from_dolphin
+from app.services.run_collector import collector_health
 
 router = APIRouter(prefix="/operation", tags=["运维中心"])
 _log = logging.getLogger(__name__)
-_UI_DS_SYNC_COOLDOWN_SEC = 20.0
-_last_ui_ds_sync: dict[str, float] = {}
 
 # 仅统计/展示「工作流提交」产生的实例：NodeInstance 必须挂 WorkflowInstance（排除数据开发里单节点试跑）
 
@@ -124,27 +118,6 @@ def _duration_ranking(base_query, since: datetime, limit: int = 5) -> list[dict]
     return out[:limit]
 
 
-def _safe_refresh_ds_running(db: Session, workspace_id: int, *, include_all: bool = False) -> None:
-    """
-    页面兜底采集：后台采集任务是主路径，这里只在其落后时补一轮，避免每次翻页都打执行引擎。
-    """
-    key = "all" if include_all else str(int(workspace_id))
-    now = time.monotonic()
-    if now - _last_ui_ds_sync.get(key, 0.0) < _UI_DS_SYNC_COOLDOWN_SEC:
-        return
-    try:
-        stats = collect_runs(db, workspace_id=None if include_all else workspace_id, page_size=30)
-        _log.info("ui run collection ws=%s %s", "all" if include_all else workspace_id, stats)
-        _last_ui_ds_sync[key] = time.monotonic()
-    except Exception:
-        _log.warning("ui run collection failed ws=%s", workspace_id, exc_info=True)
-    try:
-        if not include_all:
-            refresh_running_ds_instances_for_workspace(db, workspace_id, limit=35)
-    except Exception:
-        _log.warning("refresh running instances failed ws=%s", workspace_id, exc_info=True)
-
-
 def _assert_ops_list_scope(db: Session, current_user: User, workspace_id: int, include_all: bool) -> bool:
     if include_all:
         if not is_platform_admin(current_user):
@@ -201,9 +174,12 @@ def get_overview(
     - 今日实例：工作空间时区的「今天」新建的工作流实例条数
     - 运行中 / 成功 / 失败：按工作流实例的 `status` 计数
     - 成功率：成功 / (成功 + 失败)，无失败且无成功时为 N/A
+
+    只读 GIDO 自己的表，**不要**在这里同步调执行引擎。页面每 15 秒轮询这个接口，
+    引擎一慢请求就挂住、各自占着 DB 会话，连接池被吃干后连告警中心都打不开。
+    采集由后台 scheduler_instance_poll 负责，落后与否看返回里的 collector。
     """
     all_ws = _assert_ops_list_scope(db, current_user, workspace_id, include_all_workspaces)
-    _safe_refresh_ds_running(db, workspace_id, include_all=all_ws)
     today_start = _local_day_start_utc(db, workspace_id)
     q = db.query(WorkflowInstance).join(Workflow)
     if not all_ws:
@@ -281,7 +257,6 @@ def list_all_instances(
     current_user: User = Depends(get_current_user)
 ):
     all_ws = _assert_ops_list_scope(db, current_user, workspace_id, include_all_workspaces)
-    _safe_refresh_ds_running(db, workspace_id, include_all=all_ws)
     q = db.query(WorkflowInstance).join(Workflow)
     if not all_ws:
         q = q.filter(Workflow.workspace_id == workspace_id)

@@ -9,6 +9,7 @@ import { Alert, Button, Divider, Dropdown, Drawer, Form, Input, InputNumber, mes
 import { ClockCircleOutlined, DownOutlined, FileTextOutlined, NotificationOutlined, PartitionOutlined, PlusOutlined, QuestionCircleOutlined, ReloadOutlined, SettingOutlined, TeamOutlined } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { alertApi, operationApi, workspaceApi } from '../api'
+import { describePollError } from '../utils/pollError'
 import RunCollectorStatus from '../components/RunCollectorStatus'
 import RunDiagnosisDrawer, { type DiagnosisTarget } from '../components/RunDiagnosisDrawer'
 import { useAppStore } from '../store'
@@ -93,6 +94,7 @@ export default function AlertCenterPage() {
   const [coverage, setCoverage] = useState<any>(null)
   const [loading, setLoading] = useState(false)
   const [collector, setCollector] = useState<any>(null)
+  const [loadError, setLoadError] = useState('')
   const [diagnosisTarget, setDiagnosisTarget] = useState<DiagnosisTarget | null>(null)
   const [oncallOpen, setOncallOpen] = useState(false)
   const [oncallLoading, setOncallLoading] = useState(false)
@@ -122,19 +124,25 @@ export default function AlertCenterPage() {
 
   const loadAlerts = async () => {
     if (!wsId) return
-    const res: any = await alertApi.list(wsId, {
-      status: status === 'all' ? undefined : status,
-      page,
-      page_size: 20,
-      include_all_workspaces: includeAllWorkspaces || undefined,
-      q: keyword.trim() || undefined,
-      notification_status: notifyStatus === 'all' ? undefined : notifyStatus,
-      after_armed: afterArmed,
-    })
-    setRows(res.items || [])
-    setTotal(res.total || 0)
-    setCoverage(res.coverage || null)
-    setCollector(res.collector || null)
+    try {
+      const res: any = await alertApi.list(wsId, {
+        status: status === 'all' ? undefined : status,
+        page,
+        page_size: 20,
+        include_all_workspaces: includeAllWorkspaces || undefined,
+        q: keyword.trim() || undefined,
+        notification_status: notifyStatus === 'all' ? undefined : notifyStatus,
+        after_armed: afterArmed,
+      })
+      setRows(res.items || [])
+      setTotal(res.total || 0)
+      setCoverage(res.coverage || null)
+      setCollector(res.collector || null)
+      setLoadError('')
+    } catch (e: any) {
+      // 每 15 秒轮一次，失败挂横幅而不是弹 toast；下一轮成功自动消失
+      setLoadError(describePollError(e))
+    }
   }
 
   const load = async () => {
@@ -541,6 +549,9 @@ export default function AlertCenterPage() {
         message="执行失败、未按时完成、运行超时都会进入本页并按值班配置推送"
         description="失败由运行采集实时发现；未按时完成与运行超时由「基线」按分钟巡检。打开或保存通知配置后，历史失败只留在告警中心，不再刷群。节点失败不单独推送。"
       />
+      {loadError ? (
+        <Alert type="error" showIcon closable style={{ marginBottom: 12 }} message={loadError} />
+      ) : null}
       <RunCollectorStatus collector={collector} />
       {(coverage?.hints || []).length > 0 && (
         <Alert

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from datetime import datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -37,33 +36,16 @@ from app.services.alert_notification import (
     upsert_alert_notification_config,
 )
 from app.services.alert_oncall import on_call_label, parse_hhmm, parse_weekdays, shift_covers
-from app.services.run_collector import collect_runs, collector_health
+from app.services.run_collector import collector_health
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 _log = logging.getLogger(__name__)
-_COLLECT_COOLDOWN_SEC = 20.0
-_last_collect: dict[str, float] = {}
 
 
 def _business_date_from_dedupe_key(dedupe_key: Optional[str]) -> Optional[str]:
     """基线去重键形如 sla:workflow:12:biz:2026-09-10。"""
     m = re.search(r":biz:(\d{4}-\d{2}-\d{2})$", str(dedupe_key or ""))
     return m.group(1) if m else None
-
-
-def _collect_runs_if_stale(db: Session, workspace_id: int, *, include_all: bool = False) -> None:
-    """
-    打开告警中心时兜底采集一轮失败运行：后台采集是主路径，这里只防它掉线时告警中心空白。
-    """
-    key = "all" if include_all else str(int(workspace_id))
-    now = time.monotonic()
-    if now - _last_collect.get(key, 0.0) < _COLLECT_COOLDOWN_SEC:
-        return
-    try:
-        collect_runs(db, workspace_id=None if include_all else workspace_id, page_size=30)
-        _last_collect[key] = time.monotonic()
-    except Exception:
-        _log.warning("alert center run collection failed ws=%s", workspace_id, exc_info=True)
 
 
 @router.get("")
@@ -79,12 +61,16 @@ def list_alerts(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
+    """
+    告警列表。只读告警表，**不要**在这里同步调执行引擎采集：
+    页面在轮询这个接口，引擎一慢就把请求和 DB 会话一起挂住，告警中心反而先打不开。
+    采集是后台 scheduler_instance_poll 的事。
+    """
     if include_all_workspaces:
         if not is_platform_admin(current_user):
             raise HTTPException(status_code=403, detail="仅平台管理员可查看全部工作空间")
     else:
         assert_workspace_access(db, current_user, workspace_id)
-    _collect_runs_if_stale(db, workspace_id, include_all=include_all_workspaces)
     stmt = db.query(AlertEvent)
     if not include_all_workspaces:
         stmt = stmt.filter(AlertEvent.workspace_id == workspace_id)
