@@ -19,8 +19,8 @@ SQL_SUMMARY_MAX_LEN = 72
 
 def summarize_sql(sql: Optional[str], max_len: int = SQL_SUMMARY_MAX_LEN) -> Optional[str]:
     """
-    列表用 SQL 摘要（偏 DataWorks 清爽口径）：
-    动词 + 主表，例如「SELECT · ads_foo」，避免把整段列清单铺在列表上。
+    列表用 SQL 摘要：动词 + 主表，例如「SELECT · ads_foo」，
+    避免把整段列清单铺在列表上。
     """
     import re
 
