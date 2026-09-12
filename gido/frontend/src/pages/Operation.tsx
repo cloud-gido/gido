@@ -5,7 +5,7 @@
  * @date 2026-06-05
  */
 import { useState, useEffect, useRef, type ReactNode } from 'react'
-import { Table, Tag, Button, Space, Row, Col, Statistic, Select, message, Alert, Tooltip, Card, Switch, Tabs, Modal, Input, Dropdown, Collapse, type MenuProps } from 'antd'
+import { Table, Tag, Button, Space, Row, Col, Statistic, Select, message, Alert, Tooltip, Card, Switch, Tabs, Modal, Input, Dropdown, Collapse, Descriptions, type MenuProps } from 'antd'
 import { ReloadOutlined, StopOutlined, AuditOutlined, CheckCircleOutlined, QuestionCircleOutlined, PartitionOutlined, DownOutlined } from '@ant-design/icons'
 import { useNavigate, Link, useSearchParams } from 'react-router-dom'
 import { operationApi, schedulerApi, workflowApi } from '../api'
@@ -68,18 +68,29 @@ export default function OperationPage() {
   const [dagTarget, setDagTarget] = useState<InstanceDagTarget | null>(null)
   const [includeAllWorkspaces, setIncludeAllWorkspaces] = useState(false)
   const [loadError, setLoadError] = useState('')
+  const [listLoading, setListLoading] = useState(false)
   const appliedDeepLink = useRef('')
 
   const listParams = {
     include_all_workspaces: includeAllWorkspaces || undefined,
   }
 
-  const load = async () => {
+  const loadOverview = async () => {
     if (!wsId) return
-    // 概览与列表并行：一个挂了不该拖住另一个，也避免串行把轮询窗口拉长
-    const [ovSettled, instSettled] = await Promise.allSettled([
-      operationApi.overview(wsId, listParams),
-      operationApi.instances(wsId, {
+    try {
+      const ov = await operationApi.overview(wsId, listParams)
+      setOverview(ov as any)
+      setLoadError('')
+    } catch (e: any) {
+      setLoadError(describePollError(e))
+    }
+  }
+
+  const loadInstances = async () => {
+    if (!wsId) return
+    setListLoading(true)
+    try {
+      const inst: any = await operationApi.instances(wsId, {
         page,
         page_size: 20,
         status: statusFilter || undefined,
@@ -87,27 +98,22 @@ export default function OperationPage() {
         run_type: runTypeFilter || undefined,
         today_only: todayOnlyWorkflows ? true : undefined,
         ...listParams,
-      }),
-    ])
-    if (ovSettled.status === 'fulfilled') {
-      setOverview(ovSettled.value as any)
-    }
-    if (instSettled.status === 'fulfilled') {
-      const inst: any = instSettled.value
+      })
       setRunTypeCounts(inst.run_type_counts || {})
       setInstances(inst.items)
       setTotal(inst.total)
-    }
-    const firstErr =
-      (ovSettled.status === 'rejected' && ovSettled.reason) ||
-      (instSettled.status === 'rejected' && instSettled.reason) ||
-      null
-    // 每 15 秒轮一次，失败不能弹 toast——会把屏幕刷满。挂个横幅，下一轮成功自动消失
-    if (firstErr) {
-      setLoadError(describePollError(firstErr))
-    } else {
       setLoadError('')
+    } catch (e: any) {
+      setLoadError(describePollError(e))
+    } finally {
+      setListLoading(false)
     }
+  }
+
+  /** 概览与列表各自上屏：谁先回来谁先渲染，避免被慢的 instances 拖成整页白等 */
+  const load = async () => {
+    if (!wsId) return
+    await Promise.all([loadOverview(), loadInstances()])
   }
 
   useEffect(() => { load() }, [wsId, statusFilter, page, todayOnlyWorkflows, workflowFilter, runTypeFilter, includeAllWorkspaces])
@@ -356,14 +362,30 @@ export default function OperationPage() {
 
   const workflowColumns = [
     ...(includeAllWorkspaces
-      ? [{ title: '工作空间', dataIndex: 'workspace_name', width: 140, ellipsis: true }]
+      ? [{ title: '工作空间', dataIndex: 'workspace_name', width: 120, ellipsis: true }]
       : []),
-    { title: '工作流实例', dataIndex: 'id', width: 110 },
-    { title: '工作流', dataIndex: 'workflow_name', width: 160, ellipsis: true },
+    {
+      title: '工作流',
+      dataIndex: 'workflow_name',
+      ellipsis: true,
+      render: (name: string, row: any) => (
+        <div>
+          <div style={{ fontWeight: 500 }}>{name || '—'}</div>
+          <div style={{ color: '#8c8c8c', fontSize: 12 }}>
+            {row.business_date ? `业务日 ${row.business_date}` : '业务日 —'}
+            {(row.failed_node_count ?? 0) > 0
+              ? ` · 失败 ${row.failed_node_count}`
+              : (row.running_node_count ?? 0) > 0
+                ? ` · 运行中 ${row.running_node_count}`
+                : ''}
+          </div>
+        </div>
+      ),
+    },
     {
       title: '状态',
       dataIndex: 'status',
-      width: 140,
+      width: 120,
       render: (s: string, row: any) => (
         <Space size={4}>
           {statusTag(s)}
@@ -382,62 +404,43 @@ export default function OperationPage() {
       ),
     },
     {
-      title: '触发来源',
-      dataIndex: 'trigger_label',
-      width: 220,
-      ellipsis: true,
-      render: (label: string, row: any) => (
-        <Tooltip
-          title={
-            [
-              row.scheduler_instance_id && `运行编号：${row.scheduler_instance_id}`,
-              row.trigger_type && `触发方式：${row.trigger_type}`,
-            ]
-              .filter(Boolean)
-              .join('\n') || undefined
-          }
-        >
-          <span>{label || row.trigger_type || '—'}</span>
-        </Tooltip>
-      ),
-    },
-    { title: '业务日期', dataIndex: 'business_date', width: 110 },
-    {
-      title: '节点进度',
-      width: 160,
-      render: (_: unknown, row: any) => (
-        <Space size={4} wrap>
-          <Tag>总 {row.node_total ?? 0}</Tag>
-          {(row.running_node_count ?? 0) > 0 && <Tag color="blue">运行 {row.running_node_count}</Tag>}
-          {(row.failed_node_count ?? 0) > 0 && <Tag color="red">失败 {row.failed_node_count}</Tag>}
-        </Space>
-      ),
-    },
-    {
-      title: '当前 / 失败节点',
-      width: 220,
+      title: '关键节点',
+      width: 200,
       ellipsis: true,
       render: (_: unknown, row: any) => {
         const failed = Array.isArray(row.failed_nodes) ? row.failed_nodes : []
         const current = Array.isArray(row.current_nodes) ? row.current_nodes : []
-        const text = failed.length ? `失败：${failed.join('、')}` : current.length ? `当前：${current.join('、')}` : '—'
-        return text === '—' ? <span style={{ color: '#bbb' }}>—</span> : <Tooltip title={text}><span>{text}</span></Tooltip>
+        if (failed.length) {
+          const text = failed.join('、')
+          return <Tooltip title={text}><span style={{ color: '#cf1322' }}>{text}</span></Tooltip>
+        }
+        if (current.length) {
+          const text = current.join('、')
+          return <Tooltip title={text}><span>{text}</span></Tooltip>
+        }
+        return <span style={{ color: '#bbb' }}>—</span>
       },
     },
     {
-      title: '开始时间',
-      dataIndex: 'started_at',
-      render: (v: string) => formatInTimeZone(v, displayTz),
+      title: '时间',
+      width: 200,
+      render: (_: unknown, row: any) => (
+        <div style={{ fontSize: 13, lineHeight: 1.45 }}>
+          <div>{row.started_at ? formatInTimeZone(row.started_at, displayTz) : '—'}</div>
+          <div style={{ color: '#8c8c8c', fontSize: 12 }}>
+            {row.finished_at
+              ? `结束 ${formatInTimeZone(row.finished_at, displayTz)} · ${formatDuration(row.duration_seconds)}`
+              : row.status === 'running'
+                ? '运行中'
+                : '—'}
+          </div>
+        </div>
+      ),
     },
-    {
-      title: '结束时间',
-      dataIndex: 'finished_at',
-      render: (v: string) => formatInTimeZone(v, displayTz),
-    },
-    { title: '耗时', dataIndex: 'duration_seconds', width: 90, render: (v: number) => formatDuration(v) },
     {
       title: '操作',
-      width: 210,
+      width: 200,
+      fixed: 'right' as const,
       render: (_: unknown, row: any) => (
         <Space size={4}>
           <Button type="link" size="small" icon={<PartitionOutlined />} onClick={() => setDagTarget({
@@ -458,9 +461,34 @@ export default function OperationPage() {
     },
   ]
 
-  const tableTitle = `工作流实例列表${todayOnlyWorkflows ? '（今日创建）' : ''}${
-    statusFilter ? `（状态：${STATUS_LABEL[statusFilter] || statusFilter}）` : ''
-  }${workflowFilter ? `（仅工作流 #${workflowFilter}，点上方统计卡可取消）` : ''}`
+  const renderInstanceDetail = (row: any) => (
+    <Descriptions size="small" column={2} style={{ maxWidth: 920 }}>
+      <Descriptions.Item label="实例 ID">{row.id}</Descriptions.Item>
+      <Descriptions.Item label="调度运行编号">{row.scheduler_instance_id || '—'}</Descriptions.Item>
+      <Descriptions.Item label="触发来源">{row.trigger_label || row.trigger_type || '—'}</Descriptions.Item>
+      <Descriptions.Item label="运行类型">{row.run_type || '—'}</Descriptions.Item>
+      <Descriptions.Item label="节点进度">
+        共 {row.node_total ?? 0}
+        {(row.running_node_count ?? 0) > 0 ? ` · 运行 ${row.running_node_count}` : ''}
+        {(row.failed_node_count ?? 0) > 0 ? ` · 失败 ${row.failed_node_count}` : ''}
+      </Descriptions.Item>
+      <Descriptions.Item label="最近同步">
+        {row.last_synced_at ? formatInTimeZone(row.last_synced_at, displayTz) : '—'}
+      </Descriptions.Item>
+      {row.scheduler_error ? (
+        <Descriptions.Item label="引擎错误" span={2}>
+          <span style={{ color: '#cf1322' }}>{row.scheduler_error}</span>
+        </Descriptions.Item>
+      ) : null}
+      {row.parent_instance_id ? (
+        <Descriptions.Item label="重跑自">#{row.parent_instance_id}</Descriptions.Item>
+      ) : null}
+    </Descriptions>
+  )
+
+  const tableTitle = `工作流实例${todayOnlyWorkflows ? ' · 今日' : ''}${
+    statusFilter ? ` · ${STATUS_LABEL[statusFilter] || statusFilter}` : ''
+  }${workflowFilter ? ` · 工作流筛选中（点上方统计可取消）` : ''}`
 
   return (
     <div>
@@ -473,7 +501,7 @@ export default function OperationPage() {
         message="仅展示已上线工作流的生产运行实例"
         description={
           <span>
-            运行中与近期实例由 GIDO 持续采集（热账本默认保留约 7 天，更早以生产调度为准），页面每 15 秒自动刷新。调度、补数与运维重跑请在本页查看。数据开发试跑与数据探查查询请到{' '}
+            调度、补数与运维重跑请在本页查看。数据开发试跑与数据探查请到{' '}
             <Link to={R.batch.runHistory}>运行历史</Link>。
           </span>
         }
@@ -634,10 +662,16 @@ export default function OperationPage() {
 
       <div style={{ marginBottom: 8, color: '#666', fontSize: 13 }}>{tableTitle}</div>
       <Table
+        loading={listLoading}
         dataSource={instances}
         columns={workflowColumns}
         rowKey="id"
+        scroll={{ x: 960 }}
         pagination={{ total, pageSize: 20, current: page, onChange: setPage }}
+        expandable={{
+          expandedRowRender: renderInstanceDetail,
+          rowExpandable: () => true,
+        }}
       />
 
       <RunDiagnosisDrawer target={diagnosisTarget} onClose={() => setDiagnosisTarget(null)} />

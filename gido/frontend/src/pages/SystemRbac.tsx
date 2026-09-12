@@ -19,6 +19,7 @@ import { Link } from 'react-router-dom'
 import { R } from '../routes'
 import {
   SPACE_MEMBER_ROLE_OPTS,
+  isPlatformManagerRoleCode,
   platformRoleOptionLabel,
   spaceMemberRoleLabel,
 } from '../utils/roleLabels'
@@ -692,7 +693,17 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
 
   const roleColumns = [
     { title: 'Code', dataIndex: 'code', key: 'code', width: 140 },
-    { title: '名称', dataIndex: 'name', key: 'name' },
+    {
+      title: '名称',
+      dataIndex: 'name',
+      key: 'name',
+      render: (name: string, r: RoleRow) => (
+        <Space size={4} wrap>
+          <span>{name}</span>
+          {isPlatformManagerRoleCode(r.code) ? <Tag color="purple">平台管理</Tag> : null}
+        </Space>
+      ),
+    },
     {
       title: '类型',
       key: 'sys',
@@ -1150,13 +1161,14 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
             type="info"
             showIcon
             style={{ marginBottom: 14 }}
-            message="平台账号"
+            message="先定平台角色，再配空间成员"
             description={
               <>
-                能力只由「平台角色」决定：选 <Tag>超级管理员</Tag> / <Tag>平台管理员</Tag> 即具备平台管理（用户/角色/空间/集成）；
+                本页只配置<strong>平台角色</strong>（全站能力包）。选 <Tag>超级管理员</Tag> / <Tag>平台管理员</Tag>
+                即具备平台管理（用户/角色/空间/集成），体验上视为同类「平台管理」，能力等同。
                 开发、分析、运维等业务角色不再叠加单独的「管理员」开关。
-                <Tag>数据源管家</Tag> 是平台能力包（只管数据源权限码），不是某空间的「空间管理员」成员角色。
-                空间内的 admin/developer/viewer 请到「工作空间成员」配置。
+                <Tag>数据源管家</Tag> 是平台能力包，不是某空间的「空间管理员」。
+                各空间内的空间角色请到「工作空间成员」配置。
               </>
             }
           />
@@ -1170,7 +1182,7 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
     })
     topTabItems.push({
       key: 'roles',
-      label: '角色与权限',
+      label: '平台角色',
       children: (
         <div style={{ maxWidth: 1100 }}>
           <Space style={{ marginBottom: 14 }} wrap>
@@ -1187,8 +1199,14 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
             type="info"
             showIcon
             style={{ marginBottom: 14 }}
-            message="平台角色"
-            description="内置角色一般不可改权限集合；自定义角色用于为同事分配一组权限码。用户与角色的绑定在「用户管理」中完成。"
+            message="先定义平台角色，再到用户管理绑定"
+            description={
+              <>
+                内置角色一般不可改权限集合；自定义角色用于为同事分配一组权限码。
+                <Tag>超级管理员</Tag> 与 <Tag>平台管理员</Tag> 同属平台管理，能力等同（数据模型仍分两条，便于审计）。
+                用户与平台角色的绑定在「用户管理」中完成；空间角色不在此配置。
+              </>
+            }
           />
           {can(me, P.SYSTEM_ROLE_READ) ? (
             <Table rowKey="id" loading={loading} dataSource={roles} columns={roleColumns} pagination={{ pageSize: 12 }} />
@@ -1216,19 +1234,28 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
             style={{ marginBottom: 16 }}
             message={
               canWorkspacePlatformOps
-                ? '平台管理员：可管理任意工作空间的成员与负责人'
-                : '空间管理员：仅管理当前工作空间内的成员角色'
+                ? '先选工作空间，再配空间角色'
+                : '当前空间的成员与空间角色'
             }
             description={
               <>
-                此处<strong>只配置</strong>用户在各工作空间内的角色：
+                {canWorkspacePlatformOps
+                  ? '平台管理账号可管理任意工作空间的成员与负责人。'
+                  : '空间管理员仅管理当前工作空间内的成员角色。'}
+                此处<strong>只配置</strong>用户在各工作空间内的<strong>空间角色</strong>：
                 <Tag>{spaceMemberRoleLabel('admin')}</Tag>
                 <Tag>{spaceMemberRoleLabel('developer')}</Tag>
                 <Tag>{spaceMemberRoleLabel('viewer')}</Tag>
                 ，<strong>不修改</strong>用户的平台角色。
                 「负责人」是空间归属标记（通常同时是空间管理员），不是平台角色。
+                {canWorkspacePlatformOps && (
+                  <>
+                    {' '}
+                    平台管理账号代管空间时，成员表中的空间角色仅表示日常协作身份，不削弱平台代管能力。
+                  </>
+                )}
                 {!canWorkspacePlatformOps && (
-                  <> 创建空间、Dolphin/Flink 等请在侧栏「平台集成」或顶栏联系平台管理员。</>
+                  <> 创建空间、Dolphin/Flink 等请在侧栏「平台集成」或顶栏联系平台管理同事。</>
                 )}
                 {canWorkspacePlatformOps && (
                   <> Dolphin/Flink 等在侧栏「系统管理 → 平台集成」；新建空间在顶栏；负责人 (owner) 变更见下方。</>
@@ -1291,7 +1318,7 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
                   </Space>
                 ),
               },
-              { title: '空间内角色', dataIndex: 'role', width: 140, render: (r: string) => spaceMemberRoleLabel(r) },
+              { title: '空间角色', dataIndex: 'role', width: 140, render: (r: string) => spaceMemberRoleLabel(r) },
               {
                 title: '操作',
                 width: 100,
@@ -1419,8 +1446,8 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
           style={{ marginBottom: 14 }}
           message={
             canAccessControl
-              ? '选择「空间管理员」可将该同事设为所选工作空间的管理员'
-              : '仅从「尚未加入本空间的平台用户」中选人；平台级角色与全局权限不在此修改。选择「空间管理员」即本空间的空间管理员。'
+              ? '选择「空间管理员」可将该同事设为所选工作空间的空间管理员'
+              : '仅从「尚未加入本空间的平台用户」中选人；平台角色与全局权限不在此修改。选择「空间管理员」即本空间的空间管理员。'
           }
         />
         <Form form={wsMemberForm} layout="vertical">

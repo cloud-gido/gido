@@ -5,7 +5,7 @@
  * @date 2026-06-24
  */
 import { useEffect, useState } from 'react'
-import { Alert, Button, Divider, Dropdown, Drawer, Form, Input, InputNumber, message, Select, Space, Switch, Table, Tag, Tooltip, type MenuProps } from 'antd'
+import { Alert, Button, Descriptions, Divider, Dropdown, Drawer, Form, Input, InputNumber, message, Select, Space, Switch, Table, Tag, Tooltip, type MenuProps } from 'antd'
 import { ClockCircleOutlined, DownOutlined, FileTextOutlined, NotificationOutlined, PartitionOutlined, PlusOutlined, QuestionCircleOutlined, ReloadOutlined, SettingOutlined, TeamOutlined } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { alertApi, operationApi, workspaceApi } from '../api'
@@ -408,104 +408,97 @@ export default function AlertCenterPage() {
     return items
   }
 
+  const renderNotifyTag = (v: string, row: any) => {
+    const tag = <Tag color={NOTIFY_COLOR[v] || 'default'}>{NOTIFY_LABEL[v] || v || 'pending'}</Tag>
+    if (v === 'deferred') {
+      return (
+        <Tooltip
+          title={
+            row.notify_next_retry_at
+              ? `静默时段内不推群，${formatInTimeZone(row.notify_next_retry_at, displayTz)} 自动补推`
+              : '静默时段内不推群，时段结束后自动补推'
+          }
+        >
+          {tag}
+        </Tooltip>
+      )
+    }
+    if (v !== 'failed' && v !== 'partial') return tag
+    const tip = [
+      row.notify_pending_channels ? `待重投渠道：${row.notify_pending_channels}` : null,
+      row.notify_next_retry_at
+        ? `下次重投：${formatInTimeZone(row.notify_next_retry_at, displayTz)}`
+        : '已达重试上限，需人工处理',
+      row.notify_last_error ? `最近错误：${row.notify_last_error}` : null,
+    ]
+      .filter(Boolean)
+      .join('\n')
+    return (
+      <Tooltip title={tip}>
+        <span>
+          {tag}
+          {row.notify_attempts ? (
+            <span style={{ color: '#888', fontSize: 12 }}>×{row.notify_attempts}</span>
+          ) : null}
+        </span>
+      </Tooltip>
+    )
+  }
+
   const columns = [
-    { title: '告警', dataIndex: 'id', width: 86, render: (id: number) => `#${id}` },
     {
-      title: '类型',
-      dataIndex: 'alert_type',
-      width: 110,
-      render: (v: string) => (
-        <Tag color={ALERT_TYPE_COLOR[v] || 'default'}>{ALERT_TYPE_LABEL[v] || v || 'failed'}</Tag>
+      title: '告警',
+      ellipsis: true,
+      render: (_: any, row: any) => (
+        <div>
+          <div style={{ fontWeight: 500 }}>
+            {row.workflow_name || '—'}
+            <span style={{ marginLeft: 8, fontWeight: 400 }}>
+              <Tag color={ALERT_TYPE_COLOR[row.alert_type] || 'default'}>
+                {ALERT_TYPE_LABEL[row.alert_type] || row.alert_type || 'failed'}
+              </Tag>
+              <Tag color={LEVEL_COLOR[row.level] || 'default'}>{LEVEL_LABEL[row.level] || row.level}</Tag>
+            </span>
+          </div>
+          <div style={{ color: '#8c8c8c', fontSize: 12 }}>
+            {includeAllWorkspaces && row.workspace_name ? `${row.workspace_name} · ` : ''}
+            {row.business_date ? `业务日 ${row.business_date}` : '业务日 —'}
+            {row.node_name ? ` · ${row.node_name}` : ''}
+          </div>
+        </div>
       ),
     },
-    { title: '级别', dataIndex: 'level', width: 90, render: (v: string) => <Tag color={LEVEL_COLOR[v] || 'default'}>{LEVEL_LABEL[v] || v}</Tag> },
-    { title: '状态', dataIndex: 'status', width: 100, render: (v: string) => <Tag color={STATUS_COLOR[v] || 'default'}>{STATUS_LABEL[v] || v}</Tag> },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      width: 100,
+      render: (v: string) => <Tag color={STATUS_COLOR[v] || 'default'}>{STATUS_LABEL[v] || v}</Tag>,
+    },
     {
       title: '通知',
       dataIndex: 'notification_status',
-      width: 150,
-      render: (v: string, row: any) => {
-        const tag = <Tag color={NOTIFY_COLOR[v] || 'default'}>{NOTIFY_LABEL[v] || v || 'pending'}</Tag>
-        if (v === 'deferred') {
-          return (
-            <Tooltip
-              title={
-                row.notify_next_retry_at
-                  ? `静默时段内不推群，${formatInTimeZone(row.notify_next_retry_at, displayTz)} 自动补推`
-                  : '静默时段内不推群，时段结束后自动补推'
-              }
-            >
-              {tag}
-            </Tooltip>
-          )
-        }
-        if (v !== 'failed' && v !== 'partial') return tag
-        const tip = [
-          row.notify_pending_channels ? `待重投渠道：${row.notify_pending_channels}` : null,
-          row.notify_next_retry_at
-            ? `下次重投：${formatInTimeZone(row.notify_next_retry_at, displayTz)}`
-            : '已达重试上限，需人工处理',
-          row.notify_last_error ? `最近错误：${row.notify_last_error}` : null,
-        ]
-          .filter(Boolean)
-          .join('\n')
-        return (
-          <Tooltip title={tip}>
-            <span>
-              {tag}
-              {row.notify_attempts ? (
-                <span style={{ color: '#888', fontSize: 12 }}>×{row.notify_attempts}</span>
-              ) : null}
-            </span>
-          </Tooltip>
-        )
-      },
+      width: 110,
+      render: (v: string, row: any) => renderNotifyTag(v, row),
     },
     {
-      title: '工作流 / 实例',
-      width: 230,
-      render: (_: any, row: any) => (
-        <div>
-          <div>{row.workflow_name || '-'}</div>
-          <div style={{ color: '#888', fontSize: 12 }}>
-            {includeAllWorkspaces && row.workspace_name ? `${row.workspace_name} · ` : ''}
-            实例 #{row.workflow_instance_id || '-'}
-            {row.business_date ? ` · 业务日期 ${row.business_date}` : ''}
-          </div>
-        </div>
-      ),
-    },
-    {
-      title: '失败节点',
-      width: 210,
-      render: (_: any, row: any) => (
-        <div>
-          <div>{row.node_name || (row.node_instance_id ? `节点实例 #${row.node_instance_id}` : '工作流级告警')}</div>
-          <div style={{ color: '#888', fontSize: 12 }}>
-            {row.node_type ? <Tag>{row.node_type}</Tag> : null}
-            {row.node_instance_id ? `节点实例 #${row.node_instance_id}` : ''}
-          </div>
-        </div>
-      ),
-    },
-    {
-      title: '失败摘要',
+      title: '摘要',
       dataIndex: 'message',
       ellipsis: true,
       render: (messageText: string, row: any) => {
         const text = row.log_summary || messageText || ''
-        return text ? <Tooltip title={text}><span>{text}</span></Tooltip> : '-'
+        return text ? <Tooltip title={text}><span>{text}</span></Tooltip> : '—'
       },
     },
     {
       title: '发生时间',
       dataIndex: 'occurred_at',
       width: 170,
-      render: (v: string) => v ? formatInTimeZone(v, displayTz) : '-',
+      render: (v: string) => (v ? formatInTimeZone(v, displayTz) : '—'),
     },
     {
       title: '操作',
       width: 200,
+      fixed: 'right' as const,
       render: (_: any, row: any) => (
         <Space size={4}>
           {row.workflow_id && (
@@ -525,7 +518,6 @@ export default function AlertCenterPage() {
               </Button>
             </Tooltip>
           )}
-          {/* 未处理先确认（认领），确认过就只剩解决 */}
           {row.status === 'open' ? (
             <Button type="link" size="small" onClick={() => ack(row.id)}>确认</Button>
           ) : row.status !== 'resolved' ? (
@@ -539,15 +531,45 @@ export default function AlertCenterPage() {
     },
   ]
 
+  const renderAlertDetail = (row: any) => (
+    <Descriptions size="small" column={2} style={{ maxWidth: 920 }}>
+      <Descriptions.Item label="告警 ID">#{row.id}</Descriptions.Item>
+      <Descriptions.Item label="工作流实例">{row.workflow_instance_id ? `#${row.workflow_instance_id}` : '—'}</Descriptions.Item>
+      <Descriptions.Item label="节点">
+        {row.node_name || (row.node_instance_id ? `节点实例 #${row.node_instance_id}` : '工作流级告警')}
+        {row.node_type ? ` · ${row.node_type}` : ''}
+      </Descriptions.Item>
+      <Descriptions.Item label="节点实例">{row.node_instance_id ? `#${row.node_instance_id}` : '—'}</Descriptions.Item>
+      <Descriptions.Item label="通知状态" span={2}>
+        {renderNotifyTag(row.notification_status, row)}
+        {row.notify_pending_channels ? ` · 待重投：${row.notify_pending_channels}` : ''}
+        {row.notify_next_retry_at
+          ? ` · 下次：${formatInTimeZone(row.notify_next_retry_at, displayTz)}`
+          : ''}
+      </Descriptions.Item>
+      {(row.log_summary || row.message) ? (
+        <Descriptions.Item label="失败详情" span={2}>
+          <span style={{ whiteSpace: 'pre-wrap' }}>{row.log_summary || row.message}</span>
+        </Descriptions.Item>
+      ) : null}
+      {row.notify_last_error ? (
+        <Descriptions.Item label="通知错误" span={2}>
+          <span style={{ color: '#cf1322' }}>{row.notify_last_error}</span>
+        </Descriptions.Item>
+      ) : null}
+    </Descriptions>
+  )
+
   return (
     <div>
       <h2>告警中心</h2>
       <Alert
         type="info"
         showIcon
+        closable
         style={{ marginBottom: 16 }}
-        message="执行失败、未按时完成、运行超时都会进入本页并按值班配置推送"
-        description="失败由运行采集实时发现；未按时完成与运行超时由「基线」按分钟巡检。打开或保存通知配置后，历史失败只留在告警中心，不再刷群。节点失败不单独推送。"
+        message="执行失败、未按时完成、运行超时进入本页，并按值班配置推送"
+        description="打开或保存通知配置后，更早的失败只留在告警中心，不再刷群。节点失败不单独推送。"
       />
       {loadError ? (
         <Alert type="error" showIcon closable style={{ marginBottom: 12 }} message={loadError} />
@@ -641,7 +663,12 @@ export default function AlertCenterPage() {
         columns={columns}
         rowKey="id"
         loading={loading}
+        scroll={{ x: 960 }}
         pagination={{ total, pageSize: 20, current: page, onChange: setPage }}
+        expandable={{
+          expandedRowRender: renderAlertDetail,
+          rowExpandable: () => true,
+        }}
       />
       <RunDiagnosisDrawer target={diagnosisTarget} onClose={() => setDiagnosisTarget(null)} />
       <Drawer title="节点运行日志" open={logDrawer} onClose={() => setLogDrawer(false)} width={720}>

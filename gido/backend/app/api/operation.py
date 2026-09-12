@@ -5,7 +5,7 @@
 import logging
 import re
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session, selectinload, load_only
+from sqlalchemy.orm import Session, load_only
 from sqlalchemy import and_, desc, func, or_, text
 from typing import Optional
 from datetime import datetime, timedelta
@@ -299,19 +299,11 @@ def list_all_instances(
             )
         )
     total = q.with_entities(func.count(WorkflowInstance.id)).scalar() or 0
-    # 排序用 coalesce，避免各方言对 NULLS FIRST/LAST 差异（MySQL 无 NULLS LAST）
-    # selectinload + load_only：一页只要节点状态/名称，禁止拖回 log_content 大字段
+    # 按 created_at+id 排：有 ix_wi_created_at，能 index scan + limit。
+    # 不要用 coalesce(started_at, created_at)：表达式排序常逼全表 filesort，20 条也会等整表扫完。
     instances = (
-        q.options(
-            selectinload(WorkflowInstance.node_instances).load_only(
-                NodeInstance.id,
-                NodeInstance.workflow_instance_id,
-                NodeInstance.node_id,
-                NodeInstance.status,
-            )
-        )
-        .order_by(
-            desc(func.coalesce(WorkflowInstance.started_at, WorkflowInstance.created_at)),
+        q.order_by(
+            desc(WorkflowInstance.created_at),
             desc(WorkflowInstance.id),
         )
         .offset((page - 1) * page_size)
@@ -335,7 +327,7 @@ def list_all_instances(
 
 
 def _serialize_instance_rows(db: Session, instances: list) -> list:
-    """批量拼列表行，禁止在循环里按条查库。"""
+    """批量拼列表行，禁止在循环里按条查库；节点只聚合计数 + 失败/运行中名称。"""
     if not instances:
         return []
     wf_ids = {int(inst.workflow_id) for inst in instances if inst.workflow_id}
@@ -348,12 +340,45 @@ def _serialize_instance_rows(db: Session, instances: list) -> list:
         int(w.id): w
         for w in db.query(Workspace).filter(Workspace.id.in_(ws_ids)).all()
     } if ws_ids else {}
-    node_ids = {
-        int(ni.node_id)
-        for inst in instances
-        for ni in (inst.node_instances or [])
-        if ni.node_id
-    }
+
+    wi_ids = [int(inst.id) for inst in instances]
+    # 按状态聚合：列表不需要把每个成功节点都拉进内存
+    status_counts: dict[int, dict[str, int]] = {wid: {} for wid in wi_ids}
+    if wi_ids:
+        for wid, st, cnt in (
+            db.query(
+                NodeInstance.workflow_instance_id,
+                NodeInstance.status,
+                func.count(NodeInstance.id),
+            )
+            .filter(NodeInstance.workflow_instance_id.in_(wi_ids))
+            .group_by(NodeInstance.workflow_instance_id, NodeInstance.status)
+            .all()
+        ):
+            status_counts.setdefault(int(wid), {})[st or ""] = int(cnt)
+
+    interesting: dict[int, list] = {wid: [] for wid in wi_ids}
+    node_ids: set[int] = set()
+    if wi_ids:
+        for ni in (
+            db.query(NodeInstance)
+            .options(
+                load_only(
+                    NodeInstance.id,
+                    NodeInstance.workflow_instance_id,
+                    NodeInstance.node_id,
+                    NodeInstance.status,
+                )
+            )
+            .filter(
+                NodeInstance.workflow_instance_id.in_(wi_ids),
+                NodeInstance.status.in_(("running", "pending", "failed")),
+            )
+            .all()
+        ):
+            interesting.setdefault(int(ni.workflow_instance_id), []).append(ni)
+            if ni.node_id:
+                node_ids.add(int(ni.node_id))
     node_names = {
         int(n.id): n.name
         for n in db.query(TaskNode).filter(TaskNode.id.in_(node_ids)).all()
@@ -364,7 +389,9 @@ def _serialize_instance_rows(db: Session, instances: list) -> list:
         wf = workflows.get(int(inst.workflow_id)) if inst.workflow_id else None
         tt = inst.trigger_type
         dct = getattr(inst, "dolphin_command_type", None)
-        node_rows = list(inst.node_instances or [])
+        by_st = status_counts.get(int(inst.id), {})
+        node_total = sum(by_st.values())
+        node_rows = interesting.get(int(inst.id), [])
         running_nodes = [ni for ni in node_rows if ni.status in ("running", "pending")]
         failed_nodes = [ni for ni in node_rows if ni.status == "failed"]
         duration_seconds = None
@@ -394,7 +421,7 @@ def _serialize_instance_rows(db: Session, instances: list) -> list:
             "last_synced_at": getattr(inst, "last_synced_at", None),
             "scheduler_state_raw": getattr(inst, "scheduler_state_raw", None),
             "scheduler_error": getattr(inst, "scheduler_error", None),
-            "node_total": len(node_rows),
+            "node_total": node_total,
             "running_node_count": len(running_nodes),
             "failed_node_count": len(failed_nodes),
             "current_nodes": [node_names.get(ni.node_id, f"节点#{ni.node_id}") for ni in running_nodes[:5]],
@@ -410,6 +437,9 @@ def _run_type_counts(scoped_query, *, cache_key: str) -> dict:
 
     专业 SaaS 做法：标签数字允许与列表差一个轮询周期（~15s），不要每次先扫
     count+max 做指纹——那本身就和列表 count 一样贵。命中短缓存直接返回。
+
+    未回填的 run_type=NULL 行：计入 manual，禁止再对历史行跑 4 次 ILIKE COUNT
+    （那会把「20 条列表」拖成秒级，和 LIMIT 无关）。
     """
     import time
 
@@ -437,19 +467,15 @@ def _run_type_counts(scoped_query, *, cache_key: str) -> dict:
         .all()
     )
     counts = {rt: 0 for rt in RUN_TYPES}
-    has_legacy = False
+    legacy = 0
     for stored, cnt in rows:
+        n = int(cnt)
         if stored in counts:
-            counts[stored] += int(cnt)
+            counts[stored] += n
         elif not stored:
-            has_legacy = True
-    if has_legacy:
-        # 尚未回填的历史行：退回旧路径一次，避免标签数字对不上，也避免 NULL/空串分组重复累加
-        legacy = scoped_query.filter(
-            or_(WorkflowInstance.run_type.is_(None), WorkflowInstance.run_type == "")
-        )
-        for rt in RUN_TYPES:
-            counts[rt] += legacy.filter(_run_type_condition(rt)).count()
+            legacy += n
+    if legacy:
+        counts["manual"] += legacy
     _run_type_count_local[full_key] = (now, counts)
     try:
         cache_set(full_key, counts, 15)
