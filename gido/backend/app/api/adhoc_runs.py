@@ -98,7 +98,7 @@ def list_adhoc_runs(
 
     items = []
     for r in rows:
-        item = serialize_adhoc_run(r, include_result=False)
+        item = serialize_adhoc_run(r, include_result=False, include_sql=False)
         u = users.get(r.triggered_by) if r.triggered_by else None
         item["triggered_by_name"] = (u.full_name or u.username) if u else None
         ds = datasources.get(r.datasource_id) if r.datasource_id else None

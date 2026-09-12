@@ -22,27 +22,31 @@ describe('roleLabels', () => {
     expect(spaceMemberRoleLabel(null)).toBe('—')
   })
 
-  it('workspace switcher shows name · space role', () => {
-    expect(workspaceSwitcherLabel({ name: 'infras', my_role: 'developer' })).toBe('infras · 开发者')
-    expect(workspaceSwitcherLabel({ name: 'infras', my_role: 'admin' })).toBe('infras · 空间管理员')
+  it('workspace switcher label is space name only (role lives in account chip)', () => {
+    expect(workspaceSwitcherLabel({ name: 'infras', my_role: 'developer' })).toBe('infras')
+    expect(workspaceSwitcherLabel({ name: 'infras', my_role: 'admin' })).toBe('infras')
     expect(workspaceSwitcherLabel({ name: 'infras' })).toBe('infras')
-    expect(workspaceSwitcherLabel({ name: '  ads  ', my_role: 'viewer' })).toBe('ads · 只读')
+    expect(workspaceSwitcherLabel({ name: '  ads  ', my_role: 'viewer' })).toBe('ads')
     expect(workspaceSwitcherLabel(null)).toBe('未命名空间')
   })
 
-  it('workspace switcher title names the space role', () => {
+  it('workspace switcher title points role to account area', () => {
     expect(workspaceSwitcherTitle({ name: 'infras', my_role: 'admin' })).toContain('空间管理员')
-    expect(workspaceSwitcherTitle({ name: 'infras', my_role: 'admin' })).toContain('空间角色')
+    expect(workspaceSwitcherTitle({ name: 'infras', my_role: 'admin' })).toContain('右上角')
     expect(workspaceSwitcherTitle({ name: 'infras' })).toContain('切换工作空间')
   })
 
-  it('formatSpaceContextLabel is name · role for header secondary line', () => {
-    expect(formatSpaceContextLabel({ name: 'infras', my_role: 'developer' })).toBe('infras · 开发者')
-    expect(formatSpaceContextLabel({ my_role: null })).toBe(null)
-    expect(headerAccountRoleLabel({ name: 'ads', my_role: 'viewer' })).toBe('ads · 只读')
+  it('account chip mirrors current workspace role only', () => {
+    expect(headerAccountRoleLabel({ my_role: 'developer' })).toBe('开发者')
+    expect(headerAccountRoleLabel({ name: 'infras', my_role: 'admin' })).toBe('空间管理员')
+    expect(headerAccountRoleLabel({ my_role: null })).toBe(null)
   })
 
-  it('formatUserContextLabel exposes platform + space dual identity', () => {
+  it('formatSpaceContextLabel keeps name · role for account menu', () => {
+    expect(formatSpaceContextLabel({ name: 'infras', my_role: 'developer' })).toBe('infras · 开发者')
+  })
+
+  it('formatUserContextLabel: chrome uses space role; platform for menu only', () => {
     expect(
       formatUserContextLabel(
         { role_name: '超级管理员', role_code: 'super_admin', is_admin: true },
@@ -50,11 +54,7 @@ describe('roleLabels', () => {
       ),
     ).toEqual({
       platform: '超级管理员',
-      space: 'infras · 开发者',
-    })
-    expect(formatUserContextLabel({ role_name: '数据分析 (只读)' }, null)).toEqual({
-      platform: '数据分析 (只读)',
-      space: null,
+      space: '开发者',
     })
   })
 
@@ -64,7 +64,7 @@ describe('roleLabels', () => {
     expect(platformRoleOptionLabel({ code: 'workspace_steward', name: '数据源管家' })).toBe('数据源管家（平台角色·非空间成员）')
   })
 
-  it('platformIdentityLabel prefers role_name for chrome subtitle', () => {
+  it('platformIdentityLabel is raw name for account menu, not chrome', () => {
     expect(platformIdentityLabel({ role_name: '数据分析 (只读)', role_code: 'analyst' })).toBe('数据分析 (只读)')
     expect(platformIdentityLabel({ role_name: '超级管理员', role_code: 'super_admin', is_admin: true })).toBe('超级管理员')
     expect(platformIdentityLabel({ role_name: null, role_code: 'platform_admin' })).toBe('平台管理员')

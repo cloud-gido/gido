@@ -4,18 +4,24 @@
  * 运行历史：数据开发试跑与数据探查的交互式执行记录
  */
 import { useEffect, useState } from 'react'
-import { Table, Tag, Select, Button, Switch, message } from 'antd'
+import { Table, Tag, Select, Button, Switch, message, Tooltip } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { adhocRunsApi } from '../api'
 import { useAppStore } from '../store'
-import { formatInTimeZone } from '../utils/datetime'
+import { formatInTimeZone, formatInTimeZoneCompact } from '../utils/datetime'
 import { R } from '../routes'
 
 const STATUS_COLOR: Record<string, string> = {
   success: 'green',
   failed: 'red',
   running: 'blue',
+}
+
+const STATUS_LABEL: Record<string, string> = {
+  success: '成功',
+  failed: '失败',
+  running: '运行中',
 }
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -38,6 +44,8 @@ export default function RunHistoryPage() {
   const [canViewAll, setCanViewAll] = useState(false)
   const [allowedSources, setAllowedSources] = useState<string[]>(['studio', 'probe'])
   const [loading, setLoading] = useState(false)
+
+  const openDetail = (id: number) => navigate(`${R.batch.runHistory}/${id}`)
 
   const load = async () => {
     if (!wsId) return
@@ -67,69 +75,100 @@ export default function RunHistoryPage() {
 
   const columns = [
     {
-      title: 'ID',
-      dataIndex: 'id',
-      width: 80,
-      render: (id: number) => (
-        <a onClick={() => navigate(`${R.batch.runHistory}/${id}`)}>#{id}</a>
-      ),
-    },
-    {
-      title: '来源',
-      dataIndex: 'source',
-      width: 100,
-      render: (s: string) => SOURCE_LABEL[s] || s,
-    },
-    {
-      title: '对象',
-      dataIndex: 'object_name',
+      title: '执行内容',
       ellipsis: true,
-      render: (v: string) => v || '—',
+      render: (_: unknown, row: any) => {
+        const title = row.object_name || SOURCE_LABEL[row.source] || '未命名'
+        const summary = row.sql_summary || (row.error_message ? String(row.error_message).slice(0, 120) : '')
+        return (
+          <div
+            style={{ minWidth: 0, cursor: 'pointer' }}
+            onClick={() => openDetail(row.id)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                openDetail(row.id)
+              }
+            }}
+            role="link"
+            tabIndex={0}
+          >
+            <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {title}
+              <Tag style={{ marginLeft: 8, fontWeight: 400 }}>{SOURCE_LABEL[row.source] || row.source}</Tag>
+            </div>
+            <Tooltip title={summary || undefined}>
+              <div style={{
+                color: row.status === 'failed' && !row.sql_summary ? '#cf1322' : '#8c8c8c',
+                fontSize: 12,
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+              >
+                {summary || '—'}
+              </div>
+            </Tooltip>
+          </div>
+        )
+      },
     },
     {
       title: '数据源',
       dataIndex: 'datasource_name',
-      width: 140,
+      width: 120,
       ellipsis: true,
       render: (v: string) => v || '—',
     },
     {
       title: '状态',
       dataIndex: 'status',
-      width: 90,
-      render: (s: string) => <Tag color={STATUS_COLOR[s] || 'default'}>{s}</Tag>,
+      width: 88,
+      render: (s: string) => (
+        <Tag color={STATUS_COLOR[s] || 'default'}>{STATUS_LABEL[s] || s}</Tag>
+      ),
     },
     {
       title: '执行人',
       dataIndex: 'triggered_by_name',
-      width: 120,
+      width: 100,
+      ellipsis: true,
       render: (v: string) => v || '—',
     },
     {
       title: '行数',
       dataIndex: 'rows_returned',
-      width: 80,
+      width: 72,
       render: (v: number, row: any) =>
         row.result_truncated ? `${v}+` : (v ?? 0),
     },
     {
       title: '耗时',
       dataIndex: 'duration_ms',
-      width: 90,
+      width: 72,
       render: (ms: number) => (ms != null ? `${(ms / 1000).toFixed(1)}s` : '—'),
     },
     {
-      title: '开始时间',
+      title: '时间',
       dataIndex: 'started_at',
-      width: 170,
-      render: (v: string) => formatInTimeZone(v, displayTz),
+      width: 140,
+      render: (v: string) => (
+        v ? (
+          <Tooltip title={formatInTimeZone(v, displayTz)}>
+            <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: 12.5 }}>
+              {formatInTimeZoneCompact(v, displayTz)}
+            </span>
+          </Tooltip>
+        ) : '—'
+      ),
     },
     {
       title: '操作',
-      width: 100,
+      width: 88,
       render: (_: unknown, row: any) => (
-        <Button type="link" size="small" onClick={() => navigate(`${R.batch.runHistory}/${row.id}`)}>
-          查看详情
+        <Button type="link" size="small" onClick={() => openDetail(row.id)}>
+          详情
         </Button>
       ),
     },
@@ -156,7 +195,10 @@ export default function RunHistoryPage() {
           style={{ width: 120 }}
           value={status}
           onChange={v => { setStatus(v); setPage(1) }}
-          options={['success', 'failed'].map(s => ({ label: s, value: s }))}
+          options={[
+            { label: '成功', value: 'success' },
+            { label: '失败', value: 'failed' },
+          ]}
         />
         {canViewAll && (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
@@ -171,6 +213,7 @@ export default function RunHistoryPage() {
         dataSource={items}
         columns={columns}
         rowKey="id"
+        tableLayout="fixed"
         pagination={{ total, pageSize: 20, current: page, onChange: setPage }}
       />
     </div>

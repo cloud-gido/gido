@@ -704,32 +704,34 @@ export default function ProbePage() {
           />
         )}
       </StudioWorkbenchTopStrip>
-      <Alert
-        type="info"
-        showIcon
-        banner
-        style={{ flexShrink: 0 }}
-        message="支持多条 SELECT（分号分隔）。已单独配置数据源的查询保持原配置；新建查询继承空间默认数据源。"
-      />
       <StudioWorkbenchToolbar wrap>
-        <Select
-          allowClear
-          style={{ width: 280 }}
-          value={hasExplicitDatasource(activeScript?.datasource_id) ? activeScript?.datasource_id : undefined}
-          placeholder={
-            probeDsResolve?.effective
-              ? `继承空间默认：${probeDsResolve.effective.name}`
-              : '请先在空间设置配置默认数据源'
+        <Tooltip title="支持多条 SELECT（分号分隔）。已单独配置数据源的查询保持原配置；新建查询继承空间默认数据源。">
+          <Select
+            allowClear
+            style={{ width: 280 }}
+            value={hasExplicitDatasource(activeScript?.datasource_id) ? activeScript?.datasource_id : undefined}
+            placeholder={
+              probeDsResolve?.effective
+                ? `继承空间默认：${probeDsResolve.effective.name}`
+                : '请先在空间设置配置默认数据源'
+            }
+            onChange={v => patchActiveScript({ datasource_id: v ?? undefined })}
+            options={datasources.map((d: any) => ({ label: `${d.name} (${d.ds_type})`, value: d.id }))}
+          />
+        </Tooltip>
+        <Tag
+          style={{ margin: 0, minWidth: 88, textAlign: 'center' }}
+          color={
+            !probeDsResolve
+              ? 'default'
+              : probeDsResolve.effectiveId
+                ? (probeDsResolve.source === 'explicit' ? 'purple' : 'blue')
+                : 'default'
           }
-          onChange={v => patchActiveScript({ datasource_id: v ?? undefined })}
-          options={datasources.map((d: any) => ({ label: `${d.name} (${d.ds_type})`, value: d.id }))}
-        />
-        {probeDsResolve && (
-          <Tag color={probeDsResolve.effectiveId ? (probeDsResolve.source === 'explicit' ? 'purple' : 'blue') : 'default'}>
-            {datasourceTagText(probeDsResolve)}
-          </Tag>
-        )}
-        <span>最大行数</span>
+        >
+          {probeDsResolve ? datasourceTagText(probeDsResolve) : '数据源…'}
+        </Tag>
+        <span style={{ color: '#8c8c8c', fontSize: 12 }}>最大行数</span>
         <InputNumber
           min={1}
           max={SQL_RESULT_ROW_CAP}

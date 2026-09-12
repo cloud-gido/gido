@@ -2,11 +2,11 @@
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * 角色展示约定（鉴权仍两层，界面口径对齐）：
- * - 平台账号角色 →「平台角色」（用户管理 / 顶栏副标题）
- * - 空间成员角色 →「空间角色」（空间切换器 / 顶栏次要行 / 工作空间成员）
+ * 角色展示约定（鉴权仍两层，顶栏只突出当前上下文）：
+ * - 空间切换器：只显示空间名（回答「在哪个空间」）
+ * - 顶栏账号区：只显示本空间成员角色（回答「我是谁」）；三端共用 WorkspaceHeaderBar
+ * - 平台角色：仅出现在账号菜单「平台权限」、用户管理；不当日常第二身份并排展示
  * - 负责人：空间归属属性（owner），不是第三种权限角色
- * - 禁止对外说光秃秃的「管理员」——说清是平台管理还是空间管理员
  */
 
 /** 工作空间成员角色（与后端 WorkspaceMember.role 一致） */
@@ -39,29 +39,36 @@ export function spaceMemberRoleLabel(role?: string | null): string {
   return SPACE_MEMBER_ROLE_LABELS[role] || role
 }
 
-/** 空间切换器主文案：名称 · 空间角色（批 / 流 / 服顶栏共用） */
+/** 空间切换器主文案：仅空间名（批 / 流 / 服顶栏共用） */
 export function workspaceSwitcherLabel(workspace?: {
   name?: string | null
   my_role?: string | null
 } | null): string {
-  const name = (workspace?.name || '').trim() || '未命名空间'
-  if (!workspace?.my_role) return name
-  return `${name} · ${spaceMemberRoleLabel(workspace.my_role)}`
+  return (workspace?.name || '').trim() || '未命名空间'
 }
 
-/** 空间切换器悬停补充 */
+/** 空间切换器悬停：角色在右上角账号区，这里仅作发现提示 */
 export function workspaceSwitcherTitle(workspace?: {
   name?: string | null
   my_role?: string | null
 } | null): string {
-  const name = (workspace?.name || '').trim() || '未命名空间'
-  if (!workspace?.my_role) return `${name} · 切换工作空间`
-  return `${name} · 空间角色 ${spaceMemberRoleLabel(workspace.my_role)}`
+  const name = workspaceSwitcherLabel(workspace)
+  const role = headerAccountRoleLabel(workspace)
+  return role ? `${name} · 当前角色见右上角（${role}）` : `${name} · 切换工作空间`
+}
+
+/** 顶栏账号副标题：只显示当前空间角色，避免与平台角色并排误解 */
+export function headerAccountRoleLabel(workspace?: {
+  my_role?: string | null
+  name?: string | null
+} | null): string | null {
+  if (!workspace?.my_role) return null
+  return spaceMemberRoleLabel(workspace.my_role)
 }
 
 /**
- * 当前空间上下文行：`infras · 开发者`。
- * 无空间成员角色时返回 null（平台代管账号也可能无成员行）。
+ * 菜单内「当前空间」说明：空间名 · 空间角色。
+ * 不用于顶栏主文案。
  */
 export function formatSpaceContextLabel(workspace?: {
   name?: string | null
@@ -70,14 +77,6 @@ export function formatSpaceContextLabel(workspace?: {
   if (!workspace?.my_role) return null
   const name = (workspace.name || '').trim() || '未命名空间'
   return `${name} · ${spaceMemberRoleLabel(workspace.my_role)}`
-}
-
-/** @deprecated 使用 formatSpaceContextLabel；保留别名以免旧引用断裂 */
-export function headerAccountRoleLabel(workspace?: {
-  my_role?: string | null
-  name?: string | null
-} | null): string | null {
-  return formatSpaceContextLabel(workspace)
 }
 
 /** 平台管理类角色（与后端 PLATFORM_MANAGER_ROLE_CODES 对齐） */
@@ -96,8 +95,8 @@ export function platformRoleOptionLabel(role: { code?: string; name?: string }):
 }
 
 /**
- * 平台账号角色展示名（顶栏副标题 / 账号菜单「平台角色」）。
- * 优先 role_name；平台管理类无名称时回退「平台管理员」。
+ * 平台账号角色原始展示名（用户管理 / 账号菜单「平台权限」）。
+ * 不用于顶栏主文案。
  */
 export function platformIdentityLabel(user?: {
   role_name?: string | null
@@ -110,7 +109,7 @@ export function platformIdentityLabel(user?: {
   return null
 }
 
-/** 顶栏双身份：平台角色 + 当前空间上下文 */
+/** 顶栏：空间角色；菜单可用 platform 作补充 */
 export function formatUserContextLabel(
   user?: {
     role_name?: string | null
@@ -124,6 +123,6 @@ export function formatUserContextLabel(
 ): { platform: string | null; space: string | null } {
   return {
     platform: platformIdentityLabel(user),
-    space: formatSpaceContextLabel(workspace),
+    space: headerAccountRoleLabel(workspace),
   }
 }

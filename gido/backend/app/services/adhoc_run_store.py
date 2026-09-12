@@ -14,6 +14,30 @@ from app.models.workspace import AdhocRun
 logger = logging.getLogger(__name__)
 
 ADHOC_RESULT_PREVIEW_ROWS = 200
+SQL_SUMMARY_MAX_LEN = 140
+
+
+def summarize_sql(sql: Optional[str], max_len: int = SQL_SUMMARY_MAX_LEN) -> Optional[str]:
+    """列表用 SQL 摘要：去注释、压空白，截断到可读长度。"""
+    if not sql or not str(sql).strip():
+        return None
+    lines: list[str] = []
+    for raw in str(sql).splitlines():
+        line = raw
+        # 去掉行内 -- 注释（简单启发，足够列表摘要）
+        dash = line.find("--")
+        if dash >= 0:
+            line = line[:dash]
+        s = line.strip()
+        if not s:
+            continue
+        lines.append(s)
+    compact = " ".join(" ".join(lines).split())
+    if not compact:
+        return None
+    if len(compact) > max_len:
+        return compact[: max_len - 1] + "…"
+    return compact
 
 
 def truncate_result_preview(result: Optional[Dict[str, Any]], max_rows: int = ADHOC_RESULT_PREVIEW_ROWS) -> Optional[Dict[str, Any]]:
@@ -92,7 +116,12 @@ def save_adhoc_run(
         return None
 
 
-def serialize_adhoc_run(row: AdhocRun, *, include_result: bool = False) -> Dict[str, Any]:
+def serialize_adhoc_run(
+    row: AdhocRun,
+    *,
+    include_result: bool = False,
+    include_sql: bool = True,
+) -> Dict[str, Any]:
     data: Dict[str, Any] = {
         "id": row.id,
         "workspace_id": row.workspace_id,
@@ -102,7 +131,7 @@ def serialize_adhoc_run(row: AdhocRun, *, include_result: bool = False) -> Dict[
         "object_name": row.object_name,
         "node_id": row.node_id,
         "node_instance_id": row.node_instance_id,
-        "sql_text": row.sql_text,
+        "sql_summary": summarize_sql(row.sql_text),
         "status": row.status,
         "error_message": row.error_message,
         "log_content": row.log_content,
@@ -113,6 +142,8 @@ def serialize_adhoc_run(row: AdhocRun, *, include_result: bool = False) -> Dict[
         "created_at": row.created_at,
         "result_truncated": bool((row.result_preview or {}).get("truncated")) if isinstance(row.result_preview, dict) else False,
     }
+    if include_sql:
+        data["sql_text"] = row.sql_text
     if include_result:
         data["result_preview"] = row.result_preview
     return data

@@ -11,7 +11,7 @@ import {
 describe('workspaceSelectOptions', () => {
   it('keeps current workspace label when list is still empty', () => {
     const opts = buildWorkspaceSelectOptions([], { id: 7, name: 'infras', my_role: 'admin' })
-    expect(opts).toEqual([{ value: 7, label: 'infras · 空间管理员' }])
+    expect(opts).toEqual([{ value: 7, label: 'infras' }])
   })
 
   it('does not flash bare id when options briefly empty', () => {
