@@ -10,12 +10,14 @@ import { ReloadOutlined, StopOutlined, AuditOutlined, CheckCircleOutlined, Quest
 import { useNavigate, Link, useSearchParams } from 'react-router-dom'
 import { operationApi, schedulerApi, workflowApi } from '../api'
 import { useAppStore } from '../store'
-import { formatInTimeZone } from '../utils/datetime'
+import { formatInTimeZone, formatInTimeZoneCompact } from '../utils/datetime'
 import { describePollError } from '../utils/pollError'
 import OpsDashboardCharts from '../components/OpsDashboardCharts'
 import RunCollectorStatus from '../components/RunCollectorStatus'
 import RunDiagnosisDrawer, { type DiagnosisTarget } from '../components/RunDiagnosisDrawer'
 import InstanceDagDrawer, { type InstanceDagTarget } from '../components/InstanceDagDrawer'
+import SoftRowDetailToggle from '../components/SoftRowDetailToggle'
+import { useSoftExpandedRows } from '../hooks/useSoftExpandedRows'
 import { R } from '../routes'
 import { isPlatformAdmin, isWorkspaceAdmin } from '../perm'
 
@@ -70,6 +72,7 @@ export default function OperationPage() {
   const [loadError, setLoadError] = useState('')
   const [listLoading, setListLoading] = useState(false)
   const appliedDeepLink = useRef('')
+  const { isExpanded, toggle, expandableControl } = useSoftExpandedRows()
 
   const listParams = {
     include_all_workspaces: includeAllWorkspaces || undefined,
@@ -305,7 +308,7 @@ export default function OperationPage() {
       return (
         <Tooltip title="只重跑失败的那几个节点，比整条重跑省时间">
           <Button type="link" size="small" icon={<ReloadOutlined />} onClick={() => handleRetryFailedNodes(row)}>
-            重试失败节点
+            重试
           </Button>
         </Tooltip>
       )
@@ -362,22 +365,31 @@ export default function OperationPage() {
 
   const workflowColumns = [
     ...(includeAllWorkspaces
-      ? [{ title: '工作空间', dataIndex: 'workspace_name', width: 120, ellipsis: true }]
+      ? [{ title: '工作空间', dataIndex: 'workspace_name', width: 110, ellipsis: true }]
       : []),
     {
       title: '工作流',
       dataIndex: 'workflow_name',
+      width: 200,
       ellipsis: true,
       render: (name: string, row: any) => (
-        <div>
-          <div style={{ fontWeight: 500 }}>{name || '—'}</div>
-          <div style={{ color: '#8c8c8c', fontSize: 12 }}>
-            {row.business_date ? `业务日 ${row.business_date}` : '业务日 —'}
-            {(row.failed_node_count ?? 0) > 0
-              ? ` · 失败 ${row.failed_node_count}`
-              : (row.running_node_count ?? 0) > 0
-                ? ` · 运行中 ${row.running_node_count}`
-                : ''}
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {name || '—'}
+          </div>
+          <div style={{ color: '#8c8c8c', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {row.business_date ? `业务日 ${row.business_date}` : '业务日 —'}
+              {(row.failed_node_count ?? 0) > 0
+                ? ` · 失败 ${row.failed_node_count}`
+                : (row.running_node_count ?? 0) > 0
+                  ? ` · 运行中 ${row.running_node_count}`
+                  : ''}
+            </span>
+            <SoftRowDetailToggle
+              expanded={isExpanded(row.id)}
+              onToggle={() => toggle(row.id)}
+            />
           </div>
         </div>
       ),
@@ -385,7 +397,7 @@ export default function OperationPage() {
     {
       title: '状态',
       dataIndex: 'status',
-      width: 120,
+      width: 96,
       render: (s: string, row: any) => (
         <Space size={4}>
           {statusTag(s)}
@@ -405,7 +417,7 @@ export default function OperationPage() {
     },
     {
       title: '关键节点',
-      width: 200,
+      width: 280,
       ellipsis: true,
       render: (_: unknown, row: any) => {
         const failed = Array.isArray(row.failed_nodes) ? row.failed_nodes : []
@@ -423,26 +435,38 @@ export default function OperationPage() {
     },
     {
       title: '时间',
-      width: 200,
-      render: (_: unknown, row: any) => (
-        <div style={{ fontSize: 13, lineHeight: 1.45 }}>
-          <div>{row.started_at ? formatInTimeZone(row.started_at, displayTz) : '—'}</div>
-          <div style={{ color: '#8c8c8c', fontSize: 12 }}>
-            {row.finished_at
-              ? `结束 ${formatInTimeZone(row.finished_at, displayTz)} · ${formatDuration(row.duration_seconds)}`
-              : row.status === 'running'
-                ? '运行中'
-                : '—'}
-          </div>
-        </div>
-      ),
+      width: 168,
+      render: (_: unknown, row: any) => {
+        const fullStart = row.started_at ? formatInTimeZone(row.started_at, displayTz) : ''
+        const fullEnd = row.finished_at ? formatInTimeZone(row.finished_at, displayTz) : ''
+        return (
+          <Tooltip
+            title={[
+              fullStart && `开始 ${fullStart}`,
+              fullEnd && `结束 ${fullEnd}`,
+              row.duration_seconds != null && `耗时 ${formatDuration(row.duration_seconds)}`,
+            ].filter(Boolean).join('\n') || undefined}
+          >
+            <div style={{ fontSize: 12.5, lineHeight: 1.4, fontVariantNumeric: 'tabular-nums' }}>
+              <div>{row.started_at ? formatInTimeZoneCompact(row.started_at, displayTz) : '—'}</div>
+              <div style={{ color: '#8c8c8c' }}>
+                {row.finished_at
+                  ? `${formatInTimeZoneCompact(row.finished_at, displayTz)} · ${formatDuration(row.duration_seconds)}`
+                  : row.status === 'running'
+                    ? '运行中'
+                    : '—'}
+              </div>
+            </div>
+          </Tooltip>
+        )
+      },
     },
     {
       title: '操作',
-      width: 200,
+      width: 168,
       fixed: 'right' as const,
       render: (_: unknown, row: any) => (
-        <Space size={4}>
+        <Space size={0} wrap>
           <Button type="link" size="small" icon={<PartitionOutlined />} onClick={() => setDagTarget({
             workspaceId: row.workspace_id || wsId!,
             workflowId: row.workflow_id,
@@ -462,28 +486,30 @@ export default function OperationPage() {
   ]
 
   const renderInstanceDetail = (row: any) => (
-    <Descriptions size="small" column={2} style={{ maxWidth: 920 }}>
-      <Descriptions.Item label="实例 ID">{row.id}</Descriptions.Item>
-      <Descriptions.Item label="调度运行编号">{row.scheduler_instance_id || '—'}</Descriptions.Item>
-      <Descriptions.Item label="触发来源">{row.trigger_label || row.trigger_type || '—'}</Descriptions.Item>
-      <Descriptions.Item label="运行类型">{row.run_type || '—'}</Descriptions.Item>
-      <Descriptions.Item label="节点进度">
-        共 {row.node_total ?? 0}
-        {(row.running_node_count ?? 0) > 0 ? ` · 运行 ${row.running_node_count}` : ''}
-        {(row.failed_node_count ?? 0) > 0 ? ` · 失败 ${row.failed_node_count}` : ''}
-      </Descriptions.Item>
-      <Descriptions.Item label="最近同步">
-        {row.last_synced_at ? formatInTimeZone(row.last_synced_at, displayTz) : '—'}
-      </Descriptions.Item>
-      {row.scheduler_error ? (
-        <Descriptions.Item label="引擎错误" span={2}>
-          <span style={{ color: '#cf1322' }}>{row.scheduler_error}</span>
+    <div className="gido-soft-expanded-panel">
+      <Descriptions size="small" column={2} colon={false}>
+        <Descriptions.Item label="实例 ID">{row.id}</Descriptions.Item>
+        <Descriptions.Item label="调度运行编号">{row.scheduler_instance_id || '—'}</Descriptions.Item>
+        <Descriptions.Item label="触发来源">{row.trigger_label || row.trigger_type || '—'}</Descriptions.Item>
+        <Descriptions.Item label="运行类型">{row.run_type || '—'}</Descriptions.Item>
+        <Descriptions.Item label="节点进度">
+          共 {row.node_total ?? 0}
+          {(row.running_node_count ?? 0) > 0 ? ` · 运行 ${row.running_node_count}` : ''}
+          {(row.failed_node_count ?? 0) > 0 ? ` · 失败 ${row.failed_node_count}` : ''}
         </Descriptions.Item>
-      ) : null}
-      {row.parent_instance_id ? (
-        <Descriptions.Item label="重跑自">#{row.parent_instance_id}</Descriptions.Item>
-      ) : null}
-    </Descriptions>
+        <Descriptions.Item label="最近同步">
+          {row.last_synced_at ? formatInTimeZone(row.last_synced_at, displayTz) : '—'}
+        </Descriptions.Item>
+        {row.scheduler_error ? (
+          <Descriptions.Item label="引擎错误" span={2}>
+            <span style={{ color: '#cf1322' }}>{row.scheduler_error}</span>
+          </Descriptions.Item>
+        ) : null}
+        {row.parent_instance_id ? (
+          <Descriptions.Item label="重跑自">#{row.parent_instance_id}</Descriptions.Item>
+        ) : null}
+      </Descriptions>
+    </div>
   )
 
   const tableTitle = `工作流实例${todayOnlyWorkflows ? ' · 今日' : ''}${
@@ -666,9 +692,11 @@ export default function OperationPage() {
         dataSource={instances}
         columns={workflowColumns}
         rowKey="id"
-        scroll={{ x: 960 }}
+        scroll={{ x: 1020 }}
+        tableLayout="fixed"
         pagination={{ total, pageSize: 20, current: page, onChange: setPage }}
         expandable={{
+          ...expandableControl,
           expandedRowRender: renderInstanceDetail,
           rowExpandable: () => true,
         }}

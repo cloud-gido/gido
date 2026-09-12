@@ -1,0 +1,54 @@
+/**
+ * Copyright 2026 玑渡 GIDO Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+.gido-soft-row-detail {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.2;
+  color: rgba(15, 23, 42, 0.38);
+  transition: color 0.15s ease;
+  vertical-align: baseline;
+}
+
+.gido-soft-row-detail:hover,
+.gido-soft-row-detail:focus-visible {
+  color: rgba(15, 23, 42, 0.72);
+  outline: none;
+}
+
+.gido-soft-row-detail__chevron {
+  font-size: 9px;
+  transition: transform 0.18s ease;
+}
+
+.gido-soft-row-detail.is-open .gido-soft-row-detail__chevron {
+  transform: rotate(90deg);
+}
+
+.gido-soft-expanded-panel {
+  margin: 0 0 2px;
+  padding: 10px 14px;
+  max-width: 920px;
+  border-radius: 8px;
+  border: 1px solid var(--dw-border, #e8ecf2);
+  background: color-mix(in srgb, var(--dw-border, #e8ecf2) 45%, transparent);
+}
+
+.gido-soft-expanded-panel .ant-descriptions-item-label {
+  color: rgba(15, 23, 42, 0.45);
+  font-size: 12px;
+}
+
+.gido-soft-expanded-panel .ant-descriptions-item-content {
+  font-size: 12.5px;
+  color: rgba(15, 23, 42, 0.78);
+}

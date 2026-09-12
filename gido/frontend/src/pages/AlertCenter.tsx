@@ -12,8 +12,10 @@ import { alertApi, operationApi, workspaceApi } from '../api'
 import { describePollError } from '../utils/pollError'
 import RunCollectorStatus from '../components/RunCollectorStatus'
 import RunDiagnosisDrawer, { type DiagnosisTarget } from '../components/RunDiagnosisDrawer'
+import SoftRowDetailToggle from '../components/SoftRowDetailToggle'
+import { useSoftExpandedRows } from '../hooks/useSoftExpandedRows'
 import { useAppStore } from '../store'
-import { formatInTimeZone } from '../utils/datetime'
+import { formatInTimeZone, formatInTimeZoneCompact } from '../utils/datetime'
 import { R } from '../routes'
 import { isPlatformAdmin } from '../perm'
 
@@ -112,6 +114,7 @@ export default function AlertCenterPage() {
   const [configForm] = Form.useForm()
   const mutedUntil = Form.useWatch('muted_until', configForm)
   const notifyArmedAt = Form.useWatch('notify_armed_at', configForm)
+  const { isExpanded, toggle, expandableControl } = useSoftExpandedRows()
 
   useEffect(() => {
     const urlWs = Number(searchParams.get('workspace_id') || 0)
@@ -448,10 +451,11 @@ export default function AlertCenterPage() {
   const columns = [
     {
       title: '告警',
+      width: 220,
       ellipsis: true,
       render: (_: any, row: any) => (
-        <div>
-          <div style={{ fontWeight: 500 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {row.workflow_name || '—'}
             <span style={{ marginLeft: 8, fontWeight: 400 }}>
               <Tag color={ALERT_TYPE_COLOR[row.alert_type] || 'default'}>
@@ -460,10 +464,16 @@ export default function AlertCenterPage() {
               <Tag color={LEVEL_COLOR[row.level] || 'default'}>{LEVEL_LABEL[row.level] || row.level}</Tag>
             </span>
           </div>
-          <div style={{ color: '#8c8c8c', fontSize: 12 }}>
-            {includeAllWorkspaces && row.workspace_name ? `${row.workspace_name} · ` : ''}
-            {row.business_date ? `业务日 ${row.business_date}` : '业务日 —'}
-            {row.node_name ? ` · ${row.node_name}` : ''}
+          <div style={{ color: '#8c8c8c', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {includeAllWorkspaces && row.workspace_name ? `${row.workspace_name} · ` : ''}
+              {row.business_date ? `业务日 ${row.business_date}` : '业务日 —'}
+              {row.node_name ? ` · ${row.node_name}` : ''}
+            </span>
+            <SoftRowDetailToggle
+              expanded={isExpanded(row.id)}
+              onToggle={() => toggle(row.id)}
+            />
           </div>
         </div>
       ),
@@ -471,18 +481,19 @@ export default function AlertCenterPage() {
     {
       title: '状态',
       dataIndex: 'status',
-      width: 100,
+      width: 88,
       render: (v: string) => <Tag color={STATUS_COLOR[v] || 'default'}>{STATUS_LABEL[v] || v}</Tag>,
     },
     {
       title: '通知',
       dataIndex: 'notification_status',
-      width: 110,
+      width: 100,
       render: (v: string, row: any) => renderNotifyTag(v, row),
     },
     {
       title: '摘要',
       dataIndex: 'message',
+      width: 260,
       ellipsis: true,
       render: (messageText: string, row: any) => {
         const text = row.log_summary || messageText || ''
@@ -492,15 +503,23 @@ export default function AlertCenterPage() {
     {
       title: '发生时间',
       dataIndex: 'occurred_at',
-      width: 170,
-      render: (v: string) => (v ? formatInTimeZone(v, displayTz) : '—'),
+      width: 140,
+      render: (v: string) => (
+        v ? (
+          <Tooltip title={formatInTimeZone(v, displayTz)}>
+            <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: 12.5 }}>
+              {formatInTimeZoneCompact(v, displayTz)}
+            </span>
+          </Tooltip>
+        ) : '—'
+      ),
     },
     {
       title: '操作',
-      width: 200,
+      width: 168,
       fixed: 'right' as const,
       render: (_: any, row: any) => (
-        <Space size={4}>
+        <Space size={0} wrap>
           {row.workflow_id && (
             <Tooltip title="为什么这次没跑 / 还没跑完">
               <Button
@@ -532,32 +551,34 @@ export default function AlertCenterPage() {
   ]
 
   const renderAlertDetail = (row: any) => (
-    <Descriptions size="small" column={2} style={{ maxWidth: 920 }}>
-      <Descriptions.Item label="告警 ID">#{row.id}</Descriptions.Item>
-      <Descriptions.Item label="工作流实例">{row.workflow_instance_id ? `#${row.workflow_instance_id}` : '—'}</Descriptions.Item>
-      <Descriptions.Item label="节点">
-        {row.node_name || (row.node_instance_id ? `节点实例 #${row.node_instance_id}` : '工作流级告警')}
-        {row.node_type ? ` · ${row.node_type}` : ''}
-      </Descriptions.Item>
-      <Descriptions.Item label="节点实例">{row.node_instance_id ? `#${row.node_instance_id}` : '—'}</Descriptions.Item>
-      <Descriptions.Item label="通知状态" span={2}>
-        {renderNotifyTag(row.notification_status, row)}
-        {row.notify_pending_channels ? ` · 待重投：${row.notify_pending_channels}` : ''}
-        {row.notify_next_retry_at
-          ? ` · 下次：${formatInTimeZone(row.notify_next_retry_at, displayTz)}`
-          : ''}
-      </Descriptions.Item>
-      {(row.log_summary || row.message) ? (
-        <Descriptions.Item label="失败详情" span={2}>
-          <span style={{ whiteSpace: 'pre-wrap' }}>{row.log_summary || row.message}</span>
+    <div className="gido-soft-expanded-panel">
+      <Descriptions size="small" column={2} colon={false}>
+        <Descriptions.Item label="告警 ID">#{row.id}</Descriptions.Item>
+        <Descriptions.Item label="工作流实例">{row.workflow_instance_id ? `#${row.workflow_instance_id}` : '—'}</Descriptions.Item>
+        <Descriptions.Item label="节点">
+          {row.node_name || (row.node_instance_id ? `节点实例 #${row.node_instance_id}` : '工作流级告警')}
+          {row.node_type ? ` · ${row.node_type}` : ''}
         </Descriptions.Item>
-      ) : null}
-      {row.notify_last_error ? (
-        <Descriptions.Item label="通知错误" span={2}>
-          <span style={{ color: '#cf1322' }}>{row.notify_last_error}</span>
+        <Descriptions.Item label="节点实例">{row.node_instance_id ? `#${row.node_instance_id}` : '—'}</Descriptions.Item>
+        <Descriptions.Item label="通知状态" span={2}>
+          {renderNotifyTag(row.notification_status, row)}
+          {row.notify_pending_channels ? ` · 待重投：${row.notify_pending_channels}` : ''}
+          {row.notify_next_retry_at
+            ? ` · 下次：${formatInTimeZone(row.notify_next_retry_at, displayTz)}`
+            : ''}
         </Descriptions.Item>
-      ) : null}
-    </Descriptions>
+        {(row.log_summary || row.message) ? (
+          <Descriptions.Item label="失败详情" span={2}>
+            <span style={{ whiteSpace: 'pre-wrap' }}>{row.log_summary || row.message}</span>
+          </Descriptions.Item>
+        ) : null}
+        {row.notify_last_error ? (
+          <Descriptions.Item label="通知错误" span={2}>
+            <span style={{ color: '#cf1322' }}>{row.notify_last_error}</span>
+          </Descriptions.Item>
+        ) : null}
+      </Descriptions>
+    </div>
   )
 
   return (
@@ -663,9 +684,11 @@ export default function AlertCenterPage() {
         columns={columns}
         rowKey="id"
         loading={loading}
-        scroll={{ x: 960 }}
+        scroll={{ x: 1020 }}
+        tableLayout="fixed"
         pagination={{ total, pageSize: 20, current: page, onChange: setPage }}
         expandable={{
+          ...expandableControl,
           expandedRowRender: renderAlertDetail,
           rowExpandable: () => true,
         }}

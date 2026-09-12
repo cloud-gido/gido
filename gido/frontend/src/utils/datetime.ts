@@ -39,3 +39,26 @@ export function formatInTimeZone(
     return d.toISOString().replace('T', ' ').slice(0, 19) + 'Z'
   }
 }
+
+/** 列表紧凑时间：月-日 时:分:秒（悬停可用完整 formatInTimeZone） */
+export function formatInTimeZoneCompact(
+  input: string | undefined | null,
+  timeZone: string,
+  empty = '—',
+): string {
+  const d = parseBackendUtcToDate(input)
+  if (!d) return empty
+  try {
+    return new Intl.DateTimeFormat('zh-CN', {
+      timeZone: timeZone || 'Asia/Shanghai',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).format(d)
+  } catch {
+    return formatInTimeZone(input, timeZone, empty)
+  }
+}

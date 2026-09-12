@@ -1252,10 +1252,27 @@ export default function StreamStudioPage() {
                   <Button size="small" onClick={() => navigate(R.stream.monitor)}>作业运维</Button>
                 </Tooltip>
                 <Button size="small" icon={<AimOutlined />} onClick={locateSelectedJob} title="在左侧列表中定位当前作业">定位</Button>
-                <Button size="small" icon={<HistoryOutlined />} onClick={openHistory}>版本历史</Button>
                 <div style={{ flex: 1, minWidth: 8 }} />
-                {selected.job_type === 'SQL' && (
-                  <EditorAppearanceToolbar value={editorAppearance} onChange={setEditorAppearance} />
+                {selected.job_type === 'SQL' ? (
+                  <EditorAppearanceToolbar
+                    value={editorAppearance}
+                    onChange={setEditorAppearance}
+                    extra={(
+                      <Button
+                        type="text"
+                        size="small"
+                        block
+                        icon={<HistoryOutlined />}
+                        onClick={openHistory}
+                      >
+                        版本历史
+                      </Button>
+                    )}
+                  />
+                ) : (
+                  <Button size="small" type="text" icon={<HistoryOutlined />} onClick={openHistory}>
+                    版本历史
+                  </Button>
                 )}
                 {selected.owner_username && <Tag style={{ margin: 0 }}>负责人 {selected.owner_username}</Tag>}
                 {streamJobLifecycleTags(

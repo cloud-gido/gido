@@ -1,0 +1,53 @@
+/**
+ * Copyright 2026 玑渡 GIDO Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+.gido-editor-more-panel {
+  min-width: 260px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--dw-border, #e8ecf2);
+  background: var(--dw-card, #fff);
+  box-shadow: var(--dw-shadow, 0 4px 24px rgba(15, 23, 42, 0.08));
+}
+
+.gido-editor-more-panel__title {
+  margin-bottom: 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(15, 23, 42, 0.45);
+  letter-spacing: 0.02em;
+}
+
+.gido-editor-appearance-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gido-editor-appearance-fields__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+}
+
+.gido-editor-appearance-fields__row > span {
+  flex: 0 0 36px;
+  font-size: 12px;
+  color: rgba(15, 23, 42, 0.55);
+}
+
+.gido-editor-more-panel__extra {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.gido-editor-more-panel__extra .ant-btn {
+  justify-content: flex-start;
+  padding-inline: 4px;
+  height: 28px;
+  color: rgba(15, 23, 42, 0.72);
+}

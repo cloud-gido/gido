@@ -1596,7 +1596,6 @@ export default function StudioPage() {
               >
                 定位
               </Button>
-              <Button icon={<ReloadOutlined />} onClick={openHistory} size="small">版本历史</Button>
               <Button
                 icon={<ScheduleOutlined />}
                 size="small"
@@ -1606,7 +1605,21 @@ export default function StudioPage() {
                 运维
               </Button>
               <div style={{ flex: 1 }} />
-              <EditorAppearanceToolbar value={editorAppearance} onChange={setEditorAppearance} />
+              <EditorAppearanceToolbar
+                value={editorAppearance}
+                onChange={setEditorAppearance}
+                extra={(
+                  <Button
+                    type="text"
+                    size="small"
+                    block
+                    icon={<ReloadOutlined />}
+                    onClick={openHistory}
+                  >
+                    版本历史
+                  </Button>
+                )}
+              />
               <Tag color={activeNode.is_locked ? 'orange' : activeNode.is_published ? 'green' : 'default'}>
                 {activeNode.is_locked ? '已锁定' : activeNode.is_published ? '已提交' : '草稿'}
               </Tag>
