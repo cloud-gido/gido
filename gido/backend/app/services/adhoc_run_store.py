@@ -14,17 +14,21 @@ from app.models.workspace import AdhocRun
 logger = logging.getLogger(__name__)
 
 ADHOC_RESULT_PREVIEW_ROWS = 200
-SQL_SUMMARY_MAX_LEN = 140
+SQL_SUMMARY_MAX_LEN = 72
 
 
 def summarize_sql(sql: Optional[str], max_len: int = SQL_SUMMARY_MAX_LEN) -> Optional[str]:
-    """列表用 SQL 摘要：去注释、压空白，截断到可读长度。"""
+    """
+    列表用 SQL 摘要（偏 DataWorks 清爽口径）：
+    动词 + 主表，例如「SELECT · ads_foo」，避免把整段列清单铺在列表上。
+    """
+    import re
+
     if not sql or not str(sql).strip():
         return None
     lines: list[str] = []
     for raw in str(sql).splitlines():
         line = raw
-        # 去掉行内 -- 注释（简单启发，足够列表摘要）
         dash = line.find("--")
         if dash >= 0:
             line = line[:dash]
@@ -35,9 +39,42 @@ def summarize_sql(sql: Optional[str], max_len: int = SQL_SUMMARY_MAX_LEN) -> Opt
     compact = " ".join(" ".join(lines).split())
     if not compact:
         return None
-    if len(compact) > max_len:
-        return compact[: max_len - 1] + "…"
-    return compact
+
+    # 多语句：取第一条有意义的
+    first = compact.split(";")[0].strip() or compact
+    stmt_count = len([p for p in compact.split(";") if p.strip()])
+
+    verb_m = re.match(
+        r"(?i)\b(with|select|insert|update|delete|create|drop|alter|truncate|describe|desc|show|use|explain)\b",
+        first,
+    )
+    verb = (verb_m.group(1).upper() if verb_m else "SQL")
+    if verb == "DESC":
+        verb = "DESCRIBE"
+
+    table_m = re.search(
+        r"(?i)\b(?:from|into|update|table|describe|desc)\s+([`\"\w$.]+)",
+        first,
+    )
+    table = None
+    if table_m:
+        table = table_m.group(1).replace("`", "").replace('"', "")
+
+    if table:
+        summary = f"{verb} · {table}"
+    else:
+        # 无表：短截断正文，仍避免长列清单
+        short = first
+        if len(short) > max_len:
+            short = short[: max_len - 1] + "…"
+        summary = short
+
+    if stmt_count > 1:
+        summary = f"{summary} 等{stmt_count}段"
+
+    if len(summary) > max_len:
+        return summary[: max_len - 1] + "…"
+    return summary
 
 
 def truncate_result_preview(result: Optional[Dict[str, Any]], max_rows: int = ADHOC_RESULT_PREVIEW_ROWS) -> Optional[Dict[str, Any]]:

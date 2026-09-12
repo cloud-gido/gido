@@ -75,11 +75,11 @@ export default function RunHistoryPage() {
 
   const columns = [
     {
-      title: '执行内容',
+      title: '名称',
+      width: 220,
       ellipsis: true,
       render: (_: unknown, row: any) => {
         const title = row.object_name || SOURCE_LABEL[row.source] || '未命名'
-        const summary = row.sql_summary || (row.error_message ? String(row.error_message).slice(0, 120) : '')
         return (
           <div
             style={{ minWidth: 0, cursor: 'pointer' }}
@@ -95,36 +95,48 @@ export default function RunHistoryPage() {
           >
             <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {title}
-              <Tag style={{ marginLeft: 8, fontWeight: 400 }}>{SOURCE_LABEL[row.source] || row.source}</Tag>
             </div>
-            <Tooltip title={summary || undefined}>
-              <div style={{
-                color: row.status === 'failed' && !row.sql_summary ? '#cf1322' : '#8c8c8c',
-                fontSize: 12,
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-              >
-                {summary || '—'}
-              </div>
-            </Tooltip>
+            <div style={{ color: '#8c8c8c', fontSize: 12 }}>
+              {SOURCE_LABEL[row.source] || row.source}
+            </div>
           </div>
+        )
+      },
+    },
+    {
+      title: '语句摘要',
+      width: 200,
+      ellipsis: true,
+      render: (_: unknown, row: any) => {
+        const summary = row.sql_summary
+          || (row.error_message ? String(row.error_message).slice(0, 48) : '')
+        if (!summary) return <span style={{ color: '#bbb' }}>—</span>
+        return (
+          <Tooltip title={row.sql_summary || row.error_message || undefined}>
+            <span
+              style={{
+                color: row.status === 'failed' && !row.sql_summary ? '#cf1322' : '#595959',
+                fontSize: 12.5,
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+              }}
+            >
+              {summary}
+            </span>
+          </Tooltip>
         )
       },
     },
     {
       title: '数据源',
       dataIndex: 'datasource_name',
-      width: 120,
+      width: 110,
       ellipsis: true,
       render: (v: string) => v || '—',
     },
     {
       title: '状态',
       dataIndex: 'status',
-      width: 88,
+      width: 80,
       render: (s: string) => (
         <Tag color={STATUS_COLOR[s] || 'default'}>{STATUS_LABEL[s] || s}</Tag>
       ),
@@ -132,27 +144,27 @@ export default function RunHistoryPage() {
     {
       title: '执行人',
       dataIndex: 'triggered_by_name',
-      width: 100,
+      width: 96,
       ellipsis: true,
       render: (v: string) => v || '—',
     },
     {
       title: '行数',
       dataIndex: 'rows_returned',
-      width: 72,
+      width: 64,
       render: (v: number, row: any) =>
         row.result_truncated ? `${v}+` : (v ?? 0),
     },
     {
       title: '耗时',
       dataIndex: 'duration_ms',
-      width: 72,
+      width: 64,
       render: (ms: number) => (ms != null ? `${(ms / 1000).toFixed(1)}s` : '—'),
     },
     {
       title: '时间',
       dataIndex: 'started_at',
-      width: 140,
+      width: 128,
       render: (v: string) => (
         v ? (
           <Tooltip title={formatInTimeZone(v, displayTz)}>
@@ -165,7 +177,7 @@ export default function RunHistoryPage() {
     },
     {
       title: '操作',
-      width: 88,
+      width: 72,
       render: (_: unknown, row: any) => (
         <Button type="link" size="small" onClick={() => openDetail(row.id)}>
           详情
@@ -214,6 +226,7 @@ export default function RunHistoryPage() {
         columns={columns}
         rowKey="id"
         tableLayout="fixed"
+        scroll={{ x: 980 }}
         pagination={{ total, pageSize: 20, current: page, onChange: setPage }}
       />
     </div>

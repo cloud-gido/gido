@@ -3,25 +3,27 @@
 from app.services.adhoc_run_store import summarize_sql
 
 
-def test_summarize_sql_strips_comments_and_whitespace():
+def test_summarize_sql_select_table_style():
     sql = """
     -- header
-    SELECT id, name
+    SELECT id, name, event, stime, ctime, log_id
     FROM ads_foo  -- trailing
     WHERE dt = '2026-01-01'
     """
-    s = summarize_sql(sql)
-    assert s is not None
-    assert "SELECT id, name FROM ads_foo WHERE dt = '2026-01-01'" == s
-    assert "--" not in s
+    assert summarize_sql(sql) == "SELECT · ads_foo"
 
 
-def test_summarize_sql_truncates():
-    sql = "SELECT " + ("x," * 80) + " y FROM t"
+def test_summarize_sql_multi_statement():
+    sql = "SELECT 1 FROM a; SELECT 2 FROM b;"
+    assert summarize_sql(sql) == "SELECT · a 等2段"
+
+
+def test_summarize_sql_truncates_long_non_table():
+    sql = "SHOW " + ("X" * 100)
     s = summarize_sql(sql, max_len=40)
     assert s is not None
     assert len(s) <= 40
-    assert s.endswith("…")
+    assert s.startswith("SHOW")
 
 
 def test_summarize_sql_empty():

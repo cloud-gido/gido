@@ -44,6 +44,8 @@ import { pruneWidths, resolveResultColumnOrder } from '../utils/resultTableMeta'
 import {
   datasourceTagText,
   hasExplicitDatasource,
+  peekCachedDatasources,
+  rememberDatasources,
   resolveDatasourceForRun,
 } from '../utils/workspaceDatasource'
 import {
@@ -84,7 +86,9 @@ function sortOrderForNewScript(scripts: ProbeScript[], folderId: string | null):
 export default function ProbePage() {
   const { currentWorkspace } = useAppStore()
   const wsId = currentWorkspace?.id
-  const [datasources, setDatasources] = useState<any[]>([])
+  const [datasources, setDatasources] = useState<any[]>(() =>
+    peekCachedDatasources(useAppStore.getState().currentWorkspace?.id),
+  )
   /** 有本地缓存时先同步灌入，避免主区先闪「加载探查目录…」而侧栏已像就绪 */
   const [probeState, setProbeState] = useState<ProbeWorkspaceState>(() =>
     initialProbeWorkspaceState(useAppStore.getState().currentWorkspace?.id),
@@ -217,7 +221,9 @@ export default function ProbePage() {
   useEffect(() => {
     if (!wsId) return
     datasourceApi.list(wsId).then((d: any) => {
-      setDatasources(Array.isArray(d) ? d : [])
+      const list = Array.isArray(d) ? d : []
+      rememberDatasources(wsId, list)
+      setDatasources(list)
     })
   }, [wsId])
 
@@ -711,26 +717,28 @@ export default function ProbePage() {
             style={{ width: 280 }}
             value={hasExplicitDatasource(activeScript?.datasource_id) ? activeScript?.datasource_id : undefined}
             placeholder={
-              probeDsResolve?.effective
-                ? `继承空间默认：${probeDsResolve.effective.name}`
+              probeDsResolve?.effectiveId
+                ? (probeDsResolve.effective
+                  ? `继承空间默认：${probeDsResolve.effective.name}`
+                  : '继承空间默认')
                 : '请先在空间设置配置默认数据源'
             }
             onChange={v => patchActiveScript({ datasource_id: v ?? undefined })}
             options={datasources.map((d: any) => ({ label: `${d.name} (${d.ds_type})`, value: d.id }))}
           />
         </Tooltip>
-        <Tag
-          style={{ margin: 0, minWidth: 88, textAlign: 'center' }}
-          color={
-            !probeDsResolve
-              ? 'default'
-              : probeDsResolve.effectiveId
+        {activeScript && probeDsResolve ? (
+          <Tag
+            style={{ margin: 0, maxWidth: 200 }}
+            color={
+              probeDsResolve.effectiveId
                 ? (probeDsResolve.source === 'explicit' ? 'purple' : 'blue')
                 : 'default'
-          }
-        >
-          {probeDsResolve ? datasourceTagText(probeDsResolve) : '数据源…'}
-        </Tag>
+            }
+          >
+            {datasourceTagText(probeDsResolve)}
+          </Tag>
+        ) : null}
         <span style={{ color: '#8c8c8c', fontSize: 12 }}>最大行数</span>
         <InputNumber
           min={1}

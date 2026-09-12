@@ -68,6 +68,8 @@ import { normalizeQueryColumns } from '../utils/queryColumns'
 import { buildDefaultSqlPublishScript } from '../utils/sqlPublishTemplate'
 import {
   datasourceTagText,
+  peekCachedDatasources,
+  rememberDatasources,
   resolveDatasourceForRun,
 } from '../utils/workspaceDatasource'
 import QueryResultPanel from '../components/QueryResultPanel'
@@ -138,7 +140,9 @@ export default function StudioPage() {
   // 节点列表
   const [nodes, setNodes] = useState<any[]>([])
   const [folders, setFolders] = useState<any[]>([])
-  const [datasources, setDatasources] = useState<any[]>([])
+  const [datasources, setDatasources] = useState<any[]>(() =>
+    peekCachedDatasources(useAppStore.getState().currentWorkspace?.id),
+  )
 
   // 编辑器 ref（用于格式化 / 自研查找）
   const editorRef = useRef<any>(null)
@@ -203,7 +207,9 @@ export default function StudioPage() {
       workflowApi.listAll(wsId).catch(() => ({ items: [] })),
     ])
     setNodes(sortNodesList(n as unknown as any[]))
-    setDatasources(d as unknown as any[])
+    const dsList = Array.isArray(d) ? (d as unknown as any[]) : []
+    if (wsId) rememberDatasources(wsId, dsList)
+    setDatasources(dsList)
     setFolders(f as unknown as any[])
     setWorkflows(Array.isArray(wfs?.items) ? wfs.items : (Array.isArray(wfs) ? wfs : []))
     setPendingKeys(

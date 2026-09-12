@@ -44,26 +44,48 @@ export type DatasourceResolveInfo = {
   explicit: DatasourceRow | null
 }
 
+/**
+ * 解析运行数据源。即使 datasources 列表尚未拉到，只要空间/节点已有 id，
+ * 也不应短暂显示「未配置」（避免探查打开时 Tag/占位符闪烁）。
+ */
 export function resolveDatasourceForRun(
   explicitId: number | null | undefined,
   workspace: WorkspaceDatasourceCtx | null | undefined,
   datasources: DatasourceRow[],
 ): DatasourceResolveInfo {
-  const explicit = hasExplicitDatasource(explicitId) ? findDatasource(datasources, explicitId) : null
   const effectiveId = resolveEffectiveDatasourceId(explicitId, workspace)
+  const explicit = hasExplicitDatasource(explicitId) ? findDatasource(datasources, explicitId) : null
   const effective = findDatasource(datasources, effectiveId)
   let source: DatasourceResolveInfo['source'] = 'none'
-  if (explicit) source = 'explicit'
-  else if (effective) source = 'workspace'
+  if (hasExplicitDatasource(explicitId)) source = 'explicit'
+  else if (effectiveId != null) source = 'workspace'
   return { effectiveId, effective, source, explicit }
 }
 
 export function datasourceTagText(info: DatasourceResolveInfo): string {
-  if (info.source === 'explicit' && info.explicit) {
-    return `节点固定 ${info.explicit.name} (${info.explicit.ds_type || '—'})`
+  if (info.source === 'explicit') {
+    if (info.explicit) {
+      return `查询固定 ${info.explicit.name} (${info.explicit.ds_type || '—'})`
+    }
+    return '查询指定数据源'
   }
-  if (info.source === 'workspace' && info.effective) {
-    return `空间默认 ${info.effective.name} (${info.effective.ds_type || '—'})`
+  if (info.source === 'workspace') {
+    if (info.effective) {
+      return `空间默认 ${info.effective.name} (${info.effective.ds_type || '—'})`
+    }
+    return '空间默认'
   }
   return '未配置数据源'
+}
+
+/** 同 SPA 会话内按空间缓存数据源列表，避免探查/Studio 重复进入时先空再满闪一下 */
+const datasourceListCache = new Map<number, DatasourceRow[]>()
+
+export function peekCachedDatasources(workspaceId: number | null | undefined): DatasourceRow[] {
+  if (workspaceId == null) return []
+  return datasourceListCache.get(workspaceId) || []
+}
+
+export function rememberDatasources(workspaceId: number, list: DatasourceRow[]): void {
+  datasourceListCache.set(workspaceId, list)
 }
