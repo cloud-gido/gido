@@ -4,11 +4,11 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
 import type { Key } from 'react'
 import {
   Button, Space, Tag, message, Modal, Form, Input, InputNumber, Select, Drawer,
-  Divider, Typography, Alert, Tooltip,
+  Divider, Typography, Alert, Tooltip, Skeleton,
 } from 'antd'
 import {
   PlusOutlined, CloudUploadOutlined, SaveOutlined, ReloadOutlined,
@@ -64,6 +64,11 @@ import {
   scriptDraftStorageKey,
   writeScriptLocalDraft,
 } from '../utils/scriptLocalDraft'
+import {
+  loadTreeListCache,
+  saveTreeListCache,
+  treeListReadyFromCache,
+} from '../utils/workspaceTreeListCache'
 import StreamRuntimeConfig, {
   buildStreamRuntimeProperties,
   EMPTY_OPERATOR_RESOURCES,
@@ -177,6 +182,12 @@ SELECT order_id, user_id, amount, updated_at FROM default_catalog.default_databa
 `
 }
 
+function streamTreeFromCache(wsId: number | undefined) {
+  const cached = loadTreeListCache('stream', wsId)
+  if (!cached) return { jobs: [] as any[], folders: [] as any[] }
+  return { jobs: cached.leaves as any[], folders: cached.folders as any[] }
+}
+
 export default function StreamStudioPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -185,8 +196,9 @@ export default function StreamStudioPage() {
   const canPublishDirect = isWorkspaceAdmin(user, currentWorkspace)
   const canWrite = can(user, P.GIDO_STREAM_WRITE, currentWorkspace)
   const displayTz = currentWorkspace?.timezone || 'Asia/Shanghai'
-  const [jobs, setJobs] = useState<any[]>([])
-  const [folders, setFolders] = useState<any[]>([])
+  const [jobs, setJobs] = useState<any[]>(() => streamTreeFromCache(wsId).jobs)
+  const [folders, setFolders] = useState<any[]>(() => streamTreeFromCache(wsId).folders)
+  const [treeReady, setTreeReady] = useState(() => treeListReadyFromCache('stream', wsId))
   const [treeExpandedKeys, setTreeExpandedKeys] = useState<Key[]>(['root'])
   const [folderModalOpen, setFolderModalOpen] = useState(false)
   const [folderParentId, setFolderParentId] = useState<number | null>(null)
@@ -277,7 +289,10 @@ export default function StreamStudioPage() {
         approvalApi.list(wsId, { status: 'pending', page_size: 200 }),
       ])
       setJobs(list)
-      setFolders(folderList || [])
+      const foldersList = Array.isArray(folderList) ? folderList : []
+      setFolders(foldersList)
+      saveTreeListCache('stream', wsId, { folders: foldersList, leaves: list })
+      setTreeReady(true)
       setTreeExpandedKeys(prev => (prev.length ? prev : ['root']))
       setPendingKeys(
         new Set((pendingRes?.items || []).map((i: any) => approvalPendingKey(i.resource_type, i.resource_id, i.action))),
@@ -302,6 +317,29 @@ export default function StreamStudioPage() {
     }
   }, [wsId])
 
+  useLayoutEffect(() => {
+    if (!wsId) {
+      setTreeReady(false)
+      return
+    }
+    if (treeListReadyFromCache('stream', wsId)) {
+      const cached = streamTreeFromCache(wsId)
+      setJobs(cached.jobs)
+      setFolders(cached.folders)
+      setTreeReady(true)
+    } else {
+      setJobs([])
+      setFolders([])
+      setTreeReady(false)
+    }
+  }, [wsId])
+
+  useEffect(() => {
+    if (!wsId) return
+    const hadCache = treeListReadyFromCache('stream', wsId)
+    void load(!hadCache)
+  }, [wsId, load])
+
   const openJob = useCallback(async (job: any | null) => {
     if (!job?.id) {
       setSelected(null)
@@ -319,8 +357,6 @@ export default function StreamStudioPage() {
     }
     setSelected(full)
   }, [])
-
-  useEffect(() => { load(true) }, [load])
 
   const streamRestoreDoneRef = useRef(false)
   const streamSessionHydratedRef = useRef(false)
@@ -344,7 +380,7 @@ export default function StreamStudioPage() {
 
   // 恢复上次打开的作业（单选，仅 activeId）；?job_id= 优先于 session
   useEffect(() => {
-    if (!wsId || loading || jobs.length === 0) return
+    if (!wsId || !treeReady || jobs.length === 0) return
     if (streamRestoreDoneRef.current) return
     cancelScheduledEditorSessionWrite('stream', wsId)
     streamRestoreDoneRef.current = true
@@ -388,7 +424,7 @@ export default function StreamStudioPage() {
         activeId: job.id,
       })
     })()
-  }, [wsId, loading, jobs, selected, openJob, searchParams, setSearchParams])
+  }, [wsId, treeReady, jobs, selected, openJob, searchParams, setSearchParams])
 
   useEffect(() => {
     if (wsId == null) return
@@ -1084,7 +1120,7 @@ export default function StreamStudioPage() {
               </Tooltip>
           </>
         )}
-        tree={(
+        tree={treeReady ? (
             <WorkspaceFolderTree
               rootTitle="作业列表"
               treeClassName="stream-job-tree"
@@ -1150,6 +1186,10 @@ export default function StreamStudioPage() {
                 },
               ] : []}
             />
+        ) : (
+          <div className="stream-job-tree" style={{ padding: '12px 16px' }}>
+            <Skeleton active paragraph={{ rows: 10 }} title={false} />
+          </div>
         )}
       >
           <StudioWorkbenchTopStrip padded>

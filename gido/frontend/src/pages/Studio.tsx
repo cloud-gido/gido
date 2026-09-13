@@ -4,9 +4,9 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useState, useEffect, useRef, useCallback, useMemo, type Key, type PointerEvent } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, type Key, type PointerEvent } from 'react'
 import {
-  Button, Input, Select, Tag, message, Spin, Tooltip,
+  Button, Input, Select, Tag, message, Spin, Tooltip, Skeleton,
   Modal, Form, Tabs, Space, Badge, Table, DatePicker
 } from 'antd'
 import {
@@ -88,6 +88,11 @@ import {
   scriptDraftStorageKey,
   writeScriptLocalDraft,
 } from '../utils/scriptLocalDraft'
+import {
+  loadTreeListCache,
+  saveTreeListCache,
+  treeListReadyFromCache,
+} from '../utils/workspaceTreeListCache'
 
 const NODE_TYPES = ['SQL', 'PYTHON', 'SHELL', 'SYNC', 'VIRTUAL', 'DEPENDENT']
 const LANG_MAP: Record<string, string> = { SQL: 'sql', PYTHON: 'python', SHELL: 'shell', SYNC: 'json', DEPENDENT: 'plaintext' }
@@ -129,6 +134,15 @@ function sortNodesList(list: any[]): any[] {
   return sortLeavesByOrderThenName(list)
 }
 
+function studioTreeFromCache(wsId: number | undefined) {
+  const cached = loadTreeListCache('studio', wsId)
+  if (!cached) return { nodes: [] as any[], folders: [] as any[] }
+  return {
+    nodes: sortNodesList(cached.leaves as any[]),
+    folders: cached.folders as any[],
+  }
+}
+
 export default function StudioPage() {
   const { currentWorkspace, pendingOpenNodeId, setPendingOpenNodeId, user } = useAppStore()
   const wsId = currentWorkspace?.id
@@ -138,9 +152,10 @@ export default function StudioPage() {
   const canWrite = can(user, P.GIDO_BATCH_STUDIO_WRITE, currentWorkspace)
   const canRun = can(user, P.GIDO_BATCH_STUDIO_RUN, currentWorkspace)
 
-  // 节点列表
-  const [nodes, setNodes] = useState<any[]>([])
-  const [folders, setFolders] = useState<any[]>([])
+  // 节点列表（同会话内存 SWR：二次进页先画树，list 后台对齐）
+  const [nodes, setNodes] = useState<any[]>(() => studioTreeFromCache(wsId).nodes)
+  const [folders, setFolders] = useState<any[]>(() => studioTreeFromCache(wsId).folders)
+  const [treeReady, setTreeReady] = useState(() => treeListReadyFromCache('studio', wsId))
   const [datasources, setDatasources] = useState<any[]>(() =>
     peekCachedDatasources(useAppStore.getState().currentWorkspace?.id),
   )
@@ -219,13 +234,34 @@ export default function StudioPage() {
       datasourceApi.list(wsId),
       studioApi.listFolders(wsId),
     ])
-    setNodes(sortNodesList(n as unknown as any[]))
+    const sorted = sortNodesList(n as unknown as any[])
+    setNodes(sorted)
     const dsList = Array.isArray(d) ? (d as unknown as any[]) : []
     if (wsId) rememberDatasources(wsId, dsList)
     setDatasources(dsList)
-    setFolders(f as unknown as any[])
+    const folderList = f as unknown as any[]
+    setFolders(folderList)
+    saveTreeListCache('studio', wsId, { folders: folderList, leaves: sorted })
+    setTreeReady(true)
     void loadChrome(wsId)
   }
+
+  useLayoutEffect(() => {
+    if (!wsId) {
+      setTreeReady(false)
+      return
+    }
+    if (treeListReadyFromCache('studio', wsId)) {
+      const cached = studioTreeFromCache(wsId)
+      setNodes(cached.nodes)
+      setFolders(cached.folders)
+      setTreeReady(true)
+    } else {
+      setNodes([])
+      setFolders([])
+      setTreeReady(false)
+    }
+  }, [wsId])
 
   useEffect(() => { load() }, [wsId])
 
@@ -1414,7 +1450,7 @@ export default function StudioPage() {
         </>
       )}
       treeBodyClassName="studio-node-tree"
-      tree={(
+      tree={treeReady ? (
           <WorkspaceFolderTree
             rootTitle="节点列表"
             treeClassName="studio-node-tree"
@@ -1475,6 +1511,10 @@ export default function StudioPage() {
               { key: 'add-node', label: '新建节点', onClick: () => { setCreateFolderId(f.id); setCreateModal(true) } },
             ] : []}
           />
+      ) : (
+        <div className="studio-node-tree" style={{ padding: '12px 16px' }}>
+          <Skeleton active paragraph={{ rows: 10 }} title={false} />
+        </div>
       )}
     >
       <StudioWorkbenchTopStrip>

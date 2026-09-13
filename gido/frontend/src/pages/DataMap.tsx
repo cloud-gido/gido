@@ -4,7 +4,7 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Table, Input, Button, Modal, Form, Select, Tag, Space, message, Descriptions, Tabs, Alert, Spin } from 'antd'
 import { SearchOutlined, PlusOutlined, SyncOutlined, ApartmentOutlined, TableOutlined, UploadOutlined } from '@ant-design/icons'
@@ -14,6 +14,19 @@ import { can, P } from '../perm'
 import { formatCellDisplay } from '../utils/cellDisplay'
 import LineageGraph from '../components/LineageGraph'
 import { R } from '../routes'
+import { peekCachedDatasources, rememberDatasources } from '../utils/workspaceDatasource'
+import {
+  catalogCapableDatasources,
+  mergeCatalogWithRegistered,
+  replaceDatasourceCatalogRows,
+} from '../utils/dataMapCatalogLoad'
+
+/** 同会话内默认目录视图（无关键字）内存缓存，菜单来回切换先出表再静默刷新 */
+const catalogViewCache = new Map<string, any[]>()
+
+function catalogCacheKey(wsId: number, dsFilter?: number) {
+  return `${wsId}|${dsFilter ?? ''}`
+}
 
 function datamapErrMsg(e: any, fallback: string) {
   const detail = e?.response?.data?.detail
@@ -24,87 +37,172 @@ function datamapErrMsg(e: any, fallback: string) {
   return fallback
 }
 
+type CatalogSyncProgress = {
+  done: number
+  total: number
+  name: string
+} | null
+
 export default function DataMapPage() {
   const { currentWorkspace, user } = useAppStore()
   const wsId = currentWorkspace?.id
   const canWrite = can(user, P.GIDO_BATCH_DATAMAP_WRITE, currentWorkspace)
   const navigate = useNavigate()
-  const [tables, setTables] = useState<any[]>([])
-  const [datasources, setDatasources] = useState<any[]>([])
+  const [tables, setTables] = useState<any[]>(() => {
+    const id = useAppStore.getState().currentWorkspace?.id
+    if (id == null) return []
+    return catalogViewCache.get(catalogCacheKey(id)) ?? []
+  })
+  const [datasources, setDatasources] = useState<any[]>(() =>
+    peekCachedDatasources(useAppStore.getState().currentWorkspace?.id),
+  )
   const [keyword, setKeyword] = useState('')
   const [dsFilter, setDsFilter] = useState<number | undefined>(undefined)
   const [detailModal, setDetailModal] = useState(false)
   const [selectedTable, setSelectedTable] = useState<any>(null)
   const [lineageData, setLineageData] = useState<{ nodes: any[], edges: any[] }>({ nodes: [], edges: [] })
   const [impactData, setImpactData] = useState<any[]>([])
+  const [lineageLoading, setLineageLoading] = useState(false)
+  const [impactLoading, setImpactLoading] = useState(false)
+  const [detailExtrasLoaded, setDetailExtrasLoaded] = useState<{ lineage?: boolean; impact?: boolean }>({})
   const [previewData, setPreviewData] = useState<any>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [registerModal, setRegisterModal] = useState(false)
   const [form] = Form.useForm()
+  const [listLoading, setListLoading] = useState(false)
+  const [dsLoading, setDsLoading] = useState(false)
+  const [catalogSync, setCatalogSync] = useState<CatalogSyncProgress>(null)
+  const loadGenRef = useRef(0)
+  const keywordRef = useRef(keyword)
+  keywordRef.current = keyword
+  const dsFilterRef = useRef(dsFilter)
+  dsFilterRef.current = dsFilter
+
+  const loadDatasources = useCallback(async (): Promise<any[]> => {
+    if (!wsId) return []
+    const had = peekCachedDatasources(wsId).length > 0
+    if (!had) setDsLoading(true)
+    try {
+      const d: any = await datasourceApi.list(wsId).catch(() => [])
+      const list = Array.isArray(d) ? d : []
+      rememberDatasources(wsId, list)
+      setDatasources(list)
+      return list
+    } finally {
+      setDsLoading(false)
+    }
+  }, [wsId])
+
+  /**
+   * DataWorks 式分源加载：
+   * 1) 已注册字典秒出（纯元数据 API）
+   * 2) 再按数据源逐个拉物理 catalog，边到边合并
+   */
+  const loadCatalog = useCallback(async () => {
+    if (!wsId) return
+    const gen = ++loadGenRef.current
+    const kw = (keywordRef.current || '').trim()
+    const filter = dsFilterRef.current
+    const cacheKey = catalogCacheKey(wsId, filter)
+    const cached = !kw ? catalogViewCache.get(cacheKey) : undefined
+    if (cached?.length) {
+      setTables(cached)
+      setListLoading(false)
+    } else {
+      setListLoading(true)
+    }
+
+    try {
+      const regRaw: any = await datamapApi.searchTables(wsId, kw || undefined).catch(() => [])
+      if (gen !== loadGenRef.current) return
+      const registered = Array.isArray(regRaw) ? regRaw : []
+      let catalogRows: any[] = []
+      setTables(mergeCatalogWithRegistered(catalogRows, registered, filter))
+      setListLoading(false)
+
+      let dsList = peekCachedDatasources(wsId)
+      if (!dsList.length) {
+        dsList = await loadDatasources()
+        if (gen !== loadGenRef.current) return
+      }
+      const targets = catalogCapableDatasources(dsList as any[], filter)
+      if (!targets.length) {
+        if (!kw) catalogViewCache.set(cacheKey, mergeCatalogWithRegistered([], registered, filter))
+        setCatalogSync(null)
+        return
+      }
+
+      setCatalogSync({ done: 0, total: targets.length, name: targets[0]?.name || '' })
+      for (let i = 0; i < targets.length; i++) {
+        const ds = targets[i]
+        if (gen !== loadGenRef.current) return
+        setCatalogSync({ done: i, total: targets.length, name: ds.name || `数据源 #${ds.id}` })
+        const c: any = await datamapApi
+          .catalog(wsId, { datasource_id: ds.id, keyword: kw || undefined })
+          .catch(() => [])
+        if (gen !== loadGenRef.current) return
+        const slice = Array.isArray(c) ? c : []
+        catalogRows = replaceDatasourceCatalogRows(catalogRows, ds.id, slice)
+        setTables(mergeCatalogWithRegistered(catalogRows, registered, filter))
+        setCatalogSync({ done: i + 1, total: targets.length, name: ds.name || `数据源 #${ds.id}` })
+      }
+
+      const merged = mergeCatalogWithRegistered(catalogRows, registered, filter)
+      if (!kw) catalogViewCache.set(cacheKey, merged)
+    } finally {
+      if (gen === loadGenRef.current) {
+        setListLoading(false)
+        setCatalogSync(null)
+      }
+    }
+  }, [wsId, loadDatasources])
 
   const load = async () => {
-    if (!wsId) return
-    const [c, d, regRaw]: any = await Promise.all([
-      datamapApi.catalog(wsId, { datasource_id: dsFilter, keyword: keyword || undefined }).catch(() => []),
-      datasourceApi.list(wsId).catch(() => []),
-      datamapApi.searchTables(wsId, keyword || undefined).catch(() => []),
-    ])
-    const catalogRows = Array.isArray(c) ? c : []
-    const registered = Array.isArray(regRaw) ? regRaw : []
-    const keyOf = (dsid: number | string, cat: string, tn: string) =>
-      `${Number(dsid)}|${String(cat || '').trim()}|${String(tn || '').trim()}`
-    const seen = new Set<string>()
-    for (const x of catalogRows) {
-      if (x.error || x.datasource_id == null) continue
-      seen.add(keyOf(x.datasource_id, x.catalog || '', x.table_name || ''))
-    }
-    const extras: any[] = []
-    for (const t of registered) {
-      if (dsFilter != null && t.datasource_id !== dsFilter) continue
-      const cat = String(t.catalog || t.db_name || '')
-      const tn = String(t.table_name || '')
-      if (!tn) continue
-      const k = keyOf(t.datasource_id, cat, tn)
-      if (seen.has(k)) continue
-      seen.add(k)
-      extras.push({
-        row_key: `reg-${t.id}-${k}`,
-        registered: true,
-        meta_table_id: t.id,
-        datasource_id: t.datasource_id,
-        datasource_name: t.datasource_name || '—',
-        catalog: cat || null,
-        table_name: tn,
-        qualified_name: t.qualified_name || k,
-        table_comment: t.table_comment,
-        table_type: t.table_type,
-        row_count: t.row_count,
-        tags: t.tags,
-        owner: t.owner,
-        last_updated: t.last_updated,
-      })
-    }
-    const merged = [...catalogRows, ...extras].map((row: any, i: number) => ({
-      ...row,
-      rowKey: row.row_key ?? row.rowKey ?? `row-${i}`,
-    }))
-    setTables(merged)
-    setDatasources(d as unknown as any[])
+    await Promise.all([loadDatasources(), loadCatalog()])
   }
 
-  useEffect(() => { load() }, [wsId, dsFilter])
+  useEffect(() => { void loadDatasources() }, [loadDatasources])
+  useEffect(() => { void loadCatalog() }, [wsId, dsFilter, loadCatalog])
 
   const openDetail = async (table: any) => {
-    const [detail, lineage, impact]: any = await Promise.all([
-      datamapApi.getTable(table.id),
-      datamapApi.getLineage(table.id, 3),
-      datamapApi.getImpact(table.id)
-    ])
-    setSelectedTable(detail)
-    setLineageData(lineage)
-    setImpactData(impact.impacted_tables || [])
-    setPreviewData(null)
-    setDetailModal(true)
+    try {
+      const detail: any = await datamapApi.getTable(table.id)
+      setSelectedTable(detail)
+      setLineageData({ nodes: [], edges: [] })
+      setImpactData([])
+      setDetailExtrasLoaded({})
+      setPreviewData(null)
+      setDetailModal(true)
+    } catch (e: any) {
+      message.error(datamapErrMsg(e, '加载字典失败'))
+    }
+  }
+
+  const ensureDetailExtra = async (key: 'lineage' | 'impact') => {
+    if (!selectedTable?.id || detailExtrasLoaded[key]) return
+    if (key === 'lineage') {
+      setLineageLoading(true)
+      try {
+        const lineage: any = await datamapApi.getLineage(selectedTable.id, 3)
+        setLineageData(lineage || { nodes: [], edges: [] })
+        setDetailExtrasLoaded(prev => ({ ...prev, lineage: true }))
+      } catch (e: any) {
+        message.error(e?.response?.data?.detail || '加载血缘失败')
+      } finally {
+        setLineageLoading(false)
+      }
+      return
+    }
+    setImpactLoading(true)
+    try {
+      const impact: any = await datamapApi.getImpact(selectedTable.id)
+      setImpactData(impact?.impacted_tables || [])
+      setDetailExtrasLoaded(prev => ({ ...prev, impact: true }))
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '加载影响分析失败')
+    } finally {
+      setImpactLoading(false)
+    }
   }
 
   const loadPreview = async (tableId: number) => {
@@ -262,6 +360,7 @@ export default function DataMapPage() {
             placeholder="筛选数据源"
             style={{ width: 200 }}
             value={dsFilter}
+            loading={dsLoading}
             onChange={v => setDsFilter(v)}
             options={datasources.map((d: any) => ({ label: d.name, value: d.id }))}
           />
@@ -269,7 +368,7 @@ export default function DataMapPage() {
             placeholder="搜索表名/描述"
             value={keyword}
             onChange={e => setKeyword(e.target.value)}
-            onSearch={load}
+            onSearch={() => { void loadCatalog() }}
             style={{ width: 260 }}
           />
           {canWrite && (
@@ -283,7 +382,13 @@ export default function DataMapPage() {
               </Button>
             </>
           )}
-          <Button icon={<SearchOutlined />} onClick={load}>刷新目录</Button>
+          <Button
+            icon={<SearchOutlined />}
+            loading={Boolean(catalogSync)}
+            onClick={() => { void loadCatalog() }}
+          >
+            刷新目录
+          </Button>
         </Space>
       </div>
       {!canWrite && (
@@ -300,11 +405,26 @@ export default function DataMapPage() {
         style={{ marginBottom: 12 }}
         message={
           canWrite
-            ? '展示当前工作空间内已启用数据源中可枚举的物理表（MySQL / Doris / PostgreSQL；未注册也可浏览）。注册时会自动同步字段到数据字典；表结构变更后可点「同步结构」刷新；新建物理表后请点「刷新目录」。'
-            : '展示当前工作空间内已启用数据源中可枚举的物理表。点击已注册表可查看字典与血缘；未注册表仅可浏览目录信息。'
+            ? '先展示已注册字典，再按数据源渐进拉取可枚举物理表（MySQL / Doris / PostgreSQL）。注册时会自动同步字段；表结构变更后可点「同步结构」；新建物理表后请点「刷新目录」。'
+            : '先展示已注册字典，再按数据源渐进拉取物理表目录。点击已注册表可查看字典与血缘；未注册表仅可浏览目录信息。'
         }
       />
-      <Table dataSource={tables} columns={columns} rowKey="rowKey" scroll={{ x: 1100 }} />
+      {catalogSync && (
+        <Alert
+          type="success"
+          showIcon
+          icon={<Spin size="small" />}
+          style={{ marginBottom: 12 }}
+          message={`正在按数据源同步物理目录 ${catalogSync.done}/${catalogSync.total}：${catalogSync.name}`}
+        />
+      )}
+      <Table
+        dataSource={tables}
+        columns={columns}
+        rowKey="rowKey"
+        scroll={{ x: 1100 }}
+        loading={listLoading && !tables.length}
+      />
 
       <Modal
         title={`数据字典 - ${selectedTable?.qualified_name || selectedTable?.table_name}`}
@@ -314,7 +434,12 @@ export default function DataMapPage() {
         width={900}
       >
         {selectedTable && (
-          <Tabs items={[
+          <Tabs
+            onChange={(key) => {
+              if (key === 'lineage') void ensureDetailExtra('lineage')
+              if (key === 'impact') void ensureDetailExtra('impact')
+            }}
+            items={[
             {
               key: 'info', label: '基本信息',
               children: (
@@ -348,32 +473,42 @@ export default function DataMapPage() {
               key: 'lineage', label: '血缘图谱',
               children: (
                 <div>
-                  <LineageGraph
-                    data={lineageData}
-                    currentTableId={selectedTable.id}
-                    height={420}
-                  />
+                  {lineageLoading ? (
+                    <div style={{ padding: 48, textAlign: 'center' }}><Spin tip="加载血缘…" /></div>
+                  ) : (
+                    <LineageGraph
+                      data={lineageData}
+                      currentTableId={selectedTable.id}
+                      height={420}
+                    />
+                  )}
                 </div>
               )
             },
             {
-              key: 'impact', label: `影响分析 (${impactData.length})`,
+              key: 'impact', label: `影响分析${detailExtrasLoaded.impact ? ` (${impactData.length})` : ''}`,
               children: (
                 <div>
-                  {impactData.length > 0 && (
-                    <Alert
-                      type="warning"
-                      message={`该表变更将影响下游 ${impactData.length} 张表`}
-                      style={{ marginBottom: 12 }}
-                    />
+                  {impactLoading ? (
+                    <div style={{ padding: 48, textAlign: 'center' }}><Spin tip="加载影响分析…" /></div>
+                  ) : (
+                    <>
+                      {impactData.length > 0 && (
+                        <Alert
+                          type="warning"
+                          message={`该表变更将影响下游 ${impactData.length} 张表`}
+                          style={{ marginBottom: 12 }}
+                        />
+                      )}
+                      <Table
+                        dataSource={impactData}
+                        columns={impactColumns}
+                        rowKey="table_name"
+                        size="small"
+                        pagination={false}
+                      />
+                    </>
                   )}
-                  <Table
-                    dataSource={impactData}
-                    columns={impactColumns}
-                    rowKey="table_name"
-                    size="small"
-                    pagination={false}
-                  />
                 </div>
               )
             },

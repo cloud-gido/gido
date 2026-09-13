@@ -4,7 +4,7 @@
  * 运行历史详情：SQL + 结果预览
  */
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Card, Descriptions, Space, Tag, message, Alert } from 'antd'
+import { Button, Card, Descriptions, Space, Tag, message, Alert, Skeleton } from 'antd'
 import { ArrowLeftOutlined, CopyOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import { adhocRunsApi } from '../api'
@@ -33,12 +33,13 @@ export default function RunHistoryDetailPage() {
   const { currentWorkspace } = useAppStore()
   const displayTz = currentWorkspace?.timezone || 'Asia/Shanghai'
   const [row, setRow] = useState<any>(null)
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     const runId = Number(id)
     if (!runId) return
     setLoading(true)
+    setRow(null)
     adhocRunsApi
       .get(runId)
       .then((res: any) => setRow(res))
@@ -93,6 +94,10 @@ export default function RunHistoryDetailPage() {
     )
   }
 
+  const metaReady = Boolean(row)
+  const sqlReady = Boolean(row?.sql_text)
+  const resultReady = Boolean(preview?.columns?.length) || (metaReady && !loading)
+
   return (
     <div>
       <Space style={{ marginBottom: 16 }}>
@@ -103,30 +108,36 @@ export default function RunHistoryDetailPage() {
         {row?.status && <Tag color={STATUS_COLOR[row.status] || 'default'}>{row.status}</Tag>}
       </Space>
 
-      <Card loading={loading} size="small" style={{ marginBottom: 16 }}>
-        <Descriptions column={3} size="small">
-          <Descriptions.Item label="来源">{SOURCE_LABEL[row?.source] || row?.source}</Descriptions.Item>
-          <Descriptions.Item label="对象">{row?.object_name || '—'}</Descriptions.Item>
-          <Descriptions.Item label="数据源">{row?.datasource_name || '—'}</Descriptions.Item>
-          <Descriptions.Item label="执行人">{row?.triggered_by_name || '—'}</Descriptions.Item>
-          <Descriptions.Item label="开始时间">{formatInTimeZone(row?.started_at, displayTz)}</Descriptions.Item>
-          <Descriptions.Item label="结束时间">{formatInTimeZone(row?.finished_at, displayTz)}</Descriptions.Item>
-          <Descriptions.Item label="耗时">
-            {row?.duration_ms != null ? `${(row.duration_ms / 1000).toFixed(2)}s` : '—'}
-          </Descriptions.Item>
-          <Descriptions.Item label="返回行数">
-            {row?.rows_returned ?? 0}
-            {row?.result_preview?.truncated ? '（已截断预览）' : ''}
-          </Descriptions.Item>
-        </Descriptions>
-        <Space style={{ marginTop: 8 }}>
-          {row?.source === 'studio' && (
-            <Button size="small" onClick={openInStudio}>在数据开发打开</Button>
-          )}
-          {row?.source === 'probe' && (
-            <Button size="small" onClick={openInProbe}>打开数据探查</Button>
-          )}
-        </Space>
+      <Card size="small" style={{ marginBottom: 16 }}>
+        {!metaReady ? (
+          <Skeleton active paragraph={{ rows: 3 }} title={false} />
+        ) : (
+          <>
+            <Descriptions column={3} size="small">
+              <Descriptions.Item label="来源">{SOURCE_LABEL[row?.source] || row?.source}</Descriptions.Item>
+              <Descriptions.Item label="对象">{row?.object_name || '—'}</Descriptions.Item>
+              <Descriptions.Item label="数据源">{row?.datasource_name || '—'}</Descriptions.Item>
+              <Descriptions.Item label="执行人">{row?.triggered_by_name || '—'}</Descriptions.Item>
+              <Descriptions.Item label="开始时间">{formatInTimeZone(row?.started_at, displayTz)}</Descriptions.Item>
+              <Descriptions.Item label="结束时间">{formatInTimeZone(row?.finished_at, displayTz)}</Descriptions.Item>
+              <Descriptions.Item label="耗时">
+                {row?.duration_ms != null ? `${(row.duration_ms / 1000).toFixed(2)}s` : '—'}
+              </Descriptions.Item>
+              <Descriptions.Item label="返回行数">
+                {row?.rows_returned ?? 0}
+                {row?.result_preview?.truncated ? '（已截断预览）' : ''}
+              </Descriptions.Item>
+            </Descriptions>
+            <Space style={{ marginTop: 8 }}>
+              {row?.source === 'studio' && (
+                <Button size="small" onClick={openInStudio}>在数据开发打开</Button>
+              )}
+              {row?.source === 'probe' && (
+                <Button size="small" onClick={openInProbe}>打开数据探查</Button>
+              )}
+            </Space>
+          </>
+        )}
       </Card>
 
       <Card
@@ -139,7 +150,13 @@ export default function RunHistoryDetailPage() {
           </Button>
         }
       >
-        {row?.sql_text ? (
+        {!sqlReady ? (
+          loading ? (
+            <Skeleton active paragraph={{ rows: 6 }} title={false} />
+          ) : (
+            <div style={{ color: '#999', padding: '8px 0' }}>（无）</div>
+          )
+        ) : (
           <DwMonacoEditor
             value={row.sql_text}
             readOnly
@@ -154,8 +171,6 @@ export default function RunHistoryDetailPage() {
               scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
             }}
           />
-        ) : (
-          <div style={{ color: '#999', padding: '8px 0' }}>（无）</div>
         )}
       </Card>
 
@@ -172,7 +187,11 @@ export default function RunHistoryDetailPage() {
       )}
 
       <Card title="查询结果" size="small" styles={{ body: { padding: 0, minHeight: 280 } }}>
-        {preview?.columns?.length ? (
+        {loading && !resultReady ? (
+          <div style={{ padding: 16 }}>
+            <Skeleton active paragraph={{ rows: 8 }} title={false} />
+          </div>
+        ) : preview?.columns?.length ? (
           <div style={{ height: 420, display: 'flex', flexDirection: 'column' }}>
             <QueryResultPanel
               dataSource={tableBundle.dataSource}
