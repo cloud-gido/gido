@@ -4,11 +4,11 @@
  * @author felixzhu
  * @date 2026-06-24
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Descriptions, Divider, Dropdown, Drawer, Form, Input, InputNumber, message, Select, Space, Switch, Table, Tag, Tooltip, type MenuProps } from 'antd'
 import { ClockCircleOutlined, DownOutlined, FileTextOutlined, NotificationOutlined, PartitionOutlined, PlusOutlined, QuestionCircleOutlined, ReloadOutlined, SettingOutlined, TeamOutlined } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { alertApi, operationApi, workspaceApi } from '../api'
+import { alertApi, operationApi, workspaceApi, workflowApi } from '../api'
 import { describePollError } from '../utils/pollError'
 import RunCollectorStatus from '../components/RunCollectorStatus'
 import RunDiagnosisDrawer, { type DiagnosisTarget } from '../components/RunDiagnosisDrawer'
@@ -91,6 +91,9 @@ export default function AlertCenterPage() {
   const [status, setStatus] = useState<string>('open')
   const [keyword, setKeyword] = useState('')
   const [keywordDraft, setKeywordDraft] = useState('')
+  const [workflowFilter, setWorkflowFilter] = useState<number | undefined>()
+  const [workflowOptions, setWorkflowOptions] = useState<{ value: number; label: string }[]>([])
+  const [workflowsLoading, setWorkflowsLoading] = useState(false)
   const [notifyStatus, setNotifyStatus] = useState<string>('all')
   const [afterArmed, setAfterArmed] = useState(true)
   const [coverage, setCoverage] = useState<any>(null)
@@ -134,6 +137,7 @@ export default function AlertCenterPage() {
         page_size: 20,
         include_all_workspaces: includeAllWorkspaces || undefined,
         q: keyword.trim() || undefined,
+        workflow_id: workflowFilter ?? undefined,
         notification_status: notifyStatus === 'all' ? undefined : notifyStatus,
         after_armed: afterArmed,
       })
@@ -158,13 +162,41 @@ export default function AlertCenterPage() {
     }
   }
 
-  useEffect(() => { load() }, [wsId, includeAllWorkspaces, status, page, keyword, notifyStatus, afterArmed])
+  useEffect(() => { load() }, [wsId, includeAllWorkspaces, status, page, keyword, workflowFilter, notifyStatus, afterArmed])
 
   useEffect(() => {
     if (!wsId) return undefined
     const timer = window.setInterval(() => { loadAlerts() }, 15000)
     return () => window.clearInterval(timer)
-  }, [wsId, includeAllWorkspaces, status, page, keyword, notifyStatus, afterArmed])
+  }, [wsId, includeAllWorkspaces, status, page, keyword, workflowFilter, notifyStatus, afterArmed])
+
+  useEffect(() => {
+    if (!wsId || includeAllWorkspaces) {
+      setWorkflowOptions([])
+      return
+    }
+    let cancelled = false
+    setWorkflowsLoading(true)
+    workflowApi.listAll(wsId).then((res: any) => {
+      if (cancelled) return
+      const items = Array.isArray(res?.items) ? res.items : (Array.isArray(res) ? res : [])
+      setWorkflowOptions(
+        items.map((w: any) => {
+          const owner = w.created_by_username || w.updated_by_username
+          const name = String(w.name || `工作流 #${w.id}`)
+          return {
+            value: Number(w.id),
+            label: owner ? `${name} · ${owner}` : name,
+          }
+        }),
+      )
+    }).catch(() => {
+      if (!cancelled) setWorkflowOptions([])
+    }).finally(() => {
+      if (!cancelled) setWorkflowsLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [wsId, includeAllWorkspaces])
 
   const openSla = async () => {
     if (!wsId) return
@@ -411,6 +443,12 @@ export default function AlertCenterPage() {
     return items
   }
 
+  const workflowSelectOptions = useMemo(() => {
+    if (workflowFilter == null) return workflowOptions
+    if (workflowOptions.some(o => o.value === workflowFilter)) return workflowOptions
+    return [{ value: workflowFilter, label: `工作流 #${workflowFilter}` }, ...workflowOptions]
+  }, [workflowFilter, workflowOptions])
+
   const renderNotifyTag = (v: string, row: any) => {
     const tag = <Tag color={NOTIFY_COLOR[v] || 'default'}>{NOTIFY_LABEL[v] || v || 'pending'}</Tag>
     if (v === 'deferred') {
@@ -467,6 +505,9 @@ export default function AlertCenterPage() {
           <div style={{ color: '#8c8c8c', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {includeAllWorkspaces && row.workspace_name ? `${row.workspace_name} · ` : ''}
+              {row.workflow_created_by_username || row.workflow_updated_by_username
+                ? `负责人 ${row.workflow_created_by_username || row.workflow_updated_by_username} · `
+                : ''}
               {row.business_date ? `业务日 ${row.business_date}` : '业务日 —'}
               {row.node_name ? ` · ${row.node_name}` : ''}
             </span>
@@ -620,6 +661,22 @@ export default function AlertCenterPage() {
 
       <div style={{ marginBottom: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <Select
+          showSearch
+          allowClear
+          placeholder="工作流"
+          style={{ width: 280 }}
+          value={workflowFilter}
+          loading={workflowsLoading}
+          disabled={includeAllWorkspaces}
+          optionFilterProp="label"
+          filterOption={(input, option) =>
+            String(option?.label ?? '').toLowerCase().includes(input.trim().toLowerCase())
+          }
+          options={workflowSelectOptions}
+          onChange={(v) => { setWorkflowFilter(v); setPage(1) }}
+          notFoundContent={workflowsLoading ? '加载中…' : '无匹配工作流'}
+        />
+        <Select
           style={{ width: 160 }}
           value={status}
           onChange={(v) => { setStatus(v); setPage(1) }}
@@ -632,8 +689,8 @@ export default function AlertCenterPage() {
         />
         <Input.Search
           allowClear
-          placeholder="工作流名称"
-          style={{ width: 220 }}
+          placeholder="工作流名称关键字"
+          style={{ width: 200 }}
           value={keywordDraft}
           onChange={(e) => setKeywordDraft(e.target.value)}
           onSearch={(v) => { setKeyword(v); setPage(1) }}
@@ -673,7 +730,11 @@ export default function AlertCenterPage() {
         </Dropdown>
         {platformAdmin && (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-            <Switch checked={includeAllWorkspaces} onChange={(v) => { setIncludeAllWorkspaces(v); setPage(1) }} />
+            <Switch checked={includeAllWorkspaces} onChange={(v) => {
+              setIncludeAllWorkspaces(v)
+              setPage(1)
+              setWorkflowFilter(undefined)
+            }} />
             <span style={{ color: '#666' }}>全部工作空间</span>
           </span>
         )}

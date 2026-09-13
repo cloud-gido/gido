@@ -119,6 +119,7 @@ def list_alerts(
     page_size: int = Query(50, ge=1, le=200),
     include_all_workspaces: bool = Query(False, description="平台管理员：跨工作空间查看"),
     q: Optional[str] = Query(None, description="工作流名称"),
+    workflow_id: Optional[int] = Query(None, description="按工作流精确筛选"),
     notification_status: Optional[str] = Query(None, description="通知状态 sent/skipped/failed/pending/partial"),
     after_armed: bool = Query(True, description="默认隐藏推送起点之前、且未实际推送的历史入库"),
     db: Session = Depends(get_db),
@@ -139,6 +140,8 @@ def list_alerts(
         stmt = stmt.filter(AlertEvent.workspace_id == workspace_id)
     if status:
         stmt = stmt.filter(AlertEvent.status == status)
+    if workflow_id is not None:
+        stmt = stmt.filter(AlertEvent.workflow_id == int(workflow_id))
     keyword = (q or "").strip()
     if keyword:
         stmt = stmt.filter(
@@ -165,10 +168,22 @@ def list_alerts(
         ws.id: ws.name
         for ws in db.query(Workspace).filter(Workspace.id.in_([r.workspace_id for r in rows if r.workspace_id])).all()
     }
-    workflow_names = {
-        wf.id: wf.name
+    workflows_by_id = {
+        wf.id: wf
         for wf in db.query(Workflow).filter(Workflow.id.in_([r.workflow_id for r in rows if r.workflow_id])).all()
     }
+    owner_ids: set[int] = set()
+    for wf in workflows_by_id.values():
+        if wf.created_by:
+            owner_ids.add(int(wf.created_by))
+        ub = getattr(wf, "updated_by", None)
+        if ub:
+            owner_ids.add(int(ub))
+    usernames = {
+        int(u.id): u.username
+        for u in (db.query(User).filter(User.id.in_(owner_ids)).all() if owner_ids else [])
+    }
+    workflow_names = {wid: wf.name for wid, wf in workflows_by_id.items()}
     wi_ids = [r.workflow_instance_id for r in rows if r.workflow_instance_id]
     workflow_instances = {
         inst.id: inst
@@ -234,6 +249,7 @@ def list_alerts(
         wf_inst = workflow_instances.get(r.workflow_instance_id)
         node_inst = node_instances.get(r.node_instance_id)
         node = task_nodes.get(node_inst.node_id) if node_inst else None
+        wf = workflows_by_id.get(r.workflow_id)
         occurred_at = (
             getattr(node_inst, "finished_at", None)
             or getattr(wf_inst, "finished_at", None)
@@ -241,12 +257,18 @@ def list_alerts(
             or getattr(wf_inst, "started_at", None)
             or r.created_at
         )
+        cb = wf.created_by if wf else None
+        ub = getattr(wf, "updated_by", None) if wf else None
         items.append({
             "id": r.id,
             "workspace_id": r.workspace_id,
             "workspace_name": workspace_names.get(r.workspace_id),
             "workflow_id": r.workflow_id,
             "workflow_name": workflow_names.get(r.workflow_id),
+            "workflow_created_by": cb,
+            "workflow_created_by_username": usernames.get(int(cb)) if cb else None,
+            "workflow_updated_by": ub,
+            "workflow_updated_by_username": usernames.get(int(ub)) if ub else None,
             "workflow_instance_id": r.workflow_instance_id,
             "workflow_instance_status": getattr(wf_inst, "status", None),
             # 基线告警没有实例可挂，业务日期只存在去重键里，取出来诊断才能定到正确的那天

@@ -94,9 +94,8 @@ export default function DataMapPage() {
   }, [wsId])
 
   /**
-   * 分源渐进加载：
-   * 1) 已注册字典秒出（纯元数据 API）
-   * 2) 再按数据源逐个拉物理 catalog，边到边合并
+   * 分源渐进加载（对齐探查：有缓存则先稳住画面，后台静默对齐，不中途清空/缩表）。
+   * 无缓存：先出已注册字典，再按源补物理表。
    */
   const loadCatalog = useCallback(async () => {
     if (!wsId) return
@@ -105,8 +104,9 @@ export default function DataMapPage() {
     const filter = dsFilterRef.current
     const cacheKey = catalogCacheKey(wsId, filter)
     const cached = !kw ? catalogViewCache.get(cacheKey) : undefined
-    if (cached?.length) {
-      setTables(cached)
+    const hadCache = Boolean(cached?.length)
+    if (hadCache) {
+      setTables(cached!)
       setListLoading(false)
     } else {
       setListLoading(true)
@@ -117,8 +117,11 @@ export default function DataMapPage() {
       if (gen !== loadGenRef.current) return
       const registered = Array.isArray(regRaw) ? regRaw : []
       let catalogRows: any[] = []
-      setTables(mergeCatalogWithRegistered(catalogRows, registered, filter))
-      setListLoading(false)
+      // 有缓存时禁止中途改成「仅注册表」——那是一闪而过的割裂感来源
+      if (!hadCache) {
+        setTables(mergeCatalogWithRegistered(catalogRows, registered, filter))
+        setListLoading(false)
+      }
 
       let dsList = peekCachedDatasources(wsId)
       if (!dsList.length) {
@@ -127,7 +130,9 @@ export default function DataMapPage() {
       }
       const targets = catalogCapableDatasources(dsList as any[], filter)
       if (!targets.length) {
-        if (!kw) catalogViewCache.set(cacheKey, mergeCatalogWithRegistered([], registered, filter))
+        const merged = mergeCatalogWithRegistered([], registered, filter)
+        setTables(merged)
+        if (!kw) catalogViewCache.set(cacheKey, merged)
         setCatalogSync(null)
         return
       }
@@ -143,11 +148,15 @@ export default function DataMapPage() {
         if (gen !== loadGenRef.current) return
         const slice = Array.isArray(c) ? c : []
         catalogRows = replaceDatasourceCatalogRows(catalogRows, ds.id, slice)
-        setTables(mergeCatalogWithRegistered(catalogRows, registered, filter))
+        // 冷启动才边拉边刷；有缓存则等全部完成再一次替换（SWR）
+        if (!hadCache) {
+          setTables(mergeCatalogWithRegistered(catalogRows, registered, filter))
+        }
         setCatalogSync({ done: i + 1, total: targets.length, name: ds.name || `数据源 #${ds.id}` })
       }
 
       const merged = mergeCatalogWithRegistered(catalogRows, registered, filter)
+      setTables(merged)
       if (!kw) catalogViewCache.set(cacheKey, merged)
     } finally {
       if (gen === loadGenRef.current) {

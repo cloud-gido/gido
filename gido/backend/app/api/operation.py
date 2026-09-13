@@ -384,6 +384,18 @@ def _serialize_instance_rows(db: Session, instances: list) -> list:
         for n in db.query(TaskNode).filter(TaskNode.id.in_(node_ids)).all()
     } if node_ids else {}
 
+    owner_ids: set[int] = set()
+    for w in workflows.values():
+        if w.created_by:
+            owner_ids.add(int(w.created_by))
+        ub = getattr(w, "updated_by", None)
+        if ub:
+            owner_ids.add(int(ub))
+    usernames = {
+        int(u.id): u.username
+        for u in (db.query(User).filter(User.id.in_(owner_ids)).all() if owner_ids else [])
+    }
+
     result = []
     for inst in instances:
         wf = workflows.get(int(inst.workflow_id)) if inst.workflow_id else None
@@ -398,12 +410,18 @@ def _serialize_instance_rows(db: Session, instances: list) -> list:
         if inst.started_at and inst.finished_at:
             duration_seconds = int((inst.finished_at - inst.started_at).total_seconds())
         ws_row = workspaces.get(int(wf.workspace_id)) if wf and wf.workspace_id else None
+        cb = wf.created_by if wf else None
+        ub = getattr(wf, "updated_by", None) if wf else None
         result.append({
             "id": inst.id,
             "workflow_id": wf.id if wf else None,
             "workspace_id": wf.workspace_id if wf else None,
             "workspace_name": (ws_row.name if ws_row else "") or "",
             "workflow_name": wf.name if wf else "",
+            "workflow_created_by": cb,
+            "workflow_created_by_username": usernames.get(int(cb)) if cb else None,
+            "workflow_updated_by": ub,
+            "workflow_updated_by_username": usernames.get(int(ub)) if ub else None,
             "status": inst.status,
             "trigger_type": tt,
             "dolphin_command_type": dct,

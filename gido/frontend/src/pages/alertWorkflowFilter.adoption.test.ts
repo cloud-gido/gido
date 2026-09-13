@@ -8,14 +8,14 @@ import { describe, expect, it } from 'vitest'
 
 const root = resolve(__dirname, '..')
 
-describe('Operation workflow filter adoption', () => {
-  it('exposes searchable workflow Select like scheduler process filter', () => {
-    const src = readFileSync(resolve(root, 'pages/Operation.tsx'), 'utf8')
-    expect(src).toContain('workflowOptions')
+describe('AlertCenter workflow filter adoption', () => {
+  it('uses searchable workflow Select and surfaces workflow owners', () => {
+    const src = readFileSync(resolve(root, 'pages/AlertCenter.tsx'), 'utf8')
+    expect(src).toContain('workflowFilter')
     expect(src).toContain('workflowApi.listAll')
-    expect(src).toContain('workflow_created_by_username')
     expect(src).toContain('showSearch')
     expect(src).toContain('placeholder="工作流"')
-    expect(src).toContain('optionFilterProp="label"')
+    expect(src).toContain('workflow_id: workflowFilter')
+    expect(src).toContain('workflow_created_by_username')
   })
 })

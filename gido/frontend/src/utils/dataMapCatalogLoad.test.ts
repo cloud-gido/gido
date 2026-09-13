@@ -33,7 +33,6 @@ describe('dataMapCatalogLoad', () => {
     ]
     const catalog = [
       {
-        row_key: 'p-1-db-a',
         datasource_id: 1,
         catalog: 'db',
         table_name: 'a',
@@ -41,9 +40,22 @@ describe('dataMapCatalogLoad', () => {
       },
     ]
     const merged = mergeCatalogWithRegistered(catalog, registered)
-    expect(merged.some(r => r.table_name === 'a' && r.row_key === 'p-1-db-a')).toBe(true)
+    expect(merged.some(r => r.table_name === 'a' && r.rowKey === '1|db|a')).toBe(true)
     expect(merged.some(r => r.table_name === 'b' && r.meta_table_id === 11)).toBe(true)
     expect(registeredToCatalogExtras(registered)).toHaveLength(2)
+  })
+
+  it('keeps stable rowKey when registered shell is replaced by physical catalog', () => {
+    const registered = [
+      { id: 10, datasource_id: 1, db_name: 'db', table_name: 'a', datasource_name: 'ds1' },
+    ]
+    const onlyReg = mergeCatalogWithRegistered([], registered)
+    const withPhys = mergeCatalogWithRegistered(
+      [{ datasource_id: 1, catalog: 'db', table_name: 'a', registered: true, meta_table_id: 10 }],
+      registered,
+    )
+    expect(onlyReg[0].rowKey).toBe('1|db|a')
+    expect(withPhys[0].rowKey).toBe('1|db|a')
   })
 
   it('replaces one datasource slice without dropping others', () => {

@@ -4,6 +4,7 @@
  *
  * 数据地图目录合并与可枚举数据源筛选（与后端 _CATALOG_DS_TYPES 对齐）。
  * 首屏用已注册元数据，再按数据源渐进拉物理 catalog（业界主流数据开发台分源懒加载）。
+ * rowKey 用「数据源|库|表」稳定键，避免注册壳换成物理行时表格整行重挂导致闪一下。
  */
 
 export const DATAMAP_CATALOG_DS_TYPES = new Set(['mysql', 'doris', 'postgresql'])
@@ -27,6 +28,14 @@ export function tableKeyOf(dsid: number | string, cat: string, tn: string) {
   return `${Number(dsid)}|${String(cat || '').trim()}|${String(tn || '').trim()}`
 }
 
+function stableRowKey(row: any, fallbackIndex: number): string {
+  if (row?.error && row.datasource_id != null) return `err-${Number(row.datasource_id)}`
+  if (row?.datasource_id != null && row?.table_name) {
+    return tableKeyOf(row.datasource_id, row.catalog || '', row.table_name || '')
+  }
+  return String(row?.row_key ?? row?.rowKey ?? `row-${fallbackIndex}`)
+}
+
 /** 已注册元数据转目录行（物理 catalog 尚未覆盖时的壳） */
 export function registeredToCatalogExtras(
   registered: any[],
@@ -40,7 +49,7 @@ export function registeredToCatalogExtras(
     if (!tn) continue
     const k = tableKeyOf(t.datasource_id, cat, tn)
     extras.push({
-      row_key: `reg-${t.id}-${k}`,
+      row_key: k,
       registered: true,
       meta_table_id: t.id,
       datasource_id: t.datasource_id,
@@ -68,10 +77,16 @@ export function mergeCatalogWithRegistered(
   dsFilter?: number | null,
 ): any[] {
   const seen = new Set<string>()
+  const normalizedCatalog: any[] = []
   for (const x of catalogRows) {
-    if (x.error || x.datasource_id == null) continue
-    if (!x.table_name) continue
-    seen.add(tableKeyOf(x.datasource_id, x.catalog || '', x.table_name || ''))
+    if (x.error) {
+      normalizedCatalog.push({ ...x, row_key: `err-${Number(x.datasource_id)}` })
+      continue
+    }
+    if (x.datasource_id == null || !x.table_name) continue
+    const k = tableKeyOf(x.datasource_id, x.catalog || '', x.table_name || '')
+    seen.add(k)
+    normalizedCatalog.push({ ...x, row_key: k })
   }
   const extras = registeredToCatalogExtras(registered, dsFilter).filter((row) => {
     const k = tableKeyOf(row.datasource_id, row.catalog || '', row.table_name || '')
@@ -79,9 +94,9 @@ export function mergeCatalogWithRegistered(
     seen.add(k)
     return true
   })
-  return [...catalogRows, ...extras].map((row: any, i: number) => ({
+  return [...normalizedCatalog, ...extras].map((row: any, i: number) => ({
     ...row,
-    rowKey: row.row_key ?? row.rowKey ?? `row-${i}`,
+    rowKey: stableRowKey(row, i),
   }))
 }
 

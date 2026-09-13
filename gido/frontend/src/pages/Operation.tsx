@@ -135,10 +135,14 @@ export default function OperationPage() {
       if (cancelled) return
       const items = Array.isArray(res?.items) ? res.items : (Array.isArray(res) ? res : [])
       setWorkflowOptions(
-        items.map((w: any) => ({
-          value: Number(w.id),
-          label: String(w.name || `工作流 #${w.id}`),
-        })),
+        items.map((w: any) => {
+          const owner = w.created_by_username || w.updated_by_username
+          const name = String(w.name || `工作流 #${w.id}`)
+          return {
+            value: Number(w.id),
+            label: owner ? `${name} · ${owner}` : name,
+          }
+        }),
       )
     }).catch(() => {
       if (!cancelled) setWorkflowOptions([])
@@ -404,6 +408,8 @@ export default function OperationPage() {
         const metaBits: ReactNode[] = [
           row.business_date ? `业务日 ${row.business_date}` : '业务日 —',
         ]
+        const owner = row.workflow_created_by_username || row.workflow_updated_by_username
+        if (owner) metaBits.push(`负责人 ${owner}`)
         if (failed.length) {
           metaBits.push(
             <Tooltip key="failed" title={failed.join('、')}>
