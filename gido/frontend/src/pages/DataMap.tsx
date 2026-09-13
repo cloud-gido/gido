@@ -389,6 +389,12 @@ export default function DataMapPage() {
           >
             刷新目录
           </Button>
+          {catalogSync ? (
+            <span style={{ color: '#8c8c8c', fontSize: 12 }}>
+              同步物理表 {catalogSync.done}/{catalogSync.total}
+              {catalogSync.name ? ` · ${catalogSync.name}` : ''}
+            </span>
+          ) : null}
         </Space>
       </div>
       {!canWrite && (
@@ -402,22 +408,14 @@ export default function DataMapPage() {
       <Alert
         type="info"
         showIcon
+        closable
         style={{ marginBottom: 12 }}
         message={
           canWrite
-            ? '先展示已注册字典，再按数据源渐进拉取可枚举物理表（MySQL / Doris / PostgreSQL）。注册时会自动同步字段；表结构变更后可点「同步结构」；新建物理表后请点「刷新目录」。'
-            : '先展示已注册字典，再按数据源渐进拉取物理表目录。点击已注册表可查看字典与血缘；未注册表仅可浏览目录信息。'
+            ? '展示已启用数据源中可枚举的物理表（MySQL / Doris / PostgreSQL）。注册时自动同步字段；结构变更后点「同步结构」，新建表后点「刷新目录」。'
+            : '展示已启用数据源中可枚举的物理表。已注册表可查看字典与血缘；未注册表仅可浏览目录信息。'
         }
       />
-      {catalogSync && (
-        <Alert
-          type="success"
-          showIcon
-          icon={<Spin size="small" />}
-          style={{ marginBottom: 12 }}
-          message={`正在按数据源同步物理目录 ${catalogSync.done}/${catalogSync.total}：${catalogSync.name}`}
-        />
-      )}
       <Table
         dataSource={tables}
         columns={columns}

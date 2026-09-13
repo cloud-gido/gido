@@ -22,6 +22,8 @@ describe('DataMap staged load adoption', () => {
     expect(page).toContain('catalogCapableDatasources')
     expect(page).toContain('replaceDatasourceCatalogRows')
     expect(page).toContain('catalogSync')
+    expect(page).toContain('同步物理表')
+    expect(page).not.toContain('正在按数据源同步物理目录')
     expect(page).toContain('ensureDetailExtra')
     expect(page).toContain('datasource_id: ds.id')
     expect(page).toMatch(/datamapApi\s*\n\s*\.catalog\(/)

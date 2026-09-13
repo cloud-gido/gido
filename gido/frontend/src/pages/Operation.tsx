@@ -4,7 +4,7 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useState, useEffect, useRef, type ReactNode } from 'react'
+import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react'
 import { Table, Tag, Button, Space, Row, Col, Statistic, Select, message, Alert, Tooltip, Card, Switch, Tabs, Modal, Input, Dropdown, Collapse, Descriptions, type MenuProps } from 'antd'
 import { ReloadOutlined, StopOutlined, AuditOutlined, CheckCircleOutlined, QuestionCircleOutlined, PartitionOutlined, DownOutlined } from '@ant-design/icons'
 import { useNavigate, Link, useSearchParams } from 'react-router-dom'
@@ -63,6 +63,9 @@ export default function OperationPage() {
   const [todayOnlyWorkflows, setTodayOnlyWorkflows] = useState(false)
   /** 工作流表：仅某个工作流（概览排行下钻） */
   const [workflowFilter, setWorkflowFilter] = useState<number | undefined>()
+  /** 工作流下拉（可搜索），对标调度台「请选择」流程筛选 */
+  const [workflowOptions, setWorkflowOptions] = useState<{ value: number; label: string }[]>([])
+  const [workflowsLoading, setWorkflowsLoading] = useState(false)
   /** 工作流表：运行类型标签页，'' 为全部 */
   const [runTypeFilter, setRunTypeFilter] = useState<RunType | ''>('')
   const [runTypeCounts, setRunTypeCounts] = useState<Record<string, number>>({})
@@ -120,6 +123,30 @@ export default function OperationPage() {
   }
 
   useEffect(() => { load() }, [wsId, statusFilter, page, todayOnlyWorkflows, workflowFilter, runTypeFilter, includeAllWorkspaces])
+
+  useEffect(() => {
+    if (!wsId || includeAllWorkspaces) {
+      setWorkflowOptions([])
+      return
+    }
+    let cancelled = false
+    setWorkflowsLoading(true)
+    workflowApi.listAll(wsId).then((res: any) => {
+      if (cancelled) return
+      const items = Array.isArray(res?.items) ? res.items : (Array.isArray(res) ? res : [])
+      setWorkflowOptions(
+        items.map((w: any) => ({
+          value: Number(w.id),
+          label: String(w.name || `工作流 #${w.id}`),
+        })),
+      )
+    }).catch(() => {
+      if (!cancelled) setWorkflowOptions([])
+    }).finally(() => {
+      if (!cancelled) setWorkflowsLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [wsId, includeAllWorkspaces])
 
   useEffect(() => {
     if (!wsId) return undefined
@@ -522,7 +549,13 @@ export default function OperationPage() {
 
   const tableTitle = `工作流实例${todayOnlyWorkflows ? ' · 今日' : ''}${
     statusFilter ? ` · ${STATUS_LABEL[statusFilter] || statusFilter}` : ''
-  }${workflowFilter ? ` · 工作流筛选中（点上方统计可取消）` : ''}`
+  }${workflowFilter ? ` · 已按工作流筛选` : ''}`
+
+  const workflowSelectOptions = useMemo(() => {
+    if (workflowFilter == null) return workflowOptions
+    if (workflowOptions.some(o => o.value === workflowFilter)) return workflowOptions
+    return [{ value: workflowFilter, label: `工作流 #${workflowFilter}` }, ...workflowOptions]
+  }, [workflowFilter, workflowOptions])
 
   return (
     <div>
@@ -651,6 +684,25 @@ export default function OperationPage() {
       />
 
       <div style={{ marginBottom: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <Select
+          showSearch
+          allowClear
+          placeholder="工作流"
+          style={{ width: 280 }}
+          value={workflowFilter}
+          loading={workflowsLoading}
+          disabled={includeAllWorkspaces}
+          optionFilterProp="label"
+          filterOption={(input, option) =>
+            String(option?.label ?? '').toLowerCase().includes(input.trim().toLowerCase())
+          }
+          options={workflowSelectOptions}
+          onChange={(v) => {
+            setWorkflowFilter(v)
+            setPage(1)
+          }}
+          notFoundContent={workflowsLoading ? '加载中…' : '无匹配工作流'}
+        />
         <Select
           placeholder="状态筛选"
           allowClear
