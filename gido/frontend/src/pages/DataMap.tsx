@@ -37,12 +37,6 @@ function datamapErrMsg(e: any, fallback: string) {
   return fallback
 }
 
-type CatalogSyncProgress = {
-  done: number
-  total: number
-  name: string
-} | null
-
 export default function DataMapPage() {
   const { currentWorkspace, user } = useAppStore()
   const wsId = currentWorkspace?.id
@@ -70,8 +64,8 @@ export default function DataMapPage() {
   const [registerModal, setRegisterModal] = useState(false)
   const [form] = Form.useForm()
   const [listLoading, setListLoading] = useState(false)
-  const [dsLoading, setDsLoading] = useState(false)
-  const [catalogSync, setCatalogSync] = useState<CatalogSyncProgress>(null)
+  /** 仅用户点「刷新目录」时转圈，后台静默同步不碰工具条（避免闪） */
+  const [refreshing, setRefreshing] = useState(false)
   const loadGenRef = useRef(0)
   const keywordRef = useRef(keyword)
   keywordRef.current = keyword
@@ -80,26 +74,26 @@ export default function DataMapPage() {
 
   const loadDatasources = useCallback(async (): Promise<any[]> => {
     if (!wsId) return []
-    const had = peekCachedDatasources(wsId).length > 0
-    if (!had) setDsLoading(true)
     try {
       const d: any = await datasourceApi.list(wsId).catch(() => [])
       const list = Array.isArray(d) ? d : []
       rememberDatasources(wsId, list)
       setDatasources(list)
       return list
-    } finally {
-      setDsLoading(false)
+    } catch {
+      return peekCachedDatasources(wsId)
     }
   }, [wsId])
 
   /**
    * 分源渐进加载（对齐探查：有缓存则先稳住画面，后台静默对齐，不中途清空/缩表）。
-   * 无缓存：先出已注册字典，再按源补物理表。
+   * 无缓存：先出已注册字典，再按源补物理表。工具条不展示同步进度，避免闪来闪去。
    */
-  const loadCatalog = useCallback(async () => {
+  const loadCatalog = useCallback(async (opts?: { userRefresh?: boolean }) => {
     if (!wsId) return
     const gen = ++loadGenRef.current
+    const userRefresh = Boolean(opts?.userRefresh)
+    if (userRefresh) setRefreshing(true)
     const kw = (keywordRef.current || '').trim()
     const filter = dsFilterRef.current
     const cacheKey = catalogCacheKey(wsId, filter)
@@ -108,7 +102,7 @@ export default function DataMapPage() {
     if (hadCache) {
       setTables(cached!)
       setListLoading(false)
-    } else {
+    } else if (!userRefresh) {
       setListLoading(true)
     }
 
@@ -127,21 +121,21 @@ export default function DataMapPage() {
       if (!dsList.length) {
         dsList = await loadDatasources()
         if (gen !== loadGenRef.current) return
+      } else {
+        // 有缓存：后台刷新数据源选项，不挡工具条、不 loading Select
+        void loadDatasources()
       }
       const targets = catalogCapableDatasources(dsList as any[], filter)
       if (!targets.length) {
         const merged = mergeCatalogWithRegistered([], registered, filter)
         setTables(merged)
         if (!kw) catalogViewCache.set(cacheKey, merged)
-        setCatalogSync(null)
         return
       }
 
-      setCatalogSync({ done: 0, total: targets.length, name: targets[0]?.name || '' })
       for (let i = 0; i < targets.length; i++) {
         const ds = targets[i]
         if (gen !== loadGenRef.current) return
-        setCatalogSync({ done: i, total: targets.length, name: ds.name || `数据源 #${ds.id}` })
         const c: any = await datamapApi
           .catalog(wsId, { datasource_id: ds.id, keyword: kw || undefined })
           .catch(() => [])
@@ -152,7 +146,6 @@ export default function DataMapPage() {
         if (!hadCache) {
           setTables(mergeCatalogWithRegistered(catalogRows, registered, filter))
         }
-        setCatalogSync({ done: i + 1, total: targets.length, name: ds.name || `数据源 #${ds.id}` })
       }
 
       const merged = mergeCatalogWithRegistered(catalogRows, registered, filter)
@@ -161,13 +154,13 @@ export default function DataMapPage() {
     } finally {
       if (gen === loadGenRef.current) {
         setListLoading(false)
-        setCatalogSync(null)
+        if (userRefresh) setRefreshing(false)
       }
     }
   }, [wsId, loadDatasources])
 
   const load = async () => {
-    await Promise.all([loadDatasources(), loadCatalog()])
+    await Promise.all([loadDatasources(), loadCatalog({ userRefresh: true })])
   }
 
   useEffect(() => { void loadDatasources() }, [loadDatasources])
@@ -361,15 +354,14 @@ export default function DataMapPage() {
 
   return (
     <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, minHeight: 32 }}>
         <h2 style={{ margin: 0 }}>数据地图</h2>
-        <Space wrap>
+        <Space wrap size={8} style={{ minHeight: 32, alignItems: 'center' }}>
           <Select
             allowClear
             placeholder="筛选数据源"
             style={{ width: 200 }}
             value={dsFilter}
-            loading={dsLoading}
             onChange={v => setDsFilter(v)}
             options={datasources.map((d: any) => ({ label: d.name, value: d.id }))}
           />
@@ -377,7 +369,7 @@ export default function DataMapPage() {
             placeholder="搜索表名/描述"
             value={keyword}
             onChange={e => setKeyword(e.target.value)}
-            onSearch={() => { void loadCatalog() }}
+            onSearch={() => { void loadCatalog({ userRefresh: true }) }}
             style={{ width: 260 }}
           />
           {canWrite && (
@@ -393,17 +385,11 @@ export default function DataMapPage() {
           )}
           <Button
             icon={<SearchOutlined />}
-            loading={Boolean(catalogSync)}
-            onClick={() => { void loadCatalog() }}
+            loading={refreshing}
+            onClick={() => { void loadCatalog({ userRefresh: true }) }}
           >
             刷新目录
           </Button>
-          {catalogSync ? (
-            <span style={{ color: '#8c8c8c', fontSize: 12 }}>
-              同步物理表 {catalogSync.done}/{catalogSync.total}
-              {catalogSync.name ? ` · ${catalogSync.name}` : ''}
-            </span>
-          ) : null}
         </Space>
       </div>
       {!canWrite && (

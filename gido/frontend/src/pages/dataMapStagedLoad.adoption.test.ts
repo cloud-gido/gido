@@ -13,7 +13,7 @@ function read(rel: string) {
 }
 
 describe('DataMap staged load adoption', () => {
-  it('loads registered tables first then progressive per-datasource catalog', () => {
+  it('loads quietly without toolbar sync chrome flicker', () => {
     const page = read('pages/DataMap.tsx')
     expect(page).toContain('listLoading')
     expect(page).toContain('loadDatasources')
@@ -22,9 +22,11 @@ describe('DataMap staged load adoption', () => {
     expect(page).toContain('catalogCapableDatasources')
     expect(page).toContain('replaceDatasourceCatalogRows')
     expect(page).toContain('hadCache')
-    expect(page).toContain('catalogSync')
-    expect(page).toContain('同步物理表')
-    expect(page).not.toContain('正在按数据源同步物理目录')
+    expect(page).toContain('userRefresh')
+    expect(page).toContain('refreshing')
+    expect(page).not.toContain('catalogSync')
+    expect(page).not.toContain('同步物理表')
+    expect(page).not.toContain('loading={dsLoading}')
     expect(page).toContain('ensureDetailExtra')
     expect(page).toContain('datasource_id: ds.id')
     expect(page).toMatch(/datamapApi\s*\n\s*\.catalog\(/)
