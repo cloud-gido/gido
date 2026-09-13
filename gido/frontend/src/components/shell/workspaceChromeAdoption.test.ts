@@ -37,7 +37,10 @@ describe('workspace chrome across products', () => {
     const app = read('App.tsx')
     expect(app).toContain('ProductWorkspaceShell')
     expect(app).toContain('path="/gido"')
-    expect(app).toMatch(/lazy\(\(\) => import\('\.\/pages\/Studio'\)\)/)
+    // 常用页同步 import：切菜单不二次下载页面 chunk（弱网下 lazy 会卡 10s+）
+    expect(app).toMatch(/import StudioPage from '\.\/pages\/Studio'/)
+    expect(app).toMatch(/import ProbePage from '\.\/pages\/Probe'/)
+    expect(app).not.toMatch(/lazy\(\(\) => import\('\.\/pages\/Studio'\)\)/)
     expect(app).not.toMatch(/MainLayout|StreamLayout|ServiceLayout/)
 
     const shell = read('components/shell/ProductWorkspaceShell.tsx')
