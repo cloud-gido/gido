@@ -94,7 +94,7 @@ export default function DataMapPage() {
   }, [wsId])
 
   /**
-   * DataWorks 式分源加载：
+   * 分源渐进加载：
    * 1) 已注册字典秒出（纯元数据 API）
    * 2) 再按数据源逐个拉物理 catalog，边到边合并
    */

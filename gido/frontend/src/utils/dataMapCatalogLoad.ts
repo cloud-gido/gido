@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * 数据地图目录合并与可枚举数据源筛选（与后端 _CATALOG_DS_TYPES 对齐）。
- * 首屏用已注册元数据，再按数据源渐进拉物理 catalog——对标 DataWorks / OpenDataWorks 分源懒加载。
+ * 首屏用已注册元数据，再按数据源渐进拉物理 catalog（业界主流数据开发台分源懒加载）。
  */
 
 export const DATAMAP_CATALOG_DS_TYPES = new Set(['mysql', 'doris', 'postgresql'])
