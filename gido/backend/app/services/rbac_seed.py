@@ -571,6 +571,23 @@ def migrate_dw_task_nodes_sort_order(engine: Engine) -> None:
                 conn.execute(text("ALTER TABLE dw_task_nodes ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"))
 
 
+def migrate_studio_tree_list_indexes(engine: Engine) -> None:
+    """数据开发树列表：workspace 复合索引，加速 list_nodes / list_folders。"""
+    insp = inspect(engine)
+    specs = (
+        ("dw_task_nodes", "ix_task_nodes_workspace_sort", "workspace_id, sort_order, name"),
+        ("dw_node_folders", "ix_node_folders_workspace_scope_sort", "workspace_id, scope, sort_order, name"),
+    )
+    for table_name, index_name, columns in specs:
+        if not insp.has_table(table_name):
+            continue
+        existing = {idx["name"] for idx in insp.get_indexes(table_name)}
+        if index_name in existing:
+            continue
+        with engine.begin() as conn:
+            conn.execute(text(f"CREATE INDEX {index_name} ON {table_name} ({columns})"))
+
+
 def migrate_sort_order_name_default(engine: Engine) -> None:
     """一次性：清除历史按创建时间回填的 sort_order，恢复默认字典序。"""
     insp = inspect(engine)

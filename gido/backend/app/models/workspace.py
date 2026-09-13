@@ -99,6 +99,9 @@ class NodeType(str, enum.Enum):
 
 class TaskNode(Base):
     __tablename__ = "dw_task_nodes"
+    __table_args__ = (
+        Index("ix_task_nodes_workspace_sort", "workspace_id", "sort_order", "name"),
+    )
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = Column(Integer, ForeignKey("dw_workspaces.id"))
     name = Column(String(128), nullable=False)
@@ -124,6 +127,9 @@ class TaskNode(Base):
 class NodeFolder(Base):
     """节点文件夹/分组（batch=数据开发树；stream=实时作业树，互不混排）"""
     __tablename__ = "dw_node_folders"
+    __table_args__ = (
+        Index("ix_node_folders_workspace_scope_sort", "workspace_id", "scope", "sort_order", "name"),
+    )
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = Column(Integer, ForeignKey("dw_workspaces.id"))
     name = Column(String(128), nullable=False)

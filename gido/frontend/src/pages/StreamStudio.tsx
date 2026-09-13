@@ -283,10 +283,9 @@ export default function StreamStudioPage() {
     if (!wsId) return
     if (showSpinner) setLoading(true)
     try {
-      const [list, folderList, pendingRes]: any = await Promise.all([
+      const [list, folderList]: any = await Promise.all([
         streamingApi.listJobs(wsId),
         streamingApi.listFolders(wsId),
-        approvalApi.list(wsId, { status: 'pending', page_size: 200 }),
       ])
       setJobs(list)
       const foldersList = Array.isArray(folderList) ? folderList : []
@@ -294,9 +293,6 @@ export default function StreamStudioPage() {
       saveTreeListCache('stream', wsId, { folders: foldersList, leaves: list })
       setTreeReady(true)
       setTreeExpandedKeys(prev => (prev.length ? prev : ['root']))
-      setPendingKeys(
-        new Set((pendingRes?.items || []).map((i: any) => approvalPendingKey(i.resource_type, i.resource_id, i.action))),
-      )
       setSelected((prev) => {
         if (!prev) return prev
         const fresh = list.find((j: any) => j.id === prev.id)
@@ -315,6 +311,16 @@ export default function StreamStudioPage() {
     } finally {
       if (showSpinner) setLoading(false)
     }
+  }, [wsId])
+
+  const loadPendingApprovals = useCallback(async (workspaceId: number) => {
+    const pendingRes: any = await approvalApi
+      .list(workspaceId, { status: 'pending', page_size: 200 })
+      .catch(() => ({ items: [] }))
+    if (workspaceId !== wsId) return
+    setPendingKeys(
+      new Set((pendingRes?.items || []).map((i: any) => approvalPendingKey(i.resource_type, i.resource_id, i.action))),
+    )
   }, [wsId])
 
   useLayoutEffect(() => {
@@ -339,6 +345,22 @@ export default function StreamStudioPage() {
     const hadCache = treeListReadyFromCache('stream', wsId)
     void load(!hadCache)
   }, [wsId, load])
+
+  // 审批徽标后置：不挡作业树关键路径
+  useEffect(() => {
+    if (!wsId || !treeReady) return
+    const run = () => { void loadPendingApprovals(wsId) }
+    if (typeof window !== 'undefined' && typeof (window as any).requestIdleCallback === 'function') {
+      const idleId = (window as any).requestIdleCallback(run, { timeout: 2500 })
+      return () => {
+        if (typeof (window as any).cancelIdleCallback === 'function') {
+          (window as any).cancelIdleCallback(idleId)
+        }
+      }
+    }
+    const t = window.setTimeout(run, 400)
+    return () => window.clearTimeout(t)
+  }, [wsId, treeReady, loadPendingApprovals])
 
   const openJob = useCallback(async (job: any | null) => {
     if (!job?.id) {
@@ -914,6 +936,7 @@ export default function StreamStudioPage() {
       setApprovalOpen(false)
       setApprovalNote('')
       await load()
+      void loadPendingApprovals(wsId)
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '提交失败')
     } finally {

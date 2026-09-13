@@ -176,26 +176,42 @@ export default function AlertCenterPage() {
       return
     }
     let cancelled = false
-    setWorkflowsLoading(true)
-    workflowApi.listAll(wsId).then((res: any) => {
+    const run = () => {
       if (cancelled) return
-      const items = Array.isArray(res?.items) ? res.items : (Array.isArray(res) ? res : [])
-      setWorkflowOptions(
-        items.map((w: any) => {
-          const owner = w.created_by_username || w.updated_by_username
-          const name = String(w.name || `工作流 #${w.id}`)
-          return {
-            value: Number(w.id),
-            label: owner ? `${name} · ${owner}` : name,
-          }
-        }),
-      )
-    }).catch(() => {
-      if (!cancelled) setWorkflowOptions([])
-    }).finally(() => {
-      if (!cancelled) setWorkflowsLoading(false)
-    })
-    return () => { cancelled = true }
+      setWorkflowsLoading(true)
+      workflowApi.listAll(wsId).then((res: any) => {
+        if (cancelled) return
+        const items = Array.isArray(res?.items) ? res.items : (Array.isArray(res) ? res : [])
+        setWorkflowOptions(
+          items.map((w: any) => {
+            const owner = w.created_by_username || w.updated_by_username
+            const name = String(w.name || `工作流 #${w.id}`)
+            return {
+              value: Number(w.id),
+              label: owner ? `${name} · ${owner}` : name,
+            }
+          }),
+        )
+      }).catch(() => {
+        if (!cancelled) setWorkflowOptions([])
+      }).finally(() => {
+        if (!cancelled) setWorkflowsLoading(false)
+      })
+    }
+    if (typeof window !== 'undefined' && typeof (window as any).requestIdleCallback === 'function') {
+      const idleId = (window as any).requestIdleCallback(run, { timeout: 2500 })
+      return () => {
+        cancelled = true
+        if (typeof (window as any).cancelIdleCallback === 'function') {
+          (window as any).cancelIdleCallback(idleId)
+        }
+      }
+    }
+    const t = window.setTimeout(run, 400)
+    return () => {
+      cancelled = true
+      window.clearTimeout(t)
+    }
   }, [wsId, includeAllWorkspaces])
 
   const openSla = async () => {

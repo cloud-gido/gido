@@ -5,10 +5,13 @@
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session, load_only
 from pydantic import BaseModel, field_validator
-from typing import Optional, Any, Dict, List
+from typing import Optional, Any, Dict, List, Tuple
 from datetime import datetime
 import json
 import ast
+import logging
+import threading
+import time
 from sqlalchemy import func
 from app.core.database import get_db
 from app.core.security import get_current_user
@@ -28,14 +31,15 @@ from app.services.python_job_runner import run_python_node
 # 协作编辑锁过期时间（秒），过期后他人可直接占用或抢锁
 EDIT_LOCK_TTL_SECONDS = 30 * 60
 
-# 列表接口默认不带 script_content（侧栏/工作流选节点不需要全文）；打开编辑再用 GET /nodes/{id}
+logger = logging.getLogger(__name__)
+
+# 列表接口默认不带 script_content / params（侧栏不需要）；打开编辑再用 GET /nodes/{id}
 _TASK_NODE_LIST_LOAD_COLS = (
     TaskNode.id,
     TaskNode.workspace_id,
     TaskNode.name,
     TaskNode.node_type,
     TaskNode.datasource_id,
-    TaskNode.params,
     TaskNode.folder_id,
     TaskNode.sort_order,
     TaskNode.timeout_seconds,
@@ -49,6 +53,46 @@ _TASK_NODE_LIST_LOAD_COLS = (
     TaskNode.updated_at,
     TaskNode.created_by,
 )
+
+# 同用户连点刷新防护：进程内短 TTL；写路径显式失效
+_STUDIO_LIST_CACHE_TTL_SEC = 3.0
+_list_nodes_cache: Dict[str, Tuple[float, list]] = {}
+_list_folders_cache: Dict[str, Tuple[float, list]] = {}
+_list_cache_lock = threading.Lock()
+
+
+def _studio_list_cache_get(cache: Dict[str, Tuple[float, list]], key: str) -> Optional[list]:
+    now = time.monotonic()
+    with _list_cache_lock:
+        hit = cache.get(key)
+        if not hit:
+            return None
+        ts, payload = hit
+        if now - ts > _STUDIO_LIST_CACHE_TTL_SEC:
+            cache.pop(key, None)
+            return None
+        return payload
+
+
+def _studio_list_cache_set(cache: Dict[str, Tuple[float, list]], key: str, payload: list) -> None:
+    with _list_cache_lock:
+        cache[key] = (time.monotonic(), payload)
+
+
+def invalidate_studio_tree_list_cache(workspace_id: Optional[int] = None) -> None:
+    """节点/目录写路径调用：失效侧栏 list 短缓存。"""
+    with _list_cache_lock:
+        if workspace_id is None:
+            _list_nodes_cache.clear()
+            _list_folders_cache.clear()
+            return
+        node_prefix = f"n:{int(workspace_id)}:"
+        folder_key = f"f:{int(workspace_id)}"
+        for k in list(_list_nodes_cache):
+            if k.startswith(node_prefix):
+                _list_nodes_cache.pop(k, None)
+        _list_folders_cache.pop(folder_key, None)
+
 
 router = APIRouter(prefix="/studio", tags=["数据开发"])
 
@@ -108,6 +152,7 @@ def _serialize_task_node(
     node: TaskNode,
     *,
     include_script: bool = True,
+    include_params: bool = True,
     username_by_id: Optional[Dict[int, str]] = None,
 ) -> dict:
     lock_uid, lock_uname, lock_at_s = _effective_edit_lock_for_api(
@@ -131,7 +176,6 @@ def _serialize_task_node(
         "sort_order": getattr(node, "sort_order", 0) or 0,
         "timeout_seconds": node.timeout_seconds,
         "retry_times": node.retry_times,
-        "params": node.params,
         "is_published": bool(node.is_published),
         "owner_id": owner_id,
         "created_by": creator_id,
@@ -144,6 +188,11 @@ def _serialize_task_node(
         "created_at": node.created_at,
         "updated_at": node.updated_at,
     }
+    if include_params:
+        out["params"] = node.params
+    else:
+        # 明示缺省，避免 load_only 未加载 params 时触发懒加载
+        out["params"] = None
     if include_script:
         out["script_content"] = node.script_content
     else:
@@ -164,13 +213,19 @@ class FolderCreate(BaseModel):
 @router.get("/folders")
 def list_folders(workspace_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_BATCH_STUDIO_READ)
+    cache_key = f"f:{int(workspace_id)}"
+    cached = _studio_list_cache_get(_list_folders_cache, cache_key)
+    if cached is not None:
+        return cached
+    t0 = time.perf_counter()
     folders = (
         db.query(NodeFolder)
         .filter(NodeFolder.workspace_id == workspace_id, NodeFolder.scope == "batch")
         .order_by(NodeFolder.sort_order.asc(), NodeFolder.name.asc(), NodeFolder.id.asc())
         .all()
     )
-    return [
+    t_query = time.perf_counter()
+    payload = [
         {
             "id": f.id,
             "name": f.name,
@@ -180,6 +235,26 @@ def list_folders(workspace_id: int, db: Session = Depends(get_db), current_user:
         }
         for f in folders
     ]
+    t_ser = time.perf_counter()
+    _studio_list_cache_set(_list_folders_cache, cache_key, payload)
+    total_ms = (t_ser - t0) * 1000
+    if total_ms >= 500:
+        logger.warning(
+            "list_folders slow workspace_id=%s n=%s query_ms=%.1f ser_ms=%.1f total_ms=%.1f",
+            workspace_id,
+            len(payload),
+            (t_query - t0) * 1000,
+            (t_ser - t_query) * 1000,
+            total_ms,
+        )
+    else:
+        logger.debug(
+            "list_folders workspace_id=%s n=%s total_ms=%.1f",
+            workspace_id,
+            len(payload),
+            total_ms,
+        )
+    return payload
 
 
 @router.post("/folders")
@@ -213,6 +288,7 @@ def create_folder(folder_in: FolderCreate, db: Session = Depends(get_db), curren
     )
     db.add(folder)
     db.commit()
+    invalidate_studio_tree_list_cache(folder_in.workspace_id)
     db.refresh(folder)
     return folder
 
@@ -255,6 +331,7 @@ def reorder_folders(
     for i, fid in enumerate(body.folder_ids):
         by_id[fid].sort_order = (i + 1) * 10
     db.commit()
+    invalidate_studio_tree_list_cache(body.workspace_id)
     return {"ok": True}
 
 
@@ -266,6 +343,7 @@ def rename_folder(folder_id: int, name: str, db: Session = Depends(get_db), curr
     assert_workspace_data_capability(db, current_user, folder.workspace_id, "developer", PC.GIDO_BATCH_STUDIO_WRITE)
     folder.name = name
     db.commit()
+    invalidate_studio_tree_list_cache(folder.workspace_id)
     return {"id": folder.id, "name": folder.name, "parent_id": folder.parent_id}
 
 
@@ -289,6 +367,7 @@ def move_folder_parent(
     assert_workspace_data_capability(db, current_user, folder.workspace_id, "developer", PC.GIDO_BATCH_STUDIO_WRITE)
     reparent_folder(db, folder, body.parent_id, expected_scope="batch")
     db.commit()
+    invalidate_studio_tree_list_cache(folder.workspace_id)
     db.refresh(folder)
     return {
         "id": folder.id,
@@ -311,7 +390,9 @@ def delete_folder(folder_id: int, db: Session = Depends(get_db), current_user: U
     # 将文件夹内节点移到根目录
     db.query(TaskNode).filter(TaskNode.folder_id == folder_id).update({"folder_id": None})
     db.delete(folder)
+    ws_id = folder.workspace_id
     db.commit()
+    invalidate_studio_tree_list_cache(ws_id)
     return {"message": "删除成功"}
 
 
@@ -368,18 +449,25 @@ def list_nodes(
     folder_id: Optional[int] = None,
     include_script: bool = Query(
         False,
-        description="是否返回 script_content；侧栏列表默认 false，打开脚本请用 GET /nodes/{id}",
+        description="是否返回 script_content / params；侧栏列表默认 false，打开脚本请用 GET /nodes/{id}",
     ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     assert_workspace_data_capability(db, current_user, workspace_id, "developer", PC.GIDO_BATCH_STUDIO_READ)
+    cache_key = f"n:{int(workspace_id)}:{folder_id}:{bool(include_script)}"
+    if not include_script:
+        cached = _studio_list_cache_get(_list_nodes_cache, cache_key)
+        if cached is not None:
+            return cached
+    t0 = time.perf_counter()
     q = db.query(TaskNode).filter(TaskNode.workspace_id == workspace_id)
     if folder_id is not None:
         q = q.filter(TaskNode.folder_id == folder_id)
     if not include_script:
         q = q.options(load_only(*_TASK_NODE_LIST_LOAD_COLS))
     nodes = q.order_by(TaskNode.sort_order.asc(), TaskNode.name.asc(), TaskNode.id.asc()).all()
+    t_query = time.perf_counter()
     uids: List[Optional[int]] = []
     for n in nodes:
         uids.append(n.owner_id)
@@ -387,10 +475,41 @@ def list_nodes(
         if not _edit_lock_expired(n):
             uids.append(getattr(n, "edit_lock_user_id", None))
     umap = _username_map(db, uids)
-    return [
-        _serialize_task_node(db, n, include_script=include_script, username_by_id=umap)
+    t_umap = time.perf_counter()
+    # 瘦列表：不含 script_content / params，避免隐式触大字段与 JSON 膨胀
+    payload = [
+        _serialize_task_node(
+            db,
+            n,
+            include_script=include_script,
+            include_params=include_script,
+            username_by_id=umap,
+        )
         for n in nodes
     ]
+    t_ser = time.perf_counter()
+    if not include_script:
+        _studio_list_cache_set(_list_nodes_cache, cache_key, payload)
+    total_ms = (t_ser - t0) * 1000
+    if total_ms >= 500:
+        logger.warning(
+            "list_nodes slow workspace_id=%s n=%s query_ms=%.1f umap_ms=%.1f ser_ms=%.1f total_ms=%.1f include_script=%s",
+            workspace_id,
+            len(payload),
+            (t_query - t0) * 1000,
+            (t_umap - t_query) * 1000,
+            (t_ser - t_umap) * 1000,
+            total_ms,
+            include_script,
+        )
+    else:
+        logger.debug(
+            "list_nodes workspace_id=%s n=%s total_ms=%.1f",
+            workspace_id,
+            len(payload),
+            total_ms,
+        )
+    return payload
 
 
 @router.post("/nodes")
@@ -415,6 +534,7 @@ def create_node(node_in: NodeCreate, db: Session = Depends(get_db), current_user
     )
     db.add(node)
     db.commit()
+    invalidate_studio_tree_list_cache(node_in.workspace_id)
     db.refresh(node)
     log_action(db, current_user.id, "create", "node", node.id, node.name, node_in.workspace_id)
     return _serialize_task_node(db, node)
@@ -487,6 +607,7 @@ def copy_node(
     )
     db.add(node)
     db.commit()
+    invalidate_studio_tree_list_cache(src.workspace_id)
     db.refresh(node)
     log_action(db, current_user.id, "create", "node", node.id, node.name, src.workspace_id)
     return _serialize_task_node(db, node)
@@ -519,6 +640,7 @@ def move_node_to_folder(
     node.sort_order = _next_sort_order(db, node.workspace_id, folder_id)
     node.updated_at = datetime.utcnow()
     db.commit()
+    invalidate_studio_tree_list_cache(node.workspace_id)
     db.refresh(node)
     return _serialize_task_node(db, node)
 
@@ -555,6 +677,7 @@ def reorder_nodes(
         node = next(n for n in nodes if n.id == nid)
         node.sort_order = (i + 1) * 10
     db.commit()
+    invalidate_studio_tree_list_cache(body.workspace_id)
     return {"ok": True}
 
 
@@ -618,6 +741,7 @@ def update_node(
         setattr(node, k, v)
     node.updated_at = datetime.utcnow()
     db.commit()
+    invalidate_studio_tree_list_cache(node.workspace_id)
     db.refresh(node)
     return _serialize_task_node(db, node)
 
@@ -657,8 +781,10 @@ def delete_node(node_id: int, db: Session = Depends(get_db), current_user: User 
         {Lineage.task_node_id: None}, synchronize_session=False
     )
 
+    ws_id = node.workspace_id
     db.delete(node)
     db.commit()
+    invalidate_studio_tree_list_cache(ws_id)
     return {"message": "删除成功"}
 
 
@@ -674,6 +800,7 @@ def unlock_node(node_id: int, db: Session = Depends(get_db), current_user: User 
     node.edit_lock_at = None
     node.updated_at = datetime.utcnow()
     db.commit()
+    invalidate_studio_tree_list_cache(node.workspace_id)
     return {"message": "已解锁", "node": _serialize_task_node(db, node)}
 
 
@@ -694,17 +821,20 @@ def acquire_edit_lock(
         node.edit_lock_user_id = current_user.id
         node.edit_lock_at = datetime.utcnow()
         db.commit()
+        invalidate_studio_tree_list_cache(node.workspace_id)
         db.refresh(node)
         return {"message": "已获取编辑锁", "node": _serialize_task_node(db, node)}
     if node.edit_lock_user_id == current_user.id:
         node.edit_lock_at = datetime.utcnow()
         db.commit()
+        invalidate_studio_tree_list_cache(node.workspace_id)
         db.refresh(node)
         return {"message": "编辑锁续期", "node": _serialize_task_node(db, node)}
     if force:
         node.edit_lock_user_id = current_user.id
         node.edit_lock_at = datetime.utcnow()
         db.commit()
+        invalidate_studio_tree_list_cache(node.workspace_id)
         db.refresh(node)
         return {"message": "已抢锁", "node": _serialize_task_node(db, node)}
     hu = _username_by_id(db, node.edit_lock_user_id)
@@ -721,6 +851,7 @@ def release_edit_lock(node_id: int, db: Session = Depends(get_db), current_user:
         node.edit_lock_user_id = None
         node.edit_lock_at = None
         db.commit()
+        invalidate_studio_tree_list_cache(node.workspace_id)
     return {"message": "ok", "node": _serialize_task_node(db, node)}
 
 
@@ -738,6 +869,7 @@ def publish_node(node_id: int, db: Session = Depends(get_db), current_user: User
         node.owner_id = current_user.id
     node.updated_at = datetime.utcnow()
     db.commit()
+    invalidate_studio_tree_list_cache(node.workspace_id)
     msg = "发布成功，脚本已锁定" if settings.STUDIO_LOCK_ON_PUBLISH else "发布成功（未启用提交锁定，见 STUDIO_LOCK_ON_PUBLISH）"
     return {"message": msg, "node": _serialize_task_node(db, node)}
 

@@ -215,35 +215,48 @@ export default function StudioPage() {
   const wsIdRef = useRef(wsId)
   wsIdRef.current = wsId
 
-  const loadChrome = async (workspaceId: number) => {
-    const [pendingRes, wfs]: any = await Promise.all([
-      approvalApi.list(workspaceId, { status: 'pending', page_size: 200 }).catch(() => ({ items: [] })),
-      workflowApi.listAll(workspaceId).catch(() => ({ items: [] })),
-    ])
+  /** 审批徽标：树就绪后再拉，不进首屏关键路径 */
+  const loadPendingApprovals = useCallback(async (workspaceId: number) => {
+    const pendingRes: any = await approvalApi
+      .list(workspaceId, { status: 'pending', page_size: 200 })
+      .catch(() => ({ items: [] }))
     if (workspaceId !== wsIdRef.current) return
-    setWorkflows(Array.isArray(wfs?.items) ? wfs.items : (Array.isArray(wfs) ? wfs : []))
     setPendingKeys(
       new Set((pendingRes?.items || []).map((i: any) => `${i.resource_type}:${i.resource_id}:${i.action}`)),
     )
-  }
+  }, [])
 
+  const scheduleDeferredApprovals = useCallback((workspaceId: number) => {
+    const run = () => {
+      if (workspaceId !== wsIdRef.current) return
+      void loadPendingApprovals(workspaceId)
+    }
+    if (typeof window !== 'undefined' && typeof (window as any).requestIdleCallback === 'function') {
+      const idleId = (window as any).requestIdleCallback(run, { timeout: 2500 })
+      return () => {
+        if (typeof (window as any).cancelIdleCallback === 'function') {
+          (window as any).cancelIdleCallback(idleId)
+        }
+      }
+    }
+    const t = window.setTimeout(run, 400)
+    return () => window.clearTimeout(t)
+  }, [loadPendingApprovals])
+
+  /** 关键路径：仅 nodes + folders；datasources / 审批后置 */
   const load = async () => {
     if (!wsId) return
-    const [n, d, f]: any = await Promise.all([
+    const [n, f]: any = await Promise.all([
       studioApi.listNodes(wsId),
-      datasourceApi.list(wsId),
       studioApi.listFolders(wsId),
     ])
+    if (wsId !== wsIdRef.current) return
     const sorted = sortNodesList(n as unknown as any[])
     setNodes(sorted)
-    const dsList = Array.isArray(d) ? (d as unknown as any[]) : []
-    if (wsId) rememberDatasources(wsId, dsList)
-    setDatasources(dsList)
     const folderList = f as unknown as any[]
     setFolders(folderList)
     saveTreeListCache('studio', wsId, { folders: folderList, leaves: sorted })
     setTreeReady(true)
-    void loadChrome(wsId)
   }
 
   useLayoutEffect(() => {
@@ -263,7 +276,27 @@ export default function StudioPage() {
     }
   }, [wsId])
 
-  useEffect(() => { load() }, [wsId])
+  useEffect(() => { void load() }, [wsId])
+
+  // 数据源：缓存先画，后台静默刷新（与探查同款）
+  useEffect(() => {
+    if (!wsId) return
+    setDatasources(peekCachedDatasources(wsId))
+    let cancelled = false
+    datasourceApi.list(wsId).then((d: any) => {
+      if (cancelled || wsId !== wsIdRef.current) return
+      const list = Array.isArray(d) ? d : []
+      rememberDatasources(wsId, list)
+      setDatasources(list)
+    }).catch(() => { /* 保留缓存 */ })
+    return () => { cancelled = true }
+  }, [wsId])
+
+  // 审批徽标：树可用后再 deferred 拉取
+  useEffect(() => {
+    if (!wsId || !treeReady) return
+    return scheduleDeferredApprovals(wsId)
+  }, [wsId, treeReady, scheduleDeferredApprovals])
 
   const setSidebarCollapsedPersist = (collapsed: boolean) => {
     setSidebarCollapsed(collapsed)
@@ -762,6 +795,18 @@ export default function StudioPage() {
 
   // 当前激活节点
   const activeNode = openTabs.find(t => t.id === activeTabId)
+
+  // DEPENDENT 预览名：仅打开该类节点时再拉工作流列表（进页不 listAll）
+  useEffect(() => {
+    if (!wsId || activeNode?.node_type !== 'DEPENDENT') return
+    let cancelled = false
+    workflowApi.listAll(wsId).catch(() => ({ items: [] })).then((wfs: any) => {
+      if (cancelled || wsId !== wsIdRef.current) return
+      setWorkflows(Array.isArray(wfs?.items) ? wfs.items : (Array.isArray(wfs) ? wfs : []))
+    })
+    return () => { cancelled = true }
+  }, [wsId, activeNode?.id, activeNode?.node_type])
+
   const activeContentError = activeTabId != null ? tabContentError[activeTabId] : undefined
   const activeContentPending = Boolean(
     activeNode
@@ -1092,6 +1137,7 @@ export default function StudioPage() {
       setApprovalModalOpen(false)
       setApprovalNote('')
       await load()
+      void loadPendingApprovals(wsId)
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '提交失败')
     }

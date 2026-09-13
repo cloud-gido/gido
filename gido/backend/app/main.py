@@ -110,6 +110,7 @@ async def lifespan(app: FastAPI):
         migrate_dw_task_nodes_owner_lock,
         migrate_dw_task_nodes_edit_lock,
         migrate_dw_task_nodes_sort_order,
+        migrate_studio_tree_list_indexes,
         migrate_sort_order_name_default,
         migrate_dw_workflow_updated_by,
         migrate_dw_workflow_instance_submitted_by,
@@ -130,6 +131,7 @@ async def lifespan(app: FastAPI):
     migrate_dw_task_nodes_owner_lock(engine)
     migrate_dw_task_nodes_edit_lock(engine)
     migrate_dw_task_nodes_sort_order(engine)
+    migrate_studio_tree_list_indexes(engine)
     migrate_sort_order_name_default(engine)
     migrate_dw_workflow_updated_by(engine)
     migrate_dw_workflow_instance_submitted_by(engine)
