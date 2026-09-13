@@ -4,7 +4,7 @@
  * 运行历史详情：SQL + 结果预览
  */
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Card, Descriptions, Space, Tag, Typography, message, Alert } from 'antd'
+import { Button, Card, Descriptions, Space, Tag, message, Alert } from 'antd'
 import { ArrowLeftOutlined, CopyOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import { adhocRunsApi } from '../api'
@@ -12,10 +12,9 @@ import { useAppStore } from '../store'
 import { formatInTimeZone } from '../utils/datetime'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
 import QueryResultPanel from '../components/QueryResultPanel'
+import DwMonacoEditor from '../components/DwMonacoEditor'
 import { normalizeQueryColumns } from '../utils/queryColumns'
 import { R } from '../routes'
-
-const { Paragraph, Text } = Typography
 
 const STATUS_COLOR: Record<string, string> = {
   success: 'green',
@@ -140,11 +139,24 @@ export default function RunHistoryDetailPage() {
           </Button>
         }
       >
-        <Paragraph>
-          <Text code style={{ whiteSpace: 'pre-wrap', display: 'block' }}>
-            {row?.sql_text || '（无）'}
-          </Text>
-        </Paragraph>
+        {row?.sql_text ? (
+          <DwMonacoEditor
+            value={row.sql_text}
+            readOnly
+            height={Math.min(320, Math.max(160, String(row.sql_text).split('\n').length * 18 + 24))}
+            findBar={false}
+            options={{
+              lineNumbers: 'on',
+              wordWrap: 'on',
+              folding: false,
+              renderLineHighlight: 'none',
+              overviewRulerLanes: 0,
+              scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
+            }}
+          />
+        ) : (
+          <div style={{ color: '#999', padding: '8px 0' }}>（无）</div>
+        )}
       </Card>
 
       {row?.error_message && (

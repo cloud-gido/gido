@@ -15,66 +15,60 @@ logger = logging.getLogger(__name__)
 
 ADHOC_RESULT_PREVIEW_ROWS = 200
 SQL_SUMMARY_MAX_LEN = 72
+SQL_PREVIEW_MAX_LINES = 40
+SQL_PREVIEW_MAX_CHARS = 2048
+
+
+def _sql_content_lines(sql: Optional[str]) -> list[str]:
+    """去掉纯空行与整行注释后的有效行（保留行内代码，不含仅 -- 注释行）。"""
+    if not sql or not str(sql).strip():
+        return []
+    out: list[str] = []
+    for raw in str(sql).splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("--"):
+            continue
+        out.append(raw.rstrip())
+    return out
 
 
 def summarize_sql(sql: Optional[str], max_len: int = SQL_SUMMARY_MAX_LEN) -> Optional[str]:
     """
-    列表用 SQL 摘要：动词 + 主表，例如「SELECT · ads_foo」，
-    避免把整段列清单铺在列表上。
+    列表用 SQL 摘要：首条有效脚本行（跳过空行/整行注释），再截断长度。
+    运行历史要一眼看出「执行了什么」，首行比语义动词·表名更直观。
     """
-    import re
+    lines = _sql_content_lines(sql)
+    if not lines:
+        return None
+    first = lines[0].strip()
+    if len(first) > max_len:
+        return first[: max_len - 1] + "…"
+    return first
 
+
+def preview_sql(
+    sql: Optional[str],
+    *,
+    max_lines: int = SQL_PREVIEW_MAX_LINES,
+    max_chars: int = SQL_PREVIEW_MAX_CHARS,
+) -> Optional[str]:
+    """
+    列表 hover 用多行预览：保留原文换行，限制行数与字符数，不返回整段 sql_text。
+    """
     if not sql or not str(sql).strip():
         return None
-    lines: list[str] = []
-    for raw in str(sql).splitlines():
-        line = raw
-        dash = line.find("--")
-        if dash >= 0:
-            line = line[:dash]
-        s = line.strip()
-        if not s:
-            continue
-        lines.append(s)
-    compact = " ".join(" ".join(lines).split())
-    if not compact:
-        return None
-
-    # 多语句：取第一条有意义的
-    first = compact.split(";")[0].strip() or compact
-    stmt_count = len([p for p in compact.split(";") if p.strip()])
-
-    verb_m = re.match(
-        r"(?i)\b(with|select|insert|update|delete|create|drop|alter|truncate|describe|desc|show|use|explain)\b",
-        first,
-    )
-    verb = (verb_m.group(1).upper() if verb_m else "SQL")
-    if verb == "DESC":
-        verb = "DESCRIBE"
-
-    table_m = re.search(
-        r"(?i)\b(?:from|into|update|table|describe|desc)\s+([`\"\w$.]+)",
-        first,
-    )
-    table = None
-    if table_m:
-        table = table_m.group(1).replace("`", "").replace('"', "")
-
-    if table:
-        summary = f"{verb} · {table}"
-    else:
-        # 无表：短截断正文，仍避免长列清单
-        short = first
-        if len(short) > max_len:
-            short = short[: max_len - 1] + "…"
-        summary = short
-
-    if stmt_count > 1:
-        summary = f"{summary} 等{stmt_count}段"
-
-    if len(summary) > max_len:
-        return summary[: max_len - 1] + "…"
-    return summary
+    raw_lines = str(sql).splitlines()
+    clipped = raw_lines[: max(1, max_lines)]
+    text = "\n".join(clipped)
+    truncated = len(raw_lines) > max_lines
+    if len(text) > max_chars:
+        text = text[: max_chars - 1] + "…"
+        truncated = True
+    elif truncated:
+        text = text + "\n…"
+    return text
 
 
 def truncate_result_preview(result: Optional[Dict[str, Any]], max_rows: int = ADHOC_RESULT_PREVIEW_ROWS) -> Optional[Dict[str, Any]]:
@@ -169,6 +163,7 @@ def serialize_adhoc_run(
         "node_id": row.node_id,
         "node_instance_id": row.node_instance_id,
         "sql_summary": summarize_sql(row.sql_text),
+        "sql_preview": preview_sql(row.sql_text),
         "status": row.status,
         "error_message": row.error_message,
         "log_content": row.log_content,

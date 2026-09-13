@@ -11,6 +11,7 @@ import { adhocRunsApi } from '../api'
 import { useAppStore } from '../store'
 import { formatInTimeZone, formatInTimeZoneCompact } from '../utils/datetime'
 import { R } from '../routes'
+import SqlStatementSummaryCell from '../components/SqlStatementSummaryCell'
 
 const STATUS_COLOR: Record<string, string> = {
   success: 'green',
@@ -107,24 +108,14 @@ export default function RunHistoryPage() {
       title: '语句摘要',
       width: 200,
       ellipsis: true,
-      render: (_: unknown, row: any) => {
-        const summary = row.sql_summary
-          || (row.error_message ? String(row.error_message).slice(0, 48) : '')
-        if (!summary) return <span style={{ color: '#bbb' }}>—</span>
-        return (
-          <Tooltip title={row.sql_summary || row.error_message || undefined}>
-            <span
-              style={{
-                color: row.status === 'failed' && !row.sql_summary ? '#cf1322' : '#595959',
-                fontSize: 12.5,
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-              }}
-            >
-              {summary}
-            </span>
-          </Tooltip>
-        )
-      },
+      render: (_: unknown, row: any) => (
+        <SqlStatementSummaryCell
+          summary={row.sql_summary}
+          preview={row.sql_preview}
+          fallback={row.error_message ? String(row.error_message).slice(0, 72) : null}
+          danger={row.status === 'failed' && !row.sql_summary}
+        />
+      ),
     },
     {
       title: '数据源',
