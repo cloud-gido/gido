@@ -150,10 +150,16 @@ export const workflowApi = {
         status: params?.status ?? 'published',
       },
     }),
-  /** 依赖选择等场景：拉全量摘要（无 DAG） */
+  /** 依赖选择等场景：拉全量摘要（无 DAG / 无创建人筛选项） */
   listAll: (workspaceId: number, pageSize = 500) =>
     request.get('/workflows', {
-      params: { workspace_id: workspaceId, page: 1, page_size: pageSize, status: 'all' },
+      params: {
+        workspace_id: workspaceId,
+        page: 1,
+        page_size: pageSize,
+        status: 'all',
+        include_creators: false,
+      },
     }),
   create: (data: any) => request.post('/workflows', data),
   get: (id: number) => request.get(`/workflows/${id}`),

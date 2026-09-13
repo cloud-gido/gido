@@ -15,6 +15,7 @@ import {
   UnlockOutlined, HistoryOutlined, SearchOutlined, EditOutlined,
   MenuFoldOutlined, AimOutlined, ExpandAltOutlined,
 } from '@ant-design/icons'
+import '../monacoSetup'
 import Editor from '@monaco-editor/react'
 import { streamingApi, approvalApi } from '../api'
 import { useAppStore } from '../store'

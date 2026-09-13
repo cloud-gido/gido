@@ -19,9 +19,9 @@ describe('studio workbench system bundle smoke', () => {
     } catch {
       throw new Error('dist/ 不存在：请先 npm run build 再跑本用例')
     }
-    const jsName = assets.find(n => /^index-.*\.js$/.test(n))
-    expect(jsName, 'missing hashed index-*.js in dist/assets').toBeTruthy()
-    const js = readFileSync(resolve(distDir, 'assets', jsName!), 'utf8')
+    const jsFiles = assets.filter(n => n.endsWith('.js'))
+    expect(jsFiles.length, 'missing hashed *.js in dist/assets').toBeGreaterThan(0)
+    const js = jsFiles.map(n => readFileSync(resolve(distDir, 'assets', n), 'utf8')).join('\n')
     expect(js).toMatch(/StudioWorkbench|100vh - 112px/)
   })
 })

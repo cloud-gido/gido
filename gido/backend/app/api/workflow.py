@@ -3,9 +3,9 @@
 # @author felixzhu
 # @date 2026-06-05
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_, func
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import case, inspect as sa_inspect, or_, func
+from sqlalchemy.orm import Session, load_only
+from sqlalchemy.exc import IntegrityError, ProgrammingError, OperationalError
 from pydantic import BaseModel, Field
 from typing import Optional, List, Any, Dict, Tuple, Set
 from datetime import datetime
@@ -71,6 +71,27 @@ class WorkflowOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# 列表不取 dag_config：该 JSON 常在 TOAST 里，灌进 Python 会拖慢「打开工作流 / 数据开发」。
+_WORKFLOW_LIST_LOAD_COLS = (
+    Workflow.id,
+    Workflow.workspace_id,
+    Workflow.name,
+    Workflow.description,
+    Workflow.schedule_type,
+    Workflow.cron_expression,
+    Workflow.status,
+    Workflow.active_version_id,
+    Workflow.scheduler_engine,
+    Workflow.scheduler_definition_id,
+    Workflow.scheduler_project_id,
+    Workflow.is_active,
+    Workflow.created_at,
+    Workflow.updated_at,
+    Workflow.created_by,
+    Workflow.updated_by,
+)
 
 
 class WorkflowListItem(BaseModel):
@@ -167,13 +188,19 @@ def _prefetch_active_versions(db: Session, workflows: List[Workflow]) -> Dict[in
         if getattr(wf, "active_version_id", None)
     ]
     if version_ids:
-        for v in db.query(JobVersion).filter(JobVersion.id.in_(version_ids)).all():
+        for v in (
+            db.query(JobVersion)
+            .options(load_only(JobVersion.id, JobVersion.workflow_id, JobVersion.version_no, JobVersion.status))
+            .filter(JobVersion.id.in_(version_ids))
+            .all()
+        ):
             by_wf[int(v.workflow_id)] = v
 
     missing = [int(wf.id) for wf in workflows if int(wf.id) not in by_wf]
     if missing:
         rows = (
             db.query(JobVersion)
+            .options(load_only(JobVersion.id, JobVersion.workflow_id, JobVersion.version_no, JobVersion.status))
             .filter(JobVersion.workflow_id.in_(missing), JobVersion.status == "active")
             .order_by(JobVersion.workflow_id.asc(), JobVersion.version_no.desc(), JobVersion.id.desc())
             .all()
@@ -260,6 +287,78 @@ def _dag_node_count(dag: Any) -> int:
     return len(nodes) if isinstance(nodes, list) else 0
 
 
+def _needs_republish_flag(dag: Any) -> bool:
+    if not isinstance(dag, dict):
+        return False
+    return bool((dag.get("ds_meta") or {}).get("needs_republish"))
+
+
+def _truthy_json_flag(value: Any) -> bool:
+    if value in (None, False, 0, "0", "false", "False", "f", "F"):
+        return False
+    return bool(value)
+
+
+def _attr_unloaded(obj: Any, key: str) -> bool:
+    try:
+        insp = sa_inspect(obj)
+    except Exception:
+        return False
+    unloaded = getattr(insp, "unloaded", None)
+    return bool(unloaded) and key in unloaded
+
+
+def _prefetch_dag_list_stats(db: Session, workflow_ids: List[int]) -> Dict[int, Tuple[int, bool]]:
+    """id -> (node_count, needs_republish)，SQL 侧取 JSON 路径，不把整份 DAG 拉进 Python。"""
+    ids = sorted({int(i) for i in workflow_ids if i})
+    if not ids:
+        return {}
+    bind = db.get_bind()
+    dialect = bind.dialect.name if bind is not None else ""
+    try:
+        if dialect == "postgresql":
+            nodes = Workflow.dag_config["nodes"]
+            node_cnt = case(
+                (func.json_typeof(nodes) == "array", func.json_array_length(nodes)),
+                else_=0,
+            )
+            needs_col = Workflow.dag_config["ds_meta"]["needs_republish"].as_string()
+            rows = db.query(Workflow.id, node_cnt, needs_col).filter(Workflow.id.in_(ids)).all()
+        else:
+            node_cnt = func.coalesce(
+                func.json_array_length(func.json_extract(Workflow.dag_config, "$.nodes")),
+                0,
+            )
+            needs_col = func.json_extract(Workflow.dag_config, "$.ds_meta.needs_republish")
+            rows = db.query(Workflow.id, node_cnt, needs_col).filter(Workflow.id.in_(ids)).all()
+    except (ProgrammingError, OperationalError, TypeError, AttributeError):
+        rows = db.query(Workflow.id, Workflow.dag_config).filter(Workflow.id.in_(ids)).all()
+        return {
+            int(wid): (_dag_node_count(dag), _needs_republish_flag(dag))
+            for wid, dag in rows
+        }
+    out: Dict[int, Tuple[int, bool]] = {}
+    for wid, ncnt, needs in rows:
+        out[int(wid)] = (int(ncnt or 0), _truthy_json_flag(needs))
+    return out
+
+
+def _dag_list_stats_for_workflows(db: Session, workflows: List[Any]) -> Dict[int, Tuple[int, bool]]:
+    """已加载 dag_config 的对象直接数；load_only 卸掉的列走 SQL 路径提取。"""
+    out: Dict[int, Tuple[int, bool]] = {}
+    missing: List[int] = []
+    for wf in workflows:
+        wid = int(wf.id)
+        if _attr_unloaded(wf, "dag_config"):
+            missing.append(wid)
+            continue
+        dag = getattr(wf, "dag_config", None)
+        out[wid] = (_dag_node_count(dag), _needs_republish_flag(dag))
+    if missing:
+        out.update(_prefetch_dag_list_stats(db, missing))
+    return out
+
+
 def _prefetch_pending_publish(db: Session, workflow_ids: List[int]) -> Set[int]:
     ids = sorted({int(i) for i in workflow_ids if i})
     if not ids:
@@ -293,19 +392,53 @@ def workflows_to_list_items(
     db: Session,
     workspace_id: int,
 ) -> List[WorkflowListItem]:
-    """摘要行：批量组装后剥离 dag_config，并附带 node_count / pending_publish。"""
+    """摘要行：不读 dag_config 全文，批量附带 node_count / pending_publish。"""
     if not workflows:
         return []
-    outs = workflows_to_out_list(workflows, db, workspace_id)
+    runtime = get_dolphin_runtime(db, workspace_id)
+    user_ids: List[Optional[int]] = []
+    for wf in workflows:
+        user_ids.append(wf.created_by)
+        user_ids.append(getattr(wf, "updated_by", None))
+    usernames = _prefetch_usernames(db, user_ids)
+    versions = _prefetch_active_versions(db, workflows)
     pending = _prefetch_pending_publish(db, [int(wf.id) for wf in workflows])
+    stats = _dag_list_stats_for_workflows(db, workflows)
     items: List[WorkflowListItem] = []
-    for wf, out in zip(workflows, outs):
-        payload = out.model_dump()
-        payload.pop("dag_config", None)
+    for wf in workflows:
+        project_id = getattr(wf, "scheduler_project_id", None)
+        definition_id = getattr(wf, "scheduler_definition_id", None)
+        url = None
+        if definition_id and project_id:
+            url = _dolphin_console_url_from_runtime(runtime, project_id, f"dw_{wf.id}_{wf.name}")
+        node_count, needs_flag = stats.get(int(wf.id), (0, False))
+        cb = wf.created_by
+        ub = getattr(wf, "updated_by", None)
+        active_version = versions.get(int(wf.id))
         items.append(
             WorkflowListItem(
-                **payload,
-                node_count=_dag_node_count(wf.dag_config),
+                id=wf.id,
+                workspace_id=wf.workspace_id,
+                name=wf.name,
+                description=wf.description,
+                schedule_type=wf.schedule_type,
+                cron_expression=wf.cron_expression,
+                is_active=bool(wf.is_active) if wf.is_active is not None else True,
+                created_at=wf.created_at,
+                updated_at=getattr(wf, "updated_at", None),
+                created_by=cb,
+                created_by_username=usernames.get(int(cb)) if cb else None,
+                updated_by=ub,
+                updated_by_username=usernames.get(int(ub)) if ub else None,
+                status=getattr(wf, "status", None),
+                active_version_id=getattr(wf, "active_version_id", None),
+                active_version_no=getattr(active_version, "version_no", None),
+                scheduler_engine=getattr(wf, "scheduler_engine", None) or "dolphin",
+                scheduler_definition_id=str(definition_id) if definition_id is not None else None,
+                scheduler_project_id=str(project_id) if project_id is not None else None,
+                dolphin_workflow_url=url,
+                needs_ds_republish=needs_flag if definition_id is not None else None,
+                node_count=node_count,
                 pending_publish=int(wf.id) in pending,
             )
         )
@@ -392,6 +525,7 @@ def list_workflows(
     created_by: Optional[int] = None,
     created_by_username: Optional[str] = None,
     status: str = Query("published", description="draft|published|paused|offline|all；默认已上线"),
+    include_creators: bool = Query(True, description="创建人筛选项；数据开发选依赖时可关"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -409,7 +543,8 @@ def list_workflows(
     )
     total = q.count()
     rows = (
-        q.order_by(Workflow.id.desc())
+        q.options(load_only(*_WORKFLOW_LIST_LOAD_COLS))
+        .order_by(Workflow.id.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
@@ -419,7 +554,7 @@ def list_workflows(
         total=total,
         page=page,
         page_size=page_size,
-        creators=_workspace_workflow_creators(db, workspace_id),
+        creators=_workspace_workflow_creators(db, workspace_id) if include_creators else [],
     )
 
 

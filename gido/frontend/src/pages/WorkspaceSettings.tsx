@@ -4,7 +4,7 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Alert, Button, Card, Form, Input, Select, Space, Switch, Tabs, Table, Modal, message } from 'antd'
 import { ApiOutlined, CommentOutlined, DatabaseOutlined, ExperimentOutlined, KeyOutlined, PlusOutlined } from '@ant-design/icons'
 import { useAppStore } from '../store'
@@ -22,7 +22,8 @@ export default function WorkspaceSettingsPage() {
   const [flinkForm] = Form.useForm()
   const [dolphinMeta, setDolphinMeta] = useState<any>(null)
   const [copilotMeta, setCopilotMeta] = useState<any>(null)
-  const [loading, setLoading] = useState(false)
+  const [tabLoading, setTabLoading] = useState<Record<string, boolean>>({})
+  const loadedTabs = useRef<Set<string>>(new Set())
   const [variables, setVariables] = useState<any[]>([])
   const [varModalOpen, setVarModalOpen] = useState(false)
   const [editingVar, setEditingVar] = useState<any | null>(null)
@@ -34,52 +35,65 @@ export default function WorkspaceSettingsPage() {
     setVariables(Array.isArray(rows) ? rows : [])
   }, [wsId])
 
-  const loadAll = async () => {
+  const ensureTab = useCallback(async (key: string, force = false) => {
     if (!wsId) return
-    setLoading(true)
+    if (!force && loadedTabs.current.has(key)) return
+    loadedTabs.current.add(key)
+    setTabLoading(prev => ({ ...prev, [key]: true }))
     try {
-      const [ds, def, dol, cop]: any[] = await Promise.all([
-        datasourceApi.list(wsId),
-        workspaceApi.getDefaults(wsId),
-        workspaceApi.getDolphin(wsId),
-        workspaceApi.getCopilot(wsId).catch(() => null),
-      ])
-      setDatasources(Array.isArray(ds) ? ds : [])
-      defaultsForm.setFieldsValue({
-        default_datasource_id: def.default_datasource_id,
-        warehouse_datasource_id: def.warehouse_datasource_id ?? def.effective_warehouse_datasource_id,
-      })
-      setDolphinMeta(dol)
-      dolphinForm.setFieldsValue({
-        ds_enabled: dol.override_enabled ?? dol.effective_enabled,
-        ds_url: dol.override_url ?? '',
-        ds_ui_url: dol.override_ui_url ?? '',
-        ds_project_name: dol.override_project_name ?? dol.effective_project_name,
-        ds_token: '',
-      })
-      if (cop) {
-        setCopilotMeta(cop)
-        copilotForm.setFieldsValue({
-          copilot_llm_base_url: cop.override_base_url ?? '',
-          copilot_llm_model: cop.override_model ?? cop.effective_model ?? '',
-          copilot_llm_api_key: '',
+      if (key === 'ds') {
+        const [ds, def]: any[] = await Promise.all([
+          datasourceApi.list(wsId),
+          workspaceApi.getDefaults(wsId),
+        ])
+        setDatasources(Array.isArray(ds) ? ds : [])
+        defaultsForm.setFieldsValue({
+          default_datasource_id: def.default_datasource_id,
+          warehouse_datasource_id: def.warehouse_datasource_id ?? def.effective_warehouse_datasource_id,
         })
+      } else if (key === 'dolphin') {
+        const dol: any = await workspaceApi.getDolphin(wsId)
+        setDolphinMeta(dol)
+        dolphinForm.setFieldsValue({
+          ds_enabled: dol.override_enabled ?? dol.effective_enabled,
+          ds_url: dol.override_url ?? '',
+          ds_ui_url: dol.override_ui_url ?? '',
+          ds_project_name: dol.override_project_name ?? dol.effective_project_name,
+          ds_token: '',
+        })
+      } else if (key === 'copilot') {
+        const cop: any = await workspaceApi.getCopilot(wsId).catch(() => null)
+        if (cop) {
+          setCopilotMeta(cop)
+          copilotForm.setFieldsValue({
+            copilot_llm_base_url: cop.override_base_url ?? '',
+            copilot_llm_model: cop.override_model ?? cop.effective_model ?? '',
+            copilot_llm_api_key: '',
+          })
+        }
+      } else if (key === 'flink') {
+        try {
+          const fl: any = await workspaceApi.getFlink(wsId)
+          flinkForm.setFieldsValue(fl.override || {})
+        } catch {
+          /* flink optional */
+        }
+      } else if (key === 'variables') {
+        await loadVariables()
       }
-      try {
-        const fl: any = await workspaceApi.getFlink(wsId)
-        flinkForm.setFieldsValue(fl.override || {})
-      } catch {
-        /* flink optional */
-      }
-      await loadVariables()
     } catch (e: any) {
+      loadedTabs.current.delete(key)
       message.error(e?.response?.data?.detail || '加载空间设置失败')
     } finally {
-      setLoading(false)
+      setTabLoading(prev => ({ ...prev, [key]: false }))
     }
-  }
+  }, [wsId, defaultsForm, dolphinForm, copilotForm, flinkForm, loadVariables])
 
-  useEffect(() => { loadAll() }, [wsId])
+  useEffect(() => {
+    loadedTabs.current = new Set()
+    void ensureTab('ds')
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅切空间时重拉当前 Tab 所需数据
+  }, [wsId])
 
   const dsOptions = datasources.map((d: any) => ({
     label: `${d.name} (${d.ds_type})`,
@@ -112,7 +126,7 @@ export default function WorkspaceSettingsPage() {
     if (v.ds_token) body.ds_token = v.ds_token
     await workspaceApi.putDolphin(wsId, body)
     message.success('本空间 Dolphin 配置已保存')
-    await loadAll()
+    await ensureTab('dolphin', true)
   }
 
   const testDolphin = async () => {
@@ -132,7 +146,7 @@ export default function WorkspaceSettingsPage() {
     if (v.copilot_llm_api_key) body.copilot_llm_api_key = v.copilot_llm_api_key
     await workspaceApi.putCopilot(wsId, body)
     message.success('本空间 Copilot 配置已保存')
-    await loadAll()
+    await ensureTab('copilot', true)
   }
 
   const testCopilot = async () => {
@@ -212,6 +226,7 @@ export default function WorkspaceSettingsPage() {
       </p>
 
       <Tabs
+        onChange={(key) => { void ensureTab(key) }}
         items={[
           {
             key: 'ds',
@@ -221,7 +236,7 @@ export default function WorkspaceSettingsPage() {
               </span>
             ),
             children: (
-              <Card loading={loading}>
+              <Card loading={!!tabLoading.ds}>
                 <Form form={defaultsForm} layout="vertical">
                   <Form.Item
                     name="default_datasource_id"
@@ -252,7 +267,7 @@ export default function WorkspaceSettingsPage() {
               </span>
             ),
             children: (
-              <Card loading={loading}>
+              <Card loading={!!tabLoading.dolphin}>
                 {dolphinMeta && (
                   <Alert
                     type="info"
@@ -297,7 +312,7 @@ export default function WorkspaceSettingsPage() {
               </span>
             ),
             children: (
-              <Card loading={loading}>
+              <Card loading={!!tabLoading.copilot}>
                 {copilotMeta && (
                   <Alert
                     type="info"
@@ -339,7 +354,7 @@ export default function WorkspaceSettingsPage() {
             key: 'flink',
             label: <span><ApiOutlined /> Flink</span>,
             children: (
-              <Card loading={loading}>
+              <Card loading={!!tabLoading.flink}>
                 <Form form={flinkForm} layout="vertical">
                   <Form.Item name="flink_url" label="Flink REST">
                     <Input placeholder="留空沿用全局/环境变量" />
@@ -365,7 +380,7 @@ export default function WorkspaceSettingsPage() {
               </span>
             ),
             children: (
-              <Card loading={loading}>
+              <Card loading={!!tabLoading.variables}>
                 <Alert
                   type="info"
                   showIcon

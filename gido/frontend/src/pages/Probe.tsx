@@ -12,6 +12,7 @@ import {
   PlayCircleOutlined, DownloadOutlined, PlusOutlined, FolderAddOutlined,
   FormatPainterOutlined, MenuFoldOutlined, AimOutlined,
 } from '@ant-design/icons'
+import '../monacoSetup'
 import Editor from '@monaco-editor/react'
 import { format as sqlFormat } from 'sql-formatter'
 import { probeApi, datasourceApi } from '../api'

@@ -37,6 +37,7 @@ describe('workspace chrome across products', () => {
     const app = read('App.tsx')
     expect(app).toContain('ProductWorkspaceShell')
     expect(app).toContain('path="/gido"')
+    expect(app).toMatch(/lazy\(\(\) => import\('\.\/pages\/Studio'\)\)/)
     expect(app).not.toMatch(/MainLayout|StreamLayout|ServiceLayout/)
 
     const shell = read('components/shell/ProductWorkspaceShell.tsx')

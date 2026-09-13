@@ -4,7 +4,7 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import {
   Tabs, Table, Button, Space, Select, Switch, message, Modal, Form, Input, Checkbox, Tag, Popconfirm, Card, Descriptions, Alert, Row, Col, Typography,
 } from 'antd'
@@ -108,9 +108,10 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
   }
 
   useEffect(() => {
+    if (view === 'integration') return
     if (!canWorkspacePlatformOps) return
     refreshWorkspaceDropdown()
-  }, [canWorkspacePlatformOps])
+  }, [canWorkspacePlatformOps, view])
 
   useEffect(() => {
     if (!canManageWorkspaceMembersUi || canWorkspacePlatformOps) return
@@ -127,10 +128,11 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
   }, [canWorkspacePlatformOps, workspaceListUi])
 
   useEffect(() => {
+    if (view === 'integration') return
     if (!wsManageId) return
     setWsPanelLoading(true)
     loadWorkspaceMembers(wsManageId).finally(() => setWsPanelLoading(false))
-  }, [wsManageId])
+  }, [wsManageId, view])
 
   const load = async () => {
     setLoading(true)
@@ -151,8 +153,10 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
   }
 
   useEffect(() => {
-    if (canAccessControl) load()
-  }, [canAccessControl])
+    if (view === 'integration') return
+    if (!canAccessControl) return
+    load()
+  }, [canAccessControl, view])
 
   useEffect(() => {
     if (!wsManageId || canAccessControl) {
@@ -228,13 +232,6 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
     }
   }
 
-  useEffect(() => {
-    if (canIntegrationRead) {
-      loadDolphin()
-      loadApsSchedule()
-    }
-  }, [canIntegrationRead])
-
   const loadFlink = async () => {
     if (!canIntegrationRead) return
     setFlinkLoading(true)
@@ -261,10 +258,6 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
     }
   }
 
-  useEffect(() => {
-    if (canIntegrationRead) loadFlink()
-  }, [canIntegrationRead])
-
   const loadCopilot = async () => {
     if (!canIntegrationRead) return
     setCopilotLoading(true)
@@ -283,10 +276,6 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
     }
   }
 
-  useEffect(() => {
-    if (canIntegrationRead) loadCopilot()
-  }, [canIntegrationRead])
-
   const loadSite = async () => {
     if (!canIntegrationRead) return
     setSiteLoading(true)
@@ -301,9 +290,30 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
     }
   }
 
-  useEffect(() => {
-    if (canIntegrationRead) loadSite()
+  const integrationLoaded = useRef<Set<string>>(new Set())
+
+  const ensureIntegrationTab = useCallback((key: string) => {
+    if (!canIntegrationRead) return
+    if (integrationLoaded.current.has(key)) return
+    integrationLoaded.current.add(key)
+    if (key === 'site') void loadSite()
+    else if (key === 'dolphin') {
+      void loadDolphin()
+      void loadApsSchedule()
+    } else if (key === 'flink') void loadFlink()
+    else if (key === 'copilot') void loadCopilot()
   }, [canIntegrationRead])
+
+  useEffect(() => {
+    if (!canIntegrationRead) return
+    if (view === 'integration') {
+      ensureIntegrationTab('site')
+      return
+    }
+    if (!canAccessControl && !canManageWorkspaceMembersUi) {
+      ensureIntegrationTab('site')
+    }
+  }, [canIntegrationRead, view, canAccessControl, canManageWorkspaceMembersUi, ensureIntegrationTab])
 
   const saveSite = async () => {
     const v = await siteForm.validateFields()
@@ -1135,6 +1145,7 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
             { key: 'flink', label: 'Apache Flink', children: flinkPanel },
             { key: 'copilot', label: '玑渡 Copilot', children: copilotPanel },
           ]}
+          onChange={(key) => ensureIntegrationTab(key)}
         />
       </div>
     )
@@ -1383,6 +1394,7 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
             { key: 'flink', label: 'Apache Flink', children: flinkPanel },
             { key: 'copilot', label: '玑渡 Copilot', children: copilotPanel },
           ]}
+          onChange={(key) => ensureIntegrationTab(key)}
         />
       ),
     })
@@ -1404,6 +1416,9 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
       <Tabs
         defaultActiveKey={defaultSystemTab}
         items={topTabItems}
+        onChange={(key) => {
+          if (key === 'integrations') ensureIntegrationTab('site')
+        }}
       />
 
       <Modal

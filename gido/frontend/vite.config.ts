@@ -7,6 +7,9 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  optimizeDeps: {
+    include: ['monaco-editor/esm/vs/editor/editor.main', '@monaco-editor/react'],
+  },
   server: {
     // 与 Docker 前端 3002 错开，避免本地 dev 覆盖容器导致/about 看不到最新构建
     port: 3003,

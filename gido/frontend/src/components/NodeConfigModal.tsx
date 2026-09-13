@@ -8,6 +8,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { Modal, Form, Input, Select, Tag, Button, Space, message, Spin, Radio, Card, Tabs, Descriptions } from 'antd'
 import { LockOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons'
+import '../monacoSetup'
 import Editor from '@monaco-editor/react'
 import { studioApi, datasourceApi, integrationApi, workflowApi } from '../api'
 import { useAppStore } from '../store'
@@ -206,17 +207,13 @@ export default function NodeConfigModal({
       acquiredHereRef.current = false
       setHoldsLock(false)
       try {
-        const [n, ds, tasks, wfs]: any = await Promise.all([
+        const [n, ds]: any = await Promise.all([
           studioApi.getNode(nodeId),
           datasourceApi.list(workspaceId),
-          integrationApi.listTasks(workspaceId).catch(() => []),
-          workflowApi.listAll(workspaceId).catch(() => ({ items: [] })),
         ])
         if (cancelled) return
         setNode(n)
         setDatasources(ds || [])
-        setIntegrationTasks(Array.isArray(tasks) ? tasks : (tasks?.items || []))
-        setWorkflows(Array.isArray(wfs?.items) ? wfs.items : (Array.isArray(wfs) ? wfs : []))
         const vals = normalizeFormValues(n)
         const draftKey = scriptDraftStorageKey(`studio.${workspaceId}`, nodeId)
         const restored = canWrite && !n.is_locked
@@ -232,6 +229,18 @@ export default function NodeConfigModal({
         form.setFieldsValue(vals)
         if (canWrite && !n.is_locked) {
           await tryAcquire(false, true)
+        }
+        const type = String(n.node_type || '').toUpperCase()
+        if (type === 'SYNC') {
+          integrationApi.listTasks(workspaceId).catch(() => []).then((tasks: any) => {
+            if (cancelled) return
+            setIntegrationTasks(Array.isArray(tasks) ? tasks : (tasks?.items || []))
+          })
+        } else if (type === 'DEPENDENT') {
+          workflowApi.listAll(workspaceId).catch(() => ({ items: [] })).then((wfs: any) => {
+            if (cancelled) return
+            setWorkflows(Array.isArray(wfs?.items) ? wfs.items : (Array.isArray(wfs) ? wfs : []))
+          })
         }
       } catch (e: any) {
         if (!cancelled) message.error(e?.response?.data?.detail || '加载节点失败')

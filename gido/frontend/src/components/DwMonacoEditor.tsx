@@ -7,6 +7,7 @@
  * 试跑等业务回调由调用方通过 onRun / onMount 注入，避免壳层耦合页面逻辑。
  */
 import { useRef, type CSSProperties } from 'react'
+import '../monacoSetup'
 import Editor, { type OnMount } from '@monaco-editor/react'
 import type { editor } from 'monaco-editor'
 import {

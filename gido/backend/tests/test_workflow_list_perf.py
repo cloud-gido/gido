@@ -80,7 +80,10 @@ def test_workflows_to_out_list_batches_lookups():
         SimpleNamespace(id=12, username="bob"),
     ]
     ver_q = MagicMock()
-    ver_q.filter.return_value.all.return_value = [
+    ver_q.options.return_value = ver_q
+    ver_q.filter.return_value = ver_q
+    ver_q.order_by.return_value = ver_q
+    ver_q.all.return_value = [
         SimpleNamespace(id=101, workflow_id=1, version_no=3, status="active"),
         SimpleNamespace(id=102, workflow_id=2, version_no=1, status="active"),
     ]
@@ -114,41 +117,21 @@ def test_workflows_to_out_list_batches_lookups():
 
 def test_workflows_to_list_items_strips_dag_and_marks_pending():
     wf = _wf(id=5)
-    out = SimpleNamespace(
-        model_dump=lambda: {
-            "id": 5,
-            "workspace_id": 9,
-            "name": "demo",
-            "description": None,
-            "dag_config": {"nodes": [1, 2]},
-            "schedule_type": "manual",
-            "cron_expression": None,
-            "is_active": True,
-            "created_at": datetime(2026, 1, 1),
-            "updated_at": None,
-            "created_by": 11,
-            "created_by_username": "alice",
-            "updated_by": None,
-            "updated_by_username": None,
-            "status": "published",
-            "active_version_id": None,
-            "active_version_no": 1,
-            "scheduler_engine": "dolphin",
-            "scheduler_definition_id": "1",
-            "scheduler_project_id": "2",
-            "dolphin_workflow_url": None,
-            "needs_ds_republish": False,
-        }
-    )
     db = MagicMock()
-    with patch("app.api.workflow.workflows_to_out_list", return_value=[out]), patch(
-        "app.api.workflow._prefetch_pending_publish", return_value={5}
-    ):
+    runtime = SimpleNamespace(enabled=True, url="http://ds.example/dolphinscheduler", ui_url=None)
+    with patch("app.api.workflow.get_dolphin_runtime", return_value=runtime), patch(
+        "app.api.workflow._prefetch_usernames", return_value={11: "alice", 12: "bob"}
+    ), patch(
+        "app.api.workflow._prefetch_active_versions",
+        return_value={5: SimpleNamespace(version_no=3)},
+    ), patch("app.api.workflow._prefetch_pending_publish", return_value={5}):
         items = workflows_to_list_items([wf], db, workspace_id=9)
     assert len(items) == 1
     assert items[0].node_count == 2
     assert items[0].pending_publish is True
-    assert not hasattr(items[0], "dag_config") or "dag_config" not in items[0].model_dump()
+    assert items[0].needs_ds_republish is True
+    assert items[0].created_by_username == "alice"
+    assert "dag_config" not in items[0].model_dump()
 
 
 @pytest.fixture()
@@ -250,6 +233,7 @@ def test_list_workflows_default_published_summary(client: TestClient):
         assert item["status"] == "published"
     pending_row = next(x for x in body["items"] if x["name"] == "online-a")
     assert pending_row["pending_publish"] is True
+    assert pending_row["node_count"] == 1
     assert any(c["username"] == "admin" for c in body["creators"])
 
 
@@ -275,6 +259,19 @@ def test_list_workflows_status_all_and_keyword_paging(client: TestClient):
     body2 = r2.json()
     assert body2["total"] == 1
     assert body2["items"][0]["name"] == "draft-x"
+
+
+def test_list_workflows_can_skip_creators(client: TestClient):
+    h = _login(client)
+    r = client.get(
+        "/api/workflows",
+        params={"workspace_id": 1, "include_creators": False},
+        headers=h,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["creators"] == []
+    assert body["total"] == 2
 
 
 def test_get_workflow_includes_dag_config(client: TestClient):

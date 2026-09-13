@@ -17,6 +17,7 @@ import {
   LockOutlined, DownloadOutlined, MenuFoldOutlined, AimOutlined,
   ExclamationCircleOutlined, TableOutlined, DiffOutlined, ScheduleOutlined,
 } from '@ant-design/icons'
+import '../monacoSetup'
 import Editor, { DiffEditor } from '@monaco-editor/react'
 import { format as sqlFormat } from 'sql-formatter'
 import type { Dayjs } from 'dayjs'
@@ -196,25 +197,34 @@ export default function StudioPage() {
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set())
   const [approvalNote, setApprovalNote] = useState('')
   const [approvalModalOpen, setApprovalModalOpen] = useState(false)
+  const wsIdRef = useRef(wsId)
+  wsIdRef.current = wsId
+
+  const loadChrome = async (workspaceId: number) => {
+    const [pendingRes, wfs]: any = await Promise.all([
+      approvalApi.list(workspaceId, { status: 'pending', page_size: 200 }).catch(() => ({ items: [] })),
+      workflowApi.listAll(workspaceId).catch(() => ({ items: [] })),
+    ])
+    if (workspaceId !== wsIdRef.current) return
+    setWorkflows(Array.isArray(wfs?.items) ? wfs.items : (Array.isArray(wfs) ? wfs : []))
+    setPendingKeys(
+      new Set((pendingRes?.items || []).map((i: any) => `${i.resource_type}:${i.resource_id}:${i.action}`)),
+    )
+  }
 
   const load = async () => {
     if (!wsId) return
-    const [n, d, f, pendingRes, wfs]: any = await Promise.all([
+    const [n, d, f]: any = await Promise.all([
       studioApi.listNodes(wsId),
       datasourceApi.list(wsId),
       studioApi.listFolders(wsId),
-      approvalApi.list(wsId, { status: 'pending', page_size: 200 }),
-      workflowApi.listAll(wsId).catch(() => ({ items: [] })),
     ])
     setNodes(sortNodesList(n as unknown as any[]))
     const dsList = Array.isArray(d) ? (d as unknown as any[]) : []
     if (wsId) rememberDatasources(wsId, dsList)
     setDatasources(dsList)
     setFolders(f as unknown as any[])
-    setWorkflows(Array.isArray(wfs?.items) ? wfs.items : (Array.isArray(wfs) ? wfs : []))
-    setPendingKeys(
-      new Set((pendingRes?.items || []).map((i: any) => `${i.resource_type}:${i.resource_id}:${i.action}`)),
-    )
+    void loadChrome(wsId)
   }
 
   useEffect(() => { load() }, [wsId])
