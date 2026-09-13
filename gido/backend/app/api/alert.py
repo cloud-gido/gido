@@ -140,8 +140,9 @@ def list_alerts(
         stmt = stmt.filter(AlertEvent.workspace_id == workspace_id)
     if status:
         stmt = stmt.filter(AlertEvent.status == status)
-    if workflow_id is not None:
-        stmt = stmt.filter(AlertEvent.workflow_id == int(workflow_id))
+    # 单测会直接调本函数；未传参时默认值仍是 Query(...)，不能 int()/当筛选条件
+    if isinstance(workflow_id, int):
+        stmt = stmt.filter(AlertEvent.workflow_id == workflow_id)
     keyword = (q or "").strip()
     if keyword:
         stmt = stmt.filter(

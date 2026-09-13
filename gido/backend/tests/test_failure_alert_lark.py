@@ -571,6 +571,7 @@ def test_list_alerts_hides_pre_arm_skipped_and_filters_workflow_name(db):
         page_size=50,
         include_all_workspaces=False,
         q=None,
+        workflow_id=None,
         notification_status=None,
         after_armed=True,
         db=db,
@@ -587,6 +588,7 @@ def test_list_alerts_hides_pre_arm_skipped_and_filters_workflow_name(db):
         page_size=50,
         include_all_workspaces=False,
         q=None,
+        workflow_id=None,
         notification_status=None,
         after_armed=False,
         db=db,
@@ -601,6 +603,7 @@ def test_list_alerts_hides_pre_arm_skipped_and_filters_workflow_name(db):
         page_size=50,
         include_all_workspaces=False,
         q="风控",
+        workflow_id=None,
         notification_status=None,
         after_armed=True,
         db=db,
@@ -609,6 +612,23 @@ def test_list_alerts_hides_pre_arm_skipped_and_filters_workflow_name(db):
     assert named["total"] == 1
     assert named["items"][0]["workflow_name"] == "体育线-风控"
 
+    by_wf = list_alerts(
+        workspace_id=ws.id,
+        status="open",
+        page=1,
+        page_size=50,
+        include_all_workspaces=False,
+        q=None,
+        workflow_id=int(wf.id),
+        notification_status=None,
+        after_armed=True,
+        db=db,
+        current_user=user,
+    )
+    assert by_wf["total"] == 1
+    assert by_wf["items"][0]["workflow_id"] == wf.id
+    assert "workflow_created_by_username" in by_wf["items"][0]
+
     skipped = list_alerts(
         workspace_id=ws.id,
         status="open",
@@ -616,6 +636,7 @@ def test_list_alerts_hides_pre_arm_skipped_and_filters_workflow_name(db):
         page_size=50,
         include_all_workspaces=False,
         q=None,
+        workflow_id=None,
         notification_status="skipped",
         after_armed=False,
         db=db,
