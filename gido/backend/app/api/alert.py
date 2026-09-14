@@ -36,6 +36,11 @@ from app.services.alert_notification import (
     upsert_alert_notification_config,
 )
 from app.services.alert_oncall import on_call_label, parse_hhmm, parse_weekdays, shift_covers
+from app.services.ops_timeline import (
+    alert_event_list_order_by,
+    alert_occurred_at_sql,
+    resolve_alert_occurred_at,
+)
 from app.services.run_collector import collector_health
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
@@ -62,22 +67,27 @@ def _cached_list_meta(db: Session, workspace_id: int) -> tuple[dict, dict]:
     return dict(payload["coverage"]), dict(payload["collector"])
 
 
+def _ensure_alert_timeline_joins(stmt):
+    """告警列表过滤/排序共用：挂上工作流实例 + 节点实例，供发生时间口径。"""
+    return (
+        stmt.outerjoin(
+            WorkflowInstance,
+            WorkflowInstance.id == AlertEvent.workflow_instance_id,
+        ).outerjoin(
+            NodeInstance,
+            NodeInstance.id == AlertEvent.node_instance_id,
+        )
+    )
+
+
 def _apply_after_armed_filter(stmt, db: Session, *, workspace_id: int, include_all_workspaces: bool):
     """
     隐藏推送起点之前、且未实际推送的历史入库。
 
-    旧实现是逐行相关子查询（armed_at + 实例发生时间），open 告警一多就到数秒。
-    专业做法：一次 OUTER JOIN 实例表，单工作空间再把 armed_at 提成常量。
+    调用方须已 `_ensure_alert_timeline_joins`；发生时间与列表「发生时间」列同一口径
+    （见 ops_timeline.alert_occurred_at_sql）。
     """
-    stmt = stmt.outerjoin(
-        WorkflowInstance,
-        WorkflowInstance.id == AlertEvent.workflow_instance_id,
-    )
-    occurred = func.coalesce(
-        WorkflowInstance.finished_at,
-        WorkflowInstance.started_at,
-        AlertEvent.created_at,
-    )
+    occurred = alert_occurred_at_sql(include_node=True)
     if not include_all_workspaces:
         armed_at = (
             db.query(AlertNotificationConfig.notify_armed_at)
@@ -153,6 +163,8 @@ def list_alerts(
     notify_status = (notification_status or "").strip()
     if notify_status:
         stmt = stmt.filter(AlertEvent.notification_status == notify_status)
+    # 过滤与排序共用「发生时间」JOIN/口径（与实例中心：按真实运行时间，非入库时间）
+    stmt = _ensure_alert_timeline_joins(stmt)
     if after_armed:
         stmt = _apply_after_armed_filter(
             stmt, db, workspace_id=workspace_id, include_all_workspaces=include_all_workspaces
@@ -160,7 +172,7 @@ def list_alerts(
     # with_entities 会改 SELECT；先 count 再分页时用独立链式调用，避免互相污染
     total = stmt.with_entities(func.count(AlertEvent.id)).order_by(None).scalar() or 0
     rows = (
-        stmt.order_by(AlertEvent.created_at.desc())
+        stmt.order_by(*alert_event_list_order_by(include_node=True))
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
@@ -251,13 +263,7 @@ def list_alerts(
         node_inst = node_instances.get(r.node_instance_id)
         node = task_nodes.get(node_inst.node_id) if node_inst else None
         wf = workflows_by_id.get(r.workflow_id)
-        occurred_at = (
-            getattr(node_inst, "finished_at", None)
-            or getattr(wf_inst, "finished_at", None)
-            or getattr(node_inst, "started_at", None)
-            or getattr(wf_inst, "started_at", None)
-            or r.created_at
-        )
+        occurred_at = resolve_alert_occurred_at(r, wf_inst, node_inst)
         cb = wf.created_by if wf else None
         ub = getattr(wf, "updated_by", None) if wf else None
         items.append({

@@ -243,6 +243,8 @@ class WorkflowInstance(Base):
         Index("ix_wi_workflow_run_type", "workflow_id", "run_type"),
         # 留存清理：created_at < cutoff AND status IN (...) LIMIT n，必须能走索引
         Index("ix_wi_created_at", "created_at"),
+        # 实例中心列表：按 started_at 倒序（最近运行）
+        Index("ix_wi_started_at", "started_at"),
     )
 
 

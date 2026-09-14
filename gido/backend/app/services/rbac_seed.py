@@ -2231,6 +2231,12 @@ def migrate_instance_retention_indexes(engine: Engine) -> None:
             "CREATE INDEX ix_wi_created_at ON dw_workflow_instances (created_at)",
             wi_idx | {"ix_dw_workflow_instances_created_at"},
         )
+        _try_index(
+            conn,
+            "ix_wi_started_at",
+            "CREATE INDEX ix_wi_started_at ON dw_workflow_instances (started_at)",
+            wi_idx | {"ix_dw_workflow_instances_started_at"},
+        )
         if insp.has_table("dw_node_instances"):
             ni_idx = {i["name"] for i in insp.get_indexes("dw_node_instances")}
             _try_index(

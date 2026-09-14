@@ -25,6 +25,7 @@ from app.services.workflow_trigger_display import (
 from app.services.ds_runtime import get_dolphin_runtime
 from app.services.run_diagnosis import diagnose_workflow_run
 from app.services.dolphin_instance_sync import refresh_ds_workflow_instance_from_dolphin
+from app.services.ops_timeline import workflow_instance_list_order_by
 from app.services.run_collector import collector_health
 
 router = APIRouter(prefix="/operation", tags=["运维中心"])
@@ -299,13 +300,9 @@ def list_all_instances(
             )
         )
     total = q.with_entities(func.count(WorkflowInstance.id)).scalar() or 0
-    # 按 created_at+id 排：有 ix_wi_created_at，能 index scan + limit。
-    # 不要用 coalesce(started_at, created_at)：表达式排序常逼全表 filesort，20 条也会等整表扫完。
+    # 与告警中心同一套「最近发生」口径：见 ops_timeline（按真实运行时间，非入库/同步时刻）。
     instances = (
-        q.order_by(
-            desc(WorkflowInstance.created_at),
-            desc(WorkflowInstance.id),
-        )
+        q.order_by(*workflow_instance_list_order_by())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
