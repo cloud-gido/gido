@@ -12,8 +12,10 @@ export type SchemaNodeMeta =
   | { kind: 'table'; catalog: string; name: string; comment?: string; registered?: boolean; metaTableId?: number }
   | { kind: 'column'; catalog: string; table: string; name: string; type?: string; comment?: string | null }
 
-export type SchemaTreeNode = DataNode & {
+/** children 递归为自身，避免 antd DataNode.children 丢掉自定义 meta */
+export type SchemaTreeNode = Omit<DataNode, 'children'> & {
   meta?: SchemaNodeMeta
+  children?: SchemaTreeNode[]
 }
 
 export function schemaKey(name: string) {
@@ -38,7 +40,7 @@ export function attachTables(
     if (n.key !== schemaKey(catalog)) return n
     return {
       ...n,
-      children: tables.map((t) => {
+      children: tables.map((t): SchemaTreeNode => {
         const reg = registeredLookup?.(catalog, t.name)
         return {
           key: tableKey(catalog, t.name),
@@ -69,11 +71,11 @@ export function attachColumns(
     if (n.key !== schemaKey(catalog) || !n.children) return n
     return {
       ...n,
-      children: n.children.map((ch) => {
+      children: n.children.map((ch): SchemaTreeNode => {
         if (ch.key !== tKey) return ch
         return {
           ...ch,
-          children: cols.map((c) => ({
+          children: cols.map((c): SchemaTreeNode => ({
             key: columnKey(catalog, table, c.name),
             title: c.name,
             isLeaf: true,
@@ -103,7 +105,7 @@ export function patchTableRegistered(
     if (n.key !== schemaKey(catalog) || !n.children) return n
     return {
       ...n,
-      children: n.children.map((ch) => {
+      children: n.children.map((ch): SchemaTreeNode => {
         if (ch.key !== tKey) return ch
         const meta = ch.meta && ch.meta.kind === 'table' ? ch.meta : null
         return {
