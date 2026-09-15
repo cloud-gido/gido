@@ -98,6 +98,17 @@ def test_validate_table_name():
         pass
 
 
+def test_staging_table_name_starts_with_letter_for_doris():
+    """Doris 拒绝以下划线开头的表名；临时表须用 fi_stg_ 前缀。"""
+    import re
+
+    key = "a680ca8d0bb34098b3ff"
+    name = f"fi_stg_{key}"
+    assert validate_table_name(name) == name
+    assert re.match(r"^[a-zA-Z][a-zA-Z0-9\-_]*$", name)
+    assert not re.match(r"^[a-zA-Z][a-zA-Z0-9\-_]*$", f"_fi_stg_{key}")
+
+
 def test_infer_columns_merge():
     cols = infer_columns(["a"], [["1"], ["1.5"]])
     assert cols[0]["type"] == "double"

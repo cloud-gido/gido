@@ -690,7 +690,7 @@ export default function IntegrationPage() {
 
       <Drawer
         title={historyTask ? `运行历史 — ${historyTask.name}` : '运行历史'}
-        width={640}
+        width={720}
         open={historyOpen}
         onClose={() => setHistoryOpen(false)}
       >
@@ -699,6 +699,7 @@ export default function IntegrationPage() {
           rowKey="id"
           dataSource={records}
           pagination={false}
+          scroll={{ x: 900 }}
           columns={[
             { title: 'ID', dataIndex: 'id', width: 56 },
             {
@@ -707,9 +708,24 @@ export default function IntegrationPage() {
               width: 88,
               render: (s: string) => <Tag color={STATUS_COLOR[s] || 'default'}>{s}</Tag>,
             },
-            { title: '触发', dataIndex: 'trigger_type', width: 80 },
+            {
+              title: '失败原因',
+              dataIndex: 'error_msg',
+              width: 220,
+              ellipsis: true,
+              render: (t: string, r: any) => {
+                if (!t) return r.status === 'failed' ? <span style={{ color: '#8c8c8c' }}>无详情</span> : '—'
+                return (
+                  <Tooltip title={<span style={{ whiteSpace: 'pre-wrap' }}>{t}</span>}>
+                    <span style={{ color: '#cf1322' }}>{t}</span>
+                  </Tooltip>
+                )
+              },
+            },
+            { title: '触发', dataIndex: 'trigger_type', width: 72 },
             {
               title: '读取/写入',
+              width: 100,
               render: (_: unknown, r: any) => `${r.rows_read ?? 0} / ${r.rows_written ?? 0}`,
             },
             {
@@ -718,27 +734,22 @@ export default function IntegrationPage() {
               width: 72,
               render: (ms: number) => (ms != null ? `${(ms / 1000).toFixed(1)}s` : '—'),
             },
-            { title: '阶段', dataIndex: 'phase', width: 90, render: (p: string) => p || '—' },
+            { title: '阶段', dataIndex: 'phase', width: 80, render: (p: string) => p || '—' },
             {
               title: '质量',
               key: 'quality',
-              width: 120,
+              width: 100,
               render: (_: unknown, r: any) => {
                 const q = r.quality || {}
                 if (!q || (!q.rows_skipped && !q.rows_filtered)) return '—'
                 return `skip=${q.rows_skipped || 0} filt=${q.rows_filtered || 0}`
               },
             },
-            { title: '开始', dataIndex: 'started_at', ellipsis: true },
-            {
-              title: '错误',
-              dataIndex: 'error_msg',
-              ellipsis: true,
-              render: (t: string) => (t ? <Tooltip title={t}><span style={{ color: '#cf1322' }}>{t.slice(0, 40)}…</span></Tooltip> : '—'),
-            },
+            { title: '开始', dataIndex: 'started_at', width: 160, ellipsis: true },
             ...(historyTask?.sync_mode === 'file_import' && canRun ? [{
               title: '操作',
               width: 100,
+              fixed: 'right' as const,
               render: (_: unknown, r: any) => r.status === 'failed' ? (
                 <Tooltip title="按同一 execution_key 幂等重试（不重复提交成功装载）">
                   <Button

@@ -690,7 +690,9 @@ def execute_file_import(
 
     key = (execution_key or hashlib.sha256(f"{workspace_id}:{table_name}:{file_id}".encode()).hexdigest())[:32]
     safe_key = _re.sub(r"[^a-zA-Z0-9_]", "", key)[:20] or "x"
-    staging_name = validate_table_name(f"_fi_stg_{safe_key}")
+    # 业界常见：先写入内部 staging，质量过关再发布到用户目标表（import_…）。
+    # Doris 表名须字母开头（^[a-zA-Z][a-zA-Z0-9\-_]*$），故用 fi_stg_ 而非 _fi_stg_。
+    staging_name = validate_table_name(f"fi_stg_{safe_key}")
 
     def _phase(name: str) -> None:
         if callable(on_phase):
@@ -884,7 +886,13 @@ def _publish_staging_to_target(
     database_override: Optional[str],
     target_existed: bool,
 ) -> None:
-    """将 staging 原子发布到目标表。"""
+    """
+    将 staging 发布到用户可见的目标表（SaaS 通用口径：先装载校验，再原子提交）。
+
+    - create：rename / INSERT SELECT，失败时用户目标表尚未出现或不被半截写入污染
+    - append：校验后再 INSERT，避免 Stream Load 中途失败留下脏增量
+    - replace：Doris REPLACE WITH TABLE / MySQL rename 交换，避免先删后装丢数
+    """
     with open_connection(ds, database=database_override) as opened:
         _, conn = opened
         cur = conn.cursor()
