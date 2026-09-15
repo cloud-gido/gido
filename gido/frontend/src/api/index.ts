@@ -325,8 +325,10 @@ export const datamapApi = {
   catalog: (workspaceId: number, params?: { datasource_id?: number; keyword?: string }) =>
     request.get('/datamap/catalog', { params: { workspace_id: workspaceId, ...params } }),
   registerTable: (data: any) => request.post('/datamap/tables', data),
-  /** 打开/展开时幂等收录到数据字典（已有则返回） */
-  ensureTable: (data: {
+  /**
+   * 打开/展开时幂等收录。生产若后端尚未发布 ensure-table（404），回退到 POST /tables（手动注册同路径）。
+   */
+  ensureTable: async (data: {
     workspace_id: number
     datasource_id: number
     db_name?: string | null
@@ -334,7 +336,17 @@ export const datamapApi = {
     table_comment?: string | null
     table_type?: string
     sync_if_empty?: boolean
-  }) => request.post('/datamap/ensure-table', data),
+  }) => {
+    try {
+      return await request.post('/datamap/ensure-table', data)
+    } catch (e: any) {
+      if (e?.response?.status === 404) {
+        const { sync_if_empty: _sync, ...rest } = data
+        return await request.post('/datamap/tables', rest)
+      }
+      throw e
+    }
+  },
   getTable: (id: number) => request.get(`/datamap/tables/${id}`),
   syncSchema: (id: number) => request.post(`/datamap/tables/${id}/sync-schema`),
   addColumn: (tableId: number, data: any) => request.post(`/datamap/tables/${tableId}/columns`, data),

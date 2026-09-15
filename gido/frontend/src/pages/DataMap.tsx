@@ -159,11 +159,21 @@ export default function DataMapPage() {
       for (let i = 0; i < targets.length; i++) {
         const ds = targets[i]
         if (gen !== loadGenRef.current) return
-        const c: any = await datamapApi
-          .catalog(wsId, { datasource_id: ds.id, keyword: kw || undefined })
-          .catch(() => [])
+        let slice: any[] = []
+        try {
+          const c: any = await datamapApi.catalog(wsId, { datasource_id: ds.id, keyword: kw || undefined })
+          slice = Array.isArray(c) ? c : []
+        } catch (e: any) {
+          slice = [{
+            error: datamapErrMsg(e, `拉取 ${ds.name} 目录失败`),
+            datasource_id: ds.id,
+            datasource_name: ds.name,
+            table_name: '',
+            catalog: '',
+            qualified_name: ds.name,
+          }]
+        }
         if (gen !== loadGenRef.current) return
-        const slice = Array.isArray(c) ? c : []
         catalogRows = replaceDatasourceCatalogRows(catalogRows, ds.id, slice)
         // 冷启动才边拉边刷；有缓存则等全部完成再一次替换（SWR）
         if (!hadCache) {

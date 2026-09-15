@@ -42,8 +42,10 @@ describe('DataMap soft-expand adoption', () => {
     expect(src).not.toContain('注册并打开')
   })
 
-  it('api exposes ensure-table', () => {
+  it('api exposes ensure-table with tables fallback', () => {
     const api = read('api/index.ts')
     expect(api).toContain("request.post('/datamap/ensure-table'")
+    expect(api).toContain("request.post('/datamap/tables'")
+    expect(api).toContain('status === 404')
   })
 })

@@ -49,18 +49,35 @@ def _mysql_catalogs_to_scan(ds: DataSource, cur) -> List[str]:
     数据地图枚举哪些库：
     1) 配置了 catalogs 白名单 → 只用白名单（共享集群推荐）
     2) 否则枚举账号可见的非系统库（默认库排前）
+    3) information_schema.SCHEMATA 空时回退 SHOW DATABASES（部分 Doris 账号可见性差异）
     """
     explicit = _explicit_datamap_catalogs(ds)
     if explicit:
         return explicit[:_DATAMAP_MAX_CATALOGS]
-    cur.execute(
-        "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA "
-        "WHERE SCHEMA_NAME NOT IN ("
-        + ",".join(["%s"] * len(_MYSQL_SYSTEM_SCHEMAS))
-        + ") ORDER BY SCHEMA_NAME",
-        tuple(sorted(_MYSQL_SYSTEM_SCHEMAS)),
-    )
-    names = [str(r[0]) for r in cur.fetchall() if r and r[0]]
+
+    names: List[str] = []
+    try:
+        cur.execute(
+            "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA "
+            "WHERE SCHEMA_NAME NOT IN ("
+            + ",".join(["%s"] * len(_MYSQL_SYSTEM_SCHEMAS))
+            + ") ORDER BY SCHEMA_NAME",
+            tuple(sorted(_MYSQL_SYSTEM_SCHEMAS)),
+        )
+        names = [str(r[0]) for r in cur.fetchall() if r and r[0]]
+    except Exception:
+        names = []
+
+    if not names:
+        try:
+            cur.execute("SHOW DATABASES")
+            for r in cur.fetchall() or []:
+                name = str(r[0]) if r else ""
+                if name and name.lower() not in _MYSQL_SYSTEM_SCHEMAS:
+                    names.append(name)
+        except Exception:
+            names = []
+
     default = (ds.database or "").strip()
     if default and default not in names:
         names.insert(0, default)
@@ -439,48 +456,105 @@ def workspace_catalog(
                     port=ds.port or 3306,
                     user=mysql_protocol_connect_user(ds),
                     password=ds.password or "",
-                    connect_timeout=8,
+                    connect_timeout=15,
+                    read_timeout=120,
+                    write_timeout=60,
                 )
                 if default_schema:
                     conn_kw["database"] = default_schema
                 conn = pymysql.connect(**conn_kw)
                 cur = conn.cursor()
                 catalogs = _mysql_catalogs_to_scan(ds, cur)
+                scanned_ok = 0
                 for schema in catalogs:
-                    cur.execute(
-                        "SELECT TABLE_NAME, TABLE_TYPE, TABLE_COMMENT FROM information_schema.TABLES "
-                        "WHERE TABLE_SCHEMA = %s ORDER BY TABLE_NAME",
-                        (schema,),
-                    )
-                    for tn, tt, tc in cur.fetchall():
-                        tc = tc or ""
-                        # 关键字可匹配库名（搜 bigdata_dw 即列出该库表）
-                        if (
-                            kw
-                            and kw not in tn.lower()
-                            and kw not in tc.lower()
-                            and kw not in schema.lower()
-                        ):
-                            continue
-                        meta = meta_by_key.get((ds.id, schema, tn))
-                        qual = _qualified_name(ds.name, schema, tn)
+                    try:
+                        if kw and kw in schema.lower():
+                            # 关键字命中库名：列出该库全部表
+                            cur.execute(
+                                "SELECT TABLE_NAME, TABLE_TYPE, TABLE_COMMENT FROM information_schema.TABLES "
+                                "WHERE TABLE_SCHEMA = %s ORDER BY TABLE_NAME",
+                                (schema,),
+                            )
+                        elif kw:
+                            like = f"%{kw}%"
+                            cur.execute(
+                                "SELECT TABLE_NAME, TABLE_TYPE, TABLE_COMMENT FROM information_schema.TABLES "
+                                "WHERE TABLE_SCHEMA = %s AND ("
+                                "LOWER(TABLE_NAME) LIKE %s OR LOWER(IFNULL(TABLE_COMMENT,'')) LIKE %s"
+                                ") ORDER BY TABLE_NAME",
+                                (schema, like, like),
+                            )
+                        else:
+                            cur.execute(
+                                "SELECT TABLE_NAME, TABLE_TYPE, TABLE_COMMENT FROM information_schema.TABLES "
+                                "WHERE TABLE_SCHEMA = %s ORDER BY TABLE_NAME",
+                                (schema,),
+                            )
+                        for tn, tt, tc in cur.fetchall():
+                            tc = tc or ""
+                            meta = meta_by_key.get((ds.id, schema, tn))
+                            qual = _qualified_name(ds.name, schema, tn)
+                            rows.append({
+                                "row_key": f"{'m' if meta else 'p'}-{ds.id}-{schema}-{tn}",
+                                "registered": meta is not None,
+                                "meta_table_id": meta.id if meta else None,
+                                "datasource_id": ds.id,
+                                "datasource_name": ds.name,
+                                "ds_type": ds.ds_type,
+                                "catalog": schema,
+                                "table_name": tn,
+                                "qualified_name": qual,
+                                "table_comment": (meta.table_comment if meta else tc) or "",
+                                "table_type": (meta.table_type if meta else tt) or "table",
+                                "row_count": meta.row_count if meta else None,
+                                "tags": meta.tags if meta else None,
+                                "owner": meta.owner if meta else None,
+                                "last_updated": meta.last_updated if meta else None,
+                            })
+                        scanned_ok += 1
+                    except Exception as schema_err:
                         rows.append({
-                            "row_key": f"{'m' if meta else 'p'}-{ds.id}-{schema}-{tn}",
-                            "registered": meta is not None,
-                            "meta_table_id": meta.id if meta else None,
+                            "row_key": f"err-{ds.id}-{schema}",
+                            "registered": False,
+                            "meta_table_id": None,
                             "datasource_id": ds.id,
                             "datasource_name": ds.name,
-                            "ds_type": ds.ds_type,
+                            "error": f"库 {schema}：{schema_err}",
+                            "qualified_name": f"{ds.name}.{schema}",
                             "catalog": schema,
-                            "table_name": tn,
-                            "qualified_name": qual,
-                            "table_comment": (meta.table_comment if meta else tc) or "",
-                            "table_type": (meta.table_type if meta else tt) or "table",
-                            "row_count": meta.row_count if meta else None,
-                            "tags": meta.tags if meta else None,
-                            "owner": meta.owner if meta else None,
-                            "last_updated": meta.last_updated if meta else None,
+                            "table_name": "",
                         })
+                if not catalogs:
+                    rows.append({
+                        "row_key": f"err-{ds.id}-nocat",
+                        "registered": False,
+                        "meta_table_id": None,
+                        "datasource_id": ds.id,
+                        "datasource_name": ds.name,
+                        "error": "未枚举到任何业务库：请检查数据源默认库 / 库白名单 / 账号可见库权限",
+                        "qualified_name": f"{ds.name}.{default_schema or '*'}",
+                        "catalog": default_schema or "",
+                        "table_name": "",
+                    })
+                elif kw and scanned_ok and not any(
+                    r.get("datasource_id") == ds.id and r.get("table_name") for r in rows
+                ):
+                    # 有扫库但关键字无命中：给出可操作提示，避免「暂无数据」无因
+                    rows.append({
+                        "row_key": f"hint-{ds.id}-{kw}",
+                        "registered": False,
+                        "meta_table_id": None,
+                        "datasource_id": ds.id,
+                        "datasource_name": ds.name,
+                        "error": (
+                            f"在已扫 {scanned_ok} 个库中未找到含「{kw}」的表名/注释；"
+                            f"已扫：{', '.join(catalogs[:12])}{'…' if len(catalogs) > 12 else ''}。"
+                            "可清空关键字看全量，或到数据源核对库白名单是否含 bigdata_dw 等。"
+                        ),
+                        "qualified_name": f"{ds.name}·搜索",
+                        "catalog": "",
+                        "table_name": "",
+                    })
                 conn.close()
             except Exception as e:
                 rows.append({
