@@ -35,7 +35,9 @@
 | Stream 全产品 | developer+（viewer 不可进） | `gido:stream:*` |
 | Serve | 见 `serviceMenuPolicy` | `gido:service:*` |
 | 平台集成 / scheduler 运维面 | — | `system:integration:*` 或平台管理员（`*`） |
-| 告警列表 | 空间成员即可 | 配置需空间 admin |
+| 告警列表 / 确认解决 | developer+（与实例中心同侧栏门禁） | 列表可读；确认/解决需为本空间成员 |
+| 告警通知 / 值班配置 | 空间 admin | `PUT` 通知配置、值班表需空间管理员 |
+| 告警基线（SLA） | developer+ | 开发者可配承诺完成时间 / 最长时长 |
 
 ## 默认空间 infras
 

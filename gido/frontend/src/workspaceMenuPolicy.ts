@@ -18,6 +18,7 @@ const DEVELOPER_PATHS: string[] = [
   R.batch.integration,
   R.batch.runHistory,
   R.batch.operation,
+  R.batch.alert,
   R.batch.approval,
   R.batch.datasource,
 ]
@@ -101,6 +102,7 @@ export function canAccessBatchPath(
     [R.batch.integration]: P.GIDO_BATCH_INTEGRATION_READ,
     [R.batch.runHistory]: [P.GIDO_BATCH_STUDIO_READ, P.GIDO_BATCH_PROBE_READ],
     [R.batch.operation]: P.GIDO_BATCH_OPERATION_READ,
+    [R.batch.alert]: P.GIDO_BATCH_OPERATION_READ,
     [R.batch.approval]: P.GIDO_BATCH_OPERATION_READ,
     [R.batch.datasource]: P.GIDO_BATCH_DATASOURCE_READ,
     [R.batch.workspaceSettings]: P.GIDO_BATCH_DATASOURCE_READ,

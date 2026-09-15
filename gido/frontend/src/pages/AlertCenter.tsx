@@ -86,6 +86,7 @@ export default function AlertCenterPage() {
   const wsId = currentWorkspace?.id
   const displayTz = currentWorkspace?.timezone || 'Asia/Shanghai'
   const platformAdmin = isPlatformAdmin(user)
+  const spaceAdmin = platformAdmin || currentWorkspace?.my_role === 'admin'
   const [rows, setRows] = useState<any[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -729,9 +730,14 @@ export default function AlertCenterPage() {
           trigger={['click']}
           menu={{
             items: [
-              { key: 'notify', icon: <SettingOutlined />, label: '通知配置（渠道 / 静默时段）', onClick: openConfig },
+              // 通知渠道 / 值班：空间管理员；基线：开发者可配（与后端一致）
+              ...(spaceAdmin
+                ? [
+                    { key: 'notify', icon: <SettingOutlined />, label: '通知配置（渠道 / 静默时段）', onClick: openConfig },
+                    { key: 'oncall', icon: <TeamOutlined />, label: '值班表', onClick: openOncall },
+                  ]
+                : []),
               { key: 'sla', icon: <ClockCircleOutlined />, label: '基线（承诺完成时间 / 最长时长）', onClick: openSla },
-              { key: 'oncall', icon: <TeamOutlined />, label: '值班表', onClick: openOncall },
             ],
           }}
         >
