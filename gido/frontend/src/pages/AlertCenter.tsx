@@ -13,9 +13,10 @@ import { describePollError } from '../utils/pollError'
 import RunCollectorStatus from '../components/RunCollectorStatus'
 import RunDiagnosisDrawer, { type DiagnosisTarget } from '../components/RunDiagnosisDrawer'
 import SoftRowDetailToggle from '../components/SoftRowDetailToggle'
+import WorkspaceTime from '../components/WorkspaceTime'
 import { useSoftExpandedRows } from '../hooks/useSoftExpandedRows'
 import { useAppStore } from '../store'
-import { formatInTimeZone, formatInTimeZoneCompact } from '../utils/datetime'
+import { formatInTimeZone } from '../utils/datetime'
 import { R } from '../routes'
 import { isPlatformAdmin } from '../perm'
 
@@ -561,15 +562,7 @@ export default function AlertCenterPage() {
       title: '发生时间',
       dataIndex: 'occurred_at',
       width: 140,
-      render: (v: string) => (
-        v ? (
-          <Tooltip title={formatInTimeZone(v, displayTz)}>
-            <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: 12.5 }}>
-              {formatInTimeZoneCompact(v, displayTz)}
-            </span>
-          </Tooltip>
-        ) : '—'
-      ),
+      render: (v: string) => <WorkspaceTime value={v} timeZone={displayTz} />,
     },
     {
       title: '操作',

@@ -6,9 +6,13 @@
  */
 import { Alert, Card, Col, Row, Statistic, Table } from 'antd'
 import { useServiceData, useWorkspaceId } from './ServiceContext'
+import { useAppStore } from '../../store'
+import WorkspaceTime from '../../components/WorkspaceTime'
 
 export default function ServiceMonitorPage() {
   const wsId = useWorkspaceId()
+  const { currentWorkspace } = useAppStore()
+  const displayTz = currentWorkspace?.timezone || 'Asia/Shanghai'
   const { stats, logs, loading } = useServiceData()
 
   if (!wsId) return <Alert type="info" message="请先选择工作空间" showIcon />
@@ -41,7 +45,7 @@ export default function ServiceMonitorPage() {
           { title: '行数', dataIndex: 'row_count', width: 60 },
           { title: '延迟(ms)', dataIndex: 'latency_ms', width: 90, render: (v: number) => v?.toFixed?.(1) ?? v },
           { title: '缓存', dataIndex: 'cache_hit', width: 60, render: (v: boolean) => v ? '命中' : '—' },
-          { title: '时间', dataIndex: 'created_at', width: 170 },
+          { title: '时间', dataIndex: 'created_at', width: 140, render: (v: string) => <WorkspaceTime value={v} timeZone={displayTz} /> },
           { title: '错误', dataIndex: 'error_message', ellipsis: true },
         ]}
       />

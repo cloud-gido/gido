@@ -12,6 +12,7 @@ import { R } from '../../routes'
 import { STATUS_COLOR } from './shared'
 import { can, P } from '../../perm'
 import { useAppStore } from '../../store'
+import WorkspaceTime from '../../components/WorkspaceTime'
 
 const { Text } = Typography
 
@@ -19,6 +20,7 @@ export default function ServiceOverviewPage() {
   const navigate = useNavigate()
   const wsId = useWorkspaceId()
   const { user, currentWorkspace } = useAppStore()
+  const displayTz = currentWorkspace?.timezone || 'Asia/Shanghai'
   const { apis, apps, stats, logs, loading } = useServiceData()
   const canWrite = can(user, P.GIDO_SERVICE_WRITE, currentWorkspace)
 
@@ -90,7 +92,7 @@ export default function ServiceOverviewPage() {
             { title: 'API', dataIndex: 'api_id', width: 70 },
             { title: '状态', dataIndex: 'status_code', width: 70 },
             { title: '延迟(ms)', dataIndex: 'latency_ms', width: 90, render: (v: number) => v?.toFixed?.(1) ?? v },
-            { title: '时间', dataIndex: 'created_at', width: 170 },
+            { title: '时间', dataIndex: 'created_at', width: 140, render: (v: string) => <WorkspaceTime value={v} timeZone={displayTz} /> },
             { title: '错误', dataIndex: 'error_message', ellipsis: true },
           ]}
         />

@@ -19,6 +19,7 @@ import { useAppStore } from '../store'
 import { can, P } from '../perm'
 import CronBuilder from '../components/CronBuilder'
 import FileImportDrawer from '../components/FileImportDrawer'
+import WorkspaceTime from '../components/WorkspaceTime'
 
 type FieldMapping = { src: string; dst: string }
 
@@ -37,6 +38,7 @@ const STATUS_COLOR: Record<string, string> = {
 export default function IntegrationPage() {
   const { currentWorkspace, user } = useAppStore()
   const wsId = currentWorkspace?.id
+  const displayTz = currentWorkspace?.timezone || 'Asia/Shanghai'
   const canWrite = can(user, P.GIDO_BATCH_INTEGRATION_WRITE, currentWorkspace)
   const canRun = can(user, P.GIDO_BATCH_INTEGRATION_RUN, currentWorkspace)
   const [searchParams, setSearchParams] = useSearchParams()
@@ -327,7 +329,12 @@ export default function IntegrationPage() {
         </Space>
       ),
     },
-    { title: '最后同步', dataIndex: 'last_sync_at', width: 168, ellipsis: true },
+    {
+      title: '最后同步',
+      dataIndex: 'last_sync_at',
+      width: 140,
+      render: (v: string) => <WorkspaceTime value={v} timeZone={displayTz} />,
+    },
     {
       title: '操作',
       width: 280,
@@ -745,7 +752,7 @@ export default function IntegrationPage() {
                 return `skip=${q.rows_skipped || 0} filt=${q.rows_filtered || 0}`
               },
             },
-            { title: '开始', dataIndex: 'started_at', width: 160, ellipsis: true },
+            { title: '开始', dataIndex: 'started_at', width: 140, render: (v: string) => <WorkspaceTime value={v} timeZone={displayTz} /> },
             ...(historyTask?.sync_mode === 'file_import' && canRun ? [{
               title: '操作',
               width: 100,

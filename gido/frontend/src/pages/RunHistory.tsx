@@ -4,14 +4,14 @@
  * 运行历史：数据开发试跑与数据探查的交互式执行记录
  */
 import { useEffect, useState } from 'react'
-import { Table, Tag, Select, Button, Switch, message, Tooltip } from 'antd'
+import { Table, Tag, Select, Button, Switch, message } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { adhocRunsApi } from '../api'
 import { useAppStore } from '../store'
-import { formatInTimeZone, formatInTimeZoneCompact } from '../utils/datetime'
 import { R } from '../routes'
 import SqlStatementSummaryCell from '../components/SqlStatementSummaryCell'
+import WorkspaceTime from '../components/WorkspaceTime'
 
 const STATUS_COLOR: Record<string, string> = {
   success: 'green',
@@ -156,15 +156,7 @@ export default function RunHistoryPage() {
       title: '时间',
       dataIndex: 'started_at',
       width: 128,
-      render: (v: string) => (
-        v ? (
-          <Tooltip title={formatInTimeZone(v, displayTz)}>
-            <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: 12.5 }}>
-              {formatInTimeZoneCompact(v, displayTz)}
-            </span>
-          </Tooltip>
-        ) : '—'
-      ),
+      render: (v: string) => <WorkspaceTime value={v} timeZone={displayTz} />,
     },
     {
       title: '操作',
