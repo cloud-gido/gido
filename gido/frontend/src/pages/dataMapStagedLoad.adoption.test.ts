@@ -1,6 +1,8 @@
 /**
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * 数据地图加载策略：左树走 sqlSchemaCache 懒加载；工具条不跟同步进度闪动。
  */
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -13,24 +15,24 @@ function read(rel: string) {
 }
 
 describe('DataMap staged load adoption', () => {
-  it('loads quietly without toolbar sync chrome flicker', () => {
+  it('uses catalog tree + cache refresh without toolbar sync chrome flicker', () => {
     const page = read('pages/DataMap.tsx')
-    expect(page).toContain('listLoading')
+    expect(page).toContain('DataMapCatalogPanel')
     expect(page).toContain('loadDatasources')
     expect(page).toContain('peekCachedDatasources')
-    expect(page).toContain('catalogViewCache')
     expect(page).toContain('catalogCapableDatasources')
-    expect(page).toContain('replaceDatasourceCatalogRows')
-    expect(page).toContain('hadCache')
-    expect(page).toContain('userRefresh')
-    expect(page).toContain('refreshing')
+    expect(page).toContain('invalidateSqlSchemaCache')
+    expect(page).toContain('refreshToken')
+    expect(page).toContain('ensureDetailExtra')
     expect(page).not.toContain('catalogSync')
     expect(page).not.toContain('同步物理表')
     expect(page).not.toContain('loading={dsLoading}')
-    expect(page).toContain('ensureDetailExtra')
-    expect(page).toContain('datasource_id: ds.id')
-    expect(page).toMatch(/datamapApi\s*\n\s*\.catalog\(/)
-    expect(page).toContain('账号可见')
+
+    const panel = read('components/DataMapCatalogPanel.tsx')
+    expect(panel).toContain('fetchSchemas')
+    expect(panel).toContain('fetchTables')
+    expect(panel).toContain('sqlSchemaCache')
+
     const dsPage = read('pages/Datasource.tsx')
     expect(dsPage).toContain('数据地图库白名单')
   })
