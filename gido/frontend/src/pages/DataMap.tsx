@@ -23,7 +23,7 @@ import { tableKey } from '../utils/sqlSchemaTree'
 import { R } from '../routes'
 import { peekCachedDatasources, rememberDatasources } from '../utils/workspaceDatasource'
 import { catalogCapableDatasources, isCatalogCapableDatasource } from '../utils/dataMapCatalogLoad'
-import './DataMapCatalogPanel.css'
+import '../components/DataMapCatalogPanel.css'
 
 function datamapErrMsg(e: any, fallback: string) {
   const detail = e?.response?.data?.detail
