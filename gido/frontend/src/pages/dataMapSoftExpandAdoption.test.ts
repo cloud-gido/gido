@@ -2,7 +2,7 @@
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * 数据地图：soft-expand + 打开即收录；稳态只读 getTable；注释自愈不挡首屏。
+ * 数据地图最终形态：左树（sqlSchemaCache）+ 右详；打开即 ensure；404 回退 register。
  */
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -14,38 +14,31 @@ function read(rel: string) {
   return readFileSync(resolve(root, rel), 'utf8')
 }
 
-describe('DataMap soft-expand adoption', () => {
-  it('uses soft expand + resizable columns like instance center', () => {
-    const src = read('pages/DataMap.tsx')
-    expect(src).toContain('useSoftExpandedRows')
-    expect(src).toContain('SoftRowDetailToggle')
-    expect(src).toContain('gido-soft-expanded-panel')
-    expect(src).toContain('useResizableTableColumns')
-    expect(src).toContain('dw-resizable-table')
-    expect(src).toContain('gido.datamap.catalog.cols')
+describe('DataMap catalog tree adoption', () => {
+  it('uses left tree + right detail with sqlSchemaCache', () => {
+    const page = read('pages/DataMap.tsx')
+    expect(page).toContain('DataMapCatalogPanel')
+    expect(page).toContain('datamap-page-body')
+    expect(page).toContain('ensureTable')
+    expect(page).toContain('打开右侧字典并自动收录')
+    expect(page).not.toContain('useSoftExpandedRows')
+    expect(page).not.toMatch(/>注册</)
+
+    const panel = read('components/DataMapCatalogPanel.tsx')
+    expect(panel).toContain('fetchSchemas')
+    expect(panel).toContain('fetchTables')
+    expect(panel).toContain('fetchColumns')
+    expect(panel).toContain('sqlSchemaCache')
+    expect(panel).toContain('已收录')
   })
 
-  it('opens/expands via ensureTable only when unregistered; no prominent 注册', () => {
-    const src = read('pages/DataMap.tsx')
-    expect(src).toContain('ensureTable')
-    expect(src).toContain('ensureRowMeta')
-    expect(src).toContain('已收录')
-    expect(src).toContain('高级收录')
-    expect(src).toContain('打开或展开未收录表即自动收录')
-    // 稳态：已有 meta_table_id 早退，不盲目 ensure
-    expect(src).toMatch(/if \(row\?\.meta_table_id\) return Number\(row\.meta_table_id\)/)
-    expect(src).toContain('scheduleCommentHeal')
-    expect(src).not.toMatch(/await maybeHealColumnComments/)
-    // 主路径不再出现「注册」操作文案 / 确认框
-    expect(src).not.toMatch(/>注册</)
-    expect(src).not.toContain('注册到数据地图')
-    expect(src).not.toContain('注册并打开')
-  })
+  it('shares schema tree helpers and ensure-table fallback', () => {
+    const tree = read('utils/sqlSchemaTree.ts')
+    expect(tree).toContain('attachTables')
+    expect(tree).toContain('attachColumns')
 
-  it('api exposes ensure-table with tables fallback', () => {
     const api = read('api/index.ts')
     expect(api).toContain("request.post('/datamap/ensure-table'")
-    expect(api).toContain("request.post('/datamap/tables'")
     expect(api).toContain('status === 404')
   })
 })

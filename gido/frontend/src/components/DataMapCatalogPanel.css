@@ -1,0 +1,99 @@
+/**
+ * Copyright 2026 玑渡 GIDO Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+.datamap-catalog-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 12px;
+}
+
+.datamap-page {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 112px);
+  min-height: 520px;
+}
+
+.datamap-page-toolbar {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.datamap-page-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) 1fr;
+  gap: 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.datamap-page-tree {
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid #f0f0f0;
+  background: #fafafa;
+  overflow: hidden;
+}
+
+.datamap-page-detail {
+  min-width: 0;
+  min-height: 0;
+  padding: 16px 20px;
+  overflow: auto;
+}
+
+.datamap-detail-empty {
+  height: 100%;
+  min-height: 320px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #8c8c8c;
+  text-align: center;
+  padding: 24px;
+}
+
+.datamap-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.datamap-detail-title {
+  font-size: 16px;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  word-break: break-all;
+}
+
+.datamap-detail-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #8c8c8c;
+}
+
+@media (max-width: 960px) {
+  .datamap-page-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(240px, 40%) 1fr;
+  }
+
+  .datamap-page-tree {
+    border-right: none;
+    border-bottom: 1px solid #f0f0f0;
+  }
+}

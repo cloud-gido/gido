@@ -3,46 +3,39 @@
  * SPDX-License-Identifier: Apache-2.0
  * @author felixzhu
  * @date 2026-06-05
+ *
+ * 数据地图最终形态：左树（与 Studio「库表」同源 sqlSchemaCache）+ 右详（字典/血缘/影响/样例）。
  */
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Table, Input, Button, Modal, Form, Select, Tag, Space, message, Descriptions, Tabs, Alert, Spin } from 'antd'
-import { SearchOutlined, PlusOutlined, SyncOutlined, ApartmentOutlined, UploadOutlined } from '@ant-design/icons'
+import {
+  Table, Input, Button, Modal, Form, Select, Tag, Space, message, Descriptions, Tabs, Alert, Spin,
+} from 'antd'
+import { PlusOutlined, SyncOutlined, UploadOutlined, ReloadOutlined } from '@ant-design/icons'
 import { datamapApi, datasourceApi } from '../api'
 import { useAppStore } from '../store'
 import { can, P } from '../perm'
 import { formatCellDisplay } from '../utils/cellDisplay'
 import LineageGraph from '../components/LineageGraph'
-import SoftRowDetailToggle from '../components/SoftRowDetailToggle'
-import { useSoftExpandedRows } from '../hooks/useSoftExpandedRows'
-import { useResizableTableColumns } from '../hooks/useResizableTableColumns'
+import DataMapCatalogPanel, { type DataMapTableSelection } from '../components/DataMapCatalogPanel'
+import { invalidateSqlSchemaCache } from '../utils/sqlSchemaCache'
+import { tableKey } from '../utils/sqlSchemaTree'
 import { R } from '../routes'
 import { peekCachedDatasources, rememberDatasources } from '../utils/workspaceDatasource'
-import {
-  catalogCapableDatasources,
-  mergeCatalogWithRegistered,
-  replaceDatasourceCatalogRows,
-} from '../utils/dataMapCatalogLoad'
-
-/** 同会话内默认目录视图（无关键字）内存缓存，菜单来回切换先出表再静默刷新 */
-const catalogViewCache = new Map<string, any[]>()
-
-function catalogCacheKey(wsId: number, dsFilter?: number) {
-  return `${wsId}|${dsFilter ?? ''}`
-}
+import { catalogCapableDatasources, isCatalogCapableDatasource } from '../utils/dataMapCatalogLoad'
+import './DataMapCatalogPanel.css'
 
 function datamapErrMsg(e: any, fallback: string) {
   const detail = e?.response?.data?.detail
   if (typeof detail === 'string' && detail.trim()) return detail
   const status = e?.response?.status
-  if (status === 403) return '无权限：数据分析等只读角色可浏览目录，收录/同步需具备数据字典写权限'
+  if (status === 403) return '无权限：只读角色可浏览目录；收录/同步需具备数据字典写权限'
   if (status === 401) return '登录已失效，请重新登录后再试'
   return fallback
 }
 
-function tableTypeLabel(t: string | undefined) {
-  if (!t) return '—'
-  return String(t).toLowerCase().includes('view') ? 'VIEW' : 'TABLE'
+function regMapKey(catalog: string, table: string) {
+  return `${String(catalog || '').trim()}|${String(table || '').trim()}`
 }
 
 export default function DataMapPage() {
@@ -50,20 +43,20 @@ export default function DataMapPage() {
   const wsId = currentWorkspace?.id
   const canWrite = can(user, P.GIDO_BATCH_DATAMAP_WRITE, currentWorkspace)
   const navigate = useNavigate()
-  const { isExpanded, toggle, expandableControl } = useSoftExpandedRows()
-  const [tables, setTables] = useState<any[]>(() => {
-    const id = useAppStore.getState().currentWorkspace?.id
-    if (id == null) return []
-    return catalogViewCache.get(catalogCacheKey(id)) ?? []
-  })
+
   const [datasources, setDatasources] = useState<any[]>(() =>
     peekCachedDatasources(useAppStore.getState().currentWorkspace?.id),
   )
-  const [keyword, setKeyword] = useState('')
-  const [dsFilter, setDsFilter] = useState<number | undefined>(undefined)
-  const [detailModal, setDetailModal] = useState(false)
+  const capableDs = useMemo(() => catalogCapableDatasources(datasources as any[]), [datasources])
+  const [dsId, setDsId] = useState<number | undefined>(() => capableDs[0]?.id)
+  const selectedDs = useMemo(() => capableDs.find((d) => d.id === dsId), [capableDs, dsId])
+
+  const [registeredMap, setRegisteredMap] = useState<Map<string, number>>(new Map())
+  const [refreshToken, setRefreshToken] = useState(0)
+  const [selection, setSelection] = useState<DataMapTableSelection | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
   const [selectedTable, setSelectedTable] = useState<any>(null)
-  const [lineageData, setLineageData] = useState<{ nodes: any[], edges: any[] }>({ nodes: [], edges: [] })
+  const [lineageData, setLineageData] = useState<{ nodes: any[]; edges: any[] }>({ nodes: [], edges: [] })
   const [impactData, setImpactData] = useState<any[]>([])
   const [lineageLoading, setLineageLoading] = useState(false)
   const [impactLoading, setImpactLoading] = useState(false)
@@ -72,30 +65,10 @@ export default function DataMapPage() {
   const [previewLoading, setPreviewLoading] = useState(false)
   const [registerModal, setRegisterModal] = useState(false)
   const [form] = Form.useForm()
-  const [listLoading, setListLoading] = useState(false)
-  /** 仅用户点「刷新目录」时转圈，后台静默同步不碰工具条（避免闪） */
-  const [refreshing, setRefreshing] = useState(false)
-  /** 行展开明细：字段字典等 */
-  const [rowPanel, setRowPanel] = useState<Record<string, { loading: boolean; detail?: any; error?: string }>>({})
-  /** 旧 DESCRIBE 同步无注释：每个 meta 表本会话最多自动补同步一次 */
   const commentHealTriedRef = useRef<Set<number>>(new Set())
-  const loadGenRef = useRef(0)
-  const keywordRef = useRef(keyword)
-  keywordRef.current = keyword
-  const dsFilterRef = useRef(dsFilter)
-  dsFilterRef.current = dsFilter
+  const selectGenRef = useRef(0)
 
-  const patchCatalogRow = useCallback((rowKey: string, patch: Record<string, unknown>) => {
-    setTables((prev) => {
-      const next = prev.map((r) => (r.rowKey === rowKey ? { ...r, ...patch } : r))
-      if (wsId != null && !(keywordRef.current || '').trim()) {
-        catalogViewCache.set(catalogCacheKey(wsId, dsFilterRef.current), next)
-      }
-      return next
-    })
-  }, [wsId])
-
-  const loadDatasources = useCallback(async (): Promise<any[]> => {
+  const loadDatasources = useCallback(async () => {
     if (!wsId) return []
     try {
       const d: any = await datasourceApi.list(wsId).catch(() => [])
@@ -108,117 +81,38 @@ export default function DataMapPage() {
     }
   }, [wsId])
 
-  /**
-   * 分源渐进加载（对齐探查：有缓存则先稳住画面，后台静默对齐，不中途清空/缩表）。
-   * 无缓存：先出已注册字典，再按源补物理表。工具条不展示同步进度，避免闪来闪去。
-   */
-  const loadCatalog = useCallback(async (opts?: { userRefresh?: boolean }) => {
+  const loadRegistered = useCallback(async () => {
     if (!wsId) return
-    const gen = ++loadGenRef.current
-    const userRefresh = Boolean(opts?.userRefresh)
-    if (userRefresh) setRefreshing(true)
-    const kw = (keywordRef.current || '').trim()
-    const filter = dsFilterRef.current
-    const cacheKey = catalogCacheKey(wsId, filter)
-    const cached = !kw ? catalogViewCache.get(cacheKey) : undefined
-    const hadCache = Boolean(cached?.length)
-    if (hadCache) {
-      setTables(cached!)
-      setListLoading(false)
-    } else if (!userRefresh) {
-      setListLoading(true)
-    }
-
     try {
-      const regRaw: any = await datamapApi.searchTables(wsId, kw || undefined).catch(() => [])
-      if (gen !== loadGenRef.current) return
+      const regRaw: any = await datamapApi.searchTables(wsId).catch(() => [])
       const registered = Array.isArray(regRaw) ? regRaw : []
-      let catalogRows: any[] = []
-      // 有缓存时禁止中途改成「仅注册表」——那是一闪而过的割裂感来源
-      if (!hadCache) {
-        setTables(mergeCatalogWithRegistered(catalogRows, registered, filter))
-        setListLoading(false)
+      const m = new Map<string, number>()
+      for (const t of registered) {
+        if (dsId != null && Number(t.datasource_id) !== Number(dsId)) continue
+        const cat = String(t.catalog || t.db_name || '').trim()
+        const tn = String(t.table_name || '').trim()
+        if (!tn || t.id == null) continue
+        m.set(regMapKey(cat, tn), Number(t.id))
       }
-
-      let dsList = peekCachedDatasources(wsId)
-      if (!dsList.length) {
-        dsList = await loadDatasources()
-        if (gen !== loadGenRef.current) return
-      } else {
-        // 有缓存：后台刷新数据源选项，不挡工具条、不 loading Select
-        void loadDatasources()
-      }
-      const targets = catalogCapableDatasources(dsList as any[], filter)
-      if (!targets.length) {
-        const merged = mergeCatalogWithRegistered([], registered, filter)
-        setTables(merged)
-        if (!kw) catalogViewCache.set(cacheKey, merged)
-        return
-      }
-
-      for (let i = 0; i < targets.length; i++) {
-        const ds = targets[i]
-        if (gen !== loadGenRef.current) return
-        let slice: any[] = []
-        try {
-          const c: any = await datamapApi.catalog(wsId, { datasource_id: ds.id, keyword: kw || undefined })
-          slice = Array.isArray(c) ? c : []
-        } catch (e: any) {
-          slice = [{
-            error: datamapErrMsg(e, `拉取 ${ds.name} 目录失败`),
-            datasource_id: ds.id,
-            datasource_name: ds.name,
-            table_name: '',
-            catalog: '',
-            qualified_name: ds.name,
-          }]
-        }
-        if (gen !== loadGenRef.current) return
-        catalogRows = replaceDatasourceCatalogRows(catalogRows, ds.id, slice)
-        // 冷启动才边拉边刷；有缓存则等全部完成再一次替换（SWR）
-        if (!hadCache) {
-          setTables(mergeCatalogWithRegistered(catalogRows, registered, filter))
-        }
-      }
-
-      const merged = mergeCatalogWithRegistered(catalogRows, registered, filter)
-      setTables(merged)
-      if (!kw) catalogViewCache.set(cacheKey, merged)
-    } finally {
-      if (gen === loadGenRef.current) {
-        setListLoading(false)
-        if (userRefresh) setRefreshing(false)
-      }
+      setRegisteredMap(m)
+    } catch {
+      setRegisteredMap(new Map())
     }
-  }, [wsId, loadDatasources])
-
-  const load = async () => {
-    await Promise.all([loadDatasources(), loadCatalog({ userRefresh: true })])
-  }
+  }, [wsId, dsId])
 
   useEffect(() => { void loadDatasources() }, [loadDatasources])
-  useEffect(() => { void loadCatalog() }, [wsId, dsFilter, loadCatalog])
+  useEffect(() => { void loadRegistered() }, [loadRegistered])
 
-  const openDetail = async (table: { id: number }) => {
-    try {
-      const detail: any = await datamapApi.getTable(table.id)
-      setSelectedTable(detail)
-      setLineageData({ nodes: [], edges: [] })
-      setImpactData([])
-      setDetailExtrasLoaded({})
-      setPreviewData(null)
-      setDetailModal(true)
-      // 注释自愈不挡首屏：先展示，后台补同步后再刷新抽屉
-      scheduleCommentHeal(detail, (next) => setSelectedTable(next))
-    } catch (e: any) {
-      message.error(datamapErrMsg(e, '加载字典失败'))
+  useEffect(() => {
+    if (!capableDs.length) {
+      setDsId(undefined)
+      return
     }
-  }
+    if (dsId == null || !capableDs.some((d) => d.id === dsId)) {
+      setDsId(capableDs[0].id)
+    }
+  }, [capableDs, dsId])
 
-  /**
-   * 旧 DESCRIBE 同步无注释：先展示，后台 syncSchema 再刷新（不 await 挡屏）。
-   * 真无 COMMENT 的表本会话只打源库一次。
-   */
   const scheduleCommentHeal = (detail: any, onHealed: (next: any) => void) => {
     if (!canWrite || !detail?.id || !Array.isArray(detail.columns) || !detail.columns.length) return
     const allEmpty = detail.columns.every((c: any) => !String(c.comment || '').trim())
@@ -231,117 +125,89 @@ export default function DataMapPage() {
         await datamapApi.syncSchema(id)
         const next = await datamapApi.getTable(id)
         onHealed(next)
-      } catch {
-        /* 保持当前展示 */
-      }
+      } catch { /* keep */ }
     })()
   }
 
-  /** 仅未收录时 ensure；已有 meta_table_id 稳态只读，不打 ensure */
-  const ensureRowMeta = async (row: any): Promise<number | null> => {
-    if (row?.meta_table_id) return Number(row.meta_table_id)
-    if (row?.error || !row?.table_name || row?.datasource_id == null) return null
-    if (!canWrite || !wsId) return null
-    const ensured: any = await datamapApi.ensureTable({
-      workspace_id: wsId,
-      datasource_id: row.datasource_id,
-      db_name: row.catalog || undefined,
-      table_name: row.table_name,
-      table_comment: row.table_comment || undefined,
-      table_type: String(row.table_type || 'table').toLowerCase().includes('view') ? 'view' : 'table',
-      sync_if_empty: true,
-    })
-    const id = Number(ensured?.id)
-    if (!id) return null
-    patchCatalogRow(row.rowKey, {
-      registered: true,
-      meta_table_id: id,
-      table_comment: ensured.table_comment ?? row.table_comment,
-      row_count: ensured.row_count ?? row.row_count,
-      table_type: ensured.table_type ?? row.table_type,
-    })
-    return id
-  }
-
-  const loadExpandedPanel = async (row: any) => {
-    const key = String(row.rowKey)
-    setRowPanel((prev) => ({ ...prev, [key]: { loading: true, detail: prev[key]?.detail } }))
+  const openSelection = useCallback(async (sel: DataMapTableSelection) => {
+    const gen = ++selectGenRef.current
+    setSelection(sel)
+    setDetailLoading(true)
+    setSelectedTable(null)
+    setLineageData({ nodes: [], edges: [] })
+    setImpactData([])
+    setDetailExtrasLoaded({})
+    setPreviewData(null)
     try {
-      let metaId = row.meta_table_id ? Number(row.meta_table_id) : null
-      if (!metaId && canWrite) {
-        metaId = await ensureRowMeta(row)
+      let metaId = sel.metaTableId
+      if (!metaId && canWrite && wsId) {
+        const ensured: any = await datamapApi.ensureTable({
+          workspace_id: wsId,
+          datasource_id: sel.datasourceId,
+          db_name: sel.catalog || undefined,
+          table_name: sel.tableName,
+          table_comment: sel.comment || undefined,
+          table_type: 'table',
+          sync_if_empty: true,
+        })
+        metaId = Number(ensured?.id) || undefined
+        if (metaId) {
+          setRegisteredMap((prev) => {
+            const next = new Map(prev)
+            next.set(regMapKey(sel.catalog, sel.tableName), metaId!)
+            return next
+          })
+          setSelection((s) => (s && s.tableName === sel.tableName && s.catalog === sel.catalog
+            ? { ...s, metaTableId: metaId, registered: true }
+            : s))
+        }
       }
       if (!metaId) {
-        setRowPanel((prev) => ({
-          ...prev,
-          [key]: {
-            loading: false,
-            detail: null,
-            error: canWrite ? undefined : '只读角色：展开仅展示目录摘要；收录需写权限',
-          },
-        }))
+        if (gen !== selectGenRef.current) return
+        // 只读且未收录：用物理列即时展示（不落库）
+        const { fetchColumns } = await import('../utils/sqlSchemaCache')
+        const cols = await fetchColumns(sel.datasourceId, sel.tableName, sel.catalog)
+        setSelectedTable({
+          id: null,
+          datasource_id: sel.datasourceId,
+          datasource_name: selectedDs?.name,
+          catalog: sel.catalog,
+          db_name: sel.catalog,
+          table_name: sel.tableName,
+          table_comment: sel.comment,
+          qualified_name: `${selectedDs?.name || ''}.${sel.catalog}.${sel.tableName}`.replace(/^\./, ''),
+          columns: cols.map((c, i) => ({
+            id: i,
+            name: c.name,
+            type: c.type,
+            comment: c.comment,
+            nullable: c.nullable,
+            primary_key: String(c.key || '').toUpperCase() === 'PRI',
+          })),
+          _physicalOnly: true,
+        })
         return
       }
       const detail: any = await datamapApi.getTable(metaId)
-      setRowPanel((prev) => ({ ...prev, [key]: { loading: false, detail } }))
+      if (gen !== selectGenRef.current) return
+      setSelectedTable(detail)
       scheduleCommentHeal(detail, (next) => {
-        setRowPanel((prev) => ({ ...prev, [key]: { loading: false, detail: next } }))
-        patchCatalogRow(row.rowKey, {
-          table_comment: next.table_comment ?? row.table_comment,
-          row_count: next.row_count ?? row.row_count,
-        })
+        if (gen === selectGenRef.current) setSelectedTable(next)
       })
     } catch (e: any) {
-      setRowPanel((prev) => ({
-        ...prev,
-        [key]: { loading: false, error: datamapErrMsg(e, '加载字段失败') },
-      }))
-    }
-  }
-
-  const handleToggleRow = (row: any) => {
-    const key = row.rowKey
-    const willExpand = !isExpanded(key)
-    toggle(key)
-    if (willExpand) void loadExpandedPanel(row)
-  }
-
-  const ensureDetailExtra = async (key: 'lineage' | 'impact') => {
-    if (!selectedTable?.id || detailExtrasLoaded[key]) return
-    if (key === 'lineage') {
-      setLineageLoading(true)
-      try {
-        const lineage: any = await datamapApi.getLineage(selectedTable.id, 3)
-        setLineageData(lineage || { nodes: [], edges: [] })
-        setDetailExtrasLoaded(prev => ({ ...prev, lineage: true }))
-      } catch (e: any) {
-        message.error(e?.response?.data?.detail || '加载血缘失败')
-      } finally {
-        setLineageLoading(false)
-      }
-      return
-    }
-    setImpactLoading(true)
-    try {
-      const impact: any = await datamapApi.getImpact(selectedTable.id)
-      setImpactData(impact?.impacted_tables || [])
-      setDetailExtrasLoaded(prev => ({ ...prev, impact: true }))
-    } catch (e: any) {
-      message.error(e?.response?.data?.detail || '加载影响分析失败')
+      if (gen !== selectGenRef.current) return
+      message.error(datamapErrMsg(e, '加载表详情失败'))
+      setSelectedTable(null)
     } finally {
-      setImpactLoading(false)
+      if (gen === selectGenRef.current) setDetailLoading(false)
     }
-  }
+  }, [canWrite, wsId, selectedDs?.name])
 
-  const loadPreview = async (tableId: number) => {
-    setPreviewLoading(true)
-    try {
-      const res: any = await datamapApi.previewData(tableId, 100)
-      setPreviewData(res)
-    } catch (e: any) {
-      message.error(e?.response?.data?.detail || '预览失败')
-    }
-    setPreviewLoading(false)
+  const handleRefresh = async () => {
+    if (dsId) invalidateSqlSchemaCache(dsId)
+    await Promise.all([loadDatasources(), loadRegistered()])
+    setRefreshToken((n) => n + 1)
+    message.success('已刷新库表目录缓存')
   }
 
   const handleSyncSchema = async (tableId: number) => {
@@ -352,18 +218,8 @@ export default function DataMapPage() {
     try {
       const res: any = await datamapApi.syncSchema(tableId)
       message.success(`同步成功，共 ${res.columns} 个字段`)
-      if (selectedTable?.id === tableId) openDetail({ id: tableId })
-      setRowPanel((prev) => {
-        const next = { ...prev }
-        for (const [k, v] of Object.entries(next)) {
-          if (v.detail?.id === tableId) {
-            next[k] = { loading: true }
-          }
-        }
-        return next
-      })
-      const row = tables.find((r) => Number(r.meta_table_id) === tableId)
-      if (row) void loadExpandedPanel(row)
+      const detail: any = await datamapApi.getTable(tableId)
+      setSelectedTable(detail)
     } catch (e: any) {
       message.error(datamapErrMsg(e, '同步失败'))
     }
@@ -386,205 +242,67 @@ export default function DataMapPage() {
         message.success(`已收录，同步 ${created?.columns_synced ?? created?.columns?.length ?? 0} 个字段`)
       }
       setRegisterModal(false)
-      await load()
-      if (created?.id) openDetail({ id: created.id })
+      await loadRegistered()
+      if (created?.id && values.datasource_id && values.table_name) {
+        void openSelection({
+          datasourceId: values.datasource_id,
+          catalog: values.db_name || '',
+          tableName: values.table_name,
+          comment: values.table_comment,
+          metaTableId: created.id,
+          registered: true,
+        })
+      }
     } catch (e: any) {
       if (e?.errorFields) return
       message.error(datamapErrMsg(e, '收录失败'))
     }
   }
 
-  const openCatalogRow = async (row: any) => {
-    if (row.error) {
-      message.warning(`数据源 ${row.datasource_name} 拉表失败：${row.error}`)
-      return
-    }
-    if (!canWrite && !(row.registered && row.meta_table_id)) {
-      message.warning('当前为只读角色，可浏览物理表目录；打开收录需具备「数据字典写」权限')
-      return
-    }
-    try {
-      if (canWrite) {
-        const id = await ensureRowMeta(row)
-        if (id) openDetail({ id })
-        return
+  const ensureDetailExtra = async (key: 'lineage' | 'impact') => {
+    if (!selectedTable?.id || detailExtrasLoaded[key]) return
+    if (key === 'lineage') {
+      setLineageLoading(true)
+      try {
+        const lineage: any = await datamapApi.getLineage(selectedTable.id, 3)
+        setLineageData(lineage || { nodes: [], edges: [] })
+        setDetailExtrasLoaded((prev) => ({ ...prev, lineage: true }))
+      } catch (e: any) {
+        message.error(e?.response?.data?.detail || '加载血缘失败')
+      } finally {
+        setLineageLoading(false)
       }
-      if (row.meta_table_id) openDetail({ id: row.meta_table_id })
+      return
+    }
+    setImpactLoading(true)
+    try {
+      const impact: any = await datamapApi.getImpact(selectedTable.id)
+      setImpactData(impact?.impacted_tables || [])
+      setDetailExtrasLoaded((prev) => ({ ...prev, impact: true }))
     } catch (e: any) {
-      message.error(datamapErrMsg(e, '收录失败'))
+      message.error(e?.response?.data?.detail || '加载影响分析失败')
+    } finally {
+      setImpactLoading(false)
     }
   }
 
-  const columnsBase = [
-    {
-      title: '表',
-      key: 'table',
-      render: (_: unknown, row: any) => {
-        if (row.error) {
-          return (
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontWeight: 500, color: '#cf1322' }}>{row.datasource_name || '数据源'}</div>
-              <div style={{ color: '#8c8c8c', fontSize: 12 }}>{row.error}</div>
-            </div>
-          )
-        }
-        const sub = [row.datasource_name, row.catalog].filter(Boolean).join(' · ')
-        return (
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {canWrite || row.registered
-                ? <a onClick={() => openCatalogRow(row)}>{row.table_name || '—'}</a>
-                : <span>{row.table_name || '—'}</span>}
-            </div>
-            <div style={{ color: '#8c8c8c', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sub}>
-                {sub || '—'}
-              </span>
-              {!row.error && (
-                <SoftRowDetailToggle
-                  expanded={isExpanded(row.rowKey)}
-                  onToggle={() => handleToggleRow(row)}
-                />
-              )}
-            </div>
-          </div>
-        )
-      },
-    },
-    {
-      title: '状态',
-      key: 'status',
-      width: 88,
-      render: (_: unknown, row: any) => {
-        if (row.error) return <Tag color="error">失败</Tag>
-        return row.registered
-          ? <Tag color="green">已收录</Tag>
-          : <Tag>目录</Tag>
-      },
-    },
-    {
-      title: '描述',
-      dataIndex: 'table_comment',
-      key: 'comment',
-      ellipsis: true,
-      render: (c: string) => c || <span style={{ color: '#bfbfbf' }}>—</span>,
-    },
-    {
-      title: '操作',
-      key: 'actions',
-      width: 200,
-      fixed: 'right' as const,
-      render: (_: unknown, row: any) => (
-        <Space size={4} wrap={false} style={{ whiteSpace: 'nowrap' }}>
-          {!row.error && (
-            <Button type="link" size="small" onClick={() => openCatalogRow(row)}>打开</Button>
-          )}
-          {row.meta_table_id && canWrite && (
-            <Button
-              type="link"
-              size="small"
-              icon={<SyncOutlined />}
-              onClick={(e) => { e.stopPropagation(); handleSyncSchema(row.meta_table_id) }}
-            >
-              同步结构
-            </Button>
-          )}
-          {row.meta_table_id && (
-            <Button
-              type="link"
-              size="small"
-              icon={<ApartmentOutlined />}
-              onClick={(e) => { e.stopPropagation(); openDetail({ id: row.meta_table_id }) }}
-            >
-              字典
-            </Button>
-          )}
-        </Space>
-      ),
-    },
-  ]
-
-  const columns = useResizableTableColumns(columnsBase, {
-    storageKey: wsId ? `gido.datamap.catalog.cols.w${wsId}` : undefined,
-    defaultWidths: {
-      table: 320,
-      status: 88,
-      comment: 220,
-      actions: 200,
-    },
-  })
-
-  const renderRowDetail = (row: any) => {
-    const panel = rowPanel[String(row.rowKey)]
-    return (
-      <div className="gido-soft-expanded-panel">
-        <Descriptions size="small" column={2} style={{ marginBottom: 12 }}>
-          <Descriptions.Item label="限定名" span={2}>
-            {row.qualified_name || `${row.catalog || ''}.${row.table_name}`.replace(/^\./, '')}
-          </Descriptions.Item>
-          <Descriptions.Item label="类型">{tableTypeLabel(row.table_type)}</Descriptions.Item>
-          <Descriptions.Item label="行数">{row.row_count ?? '—'}</Descriptions.Item>
-          <Descriptions.Item label="描述" span={2}>{row.table_comment || '—'}</Descriptions.Item>
-        </Descriptions>
-        {panel?.loading && (
-          <div style={{ padding: 24, textAlign: 'center' }}><Spin tip="加载字段…" /></div>
-        )}
-        {!panel?.loading && panel?.error && (
-          <Alert type="info" showIcon message={panel.error} style={{ marginBottom: 8 }} />
-        )}
-        {!panel?.loading && panel?.detail?.columns && (
-          <>
-            <div style={{ marginBottom: 8, fontWeight: 500 }}>
-              字段（{panel.detail.columns.length}）
-              {canWrite && panel.detail.id && (
-                <Button
-                  type="link"
-                  size="small"
-                  icon={<SyncOutlined />}
-                  onClick={() => handleSyncSchema(panel.detail.id)}
-                >
-                  同步结构
-                </Button>
-              )}
-            </div>
-            <Table
-              size="small"
-              pagination={false}
-              rowKey={(c: any) => c.id ?? c.name}
-              dataSource={panel.detail.columns}
-              scroll={{ y: 240 }}
-              columns={[
-                { title: '字段', dataIndex: 'name', width: 140, ellipsis: true },
-                { title: '类型', dataIndex: 'type', width: 120, ellipsis: true },
-                { title: '描述', dataIndex: 'comment', ellipsis: true },
-                {
-                  title: '键',
-                  dataIndex: 'primary_key',
-                  width: 56,
-                  render: (v: boolean) => (v ? <Tag color="gold">PK</Tag> : ''),
-                },
-              ]}
-            />
-            <div style={{ marginTop: 8 }}>
-              <Button type="link" size="small" onClick={() => openDetail({ id: panel.detail.id })}>
-                打开字典（血缘 / 样例）
-              </Button>
-            </div>
-          </>
-        )}
-        {!panel?.loading && !panel?.detail && !panel?.error && !canWrite && (
-          <Alert type="info" showIcon message="只读角色：可浏览目录摘要；字段字典需先由有写权限的同事打开收录。" />
-        )}
-      </div>
-    )
+  const loadPreview = async (tableId: number) => {
+    setPreviewLoading(true)
+    try {
+      const res: any = await datamapApi.previewData(tableId, 100)
+      setPreviewData(res)
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '预览失败')
+    }
+    setPreviewLoading(false)
   }
 
   const colColumns = [
-    { title: '字段名', dataIndex: 'name' },
-    { title: '类型', dataIndex: 'type' },
-    { title: '描述', dataIndex: 'comment' },
-    { title: '可空', dataIndex: 'nullable', render: (v: boolean) => v ? '是' : '否' },
-    { title: '主键', dataIndex: 'primary_key', render: (v: boolean) => v ? <Tag color="gold">PK</Tag> : '' },
+    { title: '字段名', dataIndex: 'name', width: 160, ellipsis: true },
+    { title: '类型', dataIndex: 'type', width: 120, ellipsis: true },
+    { title: '描述', dataIndex: 'comment', ellipsis: true, render: (c: string) => c || <span style={{ color: '#bfbfbf' }}>—</span> },
+    { title: '可空', dataIndex: 'nullable', width: 64, render: (v: boolean) => (v ? '是' : '否') },
+    { title: '主键', dataIndex: 'primary_key', width: 64, render: (v: boolean) => (v ? <Tag color="gold">PK</Tag> : '') },
   ]
 
   const impactColumns = [
@@ -592,25 +310,28 @@ export default function DataMapPage() {
     { title: '表名', dataIndex: 'table_name' },
   ]
 
+  const selectedTreeKey = selection
+    ? tableKey(selection.catalog, selection.tableName)
+    : null
+
+  const physicalOnly = Boolean(selectedTable?._physicalOnly)
+
   return (
-    <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, minHeight: 32 }}>
+    <div className="datamap-page">
+      <div className="datamap-page-toolbar">
         <h2 style={{ margin: 0 }}>数据地图</h2>
-        <Space wrap size={8} style={{ minHeight: 32, alignItems: 'center' }}>
+        <Space wrap size={8}>
           <Select
-            allowClear
-            placeholder="筛选数据源"
+            placeholder="数据源"
             style={{ width: 200 }}
-            value={dsFilter}
-            onChange={v => setDsFilter(v)}
-            options={datasources.map((d: any) => ({ label: d.name, value: d.id }))}
-          />
-          <Input.Search
-            placeholder="搜索表名 / 库名 / 描述"
-            value={keyword}
-            onChange={e => setKeyword(e.target.value)}
-            onSearch={() => { void loadCatalog({ userRefresh: true }) }}
-            style={{ width: 260 }}
+            value={dsId}
+            onChange={(v) => {
+              setDsId(v)
+              setSelection(null)
+              setSelectedTable(null)
+            }}
+            options={capableDs.map((d: any) => ({ label: d.name, value: d.id }))}
+            notFoundContent={datasources.length ? '无可枚举库表的数据源' : '加载中…'}
           />
           {canWrite && (
             <>
@@ -623,184 +344,237 @@ export default function DataMapPage() {
               </Button>
             </>
           )}
-          <Button
-            icon={<SearchOutlined />}
-            loading={refreshing}
-            onClick={() => { void loadCatalog({ userRefresh: true }) }}
-          >
+          <Button icon={<ReloadOutlined />} onClick={() => { void handleRefresh() }}>
             刷新目录
           </Button>
         </Space>
       </div>
+
       {!canWrite && (
         <Alert
           type="warning"
           showIcon
-          style={{ marginBottom: 12 }}
-          message="当前角色为只读：可浏览物理表目录与已收录字典；打开/展开自动收录与同步结构需具备「数据字典写」权限。"
+          style={{ marginBottom: 12, flexShrink: 0 }}
+          message="当前角色为只读：可浏览物理库表树与已收录字典；单击表自动收录与同步结构需「数据字典写」权限。"
         />
       )}
       <Alert
         type="info"
         showIcon
         closable
-        style={{ marginBottom: 12 }}
+        style={{ marginBottom: 12, flexShrink: 0 }}
         message={
           canWrite
-            ? '目录默认可见（MySQL / Doris 可见库；可在数据源配置库白名单）。打开或展开未收录表即自动收录并同步字段注释；已收录表只读字典元数据。行数为库内估算值，结构变更后点「同步结构」，新建物理表后点「刷新目录」。'
-            : '展示数据源账号可见库中的物理表。已收录表可查看字典与血缘；未收录表仅可浏览目录信息。'
+            ? '左侧库表树与数据开发「库表」同源（可见库懒加载）。单击表即打开右侧字典并自动收录；行数为估算值。共享集群可在数据源配置库白名单。'
+            : '左侧浏览物理库表；已收录表可查看血缘与样例。未收录表仅展示实时字段（不落库）。'
         }
       />
-      <Table
-        dataSource={tables}
-        columns={columns}
-        rowKey="rowKey"
-        className="dw-resizable-table"
-        scroll={{ x: 900 }}
-        tableLayout="fixed"
-        loading={listLoading && !tables.length}
-        expandable={{
-          ...expandableControl,
-          expandedRowRender: renderRowDetail,
-          rowExpandable: (row: any) => !row.error,
-        }}
-      />
 
-      <Modal
-        title={`数据字典 - ${selectedTable?.qualified_name || selectedTable?.table_name}`}
-        open={detailModal}
-        onCancel={() => setDetailModal(false)}
-        footer={null}
-        width={900}
-      >
-        {selectedTable && (
-          <Tabs
-            onChange={(key) => {
-              if (key === 'lineage') void ensureDetailExtra('lineage')
-              if (key === 'impact') void ensureDetailExtra('impact')
-            }}
-            items={[
-            {
-              key: 'info', label: '基本信息',
-              children: (
-                <Descriptions column={2} bordered size="small">
-                  <Descriptions.Item label="限定名" span={2}>{selectedTable.qualified_name || `${selectedTable.db_name}.${selectedTable.table_name}`}</Descriptions.Item>
-                  <Descriptions.Item label="数据源">{selectedTable.datasource_name || '—'}</Descriptions.Item>
-                  <Descriptions.Item label="类型">{selectedTable.ds_type || '—'}</Descriptions.Item>
-                  <Descriptions.Item label="表名">{selectedTable.table_name}</Descriptions.Item>
-                  <Descriptions.Item label="数据库/Catalog">{selectedTable.catalog || selectedTable.db_name}</Descriptions.Item>
-                  <Descriptions.Item label="类型">{selectedTable.table_type}</Descriptions.Item>
-                  <Descriptions.Item label="行数">{selectedTable.row_count}</Descriptions.Item>
-                  <Descriptions.Item label="大小">{selectedTable.size_bytes ? `${(selectedTable.size_bytes / 1024 / 1024).toFixed(2)} MB` : '-'}</Descriptions.Item>
-                  <Descriptions.Item label="负责人">{selectedTable.owner}</Descriptions.Item>
-                  <Descriptions.Item label="描述" span={2}>{selectedTable.table_comment}</Descriptions.Item>
-                </Descriptions>
-              )
-            },
-            {
-              key: 'columns', label: `字段 (${selectedTable.columns?.length || 0})`,
-              children: (
-                <Table
-                  dataSource={selectedTable.columns}
-                  columns={colColumns}
-                  rowKey="id"
-                  size="small"
-                  pagination={false}
-                />
-              )
-            },
-            {
-              key: 'lineage', label: '血缘图谱',
-              children: (
-                <div>
-                  {lineageLoading ? (
-                    <div style={{ padding: 48, textAlign: 'center' }}><Spin tip="加载血缘…" /></div>
-                  ) : (
-                    <LineageGraph
-                      data={lineageData}
-                      currentTableId={selectedTable.id}
-                      height={420}
-                    />
-                  )}
+      <div className="datamap-page-body">
+        <div className="datamap-page-tree">
+          <DataMapCatalogPanel
+            datasourceId={dsId}
+            defaultCatalog={selectedDs?.database || null}
+            registeredMap={registeredMap}
+            selectedKey={selectedTreeKey}
+            onSelectTable={(sel) => { void openSelection(sel) }}
+            refreshToken={refreshToken}
+          />
+        </div>
+        <div className="datamap-page-detail">
+          {!selection && !detailLoading && (
+            <div className="datamap-detail-empty">
+              <div>
+                <div style={{ marginBottom: 8, color: '#595959' }}>从左侧选择一张表</div>
+                <div style={{ fontSize: 12 }}>
+                  将展示字段注释、血缘与样例
+                  {isCatalogCapableDatasource(selectedDs) ? '' : '；请先选择 MySQL / Doris / PostgreSQL 数据源'}
                 </div>
-              )
-            },
-            {
-              key: 'impact', label: `影响分析${detailExtrasLoaded.impact ? ` (${impactData.length})` : ''}`,
-              children: (
+              </div>
+            </div>
+          )}
+          {detailLoading && (
+            <div className="datamap-detail-empty"><Spin tip="加载字典…" /></div>
+          )}
+          {!detailLoading && selectedTable && selection && (
+            <>
+              <div className="datamap-detail-header">
                 <div>
-                  {impactLoading ? (
-                    <div style={{ padding: 48, textAlign: 'center' }}><Spin tip="加载影响分析…" /></div>
-                  ) : (
-                    <>
-                      {impactData.length > 0 && (
-                        <Alert
-                          type="warning"
-                          message={`该表变更将影响下游 ${impactData.length} 张表`}
-                          style={{ marginBottom: 12 }}
-                        />
-                      )}
+                  <div className="datamap-detail-title">
+                    {selectedTable.qualified_name || `${selection.catalog}.${selection.tableName}`}
+                  </div>
+                  <div className="datamap-detail-sub">
+                    {physicalOnly ? (
+                      <Tag>目录（未收录）</Tag>
+                    ) : (
+                      <Tag color="green">已收录</Tag>
+                    )}
+                    <span style={{ marginLeft: 8 }}>
+                      {selectedTable.table_type || 'table'}
+                      {selectedTable.row_count != null ? ` · 约 ${selectedTable.row_count} 行` : ''}
+                    </span>
+                  </div>
+                </div>
+                <Space>
+                  {!physicalOnly && selectedTable.id && canWrite && (
+                    <Button icon={<SyncOutlined />} onClick={() => handleSyncSchema(selectedTable.id)}>
+                      同步结构
+                    </Button>
+                  )}
+                  {physicalOnly && canWrite && (
+                    <Button
+                      type="primary"
+                      onClick={() => void openSelection({ ...selection, metaTableId: undefined, registered: false })}
+                    >
+                      收录到字典
+                    </Button>
+                  )}
+                </Space>
+              </div>
+
+              {selectedTable.table_comment && (
+                <Alert type="info" showIcon style={{ marginBottom: 12 }} message={selectedTable.table_comment} />
+              )}
+
+              <Tabs
+                onChange={(key) => {
+                  if (physicalOnly && (key === 'lineage' || key === 'impact' || key === 'preview')) {
+                    message.info('收录到字典后可使用血缘 / 影响分析 / 样例预览')
+                    return
+                  }
+                  if (key === 'lineage') void ensureDetailExtra('lineage')
+                  if (key === 'impact') void ensureDetailExtra('impact')
+                }}
+                items={[
+                  {
+                    key: 'columns',
+                    label: `字段 (${selectedTable.columns?.length || 0})`,
+                    children: (
                       <Table
-                        dataSource={impactData}
-                        columns={impactColumns}
-                        rowKey="table_name"
+                        dataSource={selectedTable.columns}
+                        columns={colColumns}
+                        rowKey={(r: any) => r.id ?? r.name}
                         size="small"
                         pagination={false}
+                        scroll={{ y: 'calc(100vh - 420px)' }}
                       />
-                    </>
-                  )}
-                </div>
-              )
-            },
-            {
-              key: 'preview', label: '数据预览',
-              children: (
-                <div>
-                  <Button
-                    type="primary"
-                    size="small"
-                    style={{ marginBottom: 12 }}
-                    loading={previewLoading}
-                    onClick={() => loadPreview(selectedTable.id)}
-                  >
-                    加载样例
-                  </Button>
-                  {previewLoading && <Spin />}
-                  {previewData?.columns && (
-                    <Table
-                      dataSource={(previewData.rows || []).map((r: any, i: number) => ({ ...r, _key: i }))}
-                      columns={(previewData.columns as string[]).map((c) => ({
-                        title: c,
-                        dataIndex: c,
-                        ellipsis: true,
-                        width: 140,
-                        render: (v: unknown) => {
-                          if (v === null || v === undefined || v === 'None') {
-                            return <span style={{ color: '#bfbfbf' }}>NULL</span>
-                          }
-                          const text = formatCellDisplay(v)
-                          return (
-                            <span style={{ fontFamily: 'monospace', fontSize: 12 }} title={text.length > 80 ? text : undefined}>
-                              {text}
-                            </span>
-                          )
-                        },
-                      }))}
-                      rowKey="_key"
-                      size="small"
-                      scroll={{ x: true }}
-                      pagination={{ pageSize: 20 }}
-                    />
-                  )}
-                </div>
-              )
-            }
-          ]} />
-        )}
-      </Modal>
+                    ),
+                  },
+                  {
+                    key: 'info',
+                    label: '基本信息',
+                    children: (
+                      <Descriptions column={2} bordered size="small">
+                        <Descriptions.Item label="限定名" span={2}>
+                          {selectedTable.qualified_name || `${selectedTable.db_name}.${selectedTable.table_name}`}
+                        </Descriptions.Item>
+                        <Descriptions.Item label="数据源">{selectedTable.datasource_name || selectedDs?.name || '—'}</Descriptions.Item>
+                        <Descriptions.Item label="类型">{selectedTable.ds_type || selectedDs?.ds_type || '—'}</Descriptions.Item>
+                        <Descriptions.Item label="表名">{selectedTable.table_name}</Descriptions.Item>
+                        <Descriptions.Item label="数据库/Catalog">{selectedTable.catalog || selectedTable.db_name}</Descriptions.Item>
+                        <Descriptions.Item label="行数">{selectedTable.row_count ?? '—'}</Descriptions.Item>
+                        <Descriptions.Item label="负责人">{selectedTable.owner || '—'}</Descriptions.Item>
+                        <Descriptions.Item label="描述" span={2}>{selectedTable.table_comment || '—'}</Descriptions.Item>
+                      </Descriptions>
+                    ),
+                  },
+                  {
+                    key: 'lineage',
+                    label: '血缘图谱',
+                    disabled: physicalOnly,
+                    children: physicalOnly ? null : (
+                      lineageLoading ? (
+                        <div style={{ padding: 48, textAlign: 'center' }}><Spin tip="加载血缘…" /></div>
+                      ) : (
+                        <LineageGraph
+                          data={lineageData}
+                          currentTableId={selectedTable.id}
+                          height={420}
+                        />
+                      )
+                    ),
+                  },
+                  {
+                    key: 'impact',
+                    label: `影响分析${detailExtrasLoaded.impact ? ` (${impactData.length})` : ''}`,
+                    disabled: physicalOnly,
+                    children: physicalOnly ? null : (
+                      impactLoading ? (
+                        <div style={{ padding: 48, textAlign: 'center' }}><Spin tip="加载影响分析…" /></div>
+                      ) : (
+                        <>
+                          {impactData.length > 0 && (
+                            <Alert
+                              type="warning"
+                              message={`该表变更将影响下游 ${impactData.length} 张表`}
+                              style={{ marginBottom: 12 }}
+                            />
+                          )}
+                          <Table
+                            dataSource={impactData}
+                            columns={impactColumns}
+                            rowKey="table_name"
+                            size="small"
+                            pagination={false}
+                          />
+                        </>
+                      )
+                    ),
+                  },
+                  {
+                    key: 'preview',
+                    label: '数据预览',
+                    disabled: physicalOnly,
+                    children: physicalOnly ? null : (
+                      <div>
+                        <Button
+                          type="primary"
+                          size="small"
+                          style={{ marginBottom: 12 }}
+                          loading={previewLoading}
+                          onClick={() => loadPreview(selectedTable.id)}
+                        >
+                          加载样例
+                        </Button>
+                        {previewLoading && <Spin />}
+                        {previewData?.columns && (
+                          <Table
+                            dataSource={(previewData.rows || []).map((r: any, i: number) => ({ ...r, _key: i }))}
+                            columns={(previewData.columns as string[]).map((c) => ({
+                              title: c,
+                              dataIndex: c,
+                              ellipsis: true,
+                              width: 140,
+                              render: (v: unknown) => {
+                                if (v === null || v === undefined || v === 'None') {
+                                  return <span style={{ color: '#bfbfbf' }}>NULL</span>
+                                }
+                                const text = formatCellDisplay(v)
+                                return (
+                                  <span style={{ fontFamily: 'monospace', fontSize: 12 }} title={text.length > 80 ? text : undefined}>
+                                    {text}
+                                  </span>
+                                )
+                              },
+                            }))}
+                            rowKey="_key"
+                            size="small"
+                            scroll={{ x: true }}
+                            pagination={{ pageSize: 20 }}
+                          />
+                        )}
+                      </div>
+                    ),
+                  },
+                ]}
+              />
+            </>
+          )}
+        </div>
+      </div>
 
       <Modal title="高级收录" open={registerModal} onOk={handleRegister} onCancel={() => setRegisterModal(false)} okText="收录">
-        <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+        <Form form={form} layout="vertical" style={{ marginTop: 16 }} initialValues={{ datasource_id: dsId }}>
           <Form.Item name="datasource_id" label="数据源" rules={[{ required: true }]}>
             <Select options={datasources.map((d: any) => ({ label: d.name, value: d.id }))} />
           </Form.Item>
