@@ -12,6 +12,7 @@ import { useAppStore } from '../store'
 import { R } from '../routes'
 import SqlStatementSummaryCell from '../components/SqlStatementSummaryCell'
 import WorkspaceTime from '../components/WorkspaceTime'
+import { useResizableTableColumns } from '../hooks/useResizableTableColumns'
 
 const STATUS_COLOR: Record<string, string> = {
   success: 'green',
@@ -74,9 +75,10 @@ export default function RunHistoryPage() {
     load()
   }, [wsId, page, source, status, mineOnly])
 
-  const columns = [
+  const columnsBase = [
     {
       title: '名称',
+      key: 'name',
       width: 220,
       ellipsis: true,
       render: (_: unknown, row: any) => {
@@ -106,6 +108,7 @@ export default function RunHistoryPage() {
     },
     {
       title: '语句摘要',
+      key: 'sql_summary',
       width: 200,
       ellipsis: true,
       render: (_: unknown, row: any) => (
@@ -120,6 +123,7 @@ export default function RunHistoryPage() {
     {
       title: '数据源',
       dataIndex: 'datasource_name',
+      key: 'datasource_name',
       width: 110,
       ellipsis: true,
       render: (v: string) => v || '—',
@@ -127,6 +131,7 @@ export default function RunHistoryPage() {
     {
       title: '状态',
       dataIndex: 'status',
+      key: 'status',
       width: 80,
       render: (s: string) => (
         <Tag color={STATUS_COLOR[s] || 'default'}>{STATUS_LABEL[s] || s}</Tag>
@@ -135,6 +140,7 @@ export default function RunHistoryPage() {
     {
       title: '执行人',
       dataIndex: 'triggered_by_name',
+      key: 'triggered_by_name',
       width: 96,
       ellipsis: true,
       render: (v: string) => v || '—',
@@ -142,6 +148,7 @@ export default function RunHistoryPage() {
     {
       title: '行数',
       dataIndex: 'rows_returned',
+      key: 'rows_returned',
       width: 64,
       render: (v: number, row: any) =>
         row.result_truncated ? `${v}+` : (v ?? 0),
@@ -149,17 +156,20 @@ export default function RunHistoryPage() {
     {
       title: '耗时',
       dataIndex: 'duration_ms',
+      key: 'duration_ms',
       width: 64,
       render: (ms: number) => (ms != null ? `${(ms / 1000).toFixed(1)}s` : '—'),
     },
     {
       title: '时间',
       dataIndex: 'started_at',
+      key: 'started_at',
       width: 128,
       render: (v: string) => <WorkspaceTime value={v} timeZone={displayTz} />,
     },
     {
       title: '操作',
+      key: 'actions',
       width: 72,
       render: (_: unknown, row: any) => (
         <Button type="link" size="small" onClick={() => openDetail(row.id)}>
@@ -168,6 +178,21 @@ export default function RunHistoryPage() {
       ),
     },
   ]
+
+  const columns = useResizableTableColumns(columnsBase, {
+    storageKey: wsId ? `gido.batch.runHistory.cols.w${wsId}` : undefined,
+    defaultWidths: {
+      name: 220,
+      sql_summary: 200,
+      datasource_name: 110,
+      status: 80,
+      triggered_by_name: 96,
+      rows_returned: 64,
+      duration_ms: 64,
+      started_at: 128,
+      actions: 72,
+    },
+  })
 
   return (
     <div>
@@ -208,6 +233,7 @@ export default function RunHistoryPage() {
         dataSource={items}
         columns={columns}
         rowKey="id"
+        className="dw-resizable-table"
         tableLayout="fixed"
         scroll={{ x: 980 }}
         pagination={{ total, pageSize: 20, current: page, onChange: setPage }}

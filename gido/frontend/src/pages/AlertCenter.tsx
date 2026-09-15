@@ -15,6 +15,7 @@ import RunDiagnosisDrawer, { type DiagnosisTarget } from '../components/RunDiagn
 import SoftRowDetailToggle from '../components/SoftRowDetailToggle'
 import WorkspaceTime from '../components/WorkspaceTime'
 import { useSoftExpandedRows } from '../hooks/useSoftExpandedRows'
+import { useResizableTableColumns } from '../hooks/useResizableTableColumns'
 import { useAppStore } from '../store'
 import { formatInTimeZone } from '../utils/datetime'
 import { R } from '../routes'
@@ -504,9 +505,10 @@ export default function AlertCenterPage() {
     )
   }
 
-  const columns = [
+  const columnsBase = [
     {
       title: '告警',
+      key: 'alert',
       width: 220,
       ellipsis: true,
       render: (_: any, row: any) => (
@@ -540,18 +542,21 @@ export default function AlertCenterPage() {
     {
       title: '状态',
       dataIndex: 'status',
+      key: 'status',
       width: 88,
       render: (v: string) => <Tag color={STATUS_COLOR[v] || 'default'}>{STATUS_LABEL[v] || v}</Tag>,
     },
     {
       title: '通知',
       dataIndex: 'notification_status',
+      key: 'notification_status',
       width: 100,
       render: (v: string, row: any) => renderNotifyTag(v, row),
     },
     {
       title: '摘要',
       dataIndex: 'message',
+      key: 'message',
       width: 260,
       ellipsis: true,
       render: (messageText: string, row: any) => {
@@ -562,11 +567,13 @@ export default function AlertCenterPage() {
     {
       title: '发生时间',
       dataIndex: 'occurred_at',
+      key: 'occurred_at',
       width: 140,
       render: (v: string) => <WorkspaceTime value={v} timeZone={displayTz} />,
     },
     {
       title: '操作',
+      key: 'actions',
       width: 168,
       fixed: 'right' as const,
       render: (_: any, row: any) => (
@@ -600,6 +607,18 @@ export default function AlertCenterPage() {
       ),
     },
   ]
+
+  const columns = useResizableTableColumns(columnsBase, {
+    storageKey: wsId ? `gido.alert.list.cols.w${wsId}` : undefined,
+    defaultWidths: {
+      alert: 220,
+      status: 88,
+      notification_status: 100,
+      message: 260,
+      occurred_at: 140,
+      actions: 168,
+    },
+  })
 
   const renderAlertDetail = (row: any) => (
     <div className="gido-soft-expanded-panel">
@@ -760,6 +779,7 @@ export default function AlertCenterPage() {
         columns={columns}
         rowKey="id"
         loading={loading}
+        className="dw-resizable-table"
         scroll={{ x: 1020 }}
         tableLayout="fixed"
         pagination={{ total, pageSize: 20, current: page, onChange: setPage }}

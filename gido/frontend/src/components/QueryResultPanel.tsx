@@ -13,6 +13,7 @@ import type { QueryRowRec } from './QueryResultTable'
 import { queryResultTableComponents } from './QueryResultTable'
 import { formatCellDisplay } from '../utils/cellDisplay'
 import { sortQueryRows, queryResultDataFingerprint, type QuerySortOrder } from '../utils/queryCellSort'
+import { shouldSuppressHeaderInteraction } from '../utils/columnResizeGesture'
 import './queryResultPanel.css'
 
 export function formatQueryCellValue(v: unknown): string {
@@ -352,6 +353,7 @@ export default function QueryResultPanel({
   )
 
   const onTableChange: TableProps<QueryRowRec>['onChange'] = useCallback((_pag, _filters, sorter) => {
+    if (shouldSuppressHeaderInteraction()) return
     const s = (Array.isArray(sorter) ? sorter[0] : sorter) as SorterResult<QueryRowRec>
     const field = s?.field != null ? String(s.field) : (s?.columnKey != null ? String(s.columnKey) : '')
     const order = s?.order

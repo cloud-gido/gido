@@ -18,6 +18,7 @@ import RunDiagnosisDrawer, { type DiagnosisTarget } from '../components/RunDiagn
 import InstanceDagDrawer, { type InstanceDagTarget } from '../components/InstanceDagDrawer'
 import SoftRowDetailToggle from '../components/SoftRowDetailToggle'
 import { useSoftExpandedRows } from '../hooks/useSoftExpandedRows'
+import { useResizableTableColumns } from '../hooks/useResizableTableColumns'
 import { R } from '../routes'
 import { isPlatformAdmin, isWorkspaceAdmin } from '../perm'
 
@@ -411,13 +412,14 @@ export default function OperationPage() {
     return `${h}h ${m % 60}m`
   }
 
-  const workflowColumns = [
+  const workflowColumnsBase = [
     ...(includeAllWorkspaces
-      ? [{ title: '工作空间', dataIndex: 'workspace_name', width: 110, ellipsis: true }]
+      ? [{ title: '工作空间', dataIndex: 'workspace_name', key: 'workspace_name', width: 110, ellipsis: true }]
       : []),
     {
       title: '工作流',
       dataIndex: 'workflow_name',
+      key: 'workflow_name',
       width: 280,
       ellipsis: true,
       render: (name: string, row: any) => {
@@ -437,7 +439,7 @@ export default function OperationPage() {
           metaBits.push(`运行中 ${row.running_node_count}`)
         }
         return (
-          <div style={{ minWidth: 0, maxWidth: 280 }}>
+          <div style={{ minWidth: 0 }}>
             <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {name || '—'}
             </div>
@@ -459,6 +461,7 @@ export default function OperationPage() {
     {
       title: '状态',
       dataIndex: 'status',
+      key: 'status',
       width: 88,
       render: (s: string, row: any) => (
         <Space size={4}>
@@ -479,6 +482,7 @@ export default function OperationPage() {
     },
     {
       title: '时间',
+      key: 'time',
       width: 156,
       render: (_: unknown, row: any) => {
         const fullStart = row.started_at ? formatInTimeZone(row.started_at, displayTz) : ''
@@ -507,6 +511,7 @@ export default function OperationPage() {
     },
     {
       title: '操作',
+      key: 'actions',
       width: 240,
       fixed: 'right' as const,
       render: (_: unknown, row: any) => (
@@ -528,6 +533,17 @@ export default function OperationPage() {
       ),
     },
   ]
+
+  const workflowColumns = useResizableTableColumns(workflowColumnsBase, {
+    storageKey: wsId ? `gido.ops.instances.cols.w${wsId}` : undefined,
+    defaultWidths: {
+      workspace_name: 110,
+      workflow_name: 280,
+      status: 88,
+      time: 156,
+      actions: 240,
+    },
+  })
 
   const renderInstanceDetail = (row: any) => {
     const failed = Array.isArray(row.failed_nodes) ? row.failed_nodes.filter(Boolean) : []
@@ -775,6 +791,7 @@ export default function OperationPage() {
         dataSource={instances}
         columns={workflowColumns}
         rowKey="id"
+        className="dw-resizable-table"
         scroll={{ x: 820 }}
         tableLayout="fixed"
         pagination={{ total, pageSize: 20, current: page, onChange: setPage }}

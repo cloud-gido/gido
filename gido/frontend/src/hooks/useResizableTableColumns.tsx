@@ -7,6 +7,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import type { ColumnsType, ColumnType } from 'antd/es/table'
 import ResizableColumnTitle from '../components/ResizableColumnTitle'
+import { shouldSuppressHeaderInteraction } from '../utils/columnResizeGesture'
 
 type ColWithKey<T> = ColumnType<T> & { _resizeKey?: string }
 
@@ -32,6 +33,7 @@ function loadWidths(storageKey: string | undefined, defaults: Record<string, num
 
 /**
  * 为 Ant Design Table 列增加可拖拽列宽（表头单行、右侧分隔条）。
+ * 宽度只存 localStorage，不进路由/首屏请求，不影响打开速度。
  */
 export function useResizableTableColumns<T>(
   baseColumns: ColumnsType<T>,
@@ -56,6 +58,7 @@ export function useResizableTableColumns<T>(
   const setWidth = useCallback(
     (key: string, w: number) => {
       setWidths(prev => {
+        if (prev[key] === w) return prev
         const next = { ...prev, [key]: w }
         if (options?.storageKey) {
           try {
@@ -75,20 +78,38 @@ export function useResizableTableColumns<T>(
       baseColumns.map((col, index) => {
         const key = colKey(col, index)
         const w = widths[key] ?? defaults[key] ?? 120
-        const titleText = typeof col.title === 'string' ? col.title : key
+        const titleText = typeof col.title === 'string' ? col.title : null
         const resizable = col.width != null || defaults[key] != null || options?.defaultWidths?.[key] != null
-        if (!resizable || typeof col.title !== 'string') {
-          return { ...col, width: col.width ?? w }
+        const prevHeaderCell = col.onHeaderCell
+        const onHeaderCell: ColumnType<T>['onHeaderCell'] = (...args) => {
+          const base = (typeof prevHeaderCell === 'function' ? prevHeaderCell(...args) : prevHeaderCell) || {}
+          const prevClick = (base as { onClick?: (e: React.MouseEvent) => void }).onClick
+          return {
+            ...base,
+            onClick: (e: React.MouseEvent) => {
+              if (shouldSuppressHeaderInteraction()) {
+                e.preventDefault()
+                e.stopPropagation()
+                return
+              }
+              prevClick?.(e)
+            },
+          }
+        }
+
+        if (!resizable || !titleText) {
+          return { ...col, width: col.width ?? w, onHeaderCell }
         }
         return {
           ...col,
           width: w,
+          onHeaderCell,
           title: (
             <ResizableColumnTitle
               title={titleText}
               width={w}
               minWidth={64}
-              maxWidth={520}
+              maxWidth={640}
               onResize={nw => setWidth(key, nw)}
             />
           ),

@@ -406,7 +406,7 @@ def test_file_import_versions_list_and_create(client):
     assert ver.json()["version"]["file_id"] == fid2
 
 
-def test_file_import_run_blocks_after_success_and_failed(client):
+def test_file_import_run_blocks_success_and_retries_failed(client):
     from app.models.workspace import SyncRecord
 
     c, SessionLocal, ws_id, ds_id = client
@@ -434,21 +434,36 @@ def test_file_import_run_blocks_after_success_and_failed(client):
 
     db = SessionLocal()
     db.query(SyncRecord).filter(SyncRecord.sync_task_id == task_id).delete()
-    db.add(
-        SyncRecord(
-            sync_task_id=task_id,
-            status="failed",
-            trigger_type="manual",
-            execution_key="ek-fail",
-            started_at=__import__("datetime").datetime.utcnow(),
-        )
+    failed = SyncRecord(
+        sync_task_id=task_id,
+        status="failed",
+        trigger_type="manual",
+        execution_key="ek-fail",
+        started_at=__import__("datetime").datetime.utcnow(),
     )
+    db.add(failed)
     db.commit()
+    db.refresh(failed)
+    failed_id = failed.id
     db.close()
 
-    blocked2 = c.post(f"/api/integration/tasks/{task_id}/run", headers=h)
-    assert blocked2.status_code == 400
-    assert "retry" in blocked2.json()["detail"]
+    # 失败后再点「运行」应自动幂等 retry，而不是 400 让用户去找另一接口
+    with patch("app.api.integration.start_sync_async") as start:
+        fake = MagicMock()
+        fake.id = 902
+        fake.status = "running"
+        fake.execution_key = "ek-fail"
+        start.return_value = fake
+        retried = c.post(f"/api/integration/tasks/{task_id}/run", headers=h)
+        assert retried.status_code == 200, retried.text
+        body = retried.json()
+        assert body.get("retry_of") == failed_id
+        assert body.get("execution_key") == "ek-fail"
+        assert "重试" in (body.get("message") or "")
+        kwargs = start.call_args.kwargs
+        assert kwargs.get("trigger_type") == "retry"
+        assert kwargs.get("execution_key") == "ek-fail"
+        assert kwargs.get("retry_of") == failed_id
 
 
 def test_file_import_idempotent_retry(client):

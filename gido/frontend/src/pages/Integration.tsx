@@ -20,6 +20,7 @@ import { can, P } from '../perm'
 import CronBuilder from '../components/CronBuilder'
 import FileImportDrawer from '../components/FileImportDrawer'
 import WorkspaceTime from '../components/WorkspaceTime'
+import { useResizableTableColumns } from '../hooks/useResizableTableColumns'
 
 type FieldMapping = { src: string; dst: string }
 
@@ -232,11 +233,21 @@ export default function IntegrationPage() {
   }
 
   const handleRun = async (id: number) => {
-    const res: any = await integrationApi.runTask(id)
-    message.success(res?.message || '已提交执行')
-    load()
     const task = tasks.find(t => t.id === id)
-    if (task) openHistory(task)
+    if (task?.sync_mode === 'file_import' && task?.last_run_status === 'success') {
+      message.info('成功导入请用「重新上传」选择 append/replace，避免覆盖已成功装载')
+      setReuploadTask(task)
+      setFileImportOpen(true)
+      return
+    }
+    try {
+      const res: any = await integrationApi.runTask(id)
+      message.success(res?.message || '已提交执行')
+      load()
+      if (task) openHistory(task)
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || e?.message || '执行失败')
+    }
   }
 
   const openHistory = async (task: any) => {
@@ -283,10 +294,13 @@ export default function IntegrationPage() {
     })
   }
 
-  const columns = [
-    { title: '任务名称', dataIndex: 'name', ellipsis: true },
+  const columnsBase = [
+    { title: '任务名称', dataIndex: 'name', key: 'name', width: 200, ellipsis: true },
     {
       title: '源 → 目标',
+      key: 'src_dst',
+      width: 260,
+      ellipsis: true,
       render: (_: unknown, row: any) => (
         <span style={{ fontSize: 12 }}>
           {row.sync_mode === 'file_import' ? (
@@ -300,6 +314,7 @@ export default function IntegrationPage() {
     {
       title: '模式',
       dataIndex: 'sync_mode',
+      key: 'sync_mode',
       width: 100,
       render: (t: string) => {
         if (t === 'file_import') return <Tag color="cyan">本地文件</Tag>
@@ -313,12 +328,14 @@ export default function IntegrationPage() {
     {
       title: '调度',
       dataIndex: 'schedule_cron',
+      key: 'schedule_cron',
       width: 120,
       ellipsis: true,
       render: (c: string) => c || <span style={{ color: '#bbb' }}>手动</span>,
     },
     {
       title: '状态',
+      key: 'status',
       width: 100,
       render: (_: unknown, row: any) => (
         <Space size={4}>
@@ -332,11 +349,13 @@ export default function IntegrationPage() {
     {
       title: '最后同步',
       dataIndex: 'last_sync_at',
+      key: 'last_sync_at',
       width: 140,
       render: (v: string) => <WorkspaceTime value={v} timeZone={displayTz} />,
     },
     {
       title: '操作',
+      key: 'actions',
       width: 280,
       fixed: 'right' as const,
       render: (_: unknown, row: any) => (
@@ -428,6 +447,19 @@ export default function IntegrationPage() {
     },
   ]
 
+  const columns = useResizableTableColumns(columnsBase, {
+    storageKey: wsId ? `gido.integration.tasks.cols.w${wsId}` : undefined,
+    defaultWidths: {
+      name: 200,
+      src_dst: 260,
+      sync_mode: 100,
+      schedule_cron: 120,
+      status: 100,
+      last_sync_at: 140,
+      actions: 280,
+    },
+  })
+
   if (!wsId) {
     return <Alert type="warning" showIcon message="请先选择工作区" />
   }
@@ -470,6 +502,8 @@ export default function IntegrationPage() {
         columns={columns}
         rowKey="id"
         size="small"
+        className="dw-resizable-table"
+        tableLayout="fixed"
         scroll={{ x: 1100 }}
         pagination={{ pageSize: 20, showSizeChanger: true }}
       />

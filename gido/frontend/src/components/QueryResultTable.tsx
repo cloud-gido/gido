@@ -17,6 +17,7 @@ import {
   columnFilterPredicate,
   distinctValuesForColumn,
 } from './ColumnFilterDropdown'
+import { markColumnResizeGesture } from '../utils/columnResizeGesture'
 import './queryResultPanel.css'
 
 const COL_DND_MIME = 'application/x-gido-col'
@@ -102,28 +103,49 @@ function ColumnHeaderChrome({
   onReorderPair?: (from: string, to: string) => void
   onWidthChange?: (key: string, w: number) => void
 }) {
-  const drag = useRef<{ startX: number; startW: number } | null>(null)
+  const drag = useRef<{ startX: number; startW: number; moved: boolean } | null>(null)
+  const raf = useRef(0)
+  const pending = useRef<number | null>(null)
 
   const onResizeMouseDown = useCallback(
     (e: React.MouseEvent) => {
       if (!onWidthChange) return
       e.preventDefault()
       e.stopPropagation()
-      drag.current = { startX: e.clientX, startW: width }
+      markColumnResizeGesture(60_000)
+      drag.current = { startX: e.clientX, startW: width, moved: false }
+
+      const flush = () => {
+        raf.current = 0
+        if (pending.current == null) return
+        onWidthChange(col, pending.current)
+      }
 
       const onMove = (ev: MouseEvent) => {
         const d = drag.current
         if (!d) return
+        if (Math.abs(ev.clientX - d.startX) > 2) d.moved = true
         // 拖列右缘：向右拉变宽、向左拉变窄（与 Excel / DataGrip 一致）
         const nw = Math.max(56, Math.min(720, d.startW + (ev.clientX - d.startX)))
-        onWidthChange(col, nw)
+        pending.current = nw
+        if (!raf.current) raf.current = window.requestAnimationFrame(flush)
       }
       const onUp = () => {
+        const d = drag.current
         drag.current = null
+        if (raf.current) {
+          window.cancelAnimationFrame(raf.current)
+          raf.current = 0
+        }
+        if (pending.current != null) {
+          onWidthChange(col, pending.current)
+          pending.current = null
+        }
         document.body.style.cursor = ''
         document.body.style.userSelect = ''
         window.removeEventListener('mousemove', onMove)
         window.removeEventListener('mouseup', onUp)
+        markColumnResizeGesture(d?.moved ? 450 : 200)
       }
       document.body.style.cursor = 'col-resize'
       document.body.style.userSelect = 'none'
@@ -203,6 +225,14 @@ function ColumnHeaderChrome({
           aria-orientation="vertical"
           className="dw-col-resize-handle"
           onMouseDown={onResizeMouseDown}
+          onClick={e => {
+            e.preventDefault()
+            e.stopPropagation()
+          }}
+          onDoubleClick={e => {
+            e.preventDefault()
+            e.stopPropagation()
+          }}
           title="拖拽调整列宽（固定在列右侧，类似滚动条）"
         />
       )}

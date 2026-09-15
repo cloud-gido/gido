@@ -474,7 +474,7 @@ def run_sync_task(
     if not task.is_active:
         raise HTTPException(status_code=400, detail="任务已停用")
     if task.sync_mode == "file_import":
-        # 成功记录不可用通用 run 再跑；失败请走 retry；显式再导入请建新版本
+        # 成功记录不可用通用 run 再跑；失败时「运行」等价于幂等 retry（与历史里「重试本次」同口径）
         last = (
             db.query(SyncRecord)
             .filter(SyncRecord.sync_task_id == task_id)
@@ -484,13 +484,30 @@ def run_sync_task(
         if last and last.status == "success":
             raise HTTPException(
                 status_code=400,
-                detail="成功执行不可直接重跑；请创建新版本并选择 append/replace，或对失败记录使用 retry",
+                detail="成功执行不可直接重跑；请点「重新上传」选择 append/replace，或对失败记录使用重试",
             )
         if last and last.status == "failed":
-            raise HTTPException(
-                status_code=400,
-                detail="失败执行请调用 /file-import/records/{record_id}/retry 以复用 execution_key",
-            )
+            if not last.execution_key:
+                raise HTTPException(status_code=400, detail="失败记录缺少 execution_key，无法幂等重试")
+            try:
+                record = start_sync_async(
+                    task_id,
+                    trigger_type="retry",
+                    triggered_by=current_user.id,
+                    execution_key=last.execution_key,
+                    retry_of=last.id,
+                    version_id=last.version_id,
+                    config_snapshot=last.config_snapshot,
+                )
+            except RuntimeError as e:
+                raise HTTPException(status_code=409, detail=str(e))
+            return {
+                "record_id": record.id,
+                "status": record.status,
+                "message": "已按同一 execution_key 排队重试，请在运行历史中查看进度",
+                "execution_key": record.execution_key,
+                "retry_of": last.id,
+            }
         from app.services.file_import_version import ensure_legacy_version
 
         ver = ensure_legacy_version(db, task)
