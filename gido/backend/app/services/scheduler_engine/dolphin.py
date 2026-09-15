@@ -29,8 +29,26 @@ class DolphinSchedulerEngine:
     def offline_definition(self, project_id: str, definition_id: str) -> None:
         ds_client.offline_process(int(project_id), int(definition_id))
 
-    def set_schedule(self, project_id: str, definition_id: str, cron_expression: str) -> None:
-        ds_client.set_schedule(int(project_id), int(definition_id), cron_expression)
+    def set_schedule(
+        self,
+        project_id: str,
+        definition_id: str,
+        cron_expression: str,
+        *,
+        failure_strategy: str = "CONTINUE",
+        process_priority: str = "MEDIUM",
+        worker_group: str = "default",
+        timezone_id: str = "Asia/Shanghai",
+    ) -> None:
+        ds_client.set_schedule(
+            int(project_id),
+            int(definition_id),
+            cron_expression,
+            failure_strategy=failure_strategy,
+            process_priority=process_priority,
+            worker_group=worker_group,
+            timezone_id=timezone_id,
+        )
 
     def pause_schedule(self, project_id: str, definition_id: str) -> int:
         return ds_client.offline_schedules(int(project_id), int(definition_id))
@@ -45,12 +63,18 @@ class DolphinSchedulerEngine:
         *,
         business_date: Optional[str] = None,
         complement: bool = False,
+        failure_strategy: str = "CONTINUE",
+        process_priority: str = "MEDIUM",
+        worker_group: str = "default",
     ) -> SchedulerInstanceRef:
         instance_id = ds_client.run_process(
             int(project_id),
             int(definition_id),
             business_date,
             complement=complement,
+            failure_strategy=failure_strategy,
+            process_priority=process_priority,
+            worker_group=worker_group,
         )
         return SchedulerInstanceRef(engine=self.name, instance_id=str(instance_id))
 

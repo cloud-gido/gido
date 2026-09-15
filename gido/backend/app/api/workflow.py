@@ -29,10 +29,36 @@ from app.services.ds_runtime import get_dolphin_runtime, refresh_ds_client
 from app.services.instance_override import OVERRIDE_STATUSES, apply_override, clear_override
 from app.services.rbac import assert_workspace_data_capability, require_workflow, workspace_data_full_control
 from app.services.publish_approval import assert_can_publish_production
+from app.services.schedule_policy import (
+    normalize_failure_strategy,
+    normalize_process_priority,
+    normalize_worker_group,
+    schedule_opts_from_workflow,
+)
 from app.services.workflow_dag_validate import assert_cron_when_scheduled, mark_ds_needs_republish
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/workflows", tags=["工作流"])
+
+
+def _wf_schedule_opts(db: Session, wf: Workflow) -> Dict[str, str]:
+    from app.models.workspace import Workspace
+
+    ws = db.query(Workspace).filter(Workspace.id == wf.workspace_id).first()
+    return schedule_opts_from_workflow(wf, workspace_timezone=getattr(ws, "timezone", None))
+
+
+def _normalize_workflow_schedule_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+    if "failure_strategy" in data:
+        data["failure_strategy"] = normalize_failure_strategy(data.get("failure_strategy"))
+    if "process_priority" in data:
+        data["process_priority"] = normalize_process_priority(data.get("process_priority"))
+    if "worker_group" in data:
+        data["worker_group"] = normalize_worker_group(data.get("worker_group"))
+    if "schedule_timezone" in data and data["schedule_timezone"] is not None:
+        tz = str(data["schedule_timezone"]).strip()
+        data["schedule_timezone"] = tz or None
+    return data
 
 
 class WorkflowCreate(BaseModel):
@@ -42,6 +68,10 @@ class WorkflowCreate(BaseModel):
     dag_config: Optional[Dict[str, Any]] = None  # {"nodes": [...], "edges": [...]}
     schedule_type: str = "manual"
     cron_expression: Optional[str] = None
+    failure_strategy: Optional[str] = "CONTINUE"
+    process_priority: Optional[str] = "MEDIUM"
+    worker_group: Optional[str] = "default"
+    schedule_timezone: Optional[str] = None
 
 
 class WorkflowOut(BaseModel):
@@ -52,6 +82,10 @@ class WorkflowOut(BaseModel):
     dag_config: Optional[Dict[str, Any]]
     schedule_type: str
     cron_expression: Optional[str]
+    failure_strategy: Optional[str] = "CONTINUE"
+    process_priority: Optional[str] = "MEDIUM"
+    worker_group: Optional[str] = "default"
+    schedule_timezone: Optional[str] = None
     is_active: bool
     created_at: datetime
     updated_at: Optional[datetime] = None
@@ -238,6 +272,10 @@ def _workflow_to_out_cached(
         dag_config=wf.dag_config,
         schedule_type=wf.schedule_type,
         cron_expression=wf.cron_expression,
+        failure_strategy=getattr(wf, "failure_strategy", None) or "CONTINUE",
+        process_priority=getattr(wf, "process_priority", None) or "MEDIUM",
+        worker_group=getattr(wf, "worker_group", None) or "default",
+        schedule_timezone=getattr(wf, "schedule_timezone", None),
         is_active=wf.is_active,
         created_at=wf.created_at,
         updated_at=getattr(wf, "updated_at", None),
@@ -565,7 +603,8 @@ def create_workflow(wf_in: WorkflowCreate, db: Session = Depends(get_db), curren
         assert_cron_when_scheduled(wf_in.schedule_type, wf_in.cron_expression)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    wf = Workflow(**wf_in.model_dump(), created_by=current_user.id, updated_by=current_user.id)
+    payload = _normalize_workflow_schedule_fields(wf_in.model_dump())
+    wf = Workflow(**payload, created_by=current_user.id, updated_by=current_user.id)
     db.add(wf)
     db.commit()
     db.refresh(wf)
@@ -657,7 +696,16 @@ def resume_workflow_schedule(wf_id: int, db: Session = Depends(get_db), current_
         if wf.schedule_type == "cron" and (wf.cron_expression or "").strip():
             count = engine.resume_schedule(project_id, definition_id)
             if count == 0:
-                engine.set_schedule(project_id, definition_id, wf.cron_expression.strip())
+                opts = _wf_schedule_opts(db, wf)
+                engine.set_schedule(
+                    project_id,
+                    definition_id,
+                    wf.cron_expression.strip(),
+                    failure_strategy=opts["failure_strategy"],
+                    process_priority=opts["process_priority"],
+                    worker_group=opts["worker_group"],
+                    timezone_id=opts["timezone_id"],
+                )
                 count = 1
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"恢复调度失败: {e}")
@@ -701,9 +749,18 @@ def get_workflow(wf_id: int, db: Session = Depends(get_db), current_user: User =
 @router.put("/{wf_id}", response_model=WorkflowOut)
 def update_workflow(wf_id: int, wf_in: WorkflowCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     wf = require_workflow(db, current_user, wf_id, "developer", PC.GIDO_BATCH_WORKFLOW_WRITE)
-    patch = wf_in.model_dump(exclude_unset=True)
+    patch = _normalize_workflow_schedule_fields(wf_in.model_dump(exclude_unset=True))
     patch.pop("workspace_id", None)
-    dirty_ds = {"dag_config", "name", "schedule_type", "cron_expression"}
+    dirty_ds = {
+        "dag_config",
+        "name",
+        "schedule_type",
+        "cron_expression",
+        "failure_strategy",
+        "process_priority",
+        "worker_group",
+        "schedule_timezone",
+    }
     for k, v in patch.items():
         setattr(wf, k, v)
     wf.updated_at = datetime.utcnow()
@@ -724,7 +781,16 @@ def update_workflow(wf_id: int, wf_in: WorkflowCreate, db: Session = Depends(get
                 from app.services.dolphin import ds_client
 
                 refresh_ds_client(db, wf.workspace_id)
-                ds_client.set_schedule(int(pr), int(pc), wf.cron_expression.strip())
+                opts = _wf_schedule_opts(db, wf)
+                ds_client.set_schedule(
+                    int(pr),
+                    int(pc),
+                    wf.cron_expression.strip(),
+                    failure_strategy=opts["failure_strategy"],
+                    process_priority=opts["process_priority"],
+                    worker_group=opts["worker_group"],
+                    timezone_id=opts["timezone_id"],
+                )
             except Exception as e:
                 logger.warning("保存后同步调度 Cron 失败（可再点「发布生产」重试）: %s", e)
     return workflow_to_out(wf, db)
@@ -814,7 +880,15 @@ def run_workflow(wf_id: int, business_date: Optional[str] = None, db: Session = 
         db.refresh(instance)
         try:
             engine = get_scheduler_engine(version.scheduler_engine or "dolphin")
-            ref = engine.trigger(str(project_code), str(process_code), business_date=business_date)
+            opts = _wf_schedule_opts(db, wf)
+            ref = engine.trigger(
+                str(project_code),
+                str(process_code),
+                business_date=business_date,
+                failure_strategy=opts["failure_strategy"],
+                process_priority=opts["process_priority"],
+                worker_group=opts["worker_group"],
+            )
             instance.scheduler_engine = ref.engine
             instance.scheduler_instance_id = ref.instance_id
             instance.scheduler_run_key = f"{ref.engine}:{project_code}:{process_code}:{ref.instance_id}"[:128]
@@ -980,11 +1054,15 @@ def rerun_instance(wf_id: int, inst_id: int, db: Session = Depends(get_db), curr
         refresh_ds_client(db, wf.workspace_id)
         try:
             engine = get_scheduler_engine(version.scheduler_engine or "dolphin")
+            opts = _wf_schedule_opts(db, wf)
             ref = engine.trigger(
                 str(project_code),
                 str(process_code),
                 business_date=inst.business_date,
                 complement=(inst.trigger_type or "") == "backfill",
+                failure_strategy=opts["failure_strategy"],
+                process_priority=opts["process_priority"],
+                worker_group=opts["worker_group"],
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"生产调度重跑失败: {e}")
@@ -1151,11 +1229,15 @@ def batch_run_workflow(
             bd = current.strftime("%Y-%m-%d")
             try:
                 # 必须走 Dolphin COMPLEMENT_DATA，否则调度时间为空、宏全按墙钟「昨天」
+                opts = _wf_schedule_opts(db, wf)
                 ref = engine.trigger(
                     str(project_code),
                     str(process_code),
                     business_date=bd,
                     complement=True,
+                    failure_strategy=opts["failure_strategy"],
+                    process_priority=opts["process_priority"],
+                    worker_group=opts["worker_group"],
                 )
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"生产调度补数据失败 ({bd}): {e}")

@@ -42,6 +42,9 @@ class WorkspaceDefaultsOut(BaseModel):
     default_datasource_id: Optional[int] = None
     warehouse_datasource_id: Optional[int] = None
     effective_warehouse_datasource_id: Optional[int] = None
+    default_node_timeout_seconds: int = 3600
+    default_node_retry_times: int = 3
+    default_node_retry_interval_minutes: int = 1
 
 
 class WorkspaceDefaultsUpdate(BaseModel):
@@ -49,6 +52,9 @@ class WorkspaceDefaultsUpdate(BaseModel):
     warehouse_datasource_id: Optional[int] = None
     clear_default_datasource: bool = False
     clear_warehouse_datasource: bool = False
+    default_node_timeout_seconds: Optional[int] = None
+    default_node_retry_times: Optional[int] = None
+    default_node_retry_interval_minutes: Optional[int] = None
 
 
 class WorkspaceDolphinOut(BaseModel):
@@ -183,6 +189,9 @@ def put_defaults(
         warehouse_datasource_id=body.warehouse_datasource_id,
         clear_default=body.clear_default_datasource,
         clear_warehouse=body.clear_warehouse_datasource,
+        default_node_timeout_seconds=body.default_node_timeout_seconds,
+        default_node_retry_times=body.default_node_retry_times,
+        default_node_retry_interval_minutes=body.default_node_retry_interval_minutes,
     )
     return WorkspaceDefaultsOut(**get_workspace_defaults(db, ws_id))
 

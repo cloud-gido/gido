@@ -180,6 +180,10 @@ export default function WorkflowPage() {
       description: wf.description,
       schedule_type: wf.schedule_type || 'manual',
       cron_expression: wf.cron_expression,
+      failure_strategy: wf.failure_strategy || 'CONTINUE',
+      process_priority: wf.process_priority || 'MEDIUM',
+      worker_group: wf.worker_group || 'default',
+      schedule_timezone: wf.schedule_timezone || undefined,
     })
     setScheduleType(wf.schedule_type || 'manual')
     setDetailLoading(true)
@@ -194,6 +198,10 @@ export default function WorkflowPage() {
         description: detail.description,
         schedule_type: detail.schedule_type || 'manual',
         cron_expression: detail.cron_expression,
+        failure_strategy: detail.failure_strategy || 'CONTINUE',
+        process_priority: detail.process_priority || 'MEDIUM',
+        worker_group: detail.worker_group || 'default',
+        schedule_timezone: detail.schedule_timezone || undefined,
       })
       setScheduleType(detail.schedule_type || 'manual')
     } catch (e: any) {
@@ -233,6 +241,9 @@ export default function WorkflowPage() {
       values.workspace_id = wsId
       if (values.schedule_type !== 'cron') {
         values.cron_expression = null
+      }
+      if (!values.schedule_timezone) {
+        values.schedule_timezone = null
       }
       const fromEditor = dagEditorRef.current?.getDAG() ?? dagConfig
       // 编辑器只产出 nodes/edges；调度映射绑定生产版本，不写进草稿 DAG。
@@ -704,6 +715,50 @@ export default function WorkflowPage() {
                     <CronBuilder />
                   </Form.Item>
                 )}
+                <Form.Item
+                  name="failure_strategy"
+                  label="失败策略"
+                  initialValue="CONTINUE"
+                  extra="发布/触发生产调度时生效：CONTINUE 继续跑下游；END 失败即停。"
+                >
+                  <Select
+                    options={[
+                      { label: '继续（CONTINUE）', value: 'CONTINUE' },
+                      { label: '结束（END）', value: 'END' },
+                    ]}
+                  />
+                </Form.Item>
+                <Form.Item
+                  name="process_priority"
+                  label="实例优先级"
+                  initialValue="MEDIUM"
+                  extra="对应 Dolphin processInstancePriority。"
+                >
+                  <Select
+                    options={[
+                      { label: '最高', value: 'HIGHEST' },
+                      { label: '高', value: 'HIGH' },
+                      { label: '中', value: 'MEDIUM' },
+                      { label: '低', value: 'LOW' },
+                      { label: '最低', value: 'LOWEST' },
+                    ]}
+                  />
+                </Form.Item>
+                <Form.Item
+                  name="worker_group"
+                  label="Worker 组"
+                  initialValue="default"
+                  extra="须与生产调度 Worker 组名称一致；默认 default。"
+                >
+                  <Input placeholder="default" />
+                </Form.Item>
+                <Form.Item
+                  name="schedule_timezone"
+                  label="调度时区"
+                  extra="留空则使用工作空间时区；写入 Dolphin 定时 timezoneId。"
+                >
+                  <Input placeholder={currentWorkspace?.timezone || 'Asia/Shanghai'} allowClear />
+                </Form.Item>
               </Form>
             )
           },

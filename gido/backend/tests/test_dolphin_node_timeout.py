@@ -1,6 +1,6 @@
 # Copyright 2026 玑渡 GIDO Contributors
 # SPDX-License-Identifier: Apache-2.0
-from app.services.dolphin import _fail_retry_times, _node_timeout_minutes, _rewrite_sql_builtins, _strip_sql_comments_for_ds, _timeout_flag
+from app.services.dolphin import _fail_retry_interval, _fail_retry_times, _node_timeout_minutes, _rewrite_sql_builtins, _strip_sql_comments_for_ds, _timeout_flag
 
 
 def test_timeout_minutes_when_seconds_explicit_null():
@@ -22,6 +22,13 @@ def test_fail_retry_times_default_three_explicit_zero():
     assert _fail_retry_times({"retry_times": ""}) == 3
     assert _fail_retry_times({"retry_times": 0}) == 0
     assert _fail_retry_times({"retry_times": 5}) == 5
+
+
+def test_fail_retry_interval_default_one_explicit_zero():
+    assert _fail_retry_interval({}) == 1
+    assert _fail_retry_interval({"retry_interval_minutes": None}) == 1
+    assert _fail_retry_interval({"retry_interval_minutes": 0}) == 0
+    assert _fail_retry_interval({"retry_interval_minutes": 10}) == 10
 
 
 def test_strip_sql_comments_removes_slash_inside_block_comment():

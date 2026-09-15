@@ -325,6 +325,16 @@ export const datamapApi = {
   catalog: (workspaceId: number, params?: { datasource_id?: number; keyword?: string }) =>
     request.get('/datamap/catalog', { params: { workspace_id: workspaceId, ...params } }),
   registerTable: (data: any) => request.post('/datamap/tables', data),
+  /** 打开/展开时幂等收录到数据字典（已有则返回） */
+  ensureTable: (data: {
+    workspace_id: number
+    datasource_id: number
+    db_name?: string | null
+    table_name: string
+    table_comment?: string | null
+    table_type?: string
+    sync_if_empty?: boolean
+  }) => request.post('/datamap/ensure-table', data),
   getTable: (id: number) => request.get(`/datamap/tables/${id}`),
   syncSchema: (id: number) => request.post(`/datamap/tables/${id}/sync-schema`),
   addColumn: (tableId: number, data: any) => request.post(`/datamap/tables/${tableId}/columns`, data),

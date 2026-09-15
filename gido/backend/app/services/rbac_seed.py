@@ -571,6 +571,62 @@ def migrate_dw_task_nodes_sort_order(engine: Engine) -> None:
                 conn.execute(text("ALTER TABLE dw_task_nodes ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"))
 
 
+def migrate_schedule_runtime_policy(engine: Engine) -> None:
+    """节点重试间隔 + 工作流调度策略 + 空间默认运行参数。"""
+    insp = inspect(engine)
+    dialect = engine.dialect.name
+    with engine.begin() as conn:
+        if insp.has_table("dw_task_nodes"):
+            cols = {c["name"] for c in insp.get_columns("dw_task_nodes")}
+            if "retry_interval_minutes" not in cols:
+                if dialect == "mysql":
+                    conn.execute(
+                        text(
+                            "ALTER TABLE dw_task_nodes ADD COLUMN retry_interval_minutes INT NOT NULL DEFAULT 1"
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE dw_task_nodes ADD COLUMN retry_interval_minutes INTEGER NOT NULL DEFAULT 1"
+                        )
+                    )
+        if insp.has_table("dw_workflows"):
+            cols = {c["name"] for c in insp.get_columns("dw_workflows")}
+            adds = [
+                ("failure_strategy", "VARCHAR(16)", "'CONTINUE'"),
+                ("process_priority", "VARCHAR(16)", "'MEDIUM'"),
+                ("worker_group", "VARCHAR(64)", "'default'"),
+                ("schedule_timezone", "VARCHAR(64)", "NULL"),
+            ]
+            for name, typ, default in adds:
+                if name in cols:
+                    continue
+                if default == "NULL":
+                    conn.execute(text(f"ALTER TABLE dw_workflows ADD COLUMN {name} {typ} NULL"))
+                else:
+                    conn.execute(
+                        text(
+                            f"ALTER TABLE dw_workflows ADD COLUMN {name} {typ} NOT NULL DEFAULT {default}"
+                        )
+                    )
+        if insp.has_table("dw_workspaces"):
+            cols = {c["name"] for c in insp.get_columns("dw_workspaces")}
+            adds = [
+                ("default_node_timeout_seconds", "INT" if dialect == "mysql" else "INTEGER", "3600"),
+                ("default_node_retry_times", "INT" if dialect == "mysql" else "INTEGER", "3"),
+                ("default_node_retry_interval_minutes", "INT" if dialect == "mysql" else "INTEGER", "1"),
+            ]
+            for name, typ, default in adds:
+                if name in cols:
+                    continue
+                conn.execute(
+                    text(
+                        f"ALTER TABLE dw_workspaces ADD COLUMN {name} {typ} NOT NULL DEFAULT {default}"
+                    )
+                )
+
+
 def migrate_studio_tree_list_indexes(engine: Engine) -> None:
     """数据开发树列表：workspace 复合索引，加速 list_nodes / list_folders。"""
     insp = inspect(engine)

@@ -47,6 +47,13 @@ def get_workspace_defaults(db: Session, workspace_id: int) -> Dict[str, Any]:
         "default_datasource_id": ws.default_datasource_id,
         "warehouse_datasource_id": ws.warehouse_datasource_id,
         "effective_warehouse_datasource_id": wh,
+        "default_node_timeout_seconds": getattr(ws, "default_node_timeout_seconds", None) or 3600,
+        "default_node_retry_times": getattr(ws, "default_node_retry_times", None)
+        if getattr(ws, "default_node_retry_times", None) is not None
+        else 3,
+        "default_node_retry_interval_minutes": getattr(ws, "default_node_retry_interval_minutes", None)
+        if getattr(ws, "default_node_retry_interval_minutes", None) is not None
+        else 1,
     }
 
 
@@ -58,6 +65,9 @@ def update_workspace_defaults(
     warehouse_datasource_id: Optional[int] = None,
     clear_default: bool = False,
     clear_warehouse: bool = False,
+    default_node_timeout_seconds: Optional[int] = None,
+    default_node_retry_times: Optional[int] = None,
+    default_node_retry_interval_minutes: Optional[int] = None,
 ) -> Workspace:
     ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     if not ws:
@@ -72,6 +82,12 @@ def update_workspace_defaults(
     elif warehouse_datasource_id is not None:
         _validate_ds_in_workspace(db, workspace_id, warehouse_datasource_id, "数仓数据源")
         ws.warehouse_datasource_id = warehouse_datasource_id
+    if default_node_timeout_seconds is not None:
+        ws.default_node_timeout_seconds = max(60, min(86400 * 7, int(default_node_timeout_seconds)))
+    if default_node_retry_times is not None:
+        ws.default_node_retry_times = max(0, min(20, int(default_node_retry_times)))
+    if default_node_retry_interval_minutes is not None:
+        ws.default_node_retry_interval_minutes = max(0, min(1440, int(default_node_retry_interval_minutes)))
     db.commit()
     db.refresh(ws)
     return ws

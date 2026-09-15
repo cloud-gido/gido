@@ -44,6 +44,7 @@ _TASK_NODE_LIST_LOAD_COLS = (
     TaskNode.sort_order,
     TaskNode.timeout_seconds,
     TaskNode.retry_times,
+    TaskNode.retry_interval_minutes,
     TaskNode.is_published,
     TaskNode.owner_id,
     TaskNode.is_locked,
@@ -176,6 +177,7 @@ def _serialize_task_node(
         "sort_order": getattr(node, "sort_order", 0) or 0,
         "timeout_seconds": node.timeout_seconds,
         "retry_times": node.retry_times,
+        "retry_interval_minutes": getattr(node, "retry_interval_minutes", None),
         "is_published": bool(node.is_published),
         "owner_id": owner_id,
         "created_by": creator_id,
@@ -403,8 +405,9 @@ class NodeCreate(BaseModel):
     script_content: Optional[str] = None
     datasource_id: Optional[int] = None
     folder_id: Optional[int] = None
-    timeout_seconds: Optional[int] = 3600
-    retry_times: Optional[int] = 3
+    timeout_seconds: Optional[int] = None
+    retry_times: Optional[int] = None
+    retry_interval_minutes: Optional[int] = None
     params: Optional[Dict[str, Any]] = None  # 自定义变量，如 {"env": "prod"}
 
     @field_validator("params", mode="before")
@@ -520,6 +523,19 @@ def create_node(node_in: NodeCreate, db: Session = Depends(get_db), current_user
         if ds.workspace_id != node_in.workspace_id:
             raise HTTPException(status_code=400, detail="数据源不属于该工作空间")
     payload = node_in.model_dump()
+    from app.models.workspace import Workspace
+
+    ws = db.query(Workspace).filter(Workspace.id == node_in.workspace_id).first()
+    if payload.get("timeout_seconds") is None:
+        payload["timeout_seconds"] = getattr(ws, "default_node_timeout_seconds", None) or 3600
+    if payload.get("retry_times") is None:
+        payload["retry_times"] = getattr(ws, "default_node_retry_times", None)
+        if payload["retry_times"] is None:
+            payload["retry_times"] = 3
+    if payload.get("retry_interval_minutes") is None:
+        payload["retry_interval_minutes"] = getattr(ws, "default_node_retry_interval_minutes", None)
+        if payload["retry_interval_minutes"] is None:
+            payload["retry_interval_minutes"] = 1
     if (payload.get("node_type") or "").upper() == "DEPENDENT":
         from app.services.workflow_dependent import normalize_dependent_params
         payload["params"] = normalize_dependent_params(payload.get("params"))
@@ -597,6 +613,9 @@ def copy_node(
         folder_id=src.folder_id,
         timeout_seconds=src.timeout_seconds or 3600,
         retry_times=src.retry_times if src.retry_times is not None else 3,
+        retry_interval_minutes=(
+            src.retry_interval_minutes if getattr(src, "retry_interval_minutes", None) is not None else 1
+        ),
         sort_order=_next_sort_order(db, src.workspace_id, src.folder_id),
         is_published=False,
         is_locked=False,

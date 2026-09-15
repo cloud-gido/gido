@@ -56,6 +56,12 @@ def _fail_retry_times(node: dict) -> int:
         return DEFAULT_FAIL_RETRY_TIMES
 
 
+def _fail_retry_interval(node: dict) -> int:
+    from app.services.schedule_policy import fail_retry_interval_minutes
+
+    return fail_retry_interval_minutes(node if isinstance(node, dict) else {})
+
+
 def _timeout_flag(node: dict) -> str:
     return "OPEN" if _node_timeout_minutes(node) > 0 else "CLOSE"
 
@@ -520,7 +526,7 @@ class DSClient:
                             "workerGroup": "default",
                             "environmentCode": -1,
                             "failRetryTimes": _fail_retry_times(n),
-                            "failRetryInterval": 1,
+                            "failRetryInterval": _fail_retry_interval(n),
                             "timeoutFlag": _timeout_flag(n),
                             "timeout": _node_timeout_minutes(n),
                             "delayTime": 0,
@@ -622,7 +628,7 @@ class DSClient:
                     "workerGroup": "default",
                     "environmentCode": -1,
                     "failRetryTimes": _fail_retry_times(n),
-                    "failRetryInterval": 1,
+                    "failRetryInterval": _fail_retry_interval(n),
                     "timeoutFlag": _timeout_flag(n),
                     "timeout": _node_timeout_minutes(n),
                     "delayTime": 0,
@@ -670,7 +676,7 @@ class DSClient:
                 "workerGroup": "default",
                 "environmentCode": -1,
                 "failRetryTimes": _fail_retry_times(n),
-                "failRetryInterval": 1,
+                "failRetryInterval": _fail_retry_interval(n),
                 "timeoutFlag": _timeout_flag(n),
                 "timeout": _node_timeout_minutes(n),
                 "delayTime": 0,
@@ -806,6 +812,9 @@ class DSClient:
         cron_expr: str = None,
         *,
         complement: bool = False,
+        failure_strategy: str = "CONTINUE",
+        process_priority: str = "MEDIUM",
+        worker_group: str = "default",
     ) -> int:
         """触发一次流程执行，返回 DS processInstanceId。
 
@@ -817,6 +826,11 @@ class DSClient:
         from app.services.business_date import (
             complement_schedule_time_for_dolphin,
             schedule_time_for_dolphin,
+        )
+        from app.services.schedule_policy import (
+            normalize_failure_strategy,
+            normalize_process_priority,
+            normalize_worker_group,
         )
 
         if complement:
@@ -839,18 +853,21 @@ class DSClient:
         except Exception:
             before_ids = set()
         # form 字段须为字符串；None 会被 requests 丢掉或序列化异常
+        fs = normalize_failure_strategy(failure_strategy)
+        pri = normalize_process_priority(process_priority)
+        wg = normalize_worker_group(worker_group)
         payload = {
             "processDefinitionCode": str(process_code),
             "scheduleTime": schedule_time,
-            "failureStrategy": "CONTINUE",
+            "failureStrategy": fs,
             "warningType": "NONE",
             "warningGroupId": "0",
             "execType": exec_type,
             "startNodeList": "",
             "taskDependType": "TASK_POST",
             "runMode": "RUN_MODE_SERIAL",
-            "processInstancePriority": "MEDIUM",
-            "workerGroup": "default",
+            "processInstancePriority": pri,
+            "workerGroup": wg,
             "environmentCode": "-1",
             "dryRun": "0",
         }
@@ -1089,23 +1106,42 @@ class DSClient:
             },
         )
 
-    def set_schedule(self, project_code: int, process_code: int, cron_expr: str):
+    def set_schedule(
+        self,
+        project_code: int,
+        process_code: int,
+        cron_expr: str,
+        *,
+        failure_strategy: str = "CONTINUE",
+        process_priority: str = "MEDIUM",
+        worker_group: str = "default",
+        timezone_id: str = "Asia/Shanghai",
+    ):
         """为流程定义设置 Cron 调度，自动将5位 Linux cron 转为 DS 的 Quartz 6位格式"""
         from app.services.cron_utils import linux_to_quartz_cron
+        from app.services.schedule_policy import (
+            normalize_failure_strategy,
+            normalize_process_priority,
+            normalize_worker_group,
+        )
 
         quartz_cron = linux_to_quartz_cron(cron_expr)
+        tz = (timezone_id or "Asia/Shanghai").strip() or "Asia/Shanghai"
+        fs = normalize_failure_strategy(failure_strategy)
+        pri = normalize_process_priority(process_priority)
+        wg = normalize_worker_group(worker_group)
         # 先查是否已有调度
         resp = self._get(f"/projects/{project_code}/schedules",
                          params={"processDefinitionCode": process_code, "pageSize": 10, "pageNo": 1})
         schedules = resp.get("data", {}).get("totalList", [])
         payload = {
             "processDefinitionCode": process_code,
-            "schedule": f'{{"startTime":"2020-01-01 00:00:00","endTime":"2099-12-31 00:00:00","crontab":"{quartz_cron}","timezoneId":"Asia/Shanghai"}}',
-            "failureStrategy": "CONTINUE",
+            "schedule": f'{{"startTime":"2020-01-01 00:00:00","endTime":"2099-12-31 00:00:00","crontab":"{quartz_cron}","timezoneId":"{tz}"}}',
+            "failureStrategy": fs,
             "warningType": "NONE",
             "warningGroupId": 0,
-            "processInstancePriority": "MEDIUM",
-            "workerGroup": "default",
+            "processInstancePriority": pri,
+            "workerGroup": wg,
             "environmentCode": -1,
         }
         if schedules:

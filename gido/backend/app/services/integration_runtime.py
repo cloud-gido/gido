@@ -181,7 +181,7 @@ def list_columns(
             cur = conn.cursor()
             schema = _resolve_mysql_catalog(ds, catalog)
             cur.execute(
-                "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY "
+                "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_COMMENT "
                 "FROM information_schema.COLUMNS "
                 "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s "
                 "ORDER BY ORDINAL_POSITION",
@@ -193,6 +193,7 @@ def list_columns(
                     "type": row[1],
                     "nullable": str(row[2]).upper() == "YES",
                     "key": row[3] or "",
+                    "comment": (row[4] or "").strip() or None,
                     "catalog": schema,
                     "table": table_name,
                 }
@@ -204,7 +205,7 @@ def list_columns(
         schema = _resolve_pg_schema(ds, catalog)
         cur.execute(
             """
-            SELECT column_name, data_type, is_nullable,
+            SELECT c.column_name, c.data_type, c.is_nullable,
                    (SELECT COUNT(*) > 0 FROM information_schema.table_constraints tc
                     JOIN information_schema.key_column_usage kcu
                       ON tc.constraint_name = kcu.constraint_name
@@ -212,7 +213,17 @@ def list_columns(
                     WHERE tc.constraint_type = 'PRIMARY KEY'
                       AND tc.table_schema = c.table_schema
                       AND kcu.table_name = c.table_name
-                      AND kcu.column_name = c.column_name) AS is_pk
+                      AND kcu.column_name = c.column_name) AS is_pk,
+                   (
+                     SELECT d.description
+                     FROM pg_catalog.pg_description d
+                     JOIN pg_catalog.pg_class cl ON cl.oid = d.objoid
+                     JOIN pg_catalog.pg_namespace n ON n.oid = cl.relnamespace
+                     WHERE n.nspname = c.table_schema
+                       AND cl.relname = c.table_name
+                       AND d.objsubid = c.ordinal_position
+                     LIMIT 1
+                   ) AS col_comment
             FROM information_schema.columns c
             WHERE c.table_schema = %s AND c.table_name = %s
             ORDER BY c.ordinal_position
@@ -225,6 +236,7 @@ def list_columns(
                 "type": row[1],
                 "nullable": row[2] == "YES",
                 "key": "PRI" if row[3] else "",
+                "comment": (row[4] or "").strip() or None,
                 "catalog": schema,
                 "table": table_name,
             }

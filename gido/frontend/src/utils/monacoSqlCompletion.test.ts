@@ -59,12 +59,16 @@ describe('detectSqlSuggestSlot', () => {
     expect(detectSqlSuggestSlot('select col_')).toBe('column_slot')
   })
 
-  it('FROM / JOIN are table_slot', () => {
+  it('FROM / JOIN / INTO / UPDATE / TABLE / USE are table_slot', () => {
     expect(detectSqlSuggestSlot('FROM ')).toBe('table_slot')
     expect(detectSqlSuggestSlot('SELECT * FROM ')).toBe('table_slot')
     expect(detectSqlSuggestSlot('FROM ads_')).toBe('table_slot')
     expect(detectSqlSuggestSlot('LEFT JOIN ')).toBe('table_slot')
     expect(detectSqlSuggestSlot('INNER JOIN bigdata_')).toBe('table_slot')
+    expect(detectSqlSuggestSlot('INSERT INTO ')).toBe('table_slot')
+    expect(detectSqlSuggestSlot('UPDATE ')).toBe('table_slot')
+    expect(detectSqlSuggestSlot('CREATE TABLE ')).toBe('table_slot')
+    expect(detectSqlSuggestSlot('USE ')).toBe('table_slot')
   })
 
   it('FROM ( starts subquery without table flood', () => {
@@ -177,5 +181,26 @@ describe('currentSqlStatement', () => {
     expect(text.trim().startsWith('SELECT y')).toBe(true)
     expect(text).toContain('FROM b')
     expect(beforeCursor.trim()).toBe('SELECT y')
+  })
+})
+
+describe('SELECT lookahead over full statement', () => {
+  it('resolves FROM/JOIN refs when cursor is still in SELECT list', () => {
+    const sql = 'SELECT  FROM a JOIN b ON a.id = b.id'
+    const offset = sql.indexOf('SELECT ') + 'SELECT '.length
+    expect(detectSqlSuggestSlot(sql.slice(0, offset))).toBe('column_slot')
+    const { refs } = resolveScopedTableRefs(sql, offset)
+    expect(refs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ table: 'a' }),
+      expect.objectContaining({ table: 'b' }),
+    ]))
+  })
+
+  it('AS alias is preferred for multi-table column labels', () => {
+    const refs = extractTableRefs('SELECT * FROM ads_foo AS f JOIN dim_bar AS d ON f.id = d.id')
+    expect(refs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ table: 'ads_foo', alias: 'f' }),
+      expect.objectContaining({ table: 'dim_bar', alias: 'd' }),
+    ]))
   })
 })

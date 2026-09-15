@@ -38,6 +38,10 @@ class Workspace(Base):
     # 空间级默认数据源：开发/探查/SQL 节点；warehouse 未设时集成目标也用它
     default_datasource_id = Column(Integer, ForeignKey("dw_datasources.id"), nullable=True)
     warehouse_datasource_id = Column(Integer, ForeignKey("dw_datasources.id"), nullable=True)
+    # 新建节点未显式填写时继承的运行参数（发布到调度后生效）
+    default_node_timeout_seconds = Column(Integer, default=3600)
+    default_node_retry_times = Column(Integer, default=3)
+    default_node_retry_interval_minutes = Column(Integer, default=1)
     created_at = Column(DateTime, default=datetime.utcnow)
     members = relationship("WorkspaceMember", back_populates="workspace")
 
@@ -113,6 +117,8 @@ class TaskNode(Base):
     sort_order = Column(Integer, default=0)  # 0=字典序；>0=用户拖拽手工序（同目录内）
     timeout_seconds = Column(Integer, default=3600)
     retry_times = Column(Integer, default=3)
+    # 失败重试间隔（分钟）；发布到 Dolphin 为 failRetryInterval
+    retry_interval_minutes = Column(Integer, default=1)
     is_published = Column(Boolean, default=False)  # 是否已提交到工作流
     owner_id = Column(Integer, ForeignKey("dw_users.id"), nullable=True)  # 脚本负责人（默认同创建人）
     is_locked = Column(Boolean, default=False)  # 提交发布后锁定，需显式解锁才可改脚本
@@ -168,6 +174,11 @@ class Workflow(Base):
     dag_config = Column(JSON)  # 节点和边的配置
     schedule_type = Column(String(32), default="manual")
     cron_expression = Column(String(64))
+    # 发布到生产调度的流程级策略（Source of Truth；勿仅在 Dolphin 手改）
+    failure_strategy = Column(String(16), default="CONTINUE")  # CONTINUE | END
+    process_priority = Column(String(16), default="MEDIUM")  # HIGHEST|HIGH|MEDIUM|LOW|LOWEST
+    worker_group = Column(String(64), default="default")
+    schedule_timezone = Column(String(64), nullable=True)  # 空则用工作空间 timezone
     status = Column(String(32), default="draft")  # draft/published/offline
     active_version_id = Column(Integer, nullable=True)
     scheduler_engine = Column(String(32), default="dolphin")

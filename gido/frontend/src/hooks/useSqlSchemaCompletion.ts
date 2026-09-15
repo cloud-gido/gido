@@ -2,7 +2,7 @@
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Studio / Probe Monaco onMount 共用：绑 SQL 库表列补全。
+ * Studio / Probe / Stream Studio Monaco onMount 共用：绑 SQL 库表列补全。
  */
 import { useEffect, useRef } from 'react'
 import { bindMonacoSqlSchemaCompletion } from '../utils/monacoSqlCompletion'

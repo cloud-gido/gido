@@ -17,7 +17,7 @@ import {
 } from '@ant-design/icons'
 import '../monacoSetup'
 import Editor from '@monaco-editor/react'
-import { streamingApi, approvalApi } from '../api'
+import { streamingApi, approvalApi, datasourceApi } from '../api'
 import { useAppStore } from '../store'
 import { can, isWorkspaceAdmin, P } from '../perm'
 import PublishApprovalModal from '../components/PublishApprovalModal'
@@ -58,6 +58,8 @@ import { formatInTimeZone } from '../utils/datetime'
 import { openFlinkConsoleUrl } from '../utils/flinkConsole'
 import AutosaveStatusHint from '../components/AutosaveStatusHint'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
+import { useSqlSchemaCompletion } from '../hooks/useSqlSchemaCompletion'
+import { resolveDatasourceForRun } from '../utils/workspaceDatasource'
 import {
   clearScriptLocalDraft,
   restoreScriptLocalDraft,
@@ -219,6 +221,22 @@ export default function StreamStudioPage() {
   const editorRef = useRef<any>(null)
   const findApiRef = useRef<MonacoFindBarApi | null>(null)
   const [editorAppearance, setEditorAppearance] = useState<EditorAppearance>(() => loadEditorAppearance())
+  const [schemaDatasources, setSchemaDatasources] = useState<any[]>([])
+  // 与批 Studio / Probe 同一套：未单独绑源时用空间默认；仅 SQL 作业需要
+  const streamDsResolve = useMemo(() => {
+    if (selected?.job_type !== 'SQL') return null
+    return resolveDatasourceForRun(undefined, currentWorkspace, schemaDatasources)
+  }, [selected?.job_type, currentWorkspace, schemaDatasources])
+  const streamDefaultCatalog = useMemo(() => {
+    const id = streamDsResolve?.effectiveId
+    if (id == null) return null
+    const ds = schemaDatasources.find((d: any) => d.id === id)
+    return (ds?.database || null) as string | null
+  }, [streamDsResolve?.effectiveId, schemaDatasources])
+  const { bindSqlSchemaCompletion } = useSqlSchemaCompletion({
+    datasourceId: streamDsResolve?.effectiveId ?? null,
+    defaultCatalog: streamDefaultCatalog,
+  })
   const [jarForm, setJarForm] = useState({ main_class: '', program_args: '', parallelism: 1 })
   const [jarArtifacts, setJarArtifacts] = useState<any[]>([])
   const [selectedJarArtifact, setSelectedJarArtifact] = useState<any | null>(null)
@@ -345,6 +363,22 @@ export default function StreamStudioPage() {
     const hadCache = treeListReadyFromCache('stream', wsId)
     void load(!hadCache)
   }, [wsId, load])
+
+  useEffect(() => {
+    // 与 Studio/Probe 一致：只在 SQL 编辑场景拉数据源（JAR 打开不请求）
+    if (!wsId || selected?.job_type !== 'SQL') {
+      if (selected?.job_type !== 'SQL') setSchemaDatasources([])
+      return
+    }
+    let cancelled = false
+    void datasourceApi.list(wsId).then((res: any) => {
+      if (cancelled) return
+      setSchemaDatasources(Array.isArray(res) ? res : [])
+    }).catch(() => {
+      if (!cancelled) setSchemaDatasources([])
+    })
+    return () => { cancelled = true }
+  }, [wsId, selected?.job_type])
 
   // 审批徽标后置：不挡作业树关键路径
   useEffect(() => {
@@ -1052,6 +1086,7 @@ export default function StreamStudioPage() {
               void handlePreviewSqlRef.current(sql, meta)
             },
           })
+          bindSqlSchemaCompletion(ed, monaco)
         }}
         options={{ ...monacoEditorOptionsFromAppearance(editorAppearance), readOnly: !canWrite || Boolean(selected.is_locked), minimap: { enabled: false } }}
       />

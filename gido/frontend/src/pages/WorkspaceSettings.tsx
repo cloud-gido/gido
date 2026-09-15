@@ -50,6 +50,9 @@ export default function WorkspaceSettingsPage() {
         defaultsForm.setFieldsValue({
           default_datasource_id: def.default_datasource_id,
           warehouse_datasource_id: def.warehouse_datasource_id ?? def.effective_warehouse_datasource_id,
+          default_node_timeout_seconds: def.default_node_timeout_seconds ?? 3600,
+          default_node_retry_times: def.default_node_retry_times ?? 3,
+          default_node_retry_interval_minutes: def.default_node_retry_interval_minutes ?? 1,
         })
       } else if (key === 'dolphin') {
         const dol: any = await workspaceApi.getDolphin(wsId)
@@ -108,10 +111,13 @@ export default function WorkspaceSettingsPage() {
       warehouse_datasource_id: v.warehouse_datasource_id ?? null,
       clear_default_datasource: v.default_datasource_id == null,
       clear_warehouse_datasource: v.warehouse_datasource_id == null,
+      default_node_timeout_seconds: v.default_node_timeout_seconds,
+      default_node_retry_times: v.default_node_retry_times,
+      default_node_retry_interval_minutes: v.default_node_retry_interval_minutes,
     })
     const refreshed: any = await workspaceApi.get(wsId)
     setCurrentWorkspace({ ...currentWorkspace, ...refreshed })
-    message.success('默认数据源已保存')
+    message.success('空间默认设置已保存')
   }
 
   const saveDolphin = async () => {
@@ -252,8 +258,29 @@ export default function WorkspaceSettingsPage() {
                   >
                     <Select allowClear options={dsOptions} placeholder="通常选 Doris / PostgreSQL 数仓" />
                   </Form.Item>
+                  <Form.Item
+                    name="default_node_timeout_seconds"
+                    label="新建节点默认超时（秒）"
+                    extra="数据开发新建脚本未单独填写时继承；发布到调度后打开任务超时。"
+                  >
+                    <Input type="number" min={60} />
+                  </Form.Item>
+                  <Form.Item
+                    name="default_node_retry_times"
+                    label="新建节点默认失败重试次数"
+                    extra="0 表示失败不重试。"
+                  >
+                    <Input type="number" min={0} />
+                  </Form.Item>
+                  <Form.Item
+                    name="default_node_retry_interval_minutes"
+                    label="新建节点默认重试间隔（分钟）"
+                    extra="发布到 Dolphin 后为 failRetryInterval。"
+                  >
+                    <Input type="number" min={0} />
+                  </Form.Item>
                   <Button type="primary" onClick={saveDefaults}>
-                    保存数据源设置
+                    保存默认设置
                   </Button>
                 </Form>
               </Card>

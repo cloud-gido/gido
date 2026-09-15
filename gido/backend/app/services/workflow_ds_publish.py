@@ -43,6 +43,7 @@ def enrich_dag_from_db(db: Session, wf: Workflow) -> Dict:
                     "script_content": node.script_content,
                     "datasource_id": eff_ds_id,
                     "retry_times": node.retry_times,
+                    "retry_interval_minutes": getattr(node, "retry_interval_minutes", None),
                     "timeout_seconds": node.timeout_seconds,
                     "params": node.params or {},
                 }
@@ -90,7 +91,20 @@ def publish_workflow_to_ds(db: Session, wf: Workflow, *, published_by: Optional[
         )
     engine.online_definition(str(project_code), str(process_code))
     if wf.schedule_type == "cron" and wf.cron_expression:
-        engine.set_schedule(str(project_code), str(process_code), wf.cron_expression)
+        from app.models.workspace import Workspace
+        from app.services.schedule_policy import schedule_opts_from_workflow
+
+        ws = db.query(Workspace).filter(Workspace.id == ws_id).first()
+        opts = schedule_opts_from_workflow(wf, workspace_timezone=getattr(ws, "timezone", None))
+        engine.set_schedule(
+            str(project_code),
+            str(process_code),
+            wf.cron_expression,
+            failure_strategy=opts["failure_strategy"],
+            process_priority=opts["process_priority"],
+            worker_group=opts["worker_group"],
+            timezone_id=opts["timezone_id"],
+        )
 
     # 发布时把 DS task code 写回 DAG，供运维重试定位节点
     code_by_node = {int(r["node_id"]): r.get("ds_task_code") for r in task_sync if r.get("node_id") is not None}

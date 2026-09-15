@@ -9,6 +9,15 @@
  * - 解析前剥离注释与字符串，减少误匹配
  */
 import { fetchColumns, fetchSchemas, fetchTables } from './sqlSchemaCache'
+import {
+  capSuggestions,
+  completionSortText,
+  filterByPrefixRanked,
+  filterNamesRanked,
+  formatColumnDetail,
+  isSqlCompletionRecent,
+  markSqlCompletionRecent,
+} from './sqlCompletionRank'
 
 const SQL_KEYWORDS = [
   'SELECT', 'FROM', 'WHERE', 'JOIN', 'LEFT', 'RIGHT', 'INNER', 'OUTER', 'FULL', 'CROSS',
@@ -18,6 +27,56 @@ const SQL_KEYWORDS = [
   'DROP', 'ALTER', 'WITH', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'OVERWRITE', 'PARTITION',
   'USE', 'SHOW', 'DESCRIBE', 'EXPLAIN', 'TRUNCATE', 'REPLACE', 'IF', 'TRUE', 'FALSE',
 ]
+
+/** 数仓常见函数（片段补全）；不绑死单一方言。 */
+const SQL_FUNCTIONS: Array<{ label: string; insert: string; detail: string }> = [
+  { label: 'COUNT', insert: 'COUNT($1)$0', detail: '聚合' },
+  { label: 'SUM', insert: 'SUM($1)$0', detail: '聚合' },
+  { label: 'AVG', insert: 'AVG($1)$0', detail: '聚合' },
+  { label: 'MAX', insert: 'MAX($1)$0', detail: '聚合' },
+  { label: 'MIN', insert: 'MIN($1)$0', detail: '聚合' },
+  { label: 'COALESCE', insert: 'COALESCE($1, $2)$0', detail: '空值' },
+  { label: 'CAST', insert: 'CAST($1 AS $2)$0', detail: '类型转换' },
+  { label: 'IFNULL', insert: 'IFNULL($1, $2)$0', detail: '空值' },
+  { label: 'NVL', insert: 'NVL($1, $2)$0', detail: '空值' },
+  { label: 'CONCAT', insert: 'CONCAT($1, $2)$0', detail: '字符串' },
+  { label: 'SUBSTRING', insert: 'SUBSTRING($1, $2, $3)$0', detail: '字符串' },
+  { label: 'TRIM', insert: 'TRIM($1)$0', detail: '字符串' },
+  { label: 'UPPER', insert: 'UPPER($1)$0', detail: '字符串' },
+  { label: 'LOWER', insert: 'LOWER($1)$0', detail: '字符串' },
+  { label: 'ROUND', insert: 'ROUND($1, $2)$0', detail: '数值' },
+  { label: 'DATE_FORMAT', insert: "DATE_FORMAT($1, '%Y-%m-%d')$0", detail: '日期' },
+  { label: 'DATE_ADD', insert: 'DATE_ADD($1, INTERVAL $2 DAY)$0', detail: '日期' },
+  { label: 'DATE_SUB', insert: 'DATE_SUB($1, INTERVAL $2 DAY)$0', detail: '日期' },
+  { label: 'CURRENT_DATE', insert: 'CURRENT_DATE', detail: '日期' },
+  { label: 'CURRENT_TIMESTAMP', insert: 'CURRENT_TIMESTAMP', detail: '日期' },
+  { label: 'NOW', insert: 'NOW()', detail: '日期' },
+  { label: 'FROM_UNIXTIME', insert: 'FROM_UNIXTIME($1)$0', detail: '日期' },
+  { label: 'UNIX_TIMESTAMP', insert: 'UNIX_TIMESTAMP($1)$0', detail: '日期' },
+  { label: 'JSON_EXTRACT', insert: "JSON_EXTRACT($1, '$.$2')$0", detail: 'JSON' },
+]
+
+const MARK_RECENT_CMD = 'gido.sql.markRecent'
+let recentCmdRegistered = false
+
+function ensureRecentCommand(monaco: any) {
+  if (recentCmdRegistered || !monaco?.editor?.registerCommand) return
+  try {
+    monaco.editor.registerCommand(MARK_RECENT_CMD, (_accessor: unknown, kind: string, name: string) => {
+      if (kind === 'table' || kind === 'column' || kind === 'schema') {
+        markSqlCompletionRecent(kind, name)
+      }
+    })
+    recentCmdRegistered = true
+  } catch {
+    /* already registered across HMR */
+    recentCmdRegistered = true
+  }
+}
+
+function recentCommand(kind: 'table' | 'column' | 'schema', name: string) {
+  return { id: MARK_RECENT_CMD, title: '', arguments: [kind, name] }
+}
 
 const TABLE_SLOT_KEYWORDS = new Set([
   'from', 'join', 'into', 'update', 'table', 'use',
@@ -362,10 +421,21 @@ export function extractTableRefs(fragment: string): SqlTableRef[] {
 
   let m: RegExpExecArray | null
   while ((m = re.exec(cleaned)) !== null) {
+    let aliasTok = m[3] ? stripTicks(m[3]) : null
+    // 「FROM a JOIN」会把 JOIN 吃成别名，需回退以便后续 JOIN 再匹配
+    if (aliasTok && NOT_TABLE_ALIAS.has(aliasTok.toLowerCase())) {
+      const consumed = m[0]
+      const trimmed = consumed.replace(
+        new RegExp(`\\s+(?:as\\s+)?${aliasTok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i'),
+        '',
+      )
+      re.lastIndex = m.index + trimmed.length
+      aliasTok = null
+    }
     const ref = parseTableToken(
       stripTicks(m[1]),
       m[2] ? stripTicks(m[2]) : null,
-      m[3] ? stripTicks(m[3]) : null,
+      aliasTok,
     )
     if (ref) addRef(refs, seen, ref)
   }
@@ -511,15 +581,11 @@ function stripTicks(s: string): string {
 }
 
 function filterByPrefix<T extends { name: string }>(items: T[], prefix: string): T[] {
-  const p = prefix.toLowerCase()
-  if (!p) return items
-  return items.filter(i => i.name.toLowerCase().startsWith(p) || i.name.toLowerCase().includes(p))
+  return filterByPrefixRanked(items, prefix)
 }
 
 function filterNames(names: string[], prefix: string): string[] {
-  const p = prefix.toLowerCase()
-  if (!p) return names
-  return names.filter(n => n.toLowerCase().startsWith(p) || n.toLowerCase().includes(p))
+  return filterNamesRanked(names, prefix)
 }
 
 function pushKeywords(
@@ -527,15 +593,45 @@ function pushKeywords(
   Kind: any,
   range: any,
   prefix: string,
+  slot?: SqlSuggestSlot,
 ) {
   for (const kw of SQL_KEYWORDS) {
     if (prefix && !kw.toLowerCase().startsWith(prefix.toLowerCase())) continue
+    // 表槽位优先推 FROM/JOIN 等；列槽位优先 WHERE/AND 等——用 sortText 微调
+    let boost = kw
+    if (slot === 'table_slot' && ['FROM', 'JOIN', 'INTO', 'UPDATE', 'TABLE', 'USE'].includes(kw)) {
+      boost = `0_${kw}`
+    } else if (slot === 'column_slot' && ['WHERE', 'AND', 'OR', 'ON', 'HAVING', 'GROUP', 'ORDER', 'BY'].includes(kw)) {
+      boost = `0_${kw}`
+    }
     suggestions.push({
       label: kw,
       kind: Kind.Keyword,
       insertText: kw,
       range,
-      sortText: `3_${kw}`,
+      sortText: completionSortText({ tier: 'kw', name: boost, prefix }),
+    })
+  }
+}
+
+function pushFunctions(
+  suggestions: any[],
+  monaco: any,
+  Kind: any,
+  range: any,
+  prefix: string,
+) {
+  const p = prefix.toLowerCase()
+  for (const fn of SQL_FUNCTIONS) {
+    if (p && !fn.label.toLowerCase().startsWith(p) && !fn.label.toLowerCase().includes(p)) continue
+    suggestions.push({
+      label: fn.label,
+      kind: Kind.Function,
+      detail: fn.detail,
+      insertText: fn.insert,
+      insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+      range,
+      sortText: completionSortText({ tier: 'fn', name: fn.label, prefix }),
     })
   }
 }
@@ -560,10 +656,16 @@ async function pushSchemasAndTables(
       detail: 'CTE',
       insertText: cte.name,
       range,
-      sortText: `0_${cte.name}`,
+      sortText: completionSortText({
+        tier: 'cte',
+        name: cte.name,
+        prefix,
+        recent: isSqlCompletionRecent('table', cte.name),
+      }),
+      command: recentCommand('table', cte.name),
     })
   }
-  const schemas = filterByPrefix(await fetchSchemas(dsId), prefix)
+  const schemas = capSuggestions(filterByPrefix(await fetchSchemas(dsId), prefix), prefix, 40, 80)
   for (const s of schemas) {
     suggestions.push({
       label: s.name,
@@ -571,10 +673,16 @@ async function pushSchemasAndTables(
       detail: s.is_default ? 'default catalog' : 'catalog',
       insertText: s.name,
       range,
-      sortText: `2_${s.name}`,
+      sortText: completionSortText({
+        tier: 'schema',
+        name: s.name,
+        prefix,
+        recent: isSqlCompletionRecent('schema', s.name),
+      }),
+      command: recentCommand('schema', s.name),
     })
   }
-  const tables = filterByPrefix(await fetchTables(dsId, defaultCatalog), prefix)
+  const tables = capSuggestions(filterByPrefix(await fetchTables(dsId, defaultCatalog), prefix), prefix)
   for (const t of tables) {
     const cat = (t.catalog || defaultCatalog || '').trim()
     const insert = cat ? `${cat}.${t.name}` : t.name
@@ -584,7 +692,13 @@ async function pushSchemasAndTables(
       detail: t.comment || t.type || 'table',
       insertText: insert,
       range,
-      sortText: `1_${t.name}`,
+      sortText: completionSortText({
+        tier: 'table',
+        name: t.name,
+        prefix,
+        recent: isSqlCompletionRecent('table', insert) || isSqlCompletionRecent('table', t.name),
+      }),
+      command: recentCommand('table', insert),
     })
   }
 }
@@ -612,7 +726,8 @@ async function pushColumnsForRefs(
       detail: 'select alias',
       insertText: name,
       range,
-      sortText: `0_${name}`,
+      sortText: completionSortText({ tier: 'col', name, prefix, recent: true }),
+      command: recentCommand('column', name),
     })
   }
 
@@ -631,7 +746,13 @@ async function pushColumnsForRefs(
           detail: ref.kind === 'cte' ? 'CTE column' : 'subquery column',
           insertText: insert,
           range,
-          sortText: `0_${name}`,
+          sortText: completionSortText({
+            tier: 'col',
+            name,
+            prefix,
+            recent: isSqlCompletionRecent('column', name),
+          }),
+          command: recentCommand('column', name),
         })
       }
       continue
@@ -640,7 +761,10 @@ async function pushColumnsForRefs(
     if (ref.kind === 'cte' || ref.kind === 'subquery') continue
 
     const catalog = ref.catalog || defaultCatalog
-    const columns = filterByPrefix(await fetchColumns(dsId, ref.table, catalog), prefix)
+    const columns = capSuggestions(
+      filterByPrefix(await fetchColumns(dsId, ref.table, catalog), prefix),
+      prefix,
+    )
     for (const c of columns) {
       const insert = qual ? `${qual}.${c.name}` : c.name
       const key = insert.toLowerCase()
@@ -649,10 +773,16 @@ async function pushColumnsForRefs(
       suggestions.push({
         label: insert,
         kind: Kind.Field,
-        detail: c.type || `${ref.table} column`,
+        detail: formatColumnDetail({ ...c, table: ref.table }),
         insertText: insert,
         range,
-        sortText: `0_${c.name}`,
+        sortText: completionSortText({
+          tier: 'col',
+          name: c.name,
+          prefix,
+          recent: isSqlCompletionRecent('column', c.name),
+        }),
+        command: recentCommand('column', c.name),
       })
     }
   }
@@ -700,6 +830,7 @@ export function bindMonacoSqlSchemaCompletion(
   monaco: any,
   opts: BindSqlCompletionOpts,
 ): () => void {
+  ensureRecentCommand(monaco)
   const disposable = monaco.languages.registerCompletionItemProvider('sql', {
     triggerCharacters: ['.', ' ', '`'],
     provideCompletionItems: async (model: any, position: any) => {
@@ -735,36 +866,43 @@ export function bindMonacoSqlSchemaCompletion(
 
       const suggestions: any[] = []
       const Kind = monaco.languages.CompletionItemKind
-
-      if (dsId == null || !Number.isFinite(dsId)) {
-        return { suggestions }
-      }
-
+      const hasDs = dsId != null && Number.isFinite(dsId)
       const defaultCatalog = (opts.getDefaultCatalog?.() || '').trim() || null
       const { refs, ctes } = resolveScopedTableRefs(statement, offsetInStatement)
       const selectAliases = extractOuterSelectAliases(statement, offsetInStatement)
 
       try {
         if (ctx.kind === 'column_qualified') {
-          const columns = filterByPrefix(
-            await fetchColumns(dsId, ctx.table, ctx.catalog),
+          if (!hasDs) return { suggestions }
+          const columns = capSuggestions(
+            filterByPrefix(await fetchColumns(dsId!, ctx.table, ctx.catalog), ctx.prefix),
             ctx.prefix,
           )
           for (const c of columns) {
             suggestions.push({
               label: c.name,
               kind: Kind.Field,
-              detail: c.type || 'column',
+              detail: formatColumnDetail(c),
               insertText: c.name,
               range: dotRange,
-              sortText: `0_${c.name}`,
+              sortText: completionSortText({
+                tier: 'col',
+                name: c.name,
+                prefix: ctx.prefix,
+                recent: isSqlCompletionRecent('column', c.name),
+              }),
+              command: recentCommand('column', c.name),
             })
           }
         } else if (ctx.kind === 'after_dot') {
-          const schemas = await fetchSchemas(dsId)
+          if (!hasDs) return { suggestions }
+          const schemas = await fetchSchemas(dsId!)
           const schemaNames = new Set(schemas.map(s => s.name.toLowerCase()))
           if (schemaNames.has(ctx.left.toLowerCase())) {
-            const tables = filterByPrefix(await fetchTables(dsId, ctx.left), ctx.prefix)
+            const tables = capSuggestions(
+              filterByPrefix(await fetchTables(dsId!, ctx.left), ctx.prefix),
+              ctx.prefix,
+            )
             for (const t of tables) {
               suggestions.push({
                 label: t.name,
@@ -772,7 +910,13 @@ export function bindMonacoSqlSchemaCompletion(
                 detail: t.comment || t.type || 'table',
                 insertText: t.name,
                 range: dotRange,
-                sortText: `1_${t.name}`,
+                sortText: completionSortText({
+                  tier: 'table',
+                  name: t.name,
+                  prefix: ctx.prefix,
+                  recent: isSqlCompletionRecent('table', `${ctx.left}.${t.name}`),
+                }),
+                command: recentCommand('table', `${ctx.left}.${t.name}`),
               })
             }
           } else {
@@ -785,24 +929,36 @@ export function bindMonacoSqlSchemaCompletion(
                   detail: 'column',
                   insertText: name,
                   range: dotRange,
-                  sortText: `0_${name}`,
+                  sortText: completionSortText({
+                    tier: 'col',
+                    name,
+                    prefix: ctx.prefix,
+                    recent: isSqlCompletionRecent('column', name),
+                  }),
+                  command: recentCommand('column', name),
                 })
               }
             } else if (!resolved?.virtual) {
               const table = resolved?.table || ctx.left
               const catalog = resolved?.catalog || defaultCatalog
-              const columns = filterByPrefix(
-                await fetchColumns(dsId, table, catalog),
+              const columns = capSuggestions(
+                filterByPrefix(await fetchColumns(dsId!, table, catalog), ctx.prefix),
                 ctx.prefix,
               )
               for (const c of columns) {
                 suggestions.push({
                   label: c.name,
                   kind: Kind.Field,
-                  detail: c.type || 'column',
+                  detail: formatColumnDetail({ ...c, table }),
                   insertText: c.name,
                   range: dotRange,
-                  sortText: `0_${c.name}`,
+                  sortText: completionSortText({
+                    tier: 'col',
+                    name: c.name,
+                    prefix: ctx.prefix,
+                    recent: isSqlCompletionRecent('column', c.name),
+                  }),
+                  command: recentCommand('column', c.name),
                 })
               }
             }
@@ -811,19 +967,25 @@ export function bindMonacoSqlSchemaCompletion(
           const prefix = ctx.prefix
           const slot = detectSqlSuggestSlot(stmtBefore || before)
           if (slot === 'table_slot') {
-            await pushSchemasAndTables(
-              suggestions, Kind, range, dsId, defaultCatalog, prefix, ctes,
-            )
-            pushKeywords(suggestions, Kind, range, prefix)
+            if (hasDs) {
+              await pushSchemasAndTables(
+                suggestions, Kind, range, dsId!, defaultCatalog, prefix, ctes,
+              )
+            }
+            pushKeywords(suggestions, Kind, range, prefix, slot)
           } else if (slot === 'column_slot') {
-            await pushColumnsForRefs(
-              suggestions, Kind, range, dsId, defaultCatalog, refs, prefix, selectAliases,
-            )
-            pushKeywords(suggestions, Kind, range, prefix)
+            if (hasDs) {
+              await pushColumnsForRefs(
+                suggestions, Kind, range, dsId!, defaultCatalog, refs, prefix, selectAliases,
+              )
+            }
+            pushFunctions(suggestions, monaco, Kind, range, prefix)
+            pushKeywords(suggestions, Kind, range, prefix, slot)
           } else {
-            pushKeywords(suggestions, Kind, range, prefix)
-            if (prefix.length >= 2) {
-              const schemas = filterByPrefix(await fetchSchemas(dsId), prefix)
+            pushKeywords(suggestions, Kind, range, prefix, slot)
+            pushFunctions(suggestions, monaco, Kind, range, prefix)
+            if (hasDs && prefix.length >= 2) {
+              const schemas = filterByPrefix(await fetchSchemas(dsId!), prefix)
               for (const s of schemas) {
                 suggestions.push({
                   label: s.name,
@@ -831,7 +993,13 @@ export function bindMonacoSqlSchemaCompletion(
                   detail: s.is_default ? 'default catalog' : 'catalog',
                   insertText: s.name,
                   range,
-                  sortText: `2_${s.name}`,
+                  sortText: completionSortText({
+                    tier: 'schema',
+                    name: s.name,
+                    prefix,
+                    recent: isSqlCompletionRecent('schema', s.name),
+                  }),
+                  command: recentCommand('schema', s.name),
                 })
               }
             }

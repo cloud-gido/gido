@@ -13,6 +13,7 @@ export type ColumnHint = {
   type?: string
   nullable?: boolean
   key?: string
+  comment?: string | null
   catalog?: string
   table?: string
 }

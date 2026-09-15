@@ -364,6 +364,13 @@ export default function NodeConfigModal({
     if (values.retry_times === '' || values.retry_times === undefined || values.retry_times === null) {
       values.retry_times = 3
     }
+    if (
+      values.retry_interval_minutes === ''
+      || values.retry_interval_minutes === undefined
+      || values.retry_interval_minutes === null
+    ) {
+      values.retry_interval_minutes = 1
+    }
     if (node.node_type === 'SYNC') {
       if (!values.sync_task_id) {
         message.error('请选择要绑定的数据集成任务')
@@ -721,6 +728,13 @@ export default function NodeConfigModal({
                       name="retry_times"
                       label="失败重试次数"
                       extra="发布到调度后生效。默认 3 次；填 0 表示失败不重试。"
+                    >
+                      <Input type="number" min={0} />
+                    </Form.Item>
+                    <Form.Item
+                      name="retry_interval_minutes"
+                      label="失败重试间隔（分钟）"
+                      extra="发布到调度后生效。默认 1 分钟；填 0 表示失败后立即重试。"
                     >
                       <Input type="number" min={0} />
                     </Form.Item>

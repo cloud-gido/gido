@@ -20,6 +20,7 @@ const LIST_PAGES: Array<{ file: string; storageHint: string }> = [
   { file: 'pages/Integration.tsx', storageHint: 'gido.integration.tasks.cols' },
   { file: 'pages/Workflow.tsx', storageHint: 'gido.workflow.tableCols' },
   { file: 'pages/RunHistory.tsx', storageHint: 'gido.batch.runHistory.cols' },
+  { file: 'pages/DataMap.tsx', storageHint: 'gido.datamap.catalog.cols' },
 ]
 
 describe('resizable list adoption', () => {

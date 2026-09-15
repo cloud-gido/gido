@@ -4,7 +4,7 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Table, Button, Modal, Form, Input, Select, InputNumber, Tag, Space, message, Alert } from 'antd'
 import { PlusOutlined, DeleteOutlined, ApiOutlined, EditOutlined } from '@ant-design/icons'
 import { datasourceApi } from '../api'
@@ -24,6 +24,7 @@ export default function DatasourcePage() {
   const [list, setList] = useState<any[]>([])
   const [modalOpen, setModalOpen] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
+  const editingExtraRef = useRef<Record<string, unknown>>({})
   const [submitLoading, setSubmitLoading] = useState(false)
   const [form] = Form.useForm()
 
@@ -36,6 +37,7 @@ export default function DatasourcePage() {
 
   const openCreate = () => {
     setEditingId(null)
+    editingExtraRef.current = {}
     form.resetFields()
     setModalOpen(true)
   }
@@ -44,6 +46,17 @@ export default function DatasourcePage() {
     try {
       const detail: any = await datasourceApi.get(row.id)
       setEditingId(row.id)
+      const ex = (detail.extra_config && typeof detail.extra_config === 'object')
+        ? { ...detail.extra_config }
+        : {}
+      editingExtraRef.current = ex
+      const rawCatalogs = ex.catalogs ?? ex.datamap_catalogs
+      let datamapCatalogs: string[] = []
+      if (Array.isArray(rawCatalogs)) {
+        datamapCatalogs = rawCatalogs.map((x: unknown) => String(x).trim()).filter(Boolean)
+      } else if (typeof rawCatalogs === 'string' && rawCatalogs.trim()) {
+        datamapCatalogs = rawCatalogs.split(/[,;]/).map(s => s.trim()).filter(Boolean)
+      }
       form.setFieldsValue({
         name: detail.name,
         ds_type: detail.ds_type,
@@ -52,6 +65,7 @@ export default function DatasourcePage() {
         database: detail.database,
         username: detail.ds_type === 'doris' ? (detail.username || undefined) : detail.username,
         password: undefined,
+        datamap_catalogs: datamapCatalogs,
       })
       setModalOpen(true)
     } catch {
@@ -87,7 +101,7 @@ export default function DatasourcePage() {
   }
 
   const normalizePayload = (values: Record<string, unknown>, editing: boolean) => {
-    const payload = { ...values }
+    const payload: Record<string, unknown> = { ...values }
     if (payload.ds_type === 'doris') {
       const u = String(payload.username ?? '').trim()
       payload.username = u || null
@@ -102,6 +116,20 @@ export default function DatasourcePage() {
     } else if (!payload.password) {
       delete payload.password
     }
+    const rawCats = payload.datamap_catalogs
+    delete payload.datamap_catalogs
+    const catalogs = Array.isArray(rawCats)
+      ? rawCats.map(x => String(x).trim()).filter(Boolean)
+      : []
+    const extra: Record<string, unknown> = { ...(editingExtraRef.current || {}) }
+    if (catalogs.length) {
+      extra.catalogs = catalogs
+      delete extra.datamap_catalogs
+    } else {
+      delete extra.catalogs
+      delete extra.datamap_catalogs
+    }
+    payload.extra_config = Object.keys(extra).length ? extra : null
     return payload
   }
 
@@ -249,6 +277,29 @@ export default function DatasourcePage() {
             extra="Doris/MySQL/PG：填库名（如 Doris 默认库或业务库）；留空将无法同步 Dolphin。"
           >
             <Input placeholder="例如 default_catalog 下的库名（按实际 Doris/MySQL/PG）" />
+          </Form.Item>
+          <Form.Item
+            noStyle
+            shouldUpdate={(prev, cur) => prev.ds_type !== cur.ds_type}
+          >
+            {() => {
+              const t = form.getFieldValue('ds_type')
+              if (t !== 'mysql' && t !== 'doris') return null
+              return (
+                <Form.Item
+                  name="datamap_catalogs"
+                  label="数据地图库白名单"
+                  extra="可选。留空则「数据地图 → 刷新目录」枚举该账号可见的全部业务库；填写后仅扫这些库（如 bigdata_ads、bigdata_dw），适合共享 Doris 集群。"
+                >
+                  <Select
+                    mode="tags"
+                    tokenSeparators={[',', ';', ' ']}
+                    placeholder="例如 bigdata_ads、bigdata_dw"
+                    allowClear
+                  />
+                </Form.Item>
+              )
+            }}
           </Form.Item>
           <Form.Item
             name="username"

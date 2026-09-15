@@ -40,7 +40,17 @@ class SchedulerEngine(Protocol):
     def offline_definition(self, project_id: str, definition_id: str) -> None:
         ...
 
-    def set_schedule(self, project_id: str, definition_id: str, cron_expression: str) -> None:
+    def set_schedule(
+        self,
+        project_id: str,
+        definition_id: str,
+        cron_expression: str,
+        *,
+        failure_strategy: str = "CONTINUE",
+        process_priority: str = "MEDIUM",
+        worker_group: str = "default",
+        timezone_id: str = "Asia/Shanghai",
+    ) -> None:
         ...
 
     def pause_schedule(self, project_id: str, definition_id: str) -> int:
@@ -56,6 +66,9 @@ class SchedulerEngine(Protocol):
         *,
         business_date: Optional[str] = None,
         complement: bool = False,
+        failure_strategy: str = "CONTINUE",
+        process_priority: str = "MEDIUM",
+        worker_group: str = "default",
     ) -> SchedulerInstanceRef:
         ...
 

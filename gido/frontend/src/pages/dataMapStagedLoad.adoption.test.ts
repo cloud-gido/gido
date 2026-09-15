@@ -30,5 +30,8 @@ describe('DataMap staged load adoption', () => {
     expect(page).toContain('ensureDetailExtra')
     expect(page).toContain('datasource_id: ds.id')
     expect(page).toMatch(/datamapApi\s*\n\s*\.catalog\(/)
+    expect(page).toContain('账号可见')
+    const dsPage = read('pages/Datasource.tsx')
+    expect(dsPage).toContain('数据地图库白名单')
   })
 })
