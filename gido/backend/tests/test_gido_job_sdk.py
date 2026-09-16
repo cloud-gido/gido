@@ -21,7 +21,11 @@ if _JOB_LIB not in sys.path:
 from gido_job.context import ENV_CONTEXT_FILE, load_job_context, mysql_protocol_user
 from gido_job.job import GidoJob
 from gido_job.macros import resolve_date_expr, substitute_sql_macros
-from app.services.python_job_runner import _PYTHON_JOB_LIB, datasource_to_job_context
+from app.services.python_job_runner import (
+    _PYTHON_JOB_LIB,
+    _macro_context,
+    datasource_to_job_context,
+)
 
 
 def test_mysql_protocol_user_doris_root():
@@ -208,6 +212,40 @@ def test_job_var_requires_context(monkeypatch):
     j = GidoJob()
     with pytest.raises(RuntimeError, match="未注入数据源"):
         j.var("any")
+
+
+def test_macro_context_keeps_variables_when_workspace_metadata_query_fails(monkeypatch):
+    """Workspace 字段漂移不得让空间变量和节点 params 一起丢失。"""
+    import app.services.workspace_variables as wv
+
+    class BrokenWorkspaceDb:
+        def query(self, _model):
+            raise RuntimeError("workspace schema drift")
+
+    monkeypatch.setattr(
+        wv,
+        "load_workspace_variable_map",
+        lambda db, workspace_id, scope: {
+            "applovin_report_key": "workspace-secret",
+            "workspace_only": "kept",
+        },
+    )
+    node = SimpleNamespace(
+        workspace_id=7,
+        params={
+            "applovin_report_key": "node-secret",
+            "node_only": "kept",
+        },
+    )
+
+    ctx = _macro_context(BrokenWorkspaceDb(), node, bizdate="2026-09-16")
+
+    assert ctx["timezone"] == "Asia/Shanghai"
+    assert ctx["variables"] == {
+        "applovin_report_key": "node-secret",
+        "workspace_only": "kept",
+        "node_only": "kept",
+    }
 
 
 def test_run_python_node_substitutes_source_vars(monkeypatch, tmp_path):

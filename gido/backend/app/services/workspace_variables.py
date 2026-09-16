@@ -3,6 +3,7 @@
 """工作空间全局变量：Batch / Stream / Serve 共用 ${key} 与 $[...] 时间宏替换。"""
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.models.workspace import Workspace, WorkspaceVariable
 
 VALID_SCOPES = frozenset({"all", "batch", "stream", "serve"})
+logger = logging.getLogger(__name__)
 
 
 def load_workspace_variable_map(
@@ -54,8 +56,14 @@ def substitute_script_variables(
     if not script:
         return script
 
-    ws = db.query(Workspace).filter(Workspace.id == int(workspace_id)).first()
-    tz_name = (ws.timezone if ws else None) or "Asia/Shanghai"
+    tz_name = "Asia/Shanghai"
+    try:
+        ws = db.query(Workspace).filter(Workspace.id == int(workspace_id)).first()
+        if ws and ws.timezone:
+            tz_name = ws.timezone
+    except Exception as exc:
+        # 时区元数据不可用时仍应继续展开独立表中的空间变量。
+        logger.warning("加载工作空间时区失败，使用默认时区 %s: %s", tz_name, exc)
 
     try:
         import pytz

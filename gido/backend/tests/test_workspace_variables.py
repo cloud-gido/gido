@@ -48,3 +48,25 @@ def test_substitute_workspace_variables(monkeypatch):
 
     out_stream = wv.substitute_script_variables(db, 1, "${stream.only}", "stream")
     assert out_stream == "yes"
+
+
+def test_substitute_variables_survives_workspace_metadata_query_failure(monkeypatch):
+    """时区所在 Workspace 查询失败时，变量表仍应作为独立数据源参与替换。"""
+    monkeypatch.setattr(
+        wv,
+        "load_workspace_variable_map",
+        lambda db, ws_id, scope: {"applovin_report_key": "secret-value"},
+    )
+
+    class BrokenWorkspaceDb:
+        def query(self, _):
+            raise RuntimeError("workspace schema drift")
+
+    out = wv.substitute_script_variables(
+        BrokenWorkspaceDb(),
+        1,
+        'key = "${applovin_report_key}"',
+        "batch",
+    )
+
+    assert out == 'key = "secret-value"'

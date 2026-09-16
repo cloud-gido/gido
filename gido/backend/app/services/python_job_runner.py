@@ -46,10 +46,15 @@ def _macro_context(db: Any, node: Any, bizdate: Optional[str] = None) -> Dict[st
     from app.services.business_date import bizdate_and_yesterday
     from app.services.workspace_variables import load_workspace_variable_map
 
-    ws = db.query(Workspace).filter(Workspace.id == int(node.workspace_id)).first()
-    tz_name = (ws.timezone if ws and ws.timezone else None) or getattr(
-        settings, "DEFAULT_TIMEZONE", None
-    ) or "Asia/Shanghai"
+    workspace_id = int(node.workspace_id)
+    tz_name = getattr(settings, "DEFAULT_TIMEZONE", None) or "Asia/Shanghai"
+    try:
+        ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
+        if ws and ws.timezone:
+            tz_name = ws.timezone
+    except Exception as e:
+        # Workspace 模型发生字段漂移时，不能连带丢失独立表中的空间变量和节点 params。
+        logger.warning("加载工作空间时区失败，使用默认时区 %s: %s", tz_name, e)
     try:
         import pytz
 
@@ -60,10 +65,11 @@ def _macro_context(db: Any, node: Any, bizdate: Optional[str] = None) -> Dict[st
     biz, yesterday = bizdate_and_yesterday(bizdate, now=now_local.replace(tzinfo=None))
     variables: Dict[str, str] = {}
     try:
-        variables.update(load_workspace_variable_map(db, int(node.workspace_id), "batch"))
+        variables.update(load_workspace_variable_map(db, workspace_id, "batch"))
     except Exception as e:
         logger.warning("加载空间变量失败: %s", e)
 
+    # 节点参数独立于空间变量；即使空间变量查询失败也必须保留。
     params = getattr(node, "params", None) or {}
     if isinstance(params, dict):
         for k, v in params.items():
