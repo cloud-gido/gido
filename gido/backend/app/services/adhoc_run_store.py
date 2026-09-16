@@ -162,6 +162,8 @@ def serialize_adhoc_run(
         "object_name": row.object_name,
         "node_id": row.node_id,
         "node_instance_id": row.node_instance_id,
+        "run_type": getattr(row, "run_type", None),
+        "business_date": getattr(row, "business_date", None),
         "sql_summary": summarize_sql(row.sql_text),
         "sql_preview": preview_sql(row.sql_text),
         "status": row.status,
@@ -171,6 +173,8 @@ def serialize_adhoc_run(
         "duration_ms": row.duration_ms,
         "started_at": row.started_at,
         "finished_at": row.finished_at,
+        "heartbeat_at": getattr(row, "heartbeat_at", None),
+        "cancel_requested_at": getattr(row, "cancel_requested_at", None),
         "created_at": row.created_at,
         "result_truncated": bool((row.result_preview or {}).get("truncated")) if isinstance(row.result_preview, dict) else False,
     }

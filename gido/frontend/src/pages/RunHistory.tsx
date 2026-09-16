@@ -15,15 +15,23 @@ import WorkspaceTime from '../components/WorkspaceTime'
 import { useResizableTableColumns } from '../hooks/useResizableTableColumns'
 
 const STATUS_COLOR: Record<string, string> = {
+  queued: 'blue',
   success: 'green',
   failed: 'red',
   running: 'blue',
+  cancel_requested: 'orange',
+  cancelled: 'default',
+  timed_out: 'red',
 }
 
 const STATUS_LABEL: Record<string, string> = {
+  queued: '排队中',
   success: '成功',
   failed: '失败',
   running: '运行中',
+  cancel_requested: '停止中',
+  cancelled: '已停止',
+  timed_out: '已超时',
 }
 
 const SOURCE_LABEL: Record<string, string> = {

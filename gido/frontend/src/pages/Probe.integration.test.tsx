@@ -40,9 +40,16 @@ vi.mock('../api', () => ({
   probeApi: {
     getTree: vi.fn(),
     saveTree: vi.fn(),
+    submitRun: vi.fn(),
   },
   datasourceApi: {
     list: vi.fn(),
+  },
+  adhocRunsApi: {
+    active: vi.fn().mockResolvedValue(null),
+    get: vi.fn(),
+    logs: vi.fn(),
+    cancel: vi.fn(),
   },
 }))
 

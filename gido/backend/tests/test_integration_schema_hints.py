@@ -88,7 +88,10 @@ def test_list_columns_parses_qualified_table_name():
             captured["params"] = params
 
         def fetchall(self):
-            return [("stat_date", "date", "NO", "PRI"), ("company_id", "bigint", "NO", "")]
+            return [
+                ("stat_date", "date", "NO", "PRI", "统计日期"),
+                ("company_id", "bigint", "NO", "", "公司 ID"),
+            ]
 
     class Conn:
         def cursor(self):
@@ -105,3 +108,4 @@ def test_list_columns_parses_qualified_table_name():
         out = list_columns(ds, "bigdata_ads.ads_foo")
     assert captured["params"] == ("bigdata_ads", "ads_foo")
     assert [c["name"] for c in out] == ["stat_date", "company_id"]
+    assert [c["comment"] for c in out] == ["统计日期", "公司 ID"]

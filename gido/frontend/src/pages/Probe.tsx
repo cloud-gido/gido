@@ -65,6 +65,7 @@ import {
 import WorkspaceFolderTree, { locateLeafInFolderTree, type FolderRow, type LeafRow } from '../components/WorkspaceFolderTree'
 import AutosaveStatusHint from '../components/AutosaveStatusHint'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
+import { useInteractiveRun } from '../hooks/useInteractiveRun'
 
 function sameParent(a: string | null | undefined, b: string | null | undefined) {
   return (a ?? null) === (b ?? null)
@@ -262,6 +263,49 @@ export default function ProbePage() {
     () => probeState.scripts.find(s => s.id === probeState.activeScriptId) ?? null,
     [probeState.scripts, probeState.activeScriptId],
   )
+  const interactiveRun = useInteractiveRun({
+    workspaceId: wsId,
+    source: 'probe',
+    recoveryKey: activeScript?.id,
+  })
+  const lastRunErrorRef = useRef('')
+
+  useEffect(() => {
+    setLoading(interactiveRun.isActive)
+    if (interactiveRun.result) {
+      const runResult = interactiveRun.result as ProbeRunResult
+      setResult(runResult)
+      const statements = runResult.statements || []
+      const firstOk = statements.find(s => !s.error && s.columns?.length) ?? statements[0]
+      setActiveResultTab(String(firstOk?.index ?? 0))
+      const colKeys = firstOk?.columns ?? runResult.columns
+      if (colKeys?.length) {
+        setProbeState(prev => {
+          const id = prev.activeScriptId
+          if (!id) return prev
+          return {
+            ...prev,
+            scripts: prev.scripts.map(s => {
+              if (s.id !== id) return s
+              const m = s.resultColMeta ?? { order: [], widths: {} }
+              return {
+                ...s,
+                resultColMeta: {
+                  order: resolveResultColumnOrder(m.order, colKeys, m.sourceKeys),
+                  widths: pruneWidths(m.widths, colKeys),
+                  sourceKeys: colKeys,
+                },
+              }
+            }),
+          }
+        })
+      }
+    }
+    if (interactiveRun.error && interactiveRun.error !== lastRunErrorRef.current) {
+      lastRunErrorRef.current = interactiveRun.error
+      message.error(interactiveRun.error)
+    }
+  }, [interactiveRun.isActive, interactiveRun.result, interactiveRun.error])
 
   const treeFolders = useMemo<FolderRow<string>[]>(
     () => probeState.folders.map(f => ({
@@ -437,49 +481,21 @@ export default function ProbePage() {
     }
     setLoading(true)
     setResult(null)
+    lastRunErrorRef.current = ''
     setResultPanelOpen(true)
     try {
-      const res: any = await probeApi.query({
+      const res: any = await interactiveRun.start(() => probeApi.submitRun({
         workspace_id: wsId,
         datasource_id: runDs,
         sql: sqlToRun,
         limit: activeScript.limit,
-      })
-      const runRes = res as ProbeRunResult
-      setResult(runRes)
-      const firstOk = runRes.statements?.find(s => !s.error && s.columns?.length) ?? runRes.statements?.[0]
-      setActiveResultTab(String(firstOk?.index ?? 0))
-      const colKeys = firstOk?.columns ?? runRes.columns
-      if (colKeys?.length) {
-        setProbeState(prev => {
-          const id = prev.activeScriptId
-          if (!id) return prev
-          return {
-            ...prev,
-            scripts: prev.scripts.map(s => {
-              if (s.id !== id) return s
-              const m = s.resultColMeta ?? { order: [], widths: {} }
-              // 新结果以 SQL/JDBC 列序为准；仅列签名不变时保留拖拽（见 resolveResultColumnOrder）
-              const order = resolveResultColumnOrder(m.order, colKeys, m.sourceKeys)
-              return {
-                ...s,
-                resultColMeta: {
-                  order,
-                  widths: pruneWidths(m.widths, colKeys),
-                  sourceKeys: colKeys,
-                },
-              }
-            }),
-          }
-        })
-      }
-      if (runRes.has_errors) message.warning('部分语句执行失败，请查看对应结果页签')
-      else if (runRes.statement_count > 1) message.success(`已执行 ${runRes.statement_count} 条语句`)
-      if (firstOk?.truncated) message.info(`结果已按最大 ${activeScript.limit} 行截断`)
+        client_key: activeScript.id,
+      }))
+      if (res?.reused) message.info('相同查询正在运行，已恢复进度')
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '执行失败')
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   const runRef = useRef(run)

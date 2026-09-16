@@ -26,6 +26,8 @@ import {
 import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from './MonacoFindBar'
 import { bindMonacoScriptKeybindings } from '../utils/monacoScriptKeybindings'
 import AutosaveStatusHint from './AutosaveStatusHint'
+import LiveRunPanel from './LiveRunPanel'
+import { useInteractiveRun } from '../hooks/useInteractiveRun'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
 import {
   restoreScriptLocalDraft,
@@ -107,6 +109,11 @@ export default function NodeConfigModal({
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [node, setNode] = useState<StudioNode | null>(null)
+  const interactiveRun = useInteractiveRun({
+    workspaceId,
+    nodeId,
+    source: 'studio',
+  })
   const [datasources, setDatasources] = useState<any[]>([])
   const [integrationTasks, setIntegrationTasks] = useState<any[]>([])
   const [workflows, setWorkflows] = useState<any[]>([])
@@ -430,7 +437,7 @@ export default function NodeConfigModal({
   const handleTryRun = useCallback(async (overrideScript?: string, meta?: { fromSelection?: boolean }) => {
     if (!nodeId || !node) return
     if (!canRun) return
-    if (node.node_type !== 'SQL' && node.node_type !== 'PYTHON') return
+    if (!['SQL', 'PYTHON', 'SHELL'].includes(node.node_type)) return
     const script = overrideScript ?? (form.getFieldValue('script_content') ?? '')
     if (!String(script).trim()) {
       message.warning('请先编写脚本')
@@ -440,16 +447,32 @@ export default function NodeConfigModal({
       message.info('已执行选中片段')
     }
     try {
-      const res: any = await studioApi.runNode(nodeId, script)
-      if (res?.status === 'failed') {
-        message.error(res?.log?.slice?.(-200) || '试跑失败')
-      } else {
-        message.success('试跑完成')
+      const rawParams = form.getFieldValue('params')
+      let params: Record<string, unknown> | undefined
+      if (rawParams && typeof rawParams === 'string') {
+        const parsed = JSON.parse(rawParams)
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('自定义变量须为键值对对象')
+        }
+        params = parsed
+      } else if (rawParams && typeof rawParams === 'object') {
+        params = rawParams
       }
+      const datasourceId = form.getFieldValue('datasource_id')
+      const res: any = await interactiveRun.start(() => studioApi.submitRun(
+        nodeId,
+        script,
+        undefined,
+        {
+          ...(params ? { params } : {}),
+          ...(datasourceId ? { datasource_id: Number(datasourceId) } : {}),
+        },
+      ))
+      message.success(res?.reused ? '已有相同运行，已打开日志' : '已提交后台运行')
     } catch (e: any) {
       message.error(e?.response?.data?.detail || e?.message || '试跑失败')
     }
-  }, [nodeId, node, canRun, form])
+  }, [nodeId, node, canRun, form, interactiveRun])
 
   const handleTryRunRef = useRef(handleTryRun)
   handleTryRunRef.current = handleTryRun
@@ -484,6 +507,15 @@ export default function NodeConfigModal({
       footer={(_, { OkBtn, CancelBtn }) => (
         <Space style={{ width: '100%', justifyContent: 'space-between' }}>
           <Space>
+            {canRun && node && ['SQL', 'PYTHON', 'SHELL'].includes(node.node_type) && (
+              <Button
+                size="small"
+                loading={interactiveRun.isActive}
+                onClick={() => void handleTryRun()}
+              >
+                {interactiveRun.isActive ? '查看运行中' : '试跑'}
+              </Button>
+            )}
             {canWrite && !node?.is_locked && !holdsLock && node?.edit_lock_username && (
               <Button size="small" danger icon={<LockOutlined />} onClick={handleSteal}>抢锁</Button>
             )}
@@ -590,6 +622,19 @@ export default function NodeConfigModal({
                           />
                         </div>
                       </Form.Item>
+                    )}
+                    {showScriptEditor && interactiveRun.status !== 'idle' && (
+                      <div style={{ height: 240, marginBottom: 12, border: '1px solid #f0f0f0', borderRadius: 6, overflow: 'hidden' }}>
+                        <LiveRunPanel
+                          compact
+                          runId={interactiveRun.runId}
+                          status={interactiveRun.status}
+                          log={interactiveRun.log}
+                          error={interactiveRun.error}
+                          isActive={interactiveRun.isActive}
+                          onCancel={interactiveRun.cancel}
+                        />
+                      </div>
                     )}
                     {node?.node_type === 'SYNC' && (
                       <>

@@ -13,13 +13,19 @@ import { formatInTimeZone } from '../utils/datetime'
 import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
 import QueryResultPanel from '../components/QueryResultPanel'
 import DwMonacoEditor from '../components/DwMonacoEditor'
+import LiveRunPanel from '../components/LiveRunPanel'
+import { useInteractiveRun } from '../hooks/useInteractiveRun'
 import { normalizeQueryColumns } from '../utils/queryColumns'
 import { R } from '../routes'
 
 const STATUS_COLOR: Record<string, string> = {
+  queued: 'blue',
+  cancel_requested: 'orange',
   success: 'green',
   failed: 'red',
   running: 'blue',
+  cancelled: 'default',
+  timed_out: 'red',
 }
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -34,6 +40,12 @@ export default function RunHistoryDetailPage() {
   const displayTz = currentWorkspace?.timezone || 'Asia/Shanghai'
   const [row, setRow] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const liveRun = useInteractiveRun({
+    workspaceId: row?.workspace_id,
+    nodeId: row?.node_id,
+    source: row?.source === 'probe' ? 'probe' : 'studio',
+    autoRecover: false,
+  })
 
   useEffect(() => {
     const runId = Number(id)
@@ -46,6 +58,12 @@ export default function RunHistoryDetailPage() {
       .catch((e: any) => message.error(e?.response?.data?.detail || e?.message || '加载失败'))
       .finally(() => setLoading(false))
   }, [id])
+
+  useEffect(() => {
+    if (row?.id && ['queued', 'running', 'cancel_requested'].includes(row.status)) {
+      liveRun.attach(Number(row.id))
+    }
+  }, [row?.id, row?.status])
 
   const preview = row?.result_preview
   const tableBundle = useMemo(() => {
@@ -178,11 +196,18 @@ export default function RunHistoryDetailPage() {
         <Alert type="error" showIcon style={{ marginBottom: 16 }} message="错误信息" description={row.error_message} />
       )}
 
-      {row?.log_content && (
+      {(row?.log_content || liveRun.runId === Number(row?.id)) && (
         <Card title="执行日志" size="small" style={{ marginBottom: 16 }}>
-          <pre style={{ margin: 0, maxHeight: 240, overflow: 'auto', whiteSpace: 'pre-wrap' }}>
-            {row.log_content}
-          </pre>
+          <div style={{ height: 320 }}>
+            <LiveRunPanel
+              runId={liveRun.runId || row?.id}
+              status={liveRun.runId === Number(row?.id) ? liveRun.status : row?.status}
+              log={liveRun.runId === Number(row?.id) ? liveRun.log : row?.log_content || ''}
+              error={liveRun.error || row?.error_message}
+              isActive={liveRun.runId === Number(row?.id) && liveRun.isActive}
+              onCancel={liveRun.cancel}
+            />
+          </div>
         </Card>
       )}
 

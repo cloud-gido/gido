@@ -102,6 +102,10 @@ class Settings(BaseSettings):
     # EKS 示例：http://backend.bigdata.svc.cluster.local:8001
     GIDO_DS_CALLBACK_BASE_URL: Optional[str] = None
     DEFAULT_TIMEZONE: str = "Asia/Shanghai"
+    # Studio / Probe 交互式运行：提交即返回 run_id，由数据库队列后台执行。
+    ADHOC_ASYNC_ENABLED: bool = True
+    ADHOC_WORKER_CONCURRENCY: int = 2
+    ADHOC_LOG_MAX_BYTES: int = 10 * 1024 * 1024
 
     # 仅用于本地排障：启动时把 admin 密码设为该明文；用完后务必从 .env 删除
     RESET_ADMIN_PASSWORD: Optional[str] = None

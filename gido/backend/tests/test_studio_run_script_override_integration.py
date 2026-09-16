@@ -25,7 +25,7 @@ from app.models.workspace import User, Workspace, WorkspaceMember
 from app.services.rbac_seed import run_rbac_bootstrap
 import app.api.studio  # noqa: F401
 from app.models import rbac_models  # noqa: F401
-from app.api import auth, workspace, studio
+from app.api import adhoc_runs, auth, workspace, studio
 
 
 @pytest.fixture()
@@ -71,6 +71,7 @@ def client():
     app.include_router(auth.router, prefix="/api")
     app.include_router(workspace.router, prefix="/api")
     app.include_router(studio.router, prefix="/api")
+    app.include_router(adhoc_runs.router, prefix="/api")
     app.dependency_overrides[get_db] = _get_db
 
     with TestClient(app) as c:
@@ -147,6 +148,46 @@ def test_run_node_without_override_keeps_saved_script(client: TestClient):
     ran = client.post(f"/api/studio/nodes/{nid}/run", headers=h, json={})
     assert ran.status_code == 200, ran.text
     assert "ONLY_SAVED" in (ran.json().get("log") or "")
-
     detail = client.get(f"/api/studio/nodes/{nid}", headers=h)
     assert detail.json()["script_content"] == saved
+
+
+def test_async_run_returns_202_and_reuses_active_run(client: TestClient):
+    token, ws_id = _login(client)
+    h = _h(token)
+    created = client.post(
+        "/api/studio/nodes",
+        headers=h,
+        json={
+            "workspace_id": ws_id,
+            "name": "async-python",
+            "node_type": "PYTHON",
+            "script_content": "print('queued')",
+        },
+    )
+    nid = created.json()["id"]
+
+    first = client.post(
+        f"/api/studio/nodes/{nid}/runs",
+        headers=h,
+        json={"script_content": "print('queued')", "bizdate": "2026-09-15"},
+    )
+    second = client.post(
+        f"/api/studio/nodes/{nid}/runs",
+        headers=h,
+        json={"script_content": "print('queued')", "bizdate": "2026-09-15"},
+    )
+
+    assert first.status_code == 202, first.text
+    assert first.json()["status"] == "queued"
+    assert second.status_code == 202, second.text
+    assert second.json()["run_id"] == first.json()["run_id"]
+    assert second.json()["reused"] is True
+
+    active = client.get(
+        "/api/adhoc-runs/active",
+        headers=h,
+        params={"workspace_id": ws_id, "node_id": nid, "source": "studio"},
+    )
+    assert active.status_code == 200, active.text
+    assert active.json()["id"] == first.json()["run_id"]

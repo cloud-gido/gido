@@ -523,7 +523,16 @@ class AdhocRun(Base):
     node_id = Column(Integer, ForeignKey("dw_task_nodes.id"), nullable=True)
     node_instance_id = Column(Integer, ForeignKey("dw_node_instances.id"), nullable=True)
     sql_text = Column(Text, nullable=True)
-    status = Column(String(32), default="success", index=True)  # success/failed/running
+    status = Column(String(32), default="success", index=True)  # queued/running/success/failed/cancelled/timed_out
+    run_type = Column(String(32), nullable=True)  # SQL/PYTHON/SHELL/SYNC/PROBE
+    business_date = Column(String(32), nullable=True)
+    script_hash = Column(String(64), nullable=True)
+    execution_key = Column(String(128), nullable=True, unique=True, index=True)
+    request_payload = Column(JSON, nullable=True)
+    worker_id = Column(String(128), nullable=True)
+    heartbeat_at = Column(DateTime, nullable=True)
+    cancel_requested_at = Column(DateTime, nullable=True)
+    attempt_count = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
     log_content = Column(Text, nullable=True)
     result_preview = Column(JSON, nullable=True)
@@ -532,6 +541,21 @@ class AdhocRun(Base):
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class AdhocRunLogChunk(Base):
+    """交互式运行的增量日志；seq 是单次运行内的稳定游标。"""
+    __tablename__ = "dw_adhoc_run_log_chunks"
+    __table_args__ = (
+        UniqueConstraint("run_id", "seq", name="uq_adhoc_run_log_chunk_seq"),
+        Index("ix_adhoc_run_log_chunks_run_seq", "run_id", "seq"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("dw_adhoc_runs.id", ondelete="CASCADE"), nullable=False)
+    seq = Column(Integer, nullable=False)
+    stream = Column(String(16), nullable=False, default="stdout")
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class ProbeQueryTree(Base):

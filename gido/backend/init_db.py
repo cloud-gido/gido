@@ -55,6 +55,7 @@ from app.services.rbac_seed import (
     migrate_platform_integration_copilot,
     migrate_platform_integration_public_url,
     migrate_dw_workspace_variables,
+    migrate_adhoc_async_runs,
     migrate_dw_users_avatar,
     migrate_scheduler_engine_fields,
     migrate_schedule_runtime_policy,
@@ -104,6 +105,7 @@ migrate_platform_integration_aps_schedule(engine)
 migrate_platform_integration_copilot(engine)
 migrate_platform_integration_public_url(engine)
 migrate_dw_workspace_variables(engine)
+migrate_adhoc_async_runs(engine)
 migrate_dw_users_avatar(engine)
 migrate_scheduler_engine_fields(engine)
 

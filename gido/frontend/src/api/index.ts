@@ -110,6 +110,17 @@ export const studioApi = {
       ...(scriptContent !== undefined ? { script_content: scriptContent } : {}),
       ...(bizdate ? { bizdate } : {}),
     }),
+  submitRun: (
+    id: number,
+    scriptContent?: string,
+    bizdate?: string,
+    overrides?: { params?: Record<string, unknown>; datasource_id?: number },
+  ) =>
+    request.post(`/studio/nodes/${id}/runs`, {
+      ...(scriptContent !== undefined ? { script_content: scriptContent } : {}),
+      ...(bizdate ? { bizdate } : {}),
+      ...overrides,
+    }),
   getInstances: (id: number) => request.get(`/studio/nodes/${id}/instances`),
   getHistory: (id: number) => request.get(`/studio/nodes/${id}/history`),
   rollback: (id: number, historyId: number) => request.post(`/studio/nodes/${id}/history/${historyId}/rollback`),
@@ -187,6 +198,8 @@ export const workflowApi = {
 export const probeApi = {
   query: (data: { workspace_id: number; datasource_id: number; sql: string; limit?: number }) =>
     request.post('/probe/query', data),
+  submitRun: (data: { workspace_id: number; datasource_id: number; sql: string; limit?: number; client_key?: string }) =>
+    request.post('/probe/runs', data),
   getTree: (workspaceId: number) =>
     request.get('/probe/tree', { params: { workspace_id: workspaceId } }),
   saveTree: (data: {
@@ -410,6 +423,11 @@ export const adhocRunsApi = {
   list: (workspaceId: number, params?: Record<string, unknown>) =>
     request.get('/adhoc-runs', { params: { workspace_id: workspaceId, ...params } }),
   get: (id: number) => request.get(`/adhoc-runs/${id}`),
+  active: (workspaceId: number, params?: { node_id?: number; source?: string; object_name?: string }) =>
+    request.get('/adhoc-runs/active', { params: { workspace_id: workspaceId, ...params } }),
+  logs: (id: number, afterSeq = 0, limit = 200) =>
+    request.get(`/adhoc-runs/${id}/logs`, { params: { after_seq: afterSeq, limit } }),
+  cancel: (id: number) => request.post(`/adhoc-runs/${id}/cancel`),
 }
 
 // 告警中心

@@ -2732,6 +2732,115 @@ def migrate_dw_workspace_variables(engine: Engine) -> None:
             conn.execute(text("CREATE INDEX idx_wv_workspace ON dw_workspace_variables (workspace_id)"))
 
 
+def migrate_adhoc_async_runs(engine: Engine) -> None:
+    """交互式异步运行：队列租约、取消、单飞键与增量日志。"""
+    insp = inspect(engine)
+    dialect = engine.dialect.name
+    if not insp.has_table("dw_adhoc_runs"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_adhoc_runs")}
+    json_type = "JSON" if dialect in ("mysql", "postgresql") else "JSON"
+    int_type = "INT" if dialect == "mysql" else "INTEGER"
+    dt_type = "DATETIME" if dialect == "mysql" else "TIMESTAMP"
+    adds = (
+        ("run_type", "VARCHAR(32)"),
+        ("business_date", "VARCHAR(32)"),
+        ("script_hash", "VARCHAR(64)"),
+        ("execution_key", "VARCHAR(128)"),
+        ("request_payload", json_type),
+        ("worker_id", "VARCHAR(128)"),
+        ("heartbeat_at", dt_type),
+        ("cancel_requested_at", dt_type),
+        ("attempt_count", f"{int_type} NOT NULL DEFAULT 0"),
+    )
+    with engine.begin() as conn:
+        for name, sql_type in adds:
+            if name not in cols:
+                conn.execute(text(f"ALTER TABLE dw_adhoc_runs ADD COLUMN {name} {sql_type}"))
+        adhoc_insp = inspect(engine)
+        indexes = adhoc_insp.get_indexes("dw_adhoc_runs")
+        constraints = adhoc_insp.get_unique_constraints("dw_adhoc_runs")
+        execution_key_unique = any(
+            idx.get("unique") and idx.get("column_names") == ["execution_key"]
+            for idx in indexes
+        ) or any(
+            item.get("column_names") == ["execution_key"] for item in constraints
+        )
+        if not execution_key_unique:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX ux_adhoc_runs_execution_key "
+                    "ON dw_adhoc_runs (execution_key)"
+                )
+            )
+
+        if not inspect(engine).has_table("dw_adhoc_run_log_chunks"):
+            if dialect == "mysql":
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE dw_adhoc_run_log_chunks (
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            run_id INT NOT NULL,
+                            seq INT NOT NULL,
+                            stream VARCHAR(16) NOT NULL DEFAULT 'stdout',
+                            content TEXT NOT NULL,
+                            created_at DATETIME NOT NULL,
+                            UNIQUE KEY uq_adhoc_run_log_chunk_seq (run_id, seq),
+                            INDEX ix_adhoc_run_log_chunks_run_seq (run_id, seq),
+                            CONSTRAINT fk_adhoc_log_run FOREIGN KEY (run_id)
+                                REFERENCES dw_adhoc_runs(id) ON DELETE CASCADE
+                        )
+                        """
+                    )
+                )
+            elif dialect == "postgresql":
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE dw_adhoc_run_log_chunks (
+                            id SERIAL PRIMARY KEY,
+                            run_id INTEGER NOT NULL REFERENCES dw_adhoc_runs(id) ON DELETE CASCADE,
+                            seq INTEGER NOT NULL,
+                            stream VARCHAR(16) NOT NULL DEFAULT 'stdout',
+                            content TEXT NOT NULL,
+                            created_at TIMESTAMP NOT NULL,
+                            CONSTRAINT uq_adhoc_run_log_chunk_seq UNIQUE (run_id, seq)
+                        )
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX ix_adhoc_run_log_chunks_run_seq "
+                        "ON dw_adhoc_run_log_chunks (run_id, seq)"
+                    )
+                )
+            else:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE dw_adhoc_run_log_chunks (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            run_id INTEGER NOT NULL,
+                            seq INTEGER NOT NULL,
+                            stream VARCHAR(16) NOT NULL DEFAULT 'stdout',
+                            content TEXT NOT NULL,
+                            created_at TIMESTAMP NOT NULL,
+                            FOREIGN KEY (run_id) REFERENCES dw_adhoc_runs(id) ON DELETE CASCADE,
+                            UNIQUE (run_id, seq)
+                        )
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX ix_adhoc_run_log_chunks_run_seq "
+                        "ON dw_adhoc_run_log_chunks (run_id, seq)"
+                    )
+                )
+
+
 def run_rbac_bootstrap(db: Session):
     by_code = seed_permissions(db)
     roles = seed_roles(db, by_code)

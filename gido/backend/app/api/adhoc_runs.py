@@ -13,7 +13,7 @@ from app.core import perm_codes as PC
 from app.core.access import user_has_any
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models.workspace import AdhocRun, DataSource, User
+from app.models.workspace import AdhocRun, AdhocRunLogChunk, DataSource, User
 from app.services.adhoc_run_store import serialize_adhoc_run
 from app.services.rbac import (
     assert_workspace_access,
@@ -115,6 +115,35 @@ def list_adhoc_runs(
     }
 
 
+@router.get("/active")
+def get_active_adhoc_run(
+    workspace_id: int,
+    node_id: Optional[int] = None,
+    source: str = "studio",
+    object_name: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """恢复当前用户在节点/入口上的活动运行。"""
+    assert_workspace_access(db, current_user, workspace_id)
+    allowed = _allowed_sources(db, current_user, workspace_id)
+    src = source.strip().lower()
+    if src not in allowed:
+        raise HTTPException(status_code=403, detail=f"无权查看来源 {src}")
+    q = db.query(AdhocRun).filter(
+        AdhocRun.workspace_id == workspace_id,
+        AdhocRun.source == src,
+        AdhocRun.triggered_by == current_user.id,
+        AdhocRun.status.in_(["queued", "running", "cancel_requested"]),
+    )
+    if node_id is not None:
+        q = q.filter(AdhocRun.node_id == node_id)
+    if object_name:
+        q = q.filter(AdhocRun.object_name == object_name)
+    row = q.order_by(desc(AdhocRun.id)).first()
+    return serialize_adhoc_run(row, include_result=True) if row else None
+
+
 @router.get("/{run_id}")
 def get_adhoc_run(
     run_id: int,
@@ -132,3 +161,63 @@ def get_adhoc_run(
     ds = db.query(DataSource).filter(DataSource.id == row.datasource_id).first() if row.datasource_id else None
     item["datasource_name"] = ds.name if ds else None
     return item
+
+
+@router.get("/{run_id}/logs")
+def get_adhoc_run_logs(
+    run_id: int,
+    after_seq: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    row = db.query(AdhocRun).filter(AdhocRun.id == run_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    _assert_can_view_run(db, current_user, row)
+    chunks = (
+        db.query(AdhocRunLogChunk)
+        .filter(
+            AdhocRunLogChunk.run_id == run_id,
+            AdhocRunLogChunk.seq > after_seq,
+        )
+        .order_by(AdhocRunLogChunk.seq)
+        .limit(limit)
+        .all()
+    )
+    next_seq = chunks[-1].seq if chunks else after_seq
+    return {
+        "run_id": run_id,
+        "status": row.status,
+        "chunks": [
+            {
+                "seq": item.seq,
+                "stream": item.stream,
+                "content": item.content,
+                "created_at": item.created_at,
+            }
+            for item in chunks
+        ],
+        "next_seq": next_seq,
+        "has_more": len(chunks) >= limit,
+    }
+
+
+@router.post("/{run_id}/cancel")
+def cancel_adhoc_run(
+    run_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.services.adhoc_run_worker import request_cancel
+
+    row = db.query(AdhocRun).filter(AdhocRun.id == run_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    _assert_can_view_run(db, current_user, row)
+    if row.triggered_by != current_user.id and not workspace_data_full_control(
+        db, current_user, row.workspace_id
+    ):
+        raise HTTPException(status_code=403, detail="仅执行人或空间管理员可停止运行")
+    row = request_cancel(db, row)
+    return {"run_id": row.id, "status": row.status}

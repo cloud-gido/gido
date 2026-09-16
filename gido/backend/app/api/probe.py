@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.core.security import get_current_user
 from app.core import perm_codes as PC
 from app.models.workspace import DataSource, ProbeQueryTree, User, Workspace
@@ -43,6 +44,7 @@ class ProbeQueryIn(BaseModel):
     datasource_id: int
     sql: str
     limit: int = Field(default=10000, ge=1, le=10000)
+    client_key: Optional[str] = Field(default=None, max_length=128)
 
 
 class ProbeTreeIn(BaseModel):
@@ -174,6 +176,39 @@ def _execute_one(ds: DataSource, stmt: str, lim: int) -> Dict[str, Any]:
             conn.close()
 
     raise HTTPException(status_code=400, detail=f"暂不支持该数据源类型的探查: {ds.ds_type}")
+
+
+@router.post("/runs", status_code=202)
+def submit_probe_run_async(
+    body: ProbeQueryIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """提交持久化只读探查，立即返回 run_id。"""
+    from app.services.adhoc_run_worker import submit_probe_run
+
+    if not settings.ADHOC_ASYNC_ENABLED:
+        raise HTTPException(status_code=503, detail="异步交互式运行尚未启用")
+    assert_workspace_data_capability(
+        db, current_user, body.workspace_id, "viewer", PC.GIDO_BATCH_PROBE_READ
+    )
+    ds = require_datasource_row(
+        db, current_user, body.datasource_id, PC.GIDO_BATCH_PROBE_READ
+    )
+    if ds.workspace_id != body.workspace_id:
+        raise HTTPException(status_code=400, detail="数据源不属于该工作空间")
+    # 提交前完成只读校验，非法 SQL 不进入后台队列。
+    parse_readonly_statements(body.sql or "")
+    row, reused = submit_probe_run(
+        db,
+        workspace_id=body.workspace_id,
+        datasource_id=body.datasource_id,
+        user_id=current_user.id,
+        sql=body.sql,
+        limit=body.limit,
+        object_name=f"probe:{body.client_key}" if body.client_key else ds.name,
+    )
+    return {"run_id": row.id, "status": row.status, "reused": reused}
 
 
 @router.post("/query")

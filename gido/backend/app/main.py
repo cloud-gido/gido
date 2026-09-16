@@ -117,6 +117,7 @@ async def lifespan(app: FastAPI):
         migrate_dw_workflow_instance_submitted_by,
         migrate_dw_quality_dolphin_refs,
         migrate_dw_workspace_variables,
+        migrate_adhoc_async_runs,
         migrate_dw_users_avatar,
         migrate_scheduler_engine_fields,
         run_rbac_bootstrap,
@@ -173,6 +174,7 @@ async def lifespan(app: FastAPI):
     migrate_platform_integration_copilot(engine)
     migrate_platform_integration_public_url(engine)
     migrate_dw_workspace_variables(engine)
+    migrate_adhoc_async_runs(engine)
     migrate_dw_users_avatar(engine)
     migrate_scheduler_engine_fields(engine)
     db = SessionLocal()
@@ -209,9 +211,11 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_kick_run_type_backfill, name="run-type-backfill", daemon=True).start()
     from app.services.integration_cdc import start_cdc_manager
     from app.services.sync_worker import start_sync_worker
+    from app.services.adhoc_run_worker import start_adhoc_worker, stop_adhoc_worker
 
     start_cdc_manager()
     start_sync_worker()
+    start_adhoc_worker()
     db2 = SessionLocal()
     try:
         from app.services.ds_runtime import get_dolphin_runtime
@@ -223,6 +227,7 @@ async def lifespan(app: FastAPI):
     yield
     if not ds_on:
         executor.stop()
+    stop_adhoc_worker()
     from app.services.integration_cdc import stop_cdc_manager
 
     stop_cdc_manager()

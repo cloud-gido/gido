@@ -79,6 +79,8 @@ import { exportRowsToCsv } from '../utils/csvExport'
 import { SQL_RESULT_ROW_CAP } from '../utils/sqlResultRowLimit'
 import { pruneWidths, resolveResultColumnOrder } from '../utils/resultTableMeta'
 import NodeConfigModal from '../components/NodeConfigModal'
+import LiveRunPanel from '../components/LiveRunPanel'
+import { useInteractiveRun } from '../hooks/useInteractiveRun'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
 import { sortLeavesByOrderThenName } from '../utils/treeSort'
 import WorkspaceFolderTree, { locateLeafInFolderTree } from '../components/WorkspaceFolderTree'
@@ -795,6 +797,11 @@ export default function StudioPage() {
 
   // 当前激活节点
   const activeNode = openTabs.find(t => t.id === activeTabId)
+  const interactiveRun = useInteractiveRun({
+    workspaceId: wsId,
+    nodeId: activeNode?.id,
+    source: 'studio',
+  })
 
   // DEPENDENT 预览名：仅打开该类节点时再拉工作流列表（进页不 listAll）
   useEffect(() => {
@@ -816,6 +823,21 @@ export default function StudioPage() {
   const activeScript = activeTabId !== null
     ? (dirtyMap[activeTabId] ?? activeNode?.script_content ?? '')
     : ''
+  useEffect(() => {
+    if (!activeTabId || !interactiveRun.runId) return
+    setRunningId(interactiveRun.isActive ? activeTabId : null)
+    setLogMap(prev => ({ ...prev, [activeTabId]: interactiveRun.log || interactiveRun.error || '' }))
+    if (interactiveRun.result) {
+      setResultMap(prev => ({ ...prev, [activeTabId]: interactiveRun.result }))
+    }
+  }, [
+    activeTabId,
+    interactiveRun.runId,
+    interactiveRun.isActive,
+    interactiveRun.log,
+    interactiveRun.error,
+    interactiveRun.result,
+  ])
   const holdsEditLock = activeTabId !== null && editLockHeld[activeTabId] === true
   const canEdit = Boolean(
     canWrite && activeNode && !activeNode.is_locked && holdsEditLock && !activeContentPending,
@@ -1080,18 +1102,19 @@ export default function StudioPage() {
     setLogPanelOpen(true)
     setResultTab(prev => ({ ...prev, [activeNode.id]: activeNode.node_type === 'SQL' ? 'result' : 'log' }))
     try {
-      const res: any = await studioApi.runNode(
-        activeNode.id,
-        latestScript,
-        runBizdate ? runBizdate.format('YYYY-MM-DD') : undefined,
+      const res: any = await interactiveRun.start(
+        () => studioApi.submitRun(
+          activeNode.id,
+          latestScript,
+          runBizdate ? runBizdate.format('YYYY-MM-DD') : undefined,
+        ),
       )
-      setLogMap(prev => ({ ...prev, [activeNode.id]: res.log || '执行完成，无输出' }))
-      if (res.result) setResultMap(prev => ({ ...prev, [activeNode.id]: res.result }))
+      if (res?.reused) message.info('该节点已有相同运行，已打开实时日志')
     } catch (e: any) {
       setLogMap(prev => ({ ...prev, [activeNode.id]: e?.response?.data?.detail || '执行失败' }))
       setResultTab(prev => ({ ...prev, [activeNode.id]: 'log' }))
+      setRunningId(null)
     }
-    setRunningId(null)
   }
 
   const handleRunRef = useRef(handleRun)
@@ -1760,14 +1783,14 @@ export default function StudioPage() {
                           key: 'log',
                           label: <>日志 {isRunning && <Spin size="small" style={{ marginLeft: 6 }} />}</>,
                           children: (
-                            <pre style={{
-                              flex: 1, margin: 0, padding: '10px 14px',
-                              color: '#333', fontSize: 13, overflow: 'auto',
-                              whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, monospace',
-                              background: '#fff', height: '100%', boxSizing: 'border-box',
-                            }}>
-                              {isRunning ? '执行中...' : (logMap[activeTabId!] || '暂无日志')}
-                            </pre>
+                            <LiveRunPanel
+                              runId={interactiveRun.runId}
+                              status={interactiveRun.status}
+                              log={interactiveRun.log || logMap[activeTabId!] || ''}
+                              error={interactiveRun.error}
+                              isActive={interactiveRun.isActive}
+                              onCancel={interactiveRun.cancel}
+                            />
                           ),
                         },
                         {

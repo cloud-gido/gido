@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -78,6 +78,8 @@ def run_sql_with_result(
     bizdate: Optional[str] = None,
     *,
     resolve_date_expr,
+    emit: Optional[Callable[[str], None]] = None,
+    control: Optional[Callable[[], None]] = None,
 ) -> Tuple[List[str], Optional[Dict[str, Any]]]:
     """
     执行节点脚本，返回 (log_lines, result_meta)。
@@ -100,6 +102,13 @@ def run_sql_with_result(
     logs: List[str] = [
         f"[INFO] 数据源({source}): {ds.name} ({ds.ds_type}) #{ds.id} @ {ds.host}:{ds.port or (5432 if lt == 'postgresql' else 3306)}",
     ]
+    if emit:
+        emit(logs[0])
+
+    def add_log(line: str) -> None:
+        logs.append(line)
+        if emit:
+            emit(line)
 
     from app.services.workspace_variables import substitute_script_variables
 
@@ -139,17 +148,21 @@ def run_sql_with_result(
             cur = conn.cursor()
             try:
                 for raw_stmt in raw_parts:
+                    if control:
+                        control()
                     stmt = _adapt_statement(raw_stmt, lt)
                     if stmt != raw_stmt.strip().rstrip(";").strip():
-                        logs.append(f"[INFO] 已转换为 PostgreSQL 语法: {stmt[:120]}...")
+                        add_log(f"[INFO] 已转换为 PostgreSQL 语法: {stmt[:120]}...")
                     exec_stmt = stmt
                     if _looks_like_result_query(stmt):
                         capped = apply_readonly_row_limit(stmt, _cap)
                         if capped != stmt:
-                            logs.append(f"[INFO] 已追加 LIMIT {_cap} 避免全表拉取")
+                            add_log(f"[INFO] 已追加 LIMIT {_cap} 避免全表拉取")
                             exec_stmt = capped
-                    logs.append(f"[SQL] {exec_stmt[:200]}")
+                    add_log(f"[SQL] {exec_stmt[:200]}")
                     cur.execute(exec_stmt)
+                    if control:
+                        control()
                     if cur.description:
                         # fetchmany 封顶，避免已有大 LIMIT 时仍把结果全量载入内存
                         rows = cur.fetchmany(_cap + 1)
@@ -164,17 +177,19 @@ def run_sql_with_result(
                             "total": len(rows),
                             "truncated": truncated,
                         }
-                        logs.append(
+                        add_log(
                             f"[INFO] 返回 {len(rows)} 行"
                             + ("（已截断）" if truncated else "")
                         )
                     else:
                         if kind == "mysql":
                             conn.commit()
-                        logs.append(f"[INFO] 影响行数: {getattr(cur, 'rowcount', 0)}")
+                        add_log(f"[INFO] 影响行数: {getattr(cur, 'rowcount', 0)}")
             finally:
                 cur.close()
     except Exception as e:
+        if isinstance(e, (InterruptedError, TimeoutError)):
+            raise
         err = str(e).strip()
         if lt == "postgresql" and "pymysql" in err.lower():
             err = f"{err}（请确认节点已绑定 postgresql 数据源，而非 doris/mysql）"

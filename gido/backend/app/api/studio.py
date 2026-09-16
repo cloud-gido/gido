@@ -897,6 +897,51 @@ class RunNodeBody(BaseModel):
     """POST /studio/nodes/{id}/run：大段 SQL/脚本请放 JSON body，勿用 query（易超长、被代理截断或写入访问日志）。"""
     script_content: Optional[str] = None
     bizdate: Optional[str] = None  # YYYY-MM-DD；补数据/调度回调传入，宏相对该日展开
+    params: Optional[Dict[str, Any]] = None
+    datasource_id: Optional[int] = None
+
+
+@router.post("/nodes/{node_id}/runs", status_code=202)
+def submit_node_run_async(
+    node_id: int,
+    body: RunNodeBody = Body(default_factory=RunNodeBody),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """持久化提交交互式运行；浏览器无需保持长连接。"""
+    from app.services.business_date import normalize_business_date
+    from app.services.adhoc_run_worker import submit_node_run
+
+    if not settings.ADHOC_ASYNC_ENABLED:
+        raise HTTPException(status_code=503, detail="异步交互式运行尚未启用")
+    node = db.query(TaskNode).filter(TaskNode.id == node_id).first()
+    if not node:
+        raise HTTPException(status_code=404, detail="节点不存在")
+    assert_workspace_data_capability(
+        db, current_user, node.workspace_id, "developer", PC.GIDO_BATCH_STUDIO_RUN
+    )
+    row, reused = submit_node_run(
+        db,
+        node=node,
+        user_id=current_user.id,
+        script_content=body.script_content,
+        bizdate=normalize_business_date(body.bizdate),
+        params=body.params,
+        datasource_id=body.datasource_id,
+    )
+    if reused and row.triggered_by != current_user.id:
+        raise HTTPException(
+            status_code=409,
+            detail="该节点相同业务日与脚本已有其他用户运行，请到运行历史查看后再试",
+        )
+    if not reused:
+        log_action(db, current_user.id, "run", "node", node.id, node.name, node.workspace_id)
+    return {
+        "run_id": row.id,
+        "instance_id": row.node_instance_id,
+        "status": row.status,
+        "reused": reused,
+    }
 
 
 @router.post("/nodes/{node_id}/run")
