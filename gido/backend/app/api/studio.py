@@ -3,6 +3,7 @@
 # @author felixzhu
 # @date 2026-06-05
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session, load_only
 from pydantic import BaseModel, field_validator
 from typing import Optional, Any, Dict, List, Tuple
@@ -1066,6 +1067,127 @@ def _run_python(node: TaskNode, db: Session, bizdate: str = None) -> list:
     return run_python_node(node, db, bizdate=bizdate)
 
 
+def _require_internal_token(authorization: Optional[str]) -> None:
+    token = (authorization or "").replace("Bearer ", "").strip()
+    if not settings.INTERNAL_TOKEN or token != settings.INTERNAL_TOKEN:
+        raise HTTPException(status_code=401, detail="无效的内部令牌")
+
+
+@router.post("/internal/nodes/{node_id}/runs", status_code=202)
+def submit_internal_node_run(
+    node_id: int,
+    body: RunNodeBody = Body(default_factory=RunNodeBody),
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """供 Dolphin 快速提交任务；执行由 GIDO 后台队列接管。"""
+    from app.services.adhoc_run_worker import submit_node_run
+    from app.services.business_date import normalize_business_date
+
+    _require_internal_token(authorization)
+    if not settings.ADHOC_ASYNC_ENABLED:
+        raise HTTPException(status_code=503, detail="异步运行尚未启用")
+    node = db.query(TaskNode).filter(TaskNode.id == node_id).first()
+    if not node:
+        raise HTTPException(status_code=404, detail="节点不存在")
+    if node.node_type not in ("PYTHON", "SQL"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"节点类型为 {node.node_type}，内部回调仅支持 PYTHON / SQL",
+        )
+    user_id = node.owner_id or node.created_by
+    if not user_id:
+        raise HTTPException(status_code=400, detail="节点缺少负责人，无法创建调度运行")
+    row, _reused = submit_node_run(
+        db,
+        node=node,
+        user_id=int(user_id),
+        script_content=body.script_content,
+        bizdate=normalize_business_date(body.bizdate),
+        params=body.params,
+        datasource_id=body.datasource_id,
+        source="scheduler",
+    )
+    return PlainTextResponse(str(row.id), status_code=202)
+
+
+@router.get("/internal/runs/{run_id}/poll")
+def poll_internal_node_run(
+    run_id: int,
+    after_seq: int = Query(0, ge=0),
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Shell-friendly response: status, next sequence, then new log text."""
+    from app.models.workspace import AdhocRun, AdhocRunLogChunk
+
+    _require_internal_token(authorization)
+    row = (
+        db.query(AdhocRun)
+        .filter(AdhocRun.id == run_id, AdhocRun.source == "scheduler")
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="调度运行不存在")
+    chunks = (
+        db.query(AdhocRunLogChunk)
+        .filter(
+            AdhocRunLogChunk.run_id == run_id,
+            AdhocRunLogChunk.seq > after_seq,
+        )
+        .order_by(AdhocRunLogChunk.seq.asc())
+        .limit(1000)
+        .all()
+    )
+    next_seq = int(chunks[-1].seq) if chunks else after_seq
+    content = "".join(str(chunk.content or "") for chunk in chunks)
+    has_more = (
+        db.query(AdhocRunLogChunk.id)
+        .filter(
+            AdhocRunLogChunk.run_id == run_id,
+            AdhocRunLogChunk.seq > next_seq,
+        )
+        .first()
+        is not None
+    )
+    if (
+        row.status in {"failed", "timed_out", "cancelled"}
+        and not has_more
+        and row.error_message
+        and row.error_message not in content
+    ):
+        content += f"\n[ERROR] {row.error_message}\n"
+    poll_status = (
+        "running"
+        if has_more
+        and row.status in {"success", "failed", "timed_out", "cancelled"}
+        else row.status
+    )
+    return PlainTextResponse(f"{poll_status}\n{next_seq}\n{content}")
+
+
+@router.post("/internal/runs/{run_id}/cancel")
+def cancel_internal_node_run(
+    run_id: int,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Cancel a queued/running callback when Dolphin terminates its task."""
+    from app.models.workspace import AdhocRun
+    from app.services.adhoc_run_worker import request_cancel
+
+    _require_internal_token(authorization)
+    row = (
+        db.query(AdhocRun)
+        .filter(AdhocRun.id == run_id, AdhocRun.source == "scheduler")
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="调度运行不存在")
+    row = request_cancel(db, row)
+    return PlainTextResponse(row.status)
+
+
 @router.post("/internal/nodes/{node_id}/run")
 def internal_run_node(
     node_id: int,
@@ -1079,9 +1201,7 @@ def internal_run_node(
     """
     from app.services.business_date import normalize_business_date
 
-    token = (authorization or "").replace("Bearer ", "").strip()
-    if not settings.INTERNAL_TOKEN or token != settings.INTERNAL_TOKEN:
-        raise HTTPException(status_code=401, detail="无效的内部令牌")
+    _require_internal_token(authorization)
     node = db.query(TaskNode).filter(TaskNode.id == node_id).first()
     if not node:
         raise HTTPException(status_code=404, detail="节点不存在")

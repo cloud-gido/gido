@@ -10,7 +10,14 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from app.models.rbac_models import Role, Permission
 from app.core import perm_codes as P
-from app.models.workspace import User
+from app.core.database import Base
+from app.models.workspace import (
+    AdhocRunExport,
+    AdhocRunLogChunk,
+    AdhocRunResultChunk,
+    AdhocRunStatement,
+    User,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -625,6 +632,40 @@ def migrate_schedule_runtime_policy(engine: Engine) -> None:
                         f"ALTER TABLE dw_workspaces ADD COLUMN {name} {typ} NOT NULL DEFAULT {default}"
                     )
                 )
+
+
+def migrate_job_version_publishing(engine: Engine) -> None:
+    """Add the durable fields and uniqueness required by recoverable publishing."""
+    insp = inspect(engine)
+    dialect = engine.dialect.name
+    if not insp.has_table("dw_job_versions"):
+        return
+
+    columns = {c["name"] for c in insp.get_columns("dw_job_versions")}
+    job_version_columns = (
+        ("scheduler_definition_version", "INT" if dialect == "mysql" else "INTEGER"),
+        ("build_error", "TEXT"),
+        ("build_started_at", "DATETIME" if dialect == "mysql" else "TIMESTAMP"),
+        ("build_finished_at", "DATETIME" if dialect == "mysql" else "TIMESTAMP"),
+    )
+    with engine.begin() as conn:
+        for name, ddl in job_version_columns:
+            if name not in columns:
+                conn.execute(text(f"ALTER TABLE dw_job_versions ADD COLUMN {name} {ddl} NULL"))
+
+    insp = inspect(engine)
+    indexes = {idx["name"] for idx in insp.get_indexes("dw_job_versions")}
+    uniques = {item.get("name") for item in insp.get_unique_constraints("dw_job_versions")}
+    if "uq_job_version_workflow_version" not in indexes | uniques:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX uq_job_version_workflow_version "
+                    "ON dw_job_versions (workflow_id, version_no)"
+                )
+            )
+    # Older deployments may still contain dw_python_node_artifacts. It is intentionally
+    # left in place: startup migrations must not drop production data.
 
 
 def migrate_studio_tree_list_indexes(engine: Engine) -> None:
@@ -2733,112 +2774,88 @@ def migrate_dw_workspace_variables(engine: Engine) -> None:
 
 
 def migrate_adhoc_async_runs(engine: Engine) -> None:
-    """交互式异步运行：队列租约、取消、单飞键与增量日志。"""
+    """交互式异步运行：租约、逐语句结果、导出与旧库兼容迁移。"""
     insp = inspect(engine)
     dialect = engine.dialect.name
     if not insp.has_table("dw_adhoc_runs"):
         return
     cols = {c["name"] for c in insp.get_columns("dw_adhoc_runs")}
-    json_type = "JSON" if dialect in ("mysql", "postgresql") else "JSON"
     int_type = "INT" if dialect == "mysql" else "INTEGER"
+    bigint_type = "BIGINT"
     dt_type = "DATETIME" if dialect == "mysql" else "TIMESTAMP"
+    json_type = "JSON"
     adds = (
         ("run_type", "VARCHAR(32)"),
         ("business_date", "VARCHAR(32)"),
         ("script_hash", "VARCHAR(64)"),
         ("execution_key", "VARCHAR(128)"),
         ("request_payload", json_type),
+        ("schema_version", f"{int_type} NOT NULL DEFAULT 1"),
+        ("status_version", f"{bigint_type} NOT NULL DEFAULT 0"),
         ("worker_id", "VARCHAR(128)"),
+        ("lease_token", "VARCHAR(64)"),
+        ("lease_expires_at", dt_type),
+        ("claimed_at", dt_type),
+        ("queue_deadline_at", dt_type),
+        ("run_deadline_at", dt_type),
+        ("last_progress_at", dt_type),
         ("heartbeat_at", dt_type),
         ("cancel_requested_at", dt_type),
         ("attempt_count", f"{int_type} NOT NULL DEFAULT 0"),
+        ("log_bytes", f"{bigint_type} NOT NULL DEFAULT 0"),
+        ("log_next_seq", f"{bigint_type} NOT NULL DEFAULT 1"),
     )
     with engine.begin() as conn:
         for name, sql_type in adds:
             if name not in cols:
                 conn.execute(text(f"ALTER TABLE dw_adhoc_runs ADD COLUMN {name} {sql_type}"))
-        adhoc_insp = inspect(engine)
-        indexes = adhoc_insp.get_indexes("dw_adhoc_runs")
-        constraints = adhoc_insp.get_unique_constraints("dw_adhoc_runs")
-        execution_key_unique = any(
-            idx.get("unique") and idx.get("column_names") == ["execution_key"]
-            for idx in indexes
-        ) or any(
-            item.get("column_names") == ["execution_key"] for item in constraints
-        )
-        if not execution_key_unique:
+
+    # 让模型元数据负责三方言的主键、自增、JSON、FK cascade、唯一约束和新表索引。
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            AdhocRunLogChunk.__table__,
+            AdhocRunStatement.__table__,
+            AdhocRunResultChunk.__table__,
+            AdhocRunExport.__table__,
+        ],
+        checkfirst=True,
+    )
+
+    index_specs = {
+        "ux_adhoc_runs_execution_key": ("execution_key", True),
+        "ix_adhoc_runs_queue_claim": (
+            "status, queue_deadline_at, created_at",
+            False,
+        ),
+        "ix_adhoc_runs_lease_reclaim": ("status, lease_expires_at", False),
+        "ix_adhoc_runs_owner_history": (
+            "workspace_id, triggered_by, source, created_at",
+            False,
+        ),
+    }
+    reflected_indexes = inspect(engine).get_indexes("dw_adhoc_runs")
+    existing_indexes = {item.get("name") for item in reflected_indexes}
+    constraints = inspect(engine).get_unique_constraints("dw_adhoc_runs")
+    execution_key_unique = any(
+        item.get("unique") and item.get("column_names") == ["execution_key"]
+        for item in reflected_indexes
+    ) or any(
+        item.get("column_names") == ["execution_key"] for item in constraints
+    )
+    with engine.begin() as conn:
+        for name, (columns, unique) in index_specs.items():
+            if name in existing_indexes:
+                continue
+            if name == "ux_adhoc_runs_execution_key" and execution_key_unique:
+                continue
+            unique_sql = "UNIQUE " if unique else ""
             conn.execute(
                 text(
-                    "CREATE UNIQUE INDEX ux_adhoc_runs_execution_key "
-                    "ON dw_adhoc_runs (execution_key)"
+                    f"CREATE {unique_sql}INDEX {name} "
+                    f"ON dw_adhoc_runs ({columns})"
                 )
             )
-
-        if not inspect(engine).has_table("dw_adhoc_run_log_chunks"):
-            if dialect == "mysql":
-                conn.execute(
-                    text(
-                        """
-                        CREATE TABLE dw_adhoc_run_log_chunks (
-                            id INT AUTO_INCREMENT PRIMARY KEY,
-                            run_id INT NOT NULL,
-                            seq INT NOT NULL,
-                            stream VARCHAR(16) NOT NULL DEFAULT 'stdout',
-                            content TEXT NOT NULL,
-                            created_at DATETIME NOT NULL,
-                            UNIQUE KEY uq_adhoc_run_log_chunk_seq (run_id, seq),
-                            INDEX ix_adhoc_run_log_chunks_run_seq (run_id, seq),
-                            CONSTRAINT fk_adhoc_log_run FOREIGN KEY (run_id)
-                                REFERENCES dw_adhoc_runs(id) ON DELETE CASCADE
-                        )
-                        """
-                    )
-                )
-            elif dialect == "postgresql":
-                conn.execute(
-                    text(
-                        """
-                        CREATE TABLE dw_adhoc_run_log_chunks (
-                            id SERIAL PRIMARY KEY,
-                            run_id INTEGER NOT NULL REFERENCES dw_adhoc_runs(id) ON DELETE CASCADE,
-                            seq INTEGER NOT NULL,
-                            stream VARCHAR(16) NOT NULL DEFAULT 'stdout',
-                            content TEXT NOT NULL,
-                            created_at TIMESTAMP NOT NULL,
-                            CONSTRAINT uq_adhoc_run_log_chunk_seq UNIQUE (run_id, seq)
-                        )
-                        """
-                    )
-                )
-                conn.execute(
-                    text(
-                        "CREATE INDEX ix_adhoc_run_log_chunks_run_seq "
-                        "ON dw_adhoc_run_log_chunks (run_id, seq)"
-                    )
-                )
-            else:
-                conn.execute(
-                    text(
-                        """
-                        CREATE TABLE dw_adhoc_run_log_chunks (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            run_id INTEGER NOT NULL,
-                            seq INTEGER NOT NULL,
-                            stream VARCHAR(16) NOT NULL DEFAULT 'stdout',
-                            content TEXT NOT NULL,
-                            created_at TIMESTAMP NOT NULL,
-                            FOREIGN KEY (run_id) REFERENCES dw_adhoc_runs(id) ON DELETE CASCADE,
-                            UNIQUE (run_id, seq)
-                        )
-                        """
-                    )
-                )
-                conn.execute(
-                    text(
-                        "CREATE INDEX ix_adhoc_run_log_chunks_run_seq "
-                        "ON dw_adhoc_run_log_chunks (run_id, seq)"
-                    )
-                )
 
 
 def run_rbac_bootstrap(db: Session):

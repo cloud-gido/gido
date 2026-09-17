@@ -3,6 +3,9 @@
 # =============================================================================
 # Apache DolphinScheduler 3.2.2 — 本地最小分布式（非 standalone）
 # =============================================================================
+# 仅用于本地开发/兼容验证，不是生产模板。Python 节点由 default Worker
+# 通过 curl 调用 GIDO 异步接口，无需 Python 运行时资源或专用 Worker。
+#
 # 架构：PostgreSQL×1、ZooKeeper×1、API×1、Master×1、Worker×1、Alert×1。
 # 所有 Deployment 使用 **Recreate** 策略，避免滚动更新时出现「双 Pod」导致 port-forward 连到未监听端口。
 #
@@ -38,6 +41,16 @@ metadata:
 type: Opaque
 stringData:
   postgres-password: "DolphinPgDev!72"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gido-internal-token
+  namespace: dolphinscheduler
+type: Opaque
+stringData:
+  # 必须与 GIDO Backend 的 INTERNAL_TOKEN 完全一致。
+  token: "CHANGE_ME_GIDO_INTERNAL_TOKEN"
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -560,6 +573,8 @@ spec:
               value: "false"
             - name: SPRING_CLOUD_KUBERNETES_CONFIG_ENABLED
               value: "false"
+            - name: GIDO_INTERNAL_TOKEN_FILE
+              value: "/var/run/secrets/gido-internal/token"
           volumeMounts:
             - name: worker-data
               mountPath: /tmp/dolphinscheduler
@@ -569,6 +584,9 @@ spec:
               mountPath: /opt/soft
             - name: resource
               mountPath: /dolphinscheduler
+            - name: gido-internal-token
+              mountPath: /var/run/secrets/gido-internal
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /actuator/health
@@ -593,6 +611,10 @@ spec:
           emptyDir: {}
         - name: resource
           emptyDir: {}
+        - name: gido-internal-token
+          secret:
+            secretName: gido-internal-token
+            defaultMode: 0440
 ---
 # ---------- Alert Server ----------
 apiVersion: apps/v1

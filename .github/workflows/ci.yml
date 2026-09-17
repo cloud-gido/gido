@@ -154,6 +154,25 @@ jobs:
             exit 1
           fi
 
+  infrastructure:
+    name: Infrastructure manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install kubeconform
+        run: |
+          set -euo pipefail
+          version=0.7.0
+          curl -fsSLo /tmp/kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/v${version}/kubeconform-linux-amd64.tar.gz"
+          echo "c31518ddd122663b3f3aa874cfe8178cb0988de944f29c74a0b9260920d115d3  /tmp/kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/kubeconform.tar.gz -C /usr/local/bin kubeconform
+      - name: Validate Kubernetes manifests
+        run: |
+          kubeconform -strict -summary \
+            k8s/gido.yaml \
+            k8s/eks/gido-eks-external-pg.yaml
   docker-images:
     name: Build and push images to GHCR
     runs-on: ubuntu-latest

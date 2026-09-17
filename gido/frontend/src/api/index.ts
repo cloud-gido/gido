@@ -5,6 +5,14 @@
  * @date 2026-06-05
  */
 import request from './request'
+import type {
+  InteractiveExportFormat,
+  InteractiveRun,
+  InteractiveRunEvents,
+  InteractiveRunExport,
+  InteractiveStatementList,
+  InteractiveStatementRows,
+} from '../types/interactiveRun'
 
 // 认证
 export const authApi = {
@@ -422,12 +430,63 @@ export const operationApi = {
 export const adhocRunsApi = {
   list: (workspaceId: number, params?: Record<string, unknown>) =>
     request.get('/adhoc-runs', { params: { workspace_id: workspaceId, ...params } }),
-  get: (id: number) => request.get(`/adhoc-runs/${id}`),
+  get: (id: number) =>
+    request.get(`/adhoc-runs/${id}`) as unknown as Promise<InteractiveRun>,
   active: (workspaceId: number, params?: { node_id?: number; source?: string; object_name?: string }) =>
-    request.get('/adhoc-runs/active', { params: { workspace_id: workspaceId, ...params } }),
+    request.get('/adhoc-runs/active', {
+      params: { workspace_id: workspaceId, ...params },
+    }) as unknown as Promise<InteractiveRun | null>,
   logs: (id: number, afterSeq = 0, limit = 200) =>
     request.get(`/adhoc-runs/${id}/logs`, { params: { after_seq: afterSeq, limit } }),
-  cancel: (id: number) => request.post(`/adhoc-runs/${id}/cancel`),
+  events: (
+    id: number,
+    params: {
+      after_log_seq?: number
+      statement_version?: string
+      log_limit?: number
+      signal?: AbortSignal
+    } = {},
+  ) => {
+    const { signal, ...query } = params
+    return request.get(`/adhoc-runs/${id}/events`, {
+      params: query,
+      signal,
+    }) as unknown as Promise<InteractiveRunEvents>
+  },
+  statements: (id: number, signal?: AbortSignal) =>
+    request.get(`/adhoc-runs/${id}/statements`, { signal }) as unknown as Promise<InteractiveStatementList>,
+  statementRows: (
+    id: number,
+    statementIndex: number,
+    params: { cursor?: string | null; limit?: number; signal?: AbortSignal } = {},
+  ) => {
+    const { signal, ...query } = params
+    return request.get(`/adhoc-runs/${id}/statements/${statementIndex}/rows`, {
+      params: query,
+      signal,
+    }) as unknown as Promise<InteractiveStatementRows>
+  },
+  createExport: (id: number, statementIndex: number, format: InteractiveExportFormat) =>
+    request.post(`/adhoc-runs/${id}/exports`, {
+      statement_index: statementIndex,
+      format,
+    }) as unknown as Promise<InteractiveRunExport>,
+  getExport: (id: number, exportId: number, signal?: AbortSignal) =>
+    request.get(`/adhoc-runs/${id}/exports/${exportId}`, { signal }) as unknown as Promise<InteractiveRunExport>,
+  exportDownloadUrl: (id: number, exportId: number) =>
+    `/api/adhoc-runs/${id}/exports/${exportId}/download`,
+  downloadExport: (id: number, exportId: number) =>
+    request.get(`/adhoc-runs/${id}/exports/${exportId}/download`, {
+      responseType: 'blob',
+    }) as unknown as Promise<Blob>,
+  cancelExport: (id: number, exportId: number) =>
+    request.post(`/adhoc-runs/${id}/exports/${exportId}/cancel`) as unknown as Promise<InteractiveRunExport>,
+  cancel: (id: number) =>
+    request.post(`/adhoc-runs/${id}/cancel`) as unknown as Promise<{
+      run_id: number
+      status: InteractiveRun['status']
+      cancel_outcome?: string | null
+    }>,
 }
 
 // 告警中心

@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import requests
+import shlex
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -82,19 +83,77 @@ def ds_callback_base_url() -> str:
 
 
 def _ds_callback_curl(path: str, *, json_body: Optional[str] = None) -> str:
-    """生成 Worker 上执行的 curl（Bearer = INTERNAL_TOKEN）。"""
-    from app.core.config import settings as _s
-
+    """Deprecated callback runner; token is resolved only on the Worker."""
     url = f"{ds_callback_base_url()}{path}"
     parts = [
-        f"curl -s -f -X POST {url}",
-        "-H 'Content-Type: application/json'",
-        f"-H 'Authorization: Bearer {_s.INTERNAL_TOKEN}'",
+        "set -eu",
+        'token="${GIDO_INTERNAL_TOKEN:-}"',
+        'if [ -z "$token" ] && [ -n "${GIDO_INTERNAL_TOKEN_FILE:-}" ]; then '
+        'token="$(cat -- "$GIDO_INTERNAL_TOKEN_FILE")"; fi',
+        '[ -n "$token" ] || { echo "GIDO callback token is not configured" >&2; exit 2; }',
+        "curl --fail --silent --show-error --connect-timeout 10 --max-time 3600 "
+        "--retry 2 --retry-delay 2 --retry-connrefused -X POST "
+        + shlex.quote(url)
+        + " -H "
+        + shlex.quote("Content-Type: application/json")
+        + ' -H "Authorization: Bearer $token"',
     ]
     if json_body is not None:
-        parts.append(f"-d '{json_body}'")
-    parts.append("|| exit 1")
-    return " ".join(parts)
+        parts[-1] += " --data " + shlex.quote(json_body)
+    return "\n".join(parts)
+
+
+def _ds_async_node_callback(node_id: int) -> str:
+    """Submit to GIDO, stream incremental logs, and mirror the terminal status."""
+    base = ds_callback_base_url()
+    submit_url = f"{base}/api/studio/internal/nodes/{int(node_id)}/runs"
+    poll_base = f"{base}/api/studio/internal/runs"
+    body = '{"bizdate":"$[yyyy-MM-dd]"}'
+    curl_common = (
+        "curl --fail --silent --show-error --connect-timeout 10 "
+        "--max-time 30 --retry 2 --retry-delay 2 --retry-connrefused"
+    )
+    return "\n".join(
+        [
+            "set -eu",
+            'token="${GIDO_INTERNAL_TOKEN:-}"',
+            'if [ -z "$token" ] && [ -n "${GIDO_INTERNAL_TOKEN_FILE:-}" ]; then '
+            'token="$(cat -- "$GIDO_INTERNAL_TOKEN_FILE")"; fi',
+            '[ -n "$token" ] || { echo "GIDO callback token is not configured" >&2; exit 2; }',
+            "run_id=",
+            "done_flag=0",
+            "cancel_run() {",
+            '  if [ "$done_flag" -eq 0 ] && [ -n "${run_id:-}" ]; then',
+            f'    {curl_common} -X POST -H "Authorization: Bearer $token" '
+            f'"{poll_base}/$run_id/cancel" >/dev/null 2>&1 || true',
+            "  fi",
+            "}",
+            "trap cancel_run EXIT",
+            f'run_id="$({curl_common} -X POST '
+            f"-H {shlex.quote('Content-Type: application/json')} "
+            f'-H "Authorization: Bearer $token" '
+            f"--data {shlex.quote(body)} {shlex.quote(submit_url)})\"",
+            "case \"$run_id\" in ''|*[!0-9]*) echo \"GIDO returned invalid run_id: $run_id\" >&2; exit 3;; esac",
+            'echo "[GIDO] submitted run_id=$run_id"',
+            "seq=0",
+            "while :; do",
+            f'  payload="$({curl_common} -H "Authorization: Bearer $token" '
+            f'"{poll_base}/$run_id/poll?after_seq=$seq")"',
+            "  status=\"$(printf '%s\\n' \"$payload\" | sed -n '1p')\"",
+            "  next_seq=\"$(printf '%s\\n' \"$payload\" | sed -n '2p')\"",
+            "  logs=\"$(printf '%s\\n' \"$payload\" | sed '1,2d')\"",
+            "  if [ -n \"$logs\" ]; then printf '%s\\n' \"$logs\"; fi",
+            "  case \"$next_seq\" in ''|*[!0-9]*) echo \"Invalid log cursor\" >&2; exit 3;; esac",
+            "  seq=\"$next_seq\"",
+            "  case \"$status\" in",
+            "    success) done_flag=1; exit 0 ;;",
+            "    failed|timed_out|cancelled) done_flag=1; exit 1 ;;",
+            "    queued|running|cancel_requested) sleep 2 ;;",
+            "    *) echo \"Unknown GIDO run status: $status\" >&2; exit 3 ;;",
+            "  esac",
+            "done",
+        ]
+    )
 
 
 def unwrap_ds_numeric(val, *, keys=("id", "code")):
@@ -447,6 +506,7 @@ class DSClient:
                 "datasource_id": datasource_id,
                 "ds_task_type": "SHELL",
                 "ds_task_code": task_code,
+                "execution_mode": "shell",
                 "reason": None,
             }
 
@@ -535,12 +595,13 @@ class DSClient:
                             "taskExecuteType": "BATCH",
                         })
                         diag_row["ds_task_type"] = "SQL"
+                        diag_row["execution_mode"] = "sql"
                         diag_row["dolphin_datasource_id"] = ds_id_int
                         diag_row["jdbc_type"] = ds_db_type
                         sync_diag.append(diag_row)
                         continue
 
-            # PYTHON / SHELL / SQL 无可用数据源（未配置默认源或同步 DS 数据源失败）→ SHELL
+            # callback / SHELL / SQL 无可用数据源（未配置默认源或同步 DS 数据源失败）→ SHELL
             if node_type == "SQL" and not datasource_id and not diag_row.get("reason"):
                 diag_row["reason"] = "未解析到数据源（请在节点配置或空间设置指定默认/数仓数据源）"
                 logger.warning(
@@ -552,10 +613,7 @@ class DSClient:
                 diag_row["reason"] = "未能注册 Dolphin SQL 任务（见上文数据源同步日志）"
             if node_type == "SQL":
                 # $[yyyy-MM-dd] 由 DS 按 scheduleTime 展开，保证补数据每日业务日不同
-                raw_script = _ds_callback_curl(
-                    f"/api/studio/internal/nodes/{n['node_id']}/run",
-                    json_body='{"bizdate":"$[yyyy-MM-dd]"}',
-                )
+                raw_script = _ds_async_node_callback(int(n["node_id"]))
             elif node_type == "DEPENDENT":
                 from app.models.workspace import Workflow as WfModel
                 from app.services.workflow_dependent import (
@@ -637,6 +695,7 @@ class DSClient:
                     "taskExecuteType": "BATCH",
                 })
                 diag_row["ds_task_type"] = "DEPENDENT"
+                diag_row["execution_mode"] = "dependent"
                 diag_row["depend_workflow_id"] = first_wf_id
                 diag_row["depend_definition_code"] = first_def_code
                 diag_row["depend_relation"] = dep_cfg.get("relation") or "AND"
@@ -645,12 +704,10 @@ class DSClient:
                 continue
 
             elif node_type == "PYTHON":
-                # 回调 GIDO 执行（注入 gido_job + 数据源），不在 Worker 上跑明文脚本
-                # $[yyyy-MM-dd] 由 DS 按 scheduleTime 展开，保证补数据每日业务日不同
-                raw_script = _ds_callback_curl(
-                    f"/api/studio/internal/nodes/{n['node_id']}/run",
-                    json_body='{"bizdate":"$[yyyy-MM-dd]"}',
-                )
+                # GIDO 后台异步执行；Dolphin 只轮询状态并承接日志、重试与超时。
+                raw_script = _ds_async_node_callback(int(n["node_id"]))
+                diag_row["execution_mode"] = "callback"
+                diag_row["reason"] = "GIDO async callback"
             elif node_type == "SYNC":
                 node_params = n.get("params") or {}
                 sync_tid = node_params.get("sync_task_id") or ""
@@ -663,7 +720,11 @@ class DSClient:
             task_defs.append({
                 "code": task_code,
                 "name": n.get("name", f"node_{n['node_id']}"),
-                "description": "",
+                "description": (
+                    "GIDO async callback"
+                    if node_type == "PYTHON"
+                    else ""
+                ),
                 "taskType": "SHELL",
                 "isCache": "NO",
                 "taskParams": {

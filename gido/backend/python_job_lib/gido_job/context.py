@@ -8,6 +8,26 @@ import os
 from typing import Any, Dict, Optional
 
 ENV_CONTEXT_FILE = "GIDO_JOB_CONTEXT_FILE"
+CONTEXT_PROTOCOL_FIELD = "context_protocol_version"
+
+
+def _validate_context_protocol(data: Dict[str, Any]) -> None:
+    """Validate versioned launcher contexts while accepting legacy local contexts."""
+    declared = data.get(CONTEXT_PROTOCOL_FIELD)
+    if declared is None:
+        return
+    # Keep this import local so context.py remains independently importable.
+    from gido_job import CONTEXT_PROTOCOL_VERSION
+
+    if (
+        isinstance(declared, bool)
+        or not isinstance(declared, int)
+        or declared != CONTEXT_PROTOCOL_VERSION
+    ):
+        raise RuntimeError(
+            "GIDO 作业上下文协议不兼容: "
+            f"expected={CONTEXT_PROTOCOL_VERSION}, actual={declared!r}"
+        )
 
 
 def load_job_context() -> Optional[Dict[str, Any]]:
@@ -21,6 +41,7 @@ def load_job_context() -> Optional[Dict[str, Any]]:
         data = json.load(f)
     if not isinstance(data, dict):
         raise RuntimeError("GIDO 作业上下文格式无效（须为 JSON 对象）")
+    _validate_context_protocol(data)
     return data
 
 

@@ -106,6 +106,21 @@ class Settings(BaseSettings):
     ADHOC_ASYNC_ENABLED: bool = True
     ADHOC_WORKER_CONCURRENCY: int = 2
     ADHOC_LOG_MAX_BYTES: int = 10 * 1024 * 1024
+    ADHOC_RESULT_CHUNK_ROWS: int = 500
+    ADHOC_RESULT_MAX_ROWS: int = 10000
+    ADHOC_RESULT_MAX_BYTES: int = 20 * 1024 * 1024
+    # 0 表示该维度不设限；全局配额通过元数据库统计，跨副本生效。
+    ADHOC_CONCURRENCY_GLOBAL: int = 0
+    ADHOC_CONCURRENCY_PER_WORKSPACE: int = 0
+    ADHOC_CONCURRENCY_PER_USER: int = 0
+    ADHOC_CONCURRENCY_PER_DATASOURCE: int = 0
+    ADHOC_LEASE_SECONDS: int = 60
+    ADHOC_DRAIN_SECONDS: int = 10
+    # 已物化结果与导出文件留存。导出未配置 S3 时只允许严格上限内的 DB 快照流式导出。
+    ADHOC_RESULT_RETENTION_DAYS: int = 7
+    ADHOC_EXPORT_TTL_HOURS: int = 24
+    ADHOC_EXPORT_DB_FALLBACK_MAX_BYTES: int = 10 * 1024 * 1024
+    ADHOC_EXPORT_POLL_SECONDS: float = 0.5
 
     # 仅用于本地排障：启动时把 admin 密码设为该明文；用完后务必从 .env 删除
     RESET_ADMIN_PASSWORD: Optional[str] = None

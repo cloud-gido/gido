@@ -196,6 +196,9 @@ class Workflow(Base):
 class JobVersion(Base):
     """GIDO 生产版本：每次发布生成不可变快照，实例绑定版本而非当前草稿。"""
     __tablename__ = "dw_job_versions"
+    __table_args__ = (
+        UniqueConstraint("workflow_id", "version_no", name="uq_job_version_workflow_version"),
+    )
     id = Column(Integer, primary_key=True, index=True)
     workflow_id = Column(Integer, ForeignKey("dw_workflows.id"), nullable=False)
     version_no = Column(Integer, nullable=False)
@@ -205,9 +208,14 @@ class JobVersion(Base):
     scheduler_engine = Column(String(32), default="dolphin")
     scheduler_definition_id = Column(String(128), nullable=True)
     scheduler_project_id = Column(String(128), nullable=True)
-    status = Column(String(32), default="active")  # active/archived
+    # Dolphin API 当前未稳定返回 definition version；字段预留给后续查询映射。
+    scheduler_definition_version = Column(Integer, nullable=True)
+    status = Column(String(32), default="building")  # building/active/failed/archived
+    build_error = Column(Text, nullable=True)
+    build_started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    build_finished_at = Column(DateTime, nullable=True)
     published_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
-    published_at = Column(DateTime, default=datetime.utcnow)
+    published_at = Column(DateTime, nullable=True)
     workflow = relationship("Workflow", back_populates="versions")
 
 
@@ -514,6 +522,26 @@ class SyncRecord(Base):
 class AdhocRun(Base):
     """数据开发试跑 / 数据探查的交互式执行记录（非生产调度实例）。"""
     __tablename__ = "dw_adhoc_runs"
+    __table_args__ = (
+        Index(
+            "ix_adhoc_runs_queue_claim",
+            "status",
+            "queue_deadline_at",
+            "created_at",
+        ),
+        Index(
+            "ix_adhoc_runs_lease_reclaim",
+            "status",
+            "lease_expires_at",
+        ),
+        Index(
+            "ix_adhoc_runs_owner_history",
+            "workspace_id",
+            "triggered_by",
+            "source",
+            "created_at",
+        ),
+    )
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = Column(Integer, ForeignKey("dw_workspaces.id"), nullable=False, index=True)
     source = Column(String(32), nullable=False, index=True)  # studio | probe
@@ -529,12 +557,22 @@ class AdhocRun(Base):
     script_hash = Column(String(64), nullable=True)
     execution_key = Column(String(128), nullable=True, unique=True, index=True)
     request_payload = Column(JSON, nullable=True)
+    schema_version = Column(Integer, nullable=False, default=1)
+    status_version = Column(BigInteger, nullable=False, default=0)
     worker_id = Column(String(128), nullable=True)
+    lease_token = Column(String(64), nullable=True)
+    lease_expires_at = Column(DateTime, nullable=True)
+    claimed_at = Column(DateTime, nullable=True)
+    queue_deadline_at = Column(DateTime, nullable=True)
+    run_deadline_at = Column(DateTime, nullable=True)
+    last_progress_at = Column(DateTime, nullable=True)
     heartbeat_at = Column(DateTime, nullable=True)
     cancel_requested_at = Column(DateTime, nullable=True)
     attempt_count = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
     log_content = Column(Text, nullable=True)
+    log_bytes = Column(BigInteger, nullable=False, default=0)
+    log_next_seq = Column(BigInteger, nullable=False, default=1)
     result_preview = Column(JSON, nullable=True)
     rows_returned = Column(Integer, default=0)
     duration_ms = Column(Integer, nullable=True)
@@ -556,6 +594,113 @@ class AdhocRunLogChunk(Base):
     stream = Column(String(16), nullable=False, default="stdout")
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class AdhocRunStatement(Base):
+    """交互式运行的逐语句状态与不可变结果摘要。"""
+    __tablename__ = "dw_adhoc_run_statements"
+    __table_args__ = (
+        UniqueConstraint("run_id", "statement_index", name="uq_adhoc_run_statement_index"),
+        Index("ix_adhoc_run_statements_run_status", "run_id", "status"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(
+        Integer,
+        ForeignKey("dw_adhoc_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    statement_index = Column(Integer, nullable=False)
+    statement_type = Column(String(32), nullable=True)
+    sql_text = Column(Text, nullable=False)
+    sql_hash = Column(String(64), nullable=True)
+    status = Column(String(32), nullable=False, default="pending")
+    column_schema = Column(JSON, nullable=True)
+    affected_rows = Column(BigInteger, nullable=True)
+    result_rows = Column(BigInteger, nullable=False, default=0)
+    result_bytes = Column(BigInteger, nullable=False, default=0)
+    result_chunk_count = Column(Integer, nullable=False, default=0)
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
+class AdhocRunResultChunk(Base):
+    """逐语句结果的不可变分块；chunk_index 可作为稳定分页游标。"""
+    __tablename__ = "dw_adhoc_run_result_chunks"
+    __table_args__ = (
+        UniqueConstraint(
+            "statement_id",
+            "chunk_index",
+            name="uq_adhoc_run_result_chunk_index",
+        ),
+        Index(
+            "ix_adhoc_run_result_chunks_statement_cursor",
+            "statement_id",
+            "chunk_index",
+        ),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    statement_id = Column(
+        Integer,
+        ForeignKey("dw_adhoc_run_statements.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chunk_index = Column(Integer, nullable=False)
+    row_offset = Column(BigInteger, nullable=False, default=0)
+    row_count = Column(Integer, nullable=False, default=0)
+    payload = Column(JSON, nullable=False)
+    payload_bytes = Column(BigInteger, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class AdhocRunExport(Base):
+    """基于已持久化运行快照生成的异步导出任务。"""
+    __tablename__ = "dw_adhoc_run_exports"
+    __table_args__ = (
+        UniqueConstraint("export_key", name="uq_adhoc_run_export_key"),
+        Index("ix_adhoc_run_exports_run_created", "run_id", "created_at"),
+        Index("ix_adhoc_run_exports_status_expires", "status", "expires_at"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(
+        Integer,
+        ForeignKey("dw_adhoc_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    statement_id = Column(
+        Integer,
+        ForeignKey("dw_adhoc_run_statements.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    requested_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True, index=True)
+    export_key = Column(String(64), nullable=False)
+    format = Column(String(16), nullable=False)
+    status = Column(String(32), nullable=False, default="queued")
+    snapshot_scope = Column(String(32), nullable=False, default="current")
+    row_count = Column(BigInteger, nullable=False, default=0)
+    size_bytes = Column(BigInteger, nullable=False, default=0)
+    storage_key = Column(String(1024), nullable=True)
+    file_name = Column(String(512), nullable=True)
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
 
 
 class ProbeQueryTree(Base):

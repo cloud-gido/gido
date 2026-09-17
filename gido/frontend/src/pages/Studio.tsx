@@ -64,8 +64,6 @@ import {
   planStudioSessionTabOrder,
 } from '../utils/studioTabChrome'
 import StudioEditorTabStrip from '../components/StudioEditorTabStrip'
-import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
-import { normalizeQueryColumns } from '../utils/queryColumns'
 import { buildDefaultSqlPublishScript } from '../utils/sqlPublishTemplate'
 import {
   datasourceTagText,
@@ -73,14 +71,14 @@ import {
   rememberDatasources,
   resolveDatasourceForRun,
 } from '../utils/workspaceDatasource'
-import QueryResultPanel from '../components/QueryResultPanel'
-import EditorResultDock, { EditorResultRowBadge } from '../components/EditorResultDock'
-import { exportRowsToCsv } from '../utils/csvExport'
-import { SQL_RESULT_ROW_CAP } from '../utils/sqlResultRowLimit'
 import { pruneWidths, resolveResultColumnOrder } from '../utils/resultTableMeta'
 import NodeConfigModal from '../components/NodeConfigModal'
-import LiveRunPanel from '../components/LiveRunPanel'
+import {
+  statementResultsOf,
+  type MultiStatementRunResult,
+} from '../components/StatementResultTabs'
 import { useInteractiveRun } from '../hooks/useInteractiveRun'
+import InteractiveRunDock from '../components/InteractiveRunDock'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
 import { sortLeavesByOrderThenName } from '../utils/treeSort'
 import WorkspaceFolderTree, { locateLeafInFolderTree } from '../components/WorkspaceFolderTree'
@@ -95,6 +93,7 @@ import {
   saveTreeListCache,
   treeListReadyFromCache,
 } from '../utils/workspaceTreeListCache'
+import { nextStudioRunTab } from '../utils/studioRunTabPolicy'
 
 const NODE_TYPES = ['SQL', 'PYTHON', 'SHELL', 'SYNC', 'VIRTUAL', 'DEPENDENT']
 const LANG_MAP: Record<string, string> = { SQL: 'sql', PYTHON: 'python', SHELL: 'shell', SYNC: 'json', DEPENDENT: 'plaintext' }
@@ -185,9 +184,12 @@ export default function StudioPage() {
   const runningIdRef = useRef(runningId)
   runningIdRef.current = runningId
   const [logMap, setLogMap] = useState<Record<number, string>>({})
-  const [resultMap, setResultMap] = useState<Record<number, { columns: string[], rows: any[][], total: number } | null>>({})
+  const [resultMap, setResultMap] = useState<Record<number, MultiStatementRunResult | null>>({})
+  const [statementResultTab, setStatementResultTab] = useState<Record<number, string>>({})
   const [logPanelOpen, setLogPanelOpen] = useState(false)
   const [resultTab, setResultTab] = useState<Record<number, 'log' | 'result'>>({})  // 每个节点底部面板激活的 tab
+  const runTabIntentRef = useRef<Record<number, { runId: number | null; manuallySelected: boolean }>>({})
+  const interactiveScopeNodeRef = useRef<number | null>(null)
   /** 查询结果表：列顺序与列宽（按节点，写入 sessionStorage） */
   const [resultColMeta, setResultColMeta] = useState<StudioResultColMeta>({ order: [], widths: {} })
 
@@ -824,15 +826,54 @@ export default function StudioPage() {
     ? (dirtyMap[activeTabId] ?? activeNode?.script_content ?? '')
     : ''
   useEffect(() => {
+    // 切换编辑页签时 Hook 会异步清理上一节点状态；跳过这一帧，避免旧 run 写入新节点。
+    if (interactiveScopeNodeRef.current !== activeTabId) {
+      interactiveScopeNodeRef.current = activeTabId
+      return
+    }
     if (!activeTabId || !interactiveRun.runId) return
+    const previousIntent = runTabIntentRef.current[activeTabId]
+    if (!previousIntent || previousIntent.runId !== interactiveRun.runId) {
+      runTabIntentRef.current[activeTabId] = {
+        runId: interactiveRun.runId,
+        // 提交请求返回 run_id 前用户也可能已切换页签，需保留这次明确选择。
+        manuallySelected: previousIntent?.runId === null
+          ? previousIntent.manuallySelected
+          : false,
+      }
+      setResultTab(prev => ({ ...prev, [activeTabId]: 'log' }))
+    }
     setRunningId(interactiveRun.isActive ? activeTabId : null)
     setLogMap(prev => ({ ...prev, [activeTabId]: interactiveRun.log || interactiveRun.error || '' }))
     if (interactiveRun.result) {
-      setResultMap(prev => ({ ...prev, [activeTabId]: interactiveRun.result }))
+      const result = interactiveRun.result as MultiStatementRunResult
+      const statements = statementResultsOf(result)
+      setResultMap(prev => ({ ...prev, [activeTabId]: result }))
+      setStatementResultTab(prev => {
+        const current = prev[activeTabId]
+        if (statements.some(item => String(item.index) === current)) return prev
+        return {
+          ...prev,
+          [activeTabId]: statements.length ? String(statements[0].index) : '0',
+        }
+      })
     }
+    setResultTab(prev => {
+      const current = prev[activeTabId] ?? 'log'
+      const next = nextStudioRunTab({
+        current,
+        status: interactiveRun.status,
+        nodeType: activeNode?.node_type,
+        result: interactiveRun.result,
+        manuallySelected: Boolean(runTabIntentRef.current[activeTabId]?.manuallySelected),
+      })
+      return next === current ? prev : { ...prev, [activeTabId]: next }
+    })
   }, [
     activeTabId,
+    activeNode?.node_type,
     interactiveRun.runId,
+    interactiveRun.status,
     interactiveRun.isActive,
     interactiveRun.log,
     interactiveRun.error,
@@ -890,9 +931,17 @@ export default function StudioPage() {
     [openTabs, scriptAutosave.isVersionDirty, scriptAutosave.versionDirtyEpoch],
   )
 
+  const activeRunResult = activeTabId != null ? resultMap[activeTabId] : null
+  const activeStatementResults = statementResultsOf(activeRunResult)
+  const activeStatementKey = activeTabId != null
+    ? (statementResultTab[activeTabId] ?? String(activeStatementResults[0]?.index ?? 0))
+    : '0'
+  const activeStatementResult = activeStatementResults.find(
+    item => String(item.index) === activeStatementKey,
+  ) ?? activeStatementResults[0] ?? null
   const resultColSig =
-    activeTabId != null && resultMap[activeTabId]?.columns
-      ? resultMap[activeTabId]!.columns.join('\x1e')
+    activeStatementResult?.columns
+      ? activeStatementResult.columns.join('\x1e')
       : ''
 
   useEffect(() => {
@@ -901,7 +950,7 @@ export default function StudioPage() {
       return
     }
     const stored = loadStudioResultMetaMap()[String(activeTabId)] ?? { order: [], widths: {} }
-    const cols = resultMap[activeTabId]?.columns
+    const cols = activeStatementResult?.columns
     if (!cols?.length) {
       setResultColMeta(stored)
       return
@@ -920,19 +969,19 @@ export default function StudioPage() {
     ) {
       saveStudioResultMetaNode(activeTabId, next)
     }
-  }, [activeTabId, resultColSig])
+  }, [activeTabId, activeStatementKey, resultColSig])
 
   const onResultColumnOrderChange = useCallback(
     (nextOrder: string[]) => {
       if (activeTabId == null) return
       setResultColMeta(prev => {
-        const cols = resultMap[activeTabId]?.columns ?? prev.sourceKeys ?? nextOrder
+        const cols = activeStatementResult?.columns ?? prev.sourceKeys ?? nextOrder
         const next = { ...prev, order: nextOrder, sourceKeys: cols }
         saveStudioResultMetaNode(activeTabId, next)
         return next
       })
     },
-    [activeTabId, resultMap],
+    [activeTabId, activeStatementResult],
   )
 
   const onResultColumnWidthChange = useCallback(
@@ -1099,8 +1148,10 @@ export default function StudioPage() {
     setRunningId(activeNode.id)
     setLogMap(prev => ({ ...prev, [activeNode.id]: '' }))
     setResultMap(prev => ({ ...prev, [activeNode.id]: null }))
+    setStatementResultTab(prev => ({ ...prev, [activeNode.id]: '0' }))
     setLogPanelOpen(true)
-    setResultTab(prev => ({ ...prev, [activeNode.id]: activeNode.node_type === 'SQL' ? 'result' : 'log' }))
+    runTabIntentRef.current[activeNode.id] = { runId: null, manuallySelected: false }
+    setResultTab(prev => ({ ...prev, [activeNode.id]: 'log' }))
     try {
       const res: any = await interactiveRun.start(
         () => studioApi.submitRun(
@@ -1774,96 +1825,19 @@ export default function StudioPage() {
                     </div>
                   )}
                   bottom={(
-                    <EditorResultDock
+                    <InteractiveRunDock
+                      run={interactiveRun}
+                      scopeKey={`studio:${wsId}:${activeTabId}`}
                       activeKey={resultTab[activeTabId!] ?? 'log'}
-                      onChange={key => setResultTab(prev => ({ ...prev, [activeTabId!]: key as 'log' | 'result' }))}
+                      onTabChange={key => {
+                        const nodeId = activeTabId!
+                        runTabIntentRef.current[nodeId] = {
+                          runId: interactiveRun.runId,
+                          manuallySelected: true,
+                        }
+                        setResultTab(prev => ({ ...prev, [nodeId]: key }))
+                      }}
                       onClose={() => setLogPanelOpen(false)}
-                      tabs={[
-                        {
-                          key: 'log',
-                          label: <>日志 {isRunning && <Spin size="small" style={{ marginLeft: 6 }} />}</>,
-                          children: (
-                            <LiveRunPanel
-                              runId={interactiveRun.runId}
-                              status={interactiveRun.status}
-                              log={interactiveRun.log || logMap[activeTabId!] || ''}
-                              error={interactiveRun.error}
-                              isActive={interactiveRun.isActive}
-                              onCancel={interactiveRun.cancel}
-                            />
-                          ),
-                        },
-                        {
-                          key: 'result',
-                          label: (
-                            <>
-                              查询结果
-                              {resultMap[activeTabId!] && (
-                                <EditorResultRowBadge count={resultMap[activeTabId!]!.total} />
-                              )}
-                            </>
-                          ),
-                          children: (
-                            <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-                              {isRunning && (
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, color: '#888' }}>
-                                  <Spin /><span style={{ marginLeft: 8 }}>执行中...</span>
-                                </div>
-                              )}
-                              {!isRunning && !resultMap[activeTabId!] && (
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, color: '#999', fontSize: 13 }}>
-                                  运行 SQL 后在此展示结果；表头固定，底部可横向滚动；双击单元格复制
-                                </div>
-                              )}
-                              {!isRunning && resultMap[activeTabId!] && (() => {
-                                const { columns, column_types, rows, total } = resultMap[activeTabId!]! as {
-                                  columns: string[]
-                                  column_types?: string[]
-                                  rows: unknown[][]
-                                  total: number
-                                }
-                                const colMetas = normalizeQueryColumns(columns, column_types)
-                                const dataSource = rowsToRecordDataSource(columns, rows)
-                                const tableColumns = buildQueryTableColumns(colMetas, {
-                                  order: resultColMeta.order,
-                                  widths: resultColMeta.widths,
-                                  dataSource,
-                                  onOrderChange: onResultColumnOrderChange,
-                                  onWidthChange: onResultColumnWidthChange,
-                                })
-                                const rawRows = rows as unknown[][]
-                                return (
-                                  <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-                                    <QueryResultPanel
-                                      dataSource={dataSource}
-                                      columns={tableColumns}
-                                      showViewModeToggle
-                                      toolbar={(
-                                        <div style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                                          <span style={{ color: '#666', fontSize: 12 }}>
-                                            共 <strong>{total}</strong> 行；已返回 <strong>{rows.length}</strong> 行（上限 {SQL_RESULT_ROW_CAP}）；结果区分页展示，表头右上角为类型徽章
-                                          </span>
-                                          <div style={{ flex: 1 }} />
-                                          <Button
-                                            size="small"
-                                            icon={<DownloadOutlined />}
-                                            onClick={() => {
-                                              exportRowsToCsv(columns, rawRows, `studio_node_${activeTabId}_result`)
-                                              message.success('已导出当前表格数据为 CSV')
-                                            }}
-                                          >
-                                            导出 CSV
-                                          </Button>
-                                        </div>
-                                      )}
-                                    />
-                                  </div>
-                                )
-                              })()}
-                            </div>
-                          ),
-                        },
-                      ]}
                     />
                   )}
                 />

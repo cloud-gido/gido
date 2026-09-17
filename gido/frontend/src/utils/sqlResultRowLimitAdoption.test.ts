@@ -16,13 +16,15 @@ function read(rel: string) {
 }
 
 describe('sql result row limit adoption', () => {
-  it('Probe / Studio import shared SQL_RESULT_ROW_CAP', () => {
+  it('Probe and the shared interactive dock import SQL_RESULT_ROW_CAP', () => {
     const probe = read('pages/Probe.tsx')
     const studio = read('pages/Studio.tsx')
+    const dock = read('components/InteractiveRunDock.tsx')
     expect(probe).toContain('sqlResultRowLimit')
     expect(probe).toContain('SQL_RESULT_ROW_CAP')
     expect(probe).toContain('PROBE_DEFAULT_ROW_LIMIT')
-    expect(studio).toContain('SQL_RESULT_ROW_CAP')
+    expect(studio).toContain('InteractiveRunDock')
+    expect(dock).toContain('SQL_RESULT_ROW_CAP')
     expect(SQL_RESULT_ROW_CAP).toBe(10000)
     expect(PROBE_DEFAULT_ROW_LIMIT).toBe(10000)
   })

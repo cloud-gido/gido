@@ -18,6 +18,7 @@ _JOB_LIB = str(_BACKEND_ROOT / "python_job_lib")
 if _JOB_LIB not in sys.path:
     sys.path.insert(0, _JOB_LIB)
 
+from gido_job import CONTEXT_PROTOCOL_VERSION, SDK_VERSION
 from gido_job.context import ENV_CONTEXT_FILE, load_job_context, mysql_protocol_user
 from gido_job.job import GidoJob
 from gido_job.macros import resolve_date_expr, substitute_sql_macros
@@ -46,6 +47,19 @@ def test_load_job_context_from_env_file(tmp_path, monkeypatch):
 def test_load_job_context_missing_returns_none(monkeypatch):
     monkeypatch.delenv(ENV_CONTEXT_FILE, raising=False)
     assert load_job_context() is None
+
+
+def test_sdk_versions_and_context_protocol_validation(tmp_path, monkeypatch):
+    assert SDK_VERSION == "1.0.0"
+    assert CONTEXT_PROTOCOL_VERSION == 1
+    path = tmp_path / "context.json"
+    path.write_text(
+        json.dumps({"context_protocol_version": CONTEXT_PROTOCOL_VERSION + 1}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(ENV_CONTEXT_FILE, str(path))
+    with pytest.raises(RuntimeError, match="协议不兼容"):
+        load_job_context()
 
 
 def test_writelog_prints(capsys):
@@ -183,6 +197,13 @@ def test_substitute_sql_macros_bizdate_and_bracket():
 def test_substitute_sql_macros_never_raises():
     # 畸形宏保留原文，不抛错
     assert substitute_sql_macros("select '$[not-a-valid'") == "select '$[not-a-valid'"
+    original = "print('${workspace_value}')"
+
+    class BrokenVariables:
+        def items(self):
+            raise RuntimeError("broken variable mapping")
+
+    assert substitute_sql_macros(original, variables=BrokenVariables()) == original
 
 
 def test_job_var_reads_variables(monkeypatch, tmp_path):

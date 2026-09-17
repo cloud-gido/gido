@@ -28,6 +28,7 @@ import { bindMonacoScriptKeybindings } from '../utils/monacoScriptKeybindings'
 import AutosaveStatusHint from './AutosaveStatusHint'
 import LiveRunPanel from './LiveRunPanel'
 import { useInteractiveRun } from '../hooks/useInteractiveRun'
+import InteractiveRunDock from './InteractiveRunDock'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
 import {
   restoreScriptLocalDraft,
@@ -624,15 +625,11 @@ export default function NodeConfigModal({
                       </Form.Item>
                     )}
                     {showScriptEditor && interactiveRun.status !== 'idle' && (
-                      <div style={{ height: 240, marginBottom: 12, border: '1px solid #f0f0f0', borderRadius: 6, overflow: 'hidden' }}>
-                        <LiveRunPanel
+                      <div style={{ height: 320, marginBottom: 12, border: '1px solid #f0f0f0', borderRadius: 6, overflow: 'hidden' }}>
+                        <InteractiveRunDock
                           compact
-                          runId={interactiveRun.runId}
-                          status={interactiveRun.status}
-                          log={interactiveRun.log}
-                          error={interactiveRun.error}
-                          isActive={interactiveRun.isActive}
-                          onCancel={interactiveRun.cancel}
+                          run={interactiveRun}
+                          scopeKey={`node-config:${workspaceId}:${nodeId}`}
                         />
                       </div>
                     )}

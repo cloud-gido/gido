@@ -9,6 +9,7 @@
 #
 # Backend 与 Flink 作业可共用同一 bucket、不同前缀，例如：
 #   FLINK_OPERATOR_JAR_S3_PREFIX=s3://YOUR-BUCKET/gido-artifacts
+#   GIDO_ARTIFACT_S3_PREFIX=s3://YOUR-BUCKET/gido-shared-artifacts
 #   PAIMON_WAREHOUSE_DEFAULT=s3://YOUR-BUCKET/paimon-warehouse
 #   FLINK_OPERATOR_CHECKPOINT_DIR=s3://YOUR-BUCKET/flink-checkpoints
 #
@@ -31,7 +32,7 @@ metadata:
 #       "Action": ["s3:ListBucket"],
 #       "Resource": "arn:aws:s3:::YOUR-BUCKET",
 #       "Condition": {
-#         "StringLike": { "s3:prefix": ["gido-artifacts/*", "paimon-warehouse/*", "flink-checkpoints/*"] }
+#         "StringLike": { "s3:prefix": ["gido-artifacts/*", "gido-shared-artifacts/*", "paimon-warehouse/*", "flink-checkpoints/*"] }
 #       }
 #     },
 #     {
@@ -39,6 +40,7 @@ metadata:
 #       "Action": ["s3:GetObject", "s3:PutObject", "s3:HeadObject", "s3:DeleteObject"],
 #       "Resource": [
 #         "arn:aws:s3:::YOUR-BUCKET/gido-artifacts/*",
+#         "arn:aws:s3:::YOUR-BUCKET/gido-shared-artifacts/*",
 #         "arn:aws:s3:::YOUR-BUCKET/paimon-warehouse/*",
 #         "arn:aws:s3:::YOUR-BUCKET/flink-checkpoints/*"
 #       ]

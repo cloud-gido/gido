@@ -111,6 +111,7 @@ async def lifespan(app: FastAPI):
         migrate_dw_task_nodes_edit_lock,
         migrate_dw_task_nodes_sort_order,
         migrate_schedule_runtime_policy,
+        migrate_job_version_publishing,
         migrate_studio_tree_list_indexes,
         migrate_sort_order_name_default,
         migrate_dw_workflow_updated_by,
@@ -134,6 +135,7 @@ async def lifespan(app: FastAPI):
     migrate_dw_task_nodes_edit_lock(engine)
     migrate_dw_task_nodes_sort_order(engine)
     migrate_schedule_runtime_policy(engine)
+    migrate_job_version_publishing(engine)
     migrate_studio_tree_list_indexes(engine)
     migrate_sort_order_name_default(engine)
     migrate_dw_workflow_updated_by(engine)
@@ -212,10 +214,15 @@ async def lifespan(app: FastAPI):
     from app.services.integration_cdc import start_cdc_manager
     from app.services.sync_worker import start_sync_worker
     from app.services.adhoc_run_worker import start_adhoc_worker, stop_adhoc_worker
+    from app.services.adhoc_run_export import (
+        start_export_dispatcher,
+        stop_export_dispatcher,
+    )
 
     start_cdc_manager()
     start_sync_worker()
     start_adhoc_worker()
+    start_export_dispatcher()
     db2 = SessionLocal()
     try:
         from app.services.ds_runtime import get_dolphin_runtime
@@ -227,6 +234,7 @@ async def lifespan(app: FastAPI):
     yield
     if not ds_on:
         executor.stop()
+    stop_export_dispatcher()
     stop_adhoc_worker()
     from app.services.integration_cdc import stop_cdc_manager
 
@@ -278,6 +286,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(workspace.router, prefix="/api")

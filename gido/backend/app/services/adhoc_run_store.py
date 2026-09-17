@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
+import base64
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from sqlalchemy.orm import Session
 
-from app.models.workspace import AdhocRun
+from app.models.workspace import AdhocRun, AdhocRunResultChunk, AdhocRunStatement
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +20,490 @@ ADHOC_RESULT_PREVIEW_ROWS = 200
 SQL_SUMMARY_MAX_LEN = 72
 SQL_PREVIEW_MAX_LINES = 40
 SQL_PREVIEW_MAX_CHARS = 2048
+
+
+class LeaseFenceError(InterruptedError):
+    """The caller no longer owns the run lease."""
+
+
+def _owned_run(db: Session, run_id: int, lease_token: str) -> AdhocRun:
+    query = db.query(AdhocRun).filter(
+        AdhocRun.id == run_id,
+        AdhocRun.lease_token == lease_token,
+        AdhocRun.status.in_(("running", "cancel_requested")),
+    )
+    # Serialize lease validation with all writes belonging to that lease. Without
+    # this lock, a reclaimer can replace the lease between SELECT and COMMIT.
+    if db.bind and db.bind.dialect.name in ("postgresql", "mysql"):
+        query = query.with_for_update()
+    row = query.first()
+    if not row:
+        db.rollback()
+        raise LeaseFenceError("运行租约已失效")
+    return row
+
+
+def _statement_type(sql: str) -> Optional[str]:
+    lines = _sql_content_lines(sql)
+    if not lines:
+        return None
+    first = lines[0].lstrip("(").strip().split(None, 1)
+    return first[0].upper()[:32] if first else None
+
+
+def initialize_run_statements(
+    db: Session,
+    run_id: int,
+    statements: Iterable[str],
+    lease_token: str,
+) -> List[AdhocRunStatement]:
+    """Pre-create every statement before execution starts."""
+    run = _owned_run(db, run_id, lease_token)
+    existing = {
+        item.statement_index: item
+        for item in db.query(AdhocRunStatement)
+        .filter(AdhocRunStatement.run_id == run_id)
+        .all()
+    }
+    if existing and any(item.status != "pending" for item in existing.values()):
+        statement_ids = [item.id for item in existing.values()]
+        db.query(AdhocRunResultChunk).filter(
+            AdhocRunResultChunk.statement_id.in_(statement_ids)
+        ).delete(synchronize_session=False)
+        db.query(AdhocRunStatement).filter(
+            AdhocRunStatement.run_id == run_id
+        ).delete(synchronize_session=False)
+        db.flush()
+        existing = {}
+        run.result_preview = None
+        run.rows_returned = 0
+    rows: List[AdhocRunStatement] = []
+    for index, sql in enumerate(statements):
+        text = str(sql or "").strip()
+        row = existing.get(index)
+        if row is None:
+            row = AdhocRunStatement(
+                run_id=run_id,
+                statement_index=index,
+                statement_type=_statement_type(text),
+                sql_text=text,
+                sql_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                status="pending",
+            )
+            db.add(row)
+        rows.append(row)
+    db.commit()
+    for row in rows:
+        db.refresh(row)
+    return rows
+
+
+def _owned_statement(
+    db: Session,
+    run_id: int,
+    statement_index: int,
+    lease_token: str,
+) -> AdhocRunStatement:
+    _owned_run(db, run_id, lease_token)
+    row = (
+        db.query(AdhocRunStatement)
+        .filter(
+            AdhocRunStatement.run_id == run_id,
+            AdhocRunStatement.statement_index == statement_index,
+        )
+        .first()
+    )
+    if not row:
+        raise ValueError(f"语句 {statement_index} 尚未初始化")
+    return row
+
+
+def start_run_statement(
+    db: Session, run_id: int, statement_index: int, lease_token: str
+) -> AdhocRunStatement:
+    row = _owned_statement(db, run_id, statement_index, lease_token)
+    row.status = "running"
+    row.started_at = row.started_at or datetime.utcnow()
+    row.finished_at = None
+    row.error_message = None
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def append_statement_result_chunk(
+    db: Session,
+    run_id: int,
+    statement_index: int,
+    rows: Iterable[Iterable[Any]],
+    lease_token: str,
+    *,
+    columns: Optional[Iterable[str]] = None,
+    column_types: Optional[Iterable[str]] = None,
+    truncated: bool = False,
+    max_rows: Optional[int] = None,
+    max_bytes: Optional[int] = None,
+) -> Optional[AdhocRunResultChunk]:
+    """Append one immutable chunk and return it; limits are per statement."""
+    statement = _owned_statement(db, run_id, statement_index, lease_token)
+    materialized = [list(item) for item in rows]
+    submitted_count = len(materialized)
+    remaining_rows = (
+        max(0, int(max_rows) - int(statement.result_rows or 0))
+        if max_rows is not None
+        else len(materialized)
+    )
+    materialized = materialized[:remaining_rows]
+    if not materialized:
+        schema = dict(statement.column_schema or {})
+        if columns is not None:
+            schema["columns"] = list(columns)
+            schema["column_types"] = list(column_types or [])
+        schema["truncated"] = bool(schema.get("truncated")) or bool(truncated) or submitted_count > 0
+        statement.column_schema = schema
+        db.commit()
+        return None
+
+    payload = {"rows": materialized}
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+    if max_bytes is not None:
+        remaining_bytes = max(0, int(max_bytes) - int(statement.result_bytes or 0))
+        while materialized and len(raw) > remaining_bytes:
+            materialized.pop()
+            payload["rows"] = materialized
+            raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+        if not materialized:
+            schema = dict(statement.column_schema or {})
+            if columns is not None:
+                schema["columns"] = list(columns)
+                schema["column_types"] = list(column_types or [])
+            schema["truncated"] = True
+            statement.column_schema = schema
+            db.commit()
+            return None
+
+    chunk_index = int(statement.result_chunk_count or 0)
+    chunk = AdhocRunResultChunk(
+        statement_id=statement.id,
+        chunk_index=chunk_index,
+        row_offset=int(statement.result_rows or 0),
+        row_count=len(materialized),
+        payload=payload,
+        payload_bytes=len(raw),
+    )
+    db.add(chunk)
+    statement.result_rows = int(statement.result_rows or 0) + len(materialized)
+    statement.result_bytes = int(statement.result_bytes or 0) + len(raw)
+    statement.result_chunk_count = chunk_index + 1
+    schema = dict(statement.column_schema or {})
+    if columns is not None:
+        schema["columns"] = list(columns)
+        schema["column_types"] = list(column_types or [])
+    schema["truncated"] = (
+        bool(schema.get("truncated"))
+        or bool(truncated)
+        or len(materialized) < submitted_count
+    )
+    statement.column_schema = schema
+    db.commit()
+    db.refresh(chunk)
+    return chunk
+
+
+def finish_run_statement(
+    db: Session,
+    run_id: int,
+    statement_index: int,
+    lease_token: str,
+    status: str,
+    *,
+    affected_rows: Optional[int] = None,
+    error_message: Optional[str] = None,
+    columns: Optional[Iterable[str]] = None,
+    column_types: Optional[Iterable[str]] = None,
+    truncated: bool = False,
+) -> AdhocRunStatement:
+    if status not in ("success", "failed", "skipped"):
+        raise ValueError(f"非法语句终态: {status}")
+    row = _owned_statement(db, run_id, statement_index, lease_token)
+    row.status = status
+    row.affected_rows = affected_rows
+    row.error_message = (error_message or "")[:4000] or None
+    row.finished_at = datetime.utcnow()
+    if columns is not None:
+        schema = dict(row.column_schema or {})
+        schema.update(
+            columns=list(columns),
+            column_types=list(column_types or []),
+            truncated=bool(schema.get("truncated")) or bool(truncated),
+        )
+        row.column_schema = schema
+    db.commit()
+    db.refresh(row)
+    run = _owned_run(db, run_id, lease_token)
+    preview = build_result_preview_from_statements(db, run_id)
+    if preview is not None:
+        run.result_preview = preview
+        run.rows_returned = int(preview.get("total") or 0)
+        run.last_progress_at = datetime.utcnow()
+        db.commit()
+    return row
+
+
+def complete_run_statement_success(db: Session, run_id: int, statement_index: int, lease_token: str, **kwargs):
+    return finish_run_statement(db, run_id, statement_index, lease_token, "success", **kwargs)
+
+
+def complete_run_statement_failed(db: Session, run_id: int, statement_index: int, lease_token: str, error_message: str):
+    return finish_run_statement(
+        db, run_id, statement_index, lease_token, "failed", error_message=error_message
+    )
+
+
+def complete_run_statement_skipped(db: Session, run_id: int, statement_index: int, lease_token: str, error_message: Optional[str] = None):
+    return finish_run_statement(
+        db, run_id, statement_index, lease_token, "skipped", error_message=error_message
+    )
+
+
+def list_run_statements(db: Session, run_id: int) -> List[AdhocRunStatement]:
+    return (
+        db.query(AdhocRunStatement)
+        .filter(AdhocRunStatement.run_id == run_id)
+        .order_by(AdhocRunStatement.statement_index, AdhocRunStatement.id)
+        .all()
+    )
+
+
+def serialize_run_statement(row: AdhocRunStatement) -> Dict[str, Any]:
+    schema = row.column_schema if isinstance(row.column_schema, dict) else {}
+    return {
+        "id": row.id,
+        "run_id": row.run_id,
+        "index": row.statement_index,
+        "statement_type": row.statement_type,
+        "sql": row.sql_text,
+        "status": row.status,
+        "columns": list(schema.get("columns") or []),
+        "column_types": list(schema.get("column_types") or []),
+        "affected_rows": row.affected_rows,
+        "total": int(row.result_rows or 0),
+        "result_bytes": int(row.result_bytes or 0),
+        "chunk_count": int(row.result_chunk_count or 0),
+        "truncated": bool(schema.get("truncated")),
+        "error": row.error_message,
+        "started_at": row.started_at,
+        "finished_at": row.finished_at,
+    }
+
+
+def statement_collection_version(statements: Iterable[AdhocRunStatement]) -> str:
+    """Opaque version for incremental statement metadata polling."""
+    state = [
+        (
+            int(row.id),
+            int(row.statement_index),
+            str(row.status),
+            int(row.result_rows or 0),
+            int(row.result_bytes or 0),
+            int(row.result_chunk_count or 0),
+            row.updated_at.isoformat() if row.updated_at else "",
+        )
+        for row in statements
+    ]
+    raw = json.dumps(state, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:24]
+
+
+def _encode_row_cursor(chunk_index: int, row_index: int) -> str:
+    raw = f"{int(chunk_index)}:{int(row_index)}".encode("ascii")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_row_cursor(cursor: Optional[str]) -> tuple[int, int]:
+    if not cursor:
+        return 0, 0
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        chunk_index, row_index = base64.urlsafe_b64decode(padded).decode("ascii").split(":", 1)
+        chunk_value, row_value = int(chunk_index), int(row_index)
+        if chunk_value < 0 or row_value < 0:
+            raise ValueError
+        return chunk_value, row_value
+    except (ValueError, UnicodeError) as exc:
+        raise ValueError("无效的结果分页游标") from exc
+
+
+def paginate_statement_rows(
+    db: Session,
+    run_id: int,
+    statement_index: int,
+    *,
+    cursor: Optional[str] = None,
+    limit: int = 500,
+) -> Dict[str, Any]:
+    """Flatten immutable ORM chunks into a stable row-cursor page."""
+    statement = (
+        db.query(AdhocRunStatement)
+        .filter(
+            AdhocRunStatement.run_id == run_id,
+            AdhocRunStatement.statement_index == statement_index,
+        )
+        .first()
+    )
+    if not statement:
+        raise ValueError("语句不存在")
+    page_size = min(max(int(limit), 1), 5000)
+    chunk_index, row_index = _decode_row_cursor(cursor)
+    chunks = (
+        db.query(AdhocRunResultChunk)
+        .filter(
+            AdhocRunResultChunk.statement_id == statement.id,
+            AdhocRunResultChunk.chunk_index >= chunk_index,
+        )
+        .order_by(AdhocRunResultChunk.chunk_index, AdhocRunResultChunk.id)
+        .all()
+    )
+    rows: List[List[Any]] = []
+    next_position: Optional[tuple[int, int]] = None
+    for chunk in chunks:
+        chunk_rows = list((chunk.payload or {}).get("rows") or [])
+        start = row_index if chunk.chunk_index == chunk_index else 0
+        for offset in range(start, len(chunk_rows)):
+            if len(rows) >= page_size:
+                next_position = (chunk.chunk_index, offset)
+                break
+            rows.append(list(chunk_rows[offset]))
+        if next_position is not None:
+            break
+        row_index = 0
+    has_more = next_position is not None
+    schema = statement.column_schema if isinstance(statement.column_schema, dict) else {}
+    return {
+        "statement_id": statement.id,
+        "statement_index": statement.statement_index,
+        "statement_status": statement.status,
+        "snapshot": statement.status in ("success", "failed", "skipped"),
+        "columns": list(schema.get("columns") or []),
+        "column_types": list(schema.get("column_types") or []),
+        "rows": rows,
+        "total": int(statement.result_rows or 0),
+        "truncated": bool(schema.get("truncated")),
+        "next_cursor": (
+            _encode_row_cursor(*next_position) if next_position is not None else None
+        ),
+        "has_more": has_more,
+    }
+
+
+def paginate_statement_result_chunks(
+    db: Session,
+    run_id: int,
+    statement_index: int,
+    *,
+    after_cursor: int = -1,
+    limit: int = 100,
+) -> Dict[str, Any]:
+    statement = (
+        db.query(AdhocRunStatement)
+        .filter(
+            AdhocRunStatement.run_id == run_id,
+            AdhocRunStatement.statement_index == statement_index,
+        )
+        .first()
+    )
+    if not statement:
+        raise ValueError("语句不存在")
+    page_size = min(max(int(limit), 1), 1000)
+    chunks = (
+        db.query(AdhocRunResultChunk)
+        .filter(
+            AdhocRunResultChunk.statement_id == statement.id,
+            AdhocRunResultChunk.chunk_index > int(after_cursor),
+        )
+        .order_by(AdhocRunResultChunk.chunk_index, AdhocRunResultChunk.id)
+        .limit(page_size + 1)
+        .all()
+    )
+    has_more = len(chunks) > page_size
+    chunks = chunks[:page_size]
+    return {
+        "statement_id": statement.id,
+        "statement_index": statement.statement_index,
+        "chunks": chunks,
+        "next_cursor": chunks[-1].chunk_index if chunks else int(after_cursor),
+        "has_more": has_more,
+    }
+
+
+def build_result_preview_from_statements(
+    db: Session, run_id: int, *, max_rows: int = ADHOC_RESULT_PREVIEW_ROWS
+) -> Optional[Dict[str, Any]]:
+    """Reconstruct the legacy result contract from durable statements."""
+    statements = list_run_statements(db, run_id)
+    if not statements:
+        return None
+    blocks: List[Dict[str, Any]] = []
+    for statement in statements:
+        schema = statement.column_schema if isinstance(statement.column_schema, dict) else {}
+        columns = list(schema.get("columns") or [])
+        rows: List[List[Any]] = []
+        if columns:
+            chunks = (
+                db.query(AdhocRunResultChunk)
+                .filter(AdhocRunResultChunk.statement_id == statement.id)
+                .order_by(AdhocRunResultChunk.chunk_index, AdhocRunResultChunk.id)
+                .all()
+            )
+            for chunk in chunks:
+                rows.extend(list((chunk.payload or {}).get("rows") or []))
+                if len(rows) >= max_rows:
+                    break
+        if columns or statement.status in ("failed", "skipped"):
+            blocks.append(
+                {
+                    "index": statement.statement_index,
+                    "sql": statement.sql_text,
+                    "status": statement.status,
+                    "columns": columns,
+                    "column_types": list(schema.get("column_types") or []),
+                    "rows": rows[:max_rows],
+                    "total": int(statement.result_rows or 0),
+                    "truncated": bool(schema.get("truncated"))
+                    or int(statement.result_rows or 0) > max_rows,
+                    "error": statement.error_message
+                    if statement.status in ("failed", "skipped")
+                    else None,
+                    **(
+                        {"affected_rows": int(statement.affected_rows or 0)}
+                        if statement.affected_rows is not None
+                        else {}
+                    ),
+                }
+            )
+    last_ok = next(
+        (item for item in reversed(blocks) if not item.get("error") and item.get("columns")),
+        None,
+    )
+    top = dict(
+        last_ok
+        or {
+            "columns": [],
+            "column_types": [],
+            "rows": [],
+            "total": 0,
+            "truncated": False,
+        }
+    )
+    top.update(
+        statement_count=len(statements),
+        result_set_count=sum(1 for item in blocks if item.get("columns")),
+        statements=blocks,
+        has_errors=any(item.status == "failed" for item in statements),
+        partial_success=any(item.status == "success" for item in statements)
+        and any(item.status == "failed" for item in statements),
+    )
+    return top
 
 
 def _sql_content_lines(sql: Optional[str]) -> list[str]:
@@ -75,19 +562,44 @@ def truncate_result_preview(result: Optional[Dict[str, Any]], max_rows: int = AD
     """将 SQL 结果截断为可入库的预览结构。"""
     if not result or not isinstance(result, dict):
         return None
-    columns = list(result.get("columns") or [])
-    column_types = list(result.get("column_types") or [])
-    rows = list(result.get("rows") or [])
-    total = int(result.get("total") if result.get("total") is not None else len(rows))
-    truncated = bool(result.get("truncated")) or len(rows) > max_rows
-    preview_rows = rows[:max_rows]
-    return {
-        "columns": columns,
-        "column_types": column_types,
-        "rows": preview_rows,
-        "total": total,
-        "truncated": truncated,
-    }
+
+    def truncate_one(item: Dict[str, Any]) -> Dict[str, Any]:
+        columns = list(item.get("columns") or [])
+        column_types = list(item.get("column_types") or [])
+        rows = list(item.get("rows") or [])
+        total = int(item.get("total") if item.get("total") is not None else len(rows))
+        preview = {
+            "columns": columns,
+            "column_types": column_types,
+            "rows": rows[:max_rows],
+            "total": total,
+            "truncated": bool(item.get("truncated")) or len(rows) > max_rows,
+        }
+        for key in ("index", "sql", "error", "affected_rows", "status"):
+            if key in item:
+                preview[key] = item.get(key)
+        return preview
+
+    preview = truncate_one(result)
+    statements = result.get("statements")
+    if isinstance(statements, list):
+        preview["statements"] = [
+            truncate_one(item) for item in statements if isinstance(item, dict)
+        ]
+        preview["statement_count"] = int(
+            result.get("statement_count")
+            if result.get("statement_count") is not None
+            else len(statements)
+        )
+        preview["result_set_count"] = int(
+            result.get("result_set_count")
+            if result.get("result_set_count") is not None
+            else len(preview["statements"])
+        )
+        for key in ("has_errors", "partial_success"):
+            if key in result:
+                preview[key] = bool(result.get(key))
+    return preview
 
 
 def save_adhoc_run(

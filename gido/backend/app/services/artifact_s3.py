@@ -263,6 +263,32 @@ def get_shared_object(namespace: str, filename: str) -> Optional[bytes]:
         raise
 
 
+def iter_shared_object(
+    namespace: str,
+    filename: str,
+    *,
+    chunk_size: int = 1024 * 1024,
+):
+    """Stream a shared object without buffering the complete export."""
+    prefix = artifact_s3_prefix()
+    if not prefix:
+        raise RuntimeError("共享对象存储 S3 未配置")
+    bucket, _ = _parse_s3_prefix(prefix)
+    response = _s3_client().get_object(
+        Bucket=bucket,
+        Key=shared_object_key(namespace, filename),
+    )
+    body = response["Body"]
+    try:
+        for chunk in body.iter_chunks(chunk_size=max(1, int(chunk_size))):
+            if chunk:
+                yield chunk
+    finally:
+        close = getattr(body, "close", None)
+        if close:
+            close()
+
+
 def delete_shared_object(namespace: str, filename: str) -> None:
     prefix = artifact_s3_prefix()
     if not prefix:

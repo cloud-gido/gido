@@ -4,6 +4,8 @@
 # @date 2026-06-10
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.core.config import settings
 from app.services import artifact_s3 as s3
 from app.services import jar_artifact as ja

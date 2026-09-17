@@ -3,20 +3,17 @@
  * SPDX-License-Identifier: Apache-2.0
  * 运行历史详情：SQL + 结果预览
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button, Card, Descriptions, Space, Tag, message, Alert, Skeleton } from 'antd'
 import { ArrowLeftOutlined, CopyOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import { adhocRunsApi } from '../api'
 import { useAppStore } from '../store'
 import { formatInTimeZone } from '../utils/datetime'
-import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
-import QueryResultPanel from '../components/QueryResultPanel'
 import DwMonacoEditor from '../components/DwMonacoEditor'
-import LiveRunPanel from '../components/LiveRunPanel'
 import { useInteractiveRun } from '../hooks/useInteractiveRun'
-import { normalizeQueryColumns } from '../utils/queryColumns'
 import { R } from '../routes'
+import InteractiveRunDock from '../components/InteractiveRunDock'
 
 const STATUS_COLOR: Record<string, string> = {
   queued: 'blue',
@@ -45,6 +42,7 @@ export default function RunHistoryDetailPage() {
     nodeId: row?.node_id,
     source: row?.source === 'probe' ? 'probe' : 'studio',
     autoRecover: false,
+    recoveryKey: `history:${id ?? 'none'}`,
   })
 
   useEffect(() => {
@@ -60,25 +58,17 @@ export default function RunHistoryDetailPage() {
   }, [id])
 
   useEffect(() => {
-    if (row?.id && ['queued', 'running', 'cancel_requested'].includes(row.status)) {
+    if (row?.id) {
       liveRun.attach(Number(row.id))
     }
-  }, [row?.id, row?.status])
+  }, [row?.id])
+
+  useEffect(() => {
+    if (!row?.id || liveRun.version < 0) return
+    adhocRunsApi.get(Number(row.id)).then(setRow).catch(() => undefined)
+  }, [row?.id, liveRun.version])
 
   const preview = row?.result_preview
-  const tableBundle = useMemo(() => {
-    if (!preview?.columns?.length) {
-      return { dataSource: [] as ReturnType<typeof rowsToRecordDataSource>, tableColumns: buildQueryTableColumns([]) }
-    }
-    const columns = preview.columns as string[]
-    const dataSource = rowsToRecordDataSource(columns, preview.rows || [])
-    const colMetas = normalizeQueryColumns(columns, preview.column_types)
-    return {
-      dataSource,
-      tableColumns: buildQueryTableColumns(colMetas, { dataSource }),
-    }
-  }, [preview])
-
   const copySql = async () => {
     if (!row?.sql_text) return
     try {
@@ -196,43 +186,20 @@ export default function RunHistoryDetailPage() {
         <Alert type="error" showIcon style={{ marginBottom: 16 }} message="错误信息" description={row.error_message} />
       )}
 
-      {(row?.log_content || liveRun.runId === Number(row?.id)) && (
-        <Card title="执行日志" size="small" style={{ marginBottom: 16 }}>
-          <div style={{ height: 320 }}>
-            <LiveRunPanel
-              runId={liveRun.runId || row?.id}
-              status={liveRun.runId === Number(row?.id) ? liveRun.status : row?.status}
-              log={liveRun.runId === Number(row?.id) ? liveRun.log : row?.log_content || ''}
-              error={liveRun.error || row?.error_message}
-              isActive={liveRun.runId === Number(row?.id) && liveRun.isActive}
-              onCancel={liveRun.cancel}
-            />
-          </div>
-        </Card>
-      )}
-
-      <Card title="查询结果" size="small" styles={{ body: { padding: 0, minHeight: 280 } }}>
+      <Card title="实时运行明细" size="small" styles={{ body: { padding: 0, minHeight: 420 } }}>
         {loading && !resultReady ? (
           <div style={{ padding: 16 }}>
             <Skeleton active paragraph={{ rows: 8 }} title={false} />
           </div>
-        ) : preview?.columns?.length ? (
+        ) : liveRun.runId === Number(row?.id) ? (
           <div style={{ height: 420, display: 'flex', flexDirection: 'column' }}>
-            <QueryResultPanel
-              dataSource={tableBundle.dataSource}
-              columns={tableBundle.tableColumns}
-              showViewModeToggle
-              toolbar={(
-                <div style={{ padding: '8px 12px', fontSize: 12, color: '#666' }}>
-                  共 <strong>{tableBundle.dataSource.length}</strong> 行
-                  {preview.truncated ? '（已截断预览）' : ''}
-                  ；与数据开发 / 探查共用结果组件
-                </div>
-              )}
+            <InteractiveRunDock
+              run={liveRun}
+              scopeKey={`history:${row?.workspace_id}:${row?.id}`}
             />
           </div>
         ) : (
-          <div style={{ padding: 16, color: '#999' }}>无结果集（非查询语句、失败或未返回行）</div>
+          <div style={{ padding: 16, color: '#999' }}>正在加载运行日志与语句结果…</div>
         )}
       </Card>
     </div>

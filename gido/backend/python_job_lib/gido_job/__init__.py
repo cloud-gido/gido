@@ -19,4 +19,12 @@
 
 from gido_job.job import GidoJob, job
 
-__all__ = ["GidoJob", "job"]
+SDK_VERSION = "1.0.0"
+CONTEXT_PROTOCOL_VERSION = 1
+
+__all__ = [
+    "CONTEXT_PROTOCOL_VERSION",
+    "GidoJob",
+    "SDK_VERSION",
+    "job",
+]

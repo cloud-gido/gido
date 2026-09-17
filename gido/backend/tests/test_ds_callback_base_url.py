@@ -23,7 +23,7 @@ def test_ds_callback_base_url_default(monkeypatch):
     assert ds_callback_base_url() == "http://gido-backend:8001"
 
 
-def test_ds_callback_curl_includes_bizdate_and_token(monkeypatch):
+def test_ds_callback_curl_includes_bizdate_and_runtime_token_lookup(monkeypatch):
     monkeypatch.setattr(settings, "GIDO_DS_CALLBACK_BASE_URL", "http://backend.bigdata.svc:8001")
     monkeypatch.setattr(settings, "INTERNAL_TOKEN", "tok-xyz")
     script = _ds_callback_curl(
@@ -31,5 +31,7 @@ def test_ds_callback_curl_includes_bizdate_and_token(monkeypatch):
         json_body='{"bizdate":"$[yyyy-MM-dd]"}',
     )
     assert "http://backend.bigdata.svc:8001/api/studio/internal/nodes/260/run" in script
-    assert "Bearer tok-xyz" in script
+    assert "tok-xyz" not in script
+    assert "GIDO_INTERNAL_TOKEN" in script
+    assert "GIDO_INTERNAL_TOKEN_FILE" in script
     assert '"$[yyyy-MM-dd]"' in script or "$[yyyy-MM-dd]" in script

@@ -6,7 +6,7 @@
  */
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, type Key } from 'react'
 import {
-  Button, Select, InputNumber, Alert, Space, message, Input, Modal, Form, Tooltip, Tabs, Tag, Spin,
+  Button, Select, InputNumber, Alert, Space, message, Input, Modal, Form, Tooltip, Tag, Spin,
 } from 'antd'
 import {
   PlayCircleOutlined, DownloadOutlined, PlusOutlined, FolderAddOutlined,
@@ -66,6 +66,7 @@ import WorkspaceFolderTree, { locateLeafInFolderTree, type FolderRow, type LeafR
 import AutosaveStatusHint from '../components/AutosaveStatusHint'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
 import { useInteractiveRun } from '../hooks/useInteractiveRun'
+import InteractiveRunDock from '../components/InteractiveRunDock'
 
 function sameParent(a: string | null | undefined, b: string | null | undefined) {
   return (a ?? null) === (b ?? null)
@@ -826,62 +827,10 @@ export default function ProbePage() {
               </div>
             )}
             bottom={(
-              <EditorResultDock
-                activeKey="result"
+              <InteractiveRunDock
+                run={interactiveRun}
+                scopeKey={`probe:${wsId}:${activeScript?.id ?? 'none'}`}
                 onClose={() => setResultPanelOpen(false)}
-                tabs={[{
-                  key: 'result',
-                  label: (
-                    <>
-                      查询结果
-                      {activeStmt && !activeStmt.error && (
-                        <EditorResultRowBadge count={activeStmt.total} />
-                      )}
-                      {loading && <span style={{ marginLeft: 8, color: '#999', fontSize: 12, fontWeight: 400 }}>执行中…</span>}
-                    </>
-                  ),
-                  children: (
-                    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', height: '100%' }}>
-                      {result ? (
-                        <>
-                          {result.statement_count > 1 && (
-                            <Tabs
-                              size="small"
-                              activeKey={activeResultTab}
-                              onChange={setActiveResultTab}
-                              style={{ padding: '0 8px', flexShrink: 0 }}
-                              items={result.statements.map(s => ({
-                                key: String(s.index),
-                                label: s.error ? `语句 ${s.index + 1} ✕` : `语句 ${s.index + 1}`,
-                              }))}
-                            />
-                          )}
-                          {activeStmt?.error ? (
-                            <Alert type="error" showIcon message="执行失败" description={activeStmt.error} style={{ margin: 12 }} />
-                          ) : (
-                            <QueryResultPanel
-                              dataSource={dataSource}
-                              columns={tableColumns}
-                              showViewModeToggle
-                              toolbar={(
-                                <div style={{ padding: '8px 12px', fontSize: 12, color: '#666' }}>
-                                  共 <strong>{activeStmt?.total ?? 0}</strong> 行；已返回{' '}
-                                  <strong>{activeStmt?.rows?.length ?? 0}</strong> 行（上限 {SQL_RESULT_ROW_CAP}）
-                                  {activeStmt?.truncated ? `；已按上限 ${limit} 截断` : ''}
-                                  ；支持多条语句（分号分隔）
-                                </div>
-                              )}
-                            />
-                          )}
-                        </>
-                      ) : (
-                        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999', fontSize: 13 }}>
-                          {loading ? '执行中…' : '运行后在此展示查询结果（可用分号分隔多条 SELECT）'}
-                        </div>
-                      )}
-                    </div>
-                  ),
-                }]}
               />
             )}
           />
