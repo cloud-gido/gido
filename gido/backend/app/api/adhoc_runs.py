@@ -3,13 +3,16 @@
 """运行历史：数据开发试跑与数据探查交互式执行记录。"""
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Optional
+import hashlib
+import secrets
+from datetime import datetime, timedelta
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import desc
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core import perm_codes as PC
@@ -20,6 +23,8 @@ from app.models.workspace import (
     AdhocRun,
     AdhocRunExport,
     AdhocRunLogChunk,
+    AdhocRunShare,
+    AdhocRunShareGrant,
     AdhocRunStatement,
     DataSource,
     User,
@@ -28,6 +33,7 @@ from app.services.adhoc_run_store import (
     list_run_statements,
     paginate_statement_rows,
     paginate_statement_result_chunks,
+    query_statement_rows,
     serialize_adhoc_run,
     serialize_run_statement,
     statement_collection_version,
@@ -45,6 +51,37 @@ ACTIVE_RUN_STATUSES = ("queued", "running", "cancel_requested")
 class AdhocExportCreate(BaseModel):
     format: str
     statement_index: Optional[int] = None
+    search: Optional[str] = None
+    filters: List["AdhocRowFilter"] = Field(default_factory=list)
+    sort: List["AdhocRowSort"] = Field(default_factory=list)
+    statement_version: Optional[str] = None
+
+
+class AdhocShareCreate(BaseModel):
+    ttl_hours: Optional[int] = Field(None, ge=1, le=24 * 30)
+
+
+class AdhocRowFilter(BaseModel):
+    column: str
+    operator: str
+    value: Any = None
+
+
+class AdhocRowSort(BaseModel):
+    column: str
+    direction: str
+
+
+AdhocExportCreate.model_rebuild()
+
+
+class AdhocRowQuery(BaseModel):
+    search: Optional[str] = None
+    filters: List[AdhocRowFilter] = Field(default_factory=list)
+    sort: List[AdhocRowSort] = Field(default_factory=list)
+    cursor: Optional[str] = None
+    limit: int = Field(500, ge=1, le=5000)
+    statement_version: str
 
 
 def _allowed_sources(db: Session, user: User, workspace_id: int) -> list[str]:
@@ -67,8 +104,35 @@ def _assert_can_view_run(db: Session, user: User, row: AdhocRun, *, allow_others
         raise HTTPException(status_code=403, detail="无权查看该来源的运行记录")
     if allow_others_if_admin and workspace_data_full_control(db, user, row.workspace_id):
         return
-    if row.triggered_by != user.id:
-        raise HTTPException(status_code=403, detail="仅可查看本人的运行记录")
+    if row.triggered_by == user.id:
+        return
+    now = datetime.utcnow()
+    grant = (
+        db.query(AdhocRunShareGrant.id)
+        .join(AdhocRunShare, AdhocRunShare.id == AdhocRunShareGrant.share_id)
+        .filter(
+            AdhocRunShareGrant.run_id == row.id,
+            AdhocRunShareGrant.user_id == user.id,
+            AdhocRunShare.revoked_at.is_(None),
+            AdhocRunShare.expires_at > now,
+        )
+        .first()
+    )
+    if not grant:
+        raise HTTPException(status_code=403, detail="仅可查看本人或已获分享授权的运行记录")
+
+
+def _serialize_share(row: AdhocRunShare) -> dict:
+    return {
+        "id": row.id,
+        "run_id": row.run_id,
+        "created_by": row.created_by,
+        "expires_at": row.expires_at,
+        "revoked_at": row.revoked_at,
+        "revoked_by": row.revoked_by,
+        "created_at": row.created_at,
+        "active": row.revoked_at is None and row.expires_at > datetime.utcnow(),
+    }
 
 
 @router.get("")
@@ -167,6 +231,66 @@ def get_active_adhoc_run(
     return serialize_adhoc_run(row, include_result=True) if row else None
 
 
+@router.get("/share-links/{token}")
+def redeem_adhoc_run_share(
+    token: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    share = (
+        db.query(AdhocRunShare)
+        .filter(AdhocRunShare.token_hash == token_hash)
+        .first()
+    )
+    if not share:
+        raise HTTPException(status_code=404, detail="分享链接不存在")
+    if share.revoked_at is not None:
+        raise HTTPException(status_code=410, detail="分享链接已撤销")
+    if share.expires_at <= datetime.utcnow():
+        raise HTTPException(status_code=410, detail="分享链接已过期")
+    run = db.query(AdhocRun).filter(AdhocRun.id == share.run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    # A link never bypasses current workspace membership or source permission.
+    assert_workspace_access(db, current_user, run.workspace_id)
+    if run.source not in _allowed_sources(db, current_user, run.workspace_id):
+        raise HTTPException(status_code=403, detail="无权查看该来源的运行记录")
+    grant = (
+        db.query(AdhocRunShareGrant)
+        .filter(
+            AdhocRunShareGrant.share_id == share.id,
+            AdhocRunShareGrant.user_id == current_user.id,
+        )
+        .first()
+    )
+    if not grant:
+        grant = AdhocRunShareGrant(
+            share_id=share.id,
+            run_id=run.id,
+            user_id=current_user.id,
+        )
+        db.add(grant)
+        try:
+            db.commit()
+            db.refresh(grant)
+        except IntegrityError:
+            db.rollback()
+            grant = (
+                db.query(AdhocRunShareGrant)
+                .filter(
+                    AdhocRunShareGrant.share_id == share.id,
+                    AdhocRunShareGrant.user_id == current_user.id,
+                )
+                .one()
+            )
+    return {
+        "share": _serialize_share(share),
+        "grant_id": grant.id,
+        "run": serialize_adhoc_run(run, include_result=True),
+    }
+
+
 @router.get("/{run_id}")
 def get_adhoc_run(
     run_id: int,
@@ -259,10 +383,30 @@ def get_adhoc_run_events(
     statement_changed = statement_version != current_statement_version
     next_log_seq = log_rows[-1].seq if log_rows else after_log_seq
     still_running = row.status in ACTIVE_RUN_STATUSES
+    now = datetime.utcnow()
+    queue_end = row.started_at or row.finished_at or now
+    execution_end = row.finished_at or now
+    queue_duration_ms = (
+        max(0, int((queue_end - row.created_at).total_seconds() * 1000))
+        if row.created_at
+        else None
+    )
+    execution_duration_ms = (
+        max(0, int((execution_end - row.started_at).total_seconds() * 1000))
+        if row.started_at
+        else None
+    )
     return {
         "run_id": row.id,
         "status": row.status,
         "version": int(row.status_version or 0),
+        "timing": {
+            "created_at": row.created_at,
+            "started_at": row.started_at,
+            "finished_at": row.finished_at,
+            "queue_duration_ms": queue_duration_ms,
+            "execution_duration_ms": execution_duration_ms,
+        },
         "statement_version": current_statement_version,
         "logs": {
             "chunks": [
@@ -374,8 +518,118 @@ def get_adhoc_statement_chunks(
     }
 
 
+@router.post("/{run_id}/statements/{statement_index}/rows/query")
+def query_adhoc_statement_rows(
+    run_id: int,
+    statement_index: int,
+    request: AdhocRowQuery,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    run = db.query(AdhocRun).filter(AdhocRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    _assert_can_view_run(db, current_user, run)
+    try:
+        page = query_statement_rows(
+            db,
+            run_id,
+            statement_index,
+            search=request.search,
+            filters=[item.model_dump(exclude_unset=True) for item in request.filters],
+            sort=[item.model_dump() for item in request.sort],
+            cursor=request.cursor,
+            limit=request.limit,
+            statement_version=request.statement_version,
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 409 if "版本" in detail or "尚未完成" in detail else 400
+        if "不存在" in detail:
+            status_code = 404
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    return {
+        "run_id": run_id,
+        "run_status": run.status,
+        "run_version": int(run.status_version or 0),
+        **page,
+    }
+
+
+@router.post("/{run_id}/statements/{statement_index}/explain")
+def explain_adhoc_statement(
+    run_id: int,
+    statement_index: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.services.adhoc_explain import capture_statement_plan
+
+    run = db.query(AdhocRun).filter(AdhocRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    _assert_can_view_run(db, current_user, run)
+    statement = (
+        db.query(AdhocRunStatement)
+        .filter(
+            AdhocRunStatement.run_id == run_id,
+            AdhocRunStatement.statement_index == statement_index,
+        )
+        .first()
+    )
+    if not statement:
+        raise HTTPException(status_code=404, detail="语句不存在")
+    datasource = (
+        db.query(DataSource)
+        .filter(
+            DataSource.id == run.datasource_id,
+            DataSource.workspace_id == run.workspace_id,
+        )
+        .first()
+    )
+    if not datasource:
+        raise HTTPException(status_code=409, detail="运行记录的数据源已不可用")
+    try:
+        snapshot = capture_statement_plan(
+            db, datasource=datasource, statement=statement
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=502, detail=f"Explain 执行失败: {str(exc)[:500]}") from exc
+    from app.services.audit import log_action
+
+    log_action(
+        db,
+        current_user.id,
+        "adhoc_explain",
+        "adhoc_run_statement",
+        resource_id=statement.id,
+        workspace_id=run.workspace_id,
+        detail={
+            "run_id": run.id,
+            "statement_index": statement.statement_index,
+            "analyze": False,
+        },
+    )
+    return {
+        "run_id": run_id,
+        "statement_index": statement_index,
+        "plan_snapshot": snapshot,
+        "statement": serialize_run_statement(statement),
+    }
+
+
 def _export_with_access(
-    db: Session, current_user: User, run_id: int, export_id: int
+    db: Session,
+    current_user: User,
+    run_id: int,
+    export_id: int,
+    *,
+    require_owner: bool = False,
 ) -> tuple[AdhocRun, AdhocRunExport]:
     run = db.query(AdhocRun).filter(AdhocRun.id == run_id).first()
     if not run:
@@ -391,7 +645,11 @@ def _export_with_access(
     )
     if not export:
         raise HTTPException(status_code=404, detail="导出任务不存在")
-    if export.requested_by != current_user.id:
+    if (
+        require_owner
+        and export.requested_by != current_user.id
+        and not workspace_data_full_control(db, current_user, run.workspace_id)
+    ):
         raise HTTPException(status_code=403, detail="仅导出申请人可访问该文件")
     return run, export
 
@@ -430,6 +688,14 @@ def create_adhoc_run_export(
             statement=statement,
             requested_by=current_user.id,
             export_format=request.format,
+            query_spec={
+                "search": request.search,
+                "filters": [
+                    item.model_dump(exclude_unset=True) for item in request.filters
+                ],
+                "sort": [item.model_dump() for item in request.sort],
+            },
+            statement_version=request.statement_version,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -490,8 +756,71 @@ def cancel_adhoc_run_export(
 ):
     from app.services.adhoc_run_export import cancel_export, serialize_export
 
-    _, export = _export_with_access(db, current_user, run_id, export_id)
+    _, export = _export_with_access(
+        db, current_user, run_id, export_id, require_owner=True
+    )
     return serialize_export(cancel_export(db, export))
+
+
+@router.post("/{run_id}/shares", status_code=201)
+def create_adhoc_run_share(
+    run_id: int,
+    request: AdhocShareCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.core.config import settings
+
+    run = db.query(AdhocRun).filter(AdhocRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    _assert_can_view_run(db, current_user, run)
+    if run.triggered_by != current_user.id and not workspace_data_full_control(
+        db, current_user, run.workspace_id
+    ):
+        raise HTTPException(status_code=403, detail="仅运行发起人或空间管理员可创建分享链接")
+    token = secrets.token_urlsafe(32)
+    ttl_hours = request.ttl_hours or max(1, int(settings.ADHOC_SHARE_TTL_HOURS))
+    share = AdhocRunShare(
+        run_id=run.id,
+        created_by=current_user.id,
+        token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        expires_at=datetime.utcnow() + timedelta(hours=ttl_hours),
+    )
+    db.add(share)
+    db.commit()
+    db.refresh(share)
+    return {**_serialize_share(share), "token": token}
+
+
+@router.delete("/{run_id}/shares/{share_id}")
+def revoke_adhoc_run_share(
+    run_id: int,
+    share_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    run = db.query(AdhocRun).filter(AdhocRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    _assert_can_view_run(db, current_user, run)
+    share = (
+        db.query(AdhocRunShare)
+        .filter(AdhocRunShare.id == share_id, AdhocRunShare.run_id == run_id)
+        .first()
+    )
+    if not share:
+        raise HTTPException(status_code=404, detail="分享链接不存在")
+    if share.created_by != current_user.id and not workspace_data_full_control(
+        db, current_user, run.workspace_id
+    ):
+        raise HTTPException(status_code=403, detail="仅创建者或空间管理员可撤销分享")
+    if share.revoked_at is None:
+        share.revoked_at = datetime.utcnow()
+        share.revoked_by = current_user.id
+        db.commit()
+        db.refresh(share)
+    return _serialize_share(share)
 
 
 @router.post("/{run_id}/cancel")

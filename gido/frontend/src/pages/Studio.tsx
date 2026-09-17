@@ -71,12 +71,7 @@ import {
   rememberDatasources,
   resolveDatasourceForRun,
 } from '../utils/workspaceDatasource'
-import { pruneWidths, resolveResultColumnOrder } from '../utils/resultTableMeta'
 import NodeConfigModal from '../components/NodeConfigModal'
-import {
-  statementResultsOf,
-  type MultiStatementRunResult,
-} from '../components/StatementResultTabs'
 import { useInteractiveRun } from '../hooks/useInteractiveRun'
 import InteractiveRunDock from '../components/InteractiveRunDock'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
@@ -93,42 +88,11 @@ import {
   saveTreeListCache,
   treeListReadyFromCache,
 } from '../utils/workspaceTreeListCache'
-import { nextStudioRunTab } from '../utils/studioRunTabPolicy'
 
 const NODE_TYPES = ['SQL', 'PYTHON', 'SHELL', 'SYNC', 'VIRTUAL', 'DEPENDENT']
 const LANG_MAP: Record<string, string> = { SQL: 'sql', PYTHON: 'python', SHELL: 'shell', SYNC: 'json', DEPENDENT: 'plaintext' }
 const TYPE_COLOR: Record<string, string> = {
   SQL: 'blue', PYTHON: 'green', SHELL: 'orange', SYNC: 'purple', VIRTUAL: 'default', DEPENDENT: 'magenta',
-}
-
-const STUDIO_RESULT_COL_META = 'gido.studio.resultTableMeta.v1'
-
-type StudioResultColMeta = {
-  order: string[]
-  widths: Record<string, number>
-  /** 产生 order 时的结果列序；与本次结果不一致则展示跟 SQL */
-  sourceKeys?: string[]
-}
-
-function loadStudioResultMetaMap(): Record<string, StudioResultColMeta> {
-  try {
-    const raw = sessionStorage.getItem(STUDIO_RESULT_COL_META)
-    if (!raw) return {}
-    const o = JSON.parse(raw) as Record<string, StudioResultColMeta>
-    return o && typeof o === 'object' ? o : {}
-  } catch {
-    return {}
-  }
-}
-
-function saveStudioResultMetaNode(nodeId: number, meta: StudioResultColMeta) {
-  try {
-    const all = loadStudioResultMetaMap()
-    all[String(nodeId)] = meta
-    sessionStorage.setItem(STUDIO_RESULT_COL_META, JSON.stringify(all))
-  } catch {
-    /* ignore */
-  }
 }
 
 function sortNodesList(list: any[]): any[] {
@@ -180,18 +144,7 @@ export default function StudioPage() {
   const [dirtyMap, setDirtyMap] = useState<Record<number, string>>({})
 
   // 运行状态
-  const [runningId, setRunningId] = useState<number | null>(null)
-  const runningIdRef = useRef(runningId)
-  runningIdRef.current = runningId
-  const [logMap, setLogMap] = useState<Record<number, string>>({})
-  const [resultMap, setResultMap] = useState<Record<number, MultiStatementRunResult | null>>({})
-  const [statementResultTab, setStatementResultTab] = useState<Record<number, string>>({})
   const [logPanelOpen, setLogPanelOpen] = useState(false)
-  const [resultTab, setResultTab] = useState<Record<number, 'log' | 'result'>>({})  // 每个节点底部面板激活的 tab
-  const runTabIntentRef = useRef<Record<number, { runId: number | null; manuallySelected: boolean }>>({})
-  const interactiveScopeNodeRef = useRef<number | null>(null)
-  /** 查询结果表：列顺序与列宽（按节点，写入 sessionStorage） */
-  const [resultColMeta, setResultColMeta] = useState<StudioResultColMeta>({ order: [], widths: {} })
 
   // 新建节点弹窗
   const [createModal, setCreateModal] = useState(false)
@@ -451,7 +404,6 @@ export default function StudioPage() {
       setDirtyMap({})
       setEditLockHeld({})
       setLogPanelOpen(false)
-      setRunningId(null)
       setTabContentLoading({})
       setTabContentError({})
       tabHydrateInflightRef.current.clear()
@@ -761,16 +713,6 @@ export default function StudioPage() {
     })()
     setOpenTabs(newTabs)
     if (nextActive !== activeTabId) setActiveTabId(nextActive)
-    setResultMap(prevMap => {
-      const n = { ...prevMap }
-      ids.forEach(id => { delete n[id] })
-      return n
-    })
-    setLogMap(prevMap => {
-      const n = { ...prevMap }
-      ids.forEach(id => { delete n[id] })
-      return n
-    })
     setTabContentLoading(prev => {
       let changed = false
       const n = { ...prev }
@@ -804,6 +746,8 @@ export default function StudioPage() {
     nodeId: activeNode?.id,
     source: 'studio',
   })
+  const interactiveRunActiveRef = useRef(interactiveRun.isActive)
+  interactiveRunActiveRef.current = interactiveRun.isActive
 
   // DEPENDENT 预览名：仅打开该类节点时再拉工作流列表（进页不 listAll）
   useEffect(() => {
@@ -825,60 +769,6 @@ export default function StudioPage() {
   const activeScript = activeTabId !== null
     ? (dirtyMap[activeTabId] ?? activeNode?.script_content ?? '')
     : ''
-  useEffect(() => {
-    // 切换编辑页签时 Hook 会异步清理上一节点状态；跳过这一帧，避免旧 run 写入新节点。
-    if (interactiveScopeNodeRef.current !== activeTabId) {
-      interactiveScopeNodeRef.current = activeTabId
-      return
-    }
-    if (!activeTabId || !interactiveRun.runId) return
-    const previousIntent = runTabIntentRef.current[activeTabId]
-    if (!previousIntent || previousIntent.runId !== interactiveRun.runId) {
-      runTabIntentRef.current[activeTabId] = {
-        runId: interactiveRun.runId,
-        // 提交请求返回 run_id 前用户也可能已切换页签，需保留这次明确选择。
-        manuallySelected: previousIntent?.runId === null
-          ? previousIntent.manuallySelected
-          : false,
-      }
-      setResultTab(prev => ({ ...prev, [activeTabId]: 'log' }))
-    }
-    setRunningId(interactiveRun.isActive ? activeTabId : null)
-    setLogMap(prev => ({ ...prev, [activeTabId]: interactiveRun.log || interactiveRun.error || '' }))
-    if (interactiveRun.result) {
-      const result = interactiveRun.result as MultiStatementRunResult
-      const statements = statementResultsOf(result)
-      setResultMap(prev => ({ ...prev, [activeTabId]: result }))
-      setStatementResultTab(prev => {
-        const current = prev[activeTabId]
-        if (statements.some(item => String(item.index) === current)) return prev
-        return {
-          ...prev,
-          [activeTabId]: statements.length ? String(statements[0].index) : '0',
-        }
-      })
-    }
-    setResultTab(prev => {
-      const current = prev[activeTabId] ?? 'log'
-      const next = nextStudioRunTab({
-        current,
-        status: interactiveRun.status,
-        nodeType: activeNode?.node_type,
-        result: interactiveRun.result,
-        manuallySelected: Boolean(runTabIntentRef.current[activeTabId]?.manuallySelected),
-      })
-      return next === current ? prev : { ...prev, [activeTabId]: next }
-    })
-  }, [
-    activeTabId,
-    activeNode?.node_type,
-    interactiveRun.runId,
-    interactiveRun.status,
-    interactiveRun.isActive,
-    interactiveRun.log,
-    interactiveRun.error,
-    interactiveRun.result,
-  ])
   const holdsEditLock = activeTabId !== null && editLockHeld[activeTabId] === true
   const canEdit = Boolean(
     canWrite && activeNode && !activeNode.is_locked && holdsEditLock && !activeContentPending,
@@ -929,71 +819,6 @@ export default function StudioPage() {
   const tabVersionDirtyMap = useMemo(
     () => Object.fromEntries(openTabs.map(t => [t.id, scriptAutosave.isVersionDirty(t.id)])),
     [openTabs, scriptAutosave.isVersionDirty, scriptAutosave.versionDirtyEpoch],
-  )
-
-  const activeRunResult = activeTabId != null ? resultMap[activeTabId] : null
-  const activeStatementResults = statementResultsOf(activeRunResult)
-  const activeStatementKey = activeTabId != null
-    ? (statementResultTab[activeTabId] ?? String(activeStatementResults[0]?.index ?? 0))
-    : '0'
-  const activeStatementResult = activeStatementResults.find(
-    item => String(item.index) === activeStatementKey,
-  ) ?? activeStatementResults[0] ?? null
-  const resultColSig =
-    activeStatementResult?.columns
-      ? activeStatementResult.columns.join('\x1e')
-      : ''
-
-  useEffect(() => {
-    if (activeTabId == null) {
-      setResultColMeta({ order: [], widths: {} })
-      return
-    }
-    const stored = loadStudioResultMetaMap()[String(activeTabId)] ?? { order: [], widths: {} }
-    const cols = activeStatementResult?.columns
-    if (!cols?.length) {
-      setResultColMeta(stored)
-      return
-    }
-    const next: StudioResultColMeta = {
-      order: resolveResultColumnOrder(stored.order, cols, stored.sourceKeys),
-      widths: pruneWidths(stored.widths, cols),
-      sourceKeys: cols,
-    }
-    setResultColMeta(next)
-    // 列签名变化时写回，避免旧 order 持续污染后续查询
-    if (
-      !stored.sourceKeys?.length ||
-      stored.sourceKeys.join('\x1e') !== cols.join('\x1e') ||
-      stored.order.join('\x1e') !== next.order.join('\x1e')
-    ) {
-      saveStudioResultMetaNode(activeTabId, next)
-    }
-  }, [activeTabId, activeStatementKey, resultColSig])
-
-  const onResultColumnOrderChange = useCallback(
-    (nextOrder: string[]) => {
-      if (activeTabId == null) return
-      setResultColMeta(prev => {
-        const cols = activeStatementResult?.columns ?? prev.sourceKeys ?? nextOrder
-        const next = { ...prev, order: nextOrder, sourceKeys: cols }
-        saveStudioResultMetaNode(activeTabId, next)
-        return next
-      })
-    },
-    [activeTabId, activeStatementResult],
-  )
-
-  const onResultColumnWidthChange = useCallback(
-    (key: string, width: number) => {
-      if (activeTabId == null) return
-      setResultColMeta(prev => {
-        const next = { ...prev, widths: { ...prev.widths, [key]: width } }
-        saveStudioResultMetaNode(activeTabId, next)
-        return next
-      })
-    },
-    [activeTabId],
   )
 
   /**
@@ -1145,13 +970,7 @@ export default function StudioPage() {
     if (meta?.fromSelection) {
       message.info('已执行选中片段')
     }
-    setRunningId(activeNode.id)
-    setLogMap(prev => ({ ...prev, [activeNode.id]: '' }))
-    setResultMap(prev => ({ ...prev, [activeNode.id]: null }))
-    setStatementResultTab(prev => ({ ...prev, [activeNode.id]: '0' }))
     setLogPanelOpen(true)
-    runTabIntentRef.current[activeNode.id] = { runId: null, manuallySelected: false }
-    setResultTab(prev => ({ ...prev, [activeNode.id]: 'log' }))
     try {
       const res: any = await interactiveRun.start(
         () => studioApi.submitRun(
@@ -1161,10 +980,8 @@ export default function StudioPage() {
         ),
       )
       if (res?.reused) message.info('该节点已有相同运行，已打开实时日志')
-    } catch (e: any) {
-      setLogMap(prev => ({ ...prev, [activeNode.id]: e?.response?.data?.detail || '执行失败' }))
-      setResultTab(prev => ({ ...prev, [activeNode.id]: 'log' }))
-      setRunningId(null)
+    } catch {
+      // useInteractiveRun 统一维护错误、日志与终态。
     }
   }
 
@@ -1426,7 +1243,7 @@ export default function StudioPage() {
     })
   }
 
-  const isRunning = activeTabId !== null && runningId === activeTabId
+  const isRunning = interactiveRun.isActive
 
   const renderScriptPane = () => {
     if (activeNode?.node_type === 'SYNC') {
@@ -1525,7 +1342,7 @@ export default function StudioPage() {
                   node: n,
                   loading: id != null ? tabContentLoadingRef.current[id] : false,
                   error: id != null ? tabContentErrorRef.current[id] : null,
-                  running: id != null && runningIdRef.current === id,
+                  running: id != null && id === activeTabIdRef.current && interactiveRunActiveRef.current,
                 })
               },
               onRun: (script, meta) => {
@@ -1828,15 +1645,6 @@ export default function StudioPage() {
                     <InteractiveRunDock
                       run={interactiveRun}
                       scopeKey={`studio:${wsId}:${activeTabId}`}
-                      activeKey={resultTab[activeTabId!] ?? 'log'}
-                      onTabChange={key => {
-                        const nodeId = activeTabId!
-                        runTabIntentRef.current[nodeId] = {
-                          runId: interactiveRun.runId,
-                          manuallySelected: true,
-                        }
-                        setResultTab(prev => ({ ...prev, [nodeId]: key }))
-                      }}
                       onClose={() => setLogPanelOpen(false)}
                     />
                   )}

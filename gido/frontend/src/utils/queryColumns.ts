@@ -4,7 +4,15 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-export type QueryColumnMeta = { name: string; type?: string }
+export type QueryColumnMeta = {
+  name: string
+  type?: string
+  raw_type?: string | null
+  semantic_type?: string | null
+  nullable?: boolean
+  precision?: number | null
+  scale?: number | null
+}
 
 export function normalizeQueryColumns(
   columns: string[],

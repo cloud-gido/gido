@@ -29,9 +29,12 @@ describe('sql result row limit adoption', () => {
     expect(PROBE_DEFAULT_ROW_LIMIT).toBe(10000)
   })
 
-  it('Probe export button no longer shows misleading current-row cap text', () => {
+  it('Probe delegates snapshot export to the shared dock', () => {
     const probe = read('pages/Probe.tsx')
+    const dock = read('components/InteractiveRunDock.tsx')
     expect(probe).not.toContain('导出 CSV（最多 {activeStmt.rows.length} 行）')
-    expect(probe).toContain('导出 CSV')
+    expect(probe).not.toContain('exportRowsToCsv')
+    expect(dock).toContain('导出 CSV')
+    expect(dock).toContain('已物化快照')
   })
 })

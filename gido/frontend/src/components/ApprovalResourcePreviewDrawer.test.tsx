@@ -11,6 +11,9 @@ import { R } from '../routes'
 
 vi.mock('@monaco-editor/react', () => ({
   default: ({ value }: { value: string }) => <div data-testid="monaco-script">{value}</div>,
+  DiffEditor: ({ original, modified }: { original: string; modified: string }) => (
+    <div data-testid="monaco-diff">{original} → {modified}</div>
+  ),
 }))
 
 vi.mock('../api', () => ({
@@ -35,11 +38,29 @@ const samplePayload = {
   preview: {
     kind: 'studio_node',
     action: 'publish_node',
-    summary: { node_type: 'SQL', is_published: false },
     pending: { script_content: 'SELECT 42' },
     baseline: { script_content: 'SELECT 1' },
     baseline_label: '最近保存版本',
     has_diff: true,
+    snapshot_frozen: true,
+    artifacts: [{
+      key: 'script',
+      name: '节点脚本',
+      kind: 'script',
+      language: 'sql',
+      baseline: 'SELECT 1',
+      submitted: 'SELECT 42',
+      changed: true,
+      additions: 1,
+      deletions: 1,
+    }],
+    summary: {
+      node_type: 'SQL',
+      is_published: false,
+      changed_files: 1,
+      additions: 1,
+      deletions: 1,
+    },
   },
 }
 
@@ -62,7 +83,7 @@ afterEach(() => {
 })
 
 describe('ApprovalResourcePreviewDrawer', () => {
-  it('loads preview and renders script + diff tabs', async () => {
+  it('loads preview and renders line diff with change stats', async () => {
     previewMock.mockResolvedValue(samplePayload as any)
     renderDrawer()
 
@@ -72,9 +93,10 @@ describe('ApprovalResourcePreviewDrawer', () => {
 
     expect(await screen.findByText('审批预览 — ads_demo')).toBeInTheDocument()
     expect(screen.getByText('请审批')).toBeInTheDocument()
-    expect(screen.getByText('本次提交')).toBeInTheDocument()
-    expect(screen.getByText('最近保存版本')).toBeInTheDocument()
-    expect(screen.getByTestId('monaco-script')).toHaveTextContent('SELECT 42')
+    expect(screen.getAllByText('+1').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText('-1').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText(/评审内容已冻结/)).toBeInTheDocument()
+    expect(screen.getByTestId('monaco-diff')).toHaveTextContent('SELECT 1 → SELECT 42')
   })
 
   it('shows deep link to studio when resource is studio_node', async () => {

@@ -106,7 +106,9 @@ class Settings(BaseSettings):
     ADHOC_ASYNC_ENABLED: bool = True
     ADHOC_WORKER_CONCURRENCY: int = 2
     ADHOC_LOG_MAX_BYTES: int = 10 * 1024 * 1024
-    ADHOC_RESULT_CHUNK_ROWS: int = 500
+    # 首屏小批低延迟返回；后续大批降低结果持久化事务数。
+    ADHOC_RESULT_FIRST_CHUNK_ROWS: int = 200
+    ADHOC_RESULT_CHUNK_ROWS: int = 2000
     ADHOC_RESULT_MAX_ROWS: int = 10000
     ADHOC_RESULT_MAX_BYTES: int = 20 * 1024 * 1024
     # 0 表示该维度不设限；全局配额通过元数据库统计，跨副本生效。
@@ -121,6 +123,7 @@ class Settings(BaseSettings):
     ADHOC_EXPORT_TTL_HOURS: int = 24
     ADHOC_EXPORT_DB_FALLBACK_MAX_BYTES: int = 10 * 1024 * 1024
     ADHOC_EXPORT_POLL_SECONDS: float = 0.5
+    ADHOC_SHARE_TTL_HOURS: int = 24
 
     # 仅用于本地排障：启动时把 admin 密码设为该明文；用完后务必从 .env 删除
     RESET_ADMIN_PASSWORD: Optional[str] = None

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+import time
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -15,15 +16,18 @@ from app.core.config import settings
 from app.models.workspace import DataSource, TaskNode, Workspace
 from app.services.adhoc_sql_driver import (
     ExecutionBinding,
+    connection_query_id,
     is_server_timeout_error,
     registered_connection,
     statement_handle,
     tagged_sql,
 )
 from app.services.integration_runtime import normalize_ds_type, open_connection
+from app.services.result_fetch import fetch_result_batch
 from app.services.sql_readonly import (
     _strip_sql_comments,
     apply_readonly_row_limit,
+    column_fields_from_description,
     column_types_from_description,
     json_cell_value,
     split_sql_statements,
@@ -190,7 +194,8 @@ def run_sql_with_result(
     last_select_result: Optional[Dict[str, Any]] = None
     statement_results: List[Dict[str, Any]] = []
     _cap = max(1, int(settings.ADHOC_RESULT_MAX_ROWS))
-    chunk_rows = max(1, int(settings.ADHOC_RESULT_CHUNK_ROWS))
+    first_chunk_rows = max(1, int(settings.ADHOC_RESULT_FIRST_CHUNK_ROWS))
+    chunk_rows = max(first_chunk_rows, int(settings.ADHOC_RESULT_CHUNK_ROWS))
     effective_timeout = max(
         1, int(timeout_seconds or getattr(node, "timeout_seconds", None) or 300)
     )
@@ -217,6 +222,7 @@ def run_sql_with_result(
             try:
                 for statement_index, raw_stmt in enumerate(raw_parts):
                     try:
+                        statement_started = time.monotonic()
                         if control:
                             control()
                         if callbacks.get("start"):
@@ -226,7 +232,11 @@ def run_sql_with_result(
                             add_log(f"[INFO] 已转换为 PostgreSQL 语法: {stmt[:120]}...")
                         exec_stmt = stmt
                         if _looks_like_result_query(stmt):
-                            capped = apply_readonly_row_limit(stmt, _cap)
+                            capped = apply_readonly_row_limit(
+                                stmt,
+                                _cap,
+                                overflow_probe=durable_callbacks,
+                            )
                             if capped != stmt:
                                 add_log(f"[INFO] 已追加 LIMIT {_cap} 避免全表拉取")
                                 exec_stmt = capped
@@ -247,20 +257,26 @@ def run_sql_with_result(
                         if cur.description:
                             columns = [d[0] for d in cur.description]
                             col_types = column_types_from_description(ds.ds_type, cur.description)
+                            fields = column_fields_from_description(ds.ds_type, cur.description)
                             rows: List[List[Any]] = []
+                            preview_rows: List[List[Any]] = []
+                            fetched_rows = 0
                             truncated = False
-                            while len(rows) < _cap:
+                            while fetched_rows < _cap:
                                 if control:
                                     control()
-                                fetched = cur.fetchmany(
-                                    min(chunk_rows, _cap - len(rows)) + (1 if len(rows) + chunk_rows >= _cap else 0)
+                                batch = fetch_result_batch(
+                                    cur,
+                                    fetched_rows=fetched_rows,
+                                    max_rows=_cap,
+                                    first_chunk_rows=first_chunk_rows,
+                                    chunk_rows=chunk_rows,
                                 )
-                                if not fetched:
+                                if not batch.rows:
                                     break
-                                accepted = fetched[: _cap - len(rows)]
                                 converted = [
                                     [json_cell_value(value) for value in item]
-                                    for item in accepted
+                                    for item in batch.rows
                                 ]
                                 if converted and callbacks.get("chunk"):
                                     persisted = callbacks["chunk"](
@@ -268,46 +284,79 @@ def run_sql_with_result(
                                         converted,
                                         columns=columns,
                                         column_types=col_types,
-                                        truncated=len(fetched) > len(accepted),
+                                        fields=fields,
+                                        truncated=batch.overflow,
                                     )
                                     if durable_callbacks and (
                                         persisted is None
                                         or int(getattr(persisted, "row_count", 0))
                                         < len(converted)
                                     ):
+                                        converted = (
+                                            converted[
+                                                : int(
+                                                    getattr(
+                                                        persisted,
+                                                        "row_count",
+                                                        0,
+                                                    )
+                                                )
+                                            ]
+                                            if persisted is not None
+                                            else []
+                                        )
                                         truncated = True
-                                rows.extend(converted)
+                                if durable_callbacks:
+                                    preview_rows.extend(
+                                        converted[: max(0, 200 - len(preview_rows))]
+                                    )
+                                else:
+                                    rows.extend(converted)
+                                fetched_rows += len(converted)
                                 if truncated and durable_callbacks:
                                     break
-                                if len(fetched) > len(accepted):
+                                if batch.overflow:
                                     truncated = True
                                     break
-                                if len(fetched) < min(chunk_rows, _cap - len(rows) + len(fetched)):
+                                if batch.exhausted:
                                     break
-                            if len(rows) >= _cap and not truncated:
-                                overflow = cur.fetchmany(1)
-                                truncated = bool(overflow)
+                            result_rows = preview_rows if durable_callbacks else rows
                             last_select_result = {
                                 "index": statement_index,
                                 "sql": raw_stmt.strip(),
                                 "columns": columns,
                                 "column_types": col_types,
-                                "rows": rows,
-                                "total": len(rows),
+                                "rows": result_rows,
+                                "total": fetched_rows,
                                 "truncated": truncated,
                             }
                             statement_results.append(last_select_result)
                             if kind == "postgresql":
                                 conn.commit()
                             if callbacks.get("success"):
-                                callbacks["success"](
-                                    statement_index,
+                                success_meta = dict(
                                     columns=columns,
                                     column_types=col_types,
+                                    fields=fields,
                                     truncated=truncated,
                                 )
+                                if durable_callbacks:
+                                    success_meta.update(
+                                        query_id=connection_query_id(conn, lt),
+                                        execution_metrics={
+                                        "duration_ms": max(
+                                            0,
+                                            int(
+                                                (time.monotonic() - statement_started)
+                                                * 1000
+                                            ),
+                                        ),
+                                        "rows_returned": fetched_rows,
+                                    },
+                                    )
+                                callbacks["success"](statement_index, **success_meta)
                             add_log(
-                                f"[INFO] 返回 {len(rows)} 行"
+                                f"[INFO] 返回 {fetched_rows} 行"
                                 + ("（已截断）" if truncated else "")
                             )
                         else:
@@ -315,9 +364,22 @@ def run_sql_with_result(
                             if kind in ("mysql", "postgresql"):
                                 conn.commit()
                             if callbacks.get("success"):
-                                callbacks["success"](
-                                    statement_index, affected_rows=affected
-                                )
+                                success_meta = {"affected_rows": affected}
+                                if durable_callbacks:
+                                    success_meta.update(
+                                        query_id=connection_query_id(conn, lt),
+                                        execution_metrics={
+                                        "duration_ms": max(
+                                            0,
+                                            int(
+                                                (time.monotonic() - statement_started)
+                                                * 1000
+                                            ),
+                                        ),
+                                        "affected_rows": affected,
+                                    },
+                                    )
+                                callbacks["success"](statement_index, **success_meta)
                             add_log(f"[INFO] 影响行数: {affected}")
                     except Exception as statement_error:
                         if kind == "postgresql":

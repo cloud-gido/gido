@@ -10,6 +10,11 @@ import type {
   InteractiveRun,
   InteractiveRunEvents,
   InteractiveRunExport,
+  InteractiveRunShare,
+  InteractiveRunShareRedeem,
+  InteractiveRowsQueryRequest,
+  InteractiveRowsQueryResponse,
+  InteractiveStatementExplain,
   InteractiveStatementList,
   InteractiveStatementRows,
 } from '../types/interactiveRun'
@@ -204,8 +209,6 @@ export const workflowApi = {
 
 // 数据探查（只读 SQL）
 export const probeApi = {
-  query: (data: { workspace_id: number; datasource_id: number; sql: string; limit?: number }) =>
-    request.post('/probe/query', data),
   submitRun: (data: { workspace_id: number; datasource_id: number; sql: string; limit?: number; client_key?: string }) =>
     request.post('/probe/runs', data),
   getTree: (workspaceId: number) =>
@@ -466,10 +469,36 @@ export const adhocRunsApi = {
       signal,
     }) as unknown as Promise<InteractiveStatementRows>
   },
-  createExport: (id: number, statementIndex: number, format: InteractiveExportFormat) =>
+  queryStatementRows: (
+    id: number,
+    statementIndex: number,
+    body: InteractiveRowsQueryRequest,
+    signal?: AbortSignal,
+  ) =>
+    request.post(
+      `/adhoc-runs/${id}/statements/${statementIndex}/rows/query`,
+      body,
+      { signal },
+    ) as unknown as Promise<InteractiveRowsQueryResponse>,
+  explainStatement: (id: number, statementIndex: number, signal?: AbortSignal) =>
+    request.post(
+      `/adhoc-runs/${id}/statements/${statementIndex}/explain`,
+      {},
+      { signal },
+    ) as unknown as Promise<InteractiveStatementExplain>,
+  createExport: (
+    id: number,
+    body: {
+      statement_index: number
+      format: InteractiveExportFormat
+      search?: string
+      filters?: InteractiveRowsQueryRequest['filters']
+      sort?: InteractiveRowsQueryRequest['sort']
+      statement_version?: string | null
+    },
+  ) =>
     request.post(`/adhoc-runs/${id}/exports`, {
-      statement_index: statementIndex,
-      format,
+      ...body,
     }) as unknown as Promise<InteractiveRunExport>,
   getExport: (id: number, exportId: number, signal?: AbortSignal) =>
     request.get(`/adhoc-runs/${id}/exports/${exportId}`, { signal }) as unknown as Promise<InteractiveRunExport>,
@@ -481,6 +510,14 @@ export const adhocRunsApi = {
     }) as unknown as Promise<Blob>,
   cancelExport: (id: number, exportId: number) =>
     request.post(`/adhoc-runs/${id}/exports/${exportId}/cancel`) as unknown as Promise<InteractiveRunExport>,
+  createShare: (id: number, ttlHours: number) =>
+    request.post(`/adhoc-runs/${id}/shares`, {
+      ttl_hours: ttlHours,
+    }) as unknown as Promise<InteractiveRunShare>,
+  revokeShare: (id: number, shareId: number) =>
+    request.delete(`/adhoc-runs/${id}/shares/${shareId}`) as unknown as Promise<InteractiveRunShare>,
+  redeemShare: (token: string) =>
+    request.get(`/adhoc-runs/share-links/${encodeURIComponent(token)}`) as unknown as Promise<InteractiveRunShareRedeem>,
   cancel: (id: number) =>
     request.post(`/adhoc-runs/${id}/cancel`) as unknown as Promise<{
       run_id: number

@@ -26,7 +26,6 @@ import {
 import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from './MonacoFindBar'
 import { bindMonacoScriptKeybindings } from '../utils/monacoScriptKeybindings'
 import AutosaveStatusHint from './AutosaveStatusHint'
-import LiveRunPanel from './LiveRunPanel'
 import { useInteractiveRun } from '../hooks/useInteractiveRun'
 import InteractiveRunDock from './InteractiveRunDock'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'

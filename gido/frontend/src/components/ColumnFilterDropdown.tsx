@@ -9,6 +9,7 @@ import { Input, Button, Space, Checkbox } from 'antd'
 import { formatCellDisplay } from '../utils/cellDisplay'
 
 const CONTAINS_PREFIX = '__contains:'
+export const NULL_FILTER_KEY = '__gido_null__'
 
 export function distinctValuesForColumn(
   data: Record<string, unknown>[],
@@ -18,7 +19,8 @@ export function distinctValuesForColumn(
   const seen = new Set<string>()
   const out: string[] = []
   for (const row of data) {
-    const s = formatCellDisplay(row[col], 0)
+    const value = row[col]
+    const s = value === null || value === undefined ? NULL_FILTER_KEY : formatCellDisplay(value, 0)
     if (seen.has(s)) continue
     seen.add(s)
     out.push(s)
@@ -29,6 +31,7 @@ export function distinctValuesForColumn(
 
 export function columnFilterPredicate(col: string, filterKey: string | number | boolean, record: Record<string, unknown>) {
   const key = String(filterKey)
+  if (key === NULL_FILTER_KEY) return record[col] === null || record[col] === undefined
   const text = formatCellDisplay(record[col], 0)
   if (key.startsWith(CONTAINS_PREFIX)) {
     const q = key.slice(CONTAINS_PREFIX.length).toLowerCase()
@@ -65,7 +68,7 @@ export function ColumnFilterDropdown({
     const q = listSearch.trim().toLowerCase()
     if (!q) return distinctValues
     return distinctValues.filter(v => {
-      const label = v === '' ? '(空)' : v
+      const label = v === NULL_FILTER_KEY ? '(NULL)' : v === '' ? '(空)' : v
       return label.toLowerCase().includes(q)
     })
   }, [distinctValues, listSearch])
@@ -101,8 +104,8 @@ export function ColumnFilterDropdown({
             >
               {visibleValues.map(v => (
                 <Checkbox key={v || '__empty__'} value={v} style={{ marginInlineStart: 0 }}>
-                  <span className="dw-col-filter-value-label" title={v === '' ? '(空)' : v}>
-                    {v === '' ? '(空)' : v}
+                  <span className="dw-col-filter-value-label" title={v === NULL_FILTER_KEY ? '(NULL)' : v === '' ? '(空)' : v}>
+                    {v === NULL_FILTER_KEY ? '(NULL)' : v === '' ? '(空)' : v}
                   </span>
                 </Checkbox>
               ))}

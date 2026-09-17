@@ -6,10 +6,10 @@
  */
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, type Key } from 'react'
 import {
-  Button, Select, InputNumber, Alert, Space, message, Input, Modal, Form, Tooltip, Tag, Spin,
+  Button, Select, InputNumber, Alert, message, Input, Modal, Form, Tooltip, Tag, Spin,
 } from 'antd'
 import {
-  PlayCircleOutlined, DownloadOutlined, PlusOutlined, FolderAddOutlined,
+  PlayCircleOutlined, PlusOutlined, FolderAddOutlined,
   FormatPainterOutlined, MenuFoldOutlined, AimOutlined,
 } from '@ant-design/icons'
 import '../monacoSetup'
@@ -35,13 +35,7 @@ import {
 import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from '../components/MonacoFindBar'
 import { bindMonacoScriptKeybindings } from '../utils/monacoScriptKeybindings'
 import { useSqlSchemaCompletion } from '../hooks/useSqlSchemaCompletion'
-import { buildQueryTableColumns, rowsToRecordDataSource } from '../components/QueryResultTable'
-import QueryResultPanel from '../components/QueryResultPanel'
-import EditorResultDock, { EditorResultRowBadge } from '../components/EditorResultDock'
-import { normalizeQueryColumns } from '../utils/queryColumns'
-import { exportRowsToCsv } from '../utils/csvExport'
 import { PROBE_DEFAULT_ROW_LIMIT, SQL_RESULT_ROW_CAP, clampSqlResultRowLimit } from '../utils/sqlResultRowLimit'
-import { pruneWidths, resolveResultColumnOrder } from '../utils/resultTableMeta'
 import {
   datasourceTagText,
   hasExplicitDatasource,
@@ -100,28 +94,6 @@ export default function ProbePage() {
     probeTreeReadyFromCache(useAppStore.getState().currentWorkspace?.id),
   )
   const [loading, setLoading] = useState(false)
-  type StmtResult = {
-    index: number
-    sql: string
-    columns: string[]
-    column_types?: string[]
-    rows: unknown[][]
-    total: number
-    truncated?: boolean
-    error?: string | null
-  }
-  type ProbeRunResult = {
-    statement_count: number
-    statements: StmtResult[]
-    columns: string[]
-    column_types?: string[]
-    rows: unknown[][]
-    total: number
-    truncated?: boolean
-    has_errors?: boolean
-  }
-  const [result, setResult] = useState<ProbeRunResult | null>(null)
-  const [activeResultTab, setActiveResultTab] = useState('0')
   /** 与 Studio 一致：可关闭底部结果面板，再次运行时自动打开 */
   const [resultPanelOpen, setResultPanelOpen] = useState(false)
   const [editorAppearance, setEditorAppearance] = useState<EditorAppearance>(() => loadEditorAppearance())
@@ -273,40 +245,11 @@ export default function ProbePage() {
 
   useEffect(() => {
     setLoading(interactiveRun.isActive)
-    if (interactiveRun.result) {
-      const runResult = interactiveRun.result as ProbeRunResult
-      setResult(runResult)
-      const statements = runResult.statements || []
-      const firstOk = statements.find(s => !s.error && s.columns?.length) ?? statements[0]
-      setActiveResultTab(String(firstOk?.index ?? 0))
-      const colKeys = firstOk?.columns ?? runResult.columns
-      if (colKeys?.length) {
-        setProbeState(prev => {
-          const id = prev.activeScriptId
-          if (!id) return prev
-          return {
-            ...prev,
-            scripts: prev.scripts.map(s => {
-              if (s.id !== id) return s
-              const m = s.resultColMeta ?? { order: [], widths: {} }
-              return {
-                ...s,
-                resultColMeta: {
-                  order: resolveResultColumnOrder(m.order, colKeys, m.sourceKeys),
-                  widths: pruneWidths(m.widths, colKeys),
-                  sourceKeys: colKeys,
-                },
-              }
-            }),
-          }
-        })
-      }
-    }
     if (interactiveRun.error && interactiveRun.error !== lastRunErrorRef.current) {
       lastRunErrorRef.current = interactiveRun.error
       message.error(interactiveRun.error)
     }
-  }, [interactiveRun.isActive, interactiveRun.result, interactiveRun.error])
+  }, [interactiveRun.isActive, interactiveRun.error])
 
   const treeFolders = useMemo<FolderRow<string>[]>(
     () => probeState.folders.map(f => ({
@@ -346,25 +289,6 @@ export default function ProbePage() {
     })
   }
 
-  const activeStmt = useMemo(() => {
-    if (!result?.statements?.length) return null
-    const idx = Number(activeResultTab)
-    return result.statements.find(s => s.index === idx) ?? result.statements[0]
-  }, [result, activeResultTab])
-
-  const displayColMeta = useMemo(() => {
-    const cols = activeStmt?.columns
-    if (!cols?.length) {
-      return { order: [] as string[], widths: {} as Record<string, number>, sourceKeys: [] as string[] }
-    }
-    const m = activeScript?.resultColMeta ?? { order: [], widths: {} }
-    return {
-      order: resolveResultColumnOrder(m.order, cols, m.sourceKeys),
-      widths: pruneWidths(m.widths, cols),
-      sourceKeys: cols,
-    }
-  }, [activeStmt?.columns, activeScript?.resultColMeta])
-
   const patchActiveScript = useCallback((patch: Partial<ProbeScript>) => {
     setProbeState(prev => {
       const id = prev.activeScriptId
@@ -375,32 +299,6 @@ export default function ProbePage() {
       }
     })
   }, [])
-
-  const onResultColumnOrderChange = useCallback(
-    (nextOrder: string[]) => {
-      patchActiveScript({
-        resultColMeta: {
-          order: nextOrder,
-          widths: displayColMeta.widths,
-          sourceKeys: displayColMeta.sourceKeys,
-        },
-      })
-    },
-    [patchActiveScript, displayColMeta.widths, displayColMeta.sourceKeys],
-  )
-
-  const onResultColumnWidthChange = useCallback(
-    (key: string, width: number) => {
-      patchActiveScript({
-        resultColMeta: {
-          order: displayColMeta.order,
-          widths: { ...displayColMeta.widths, [key]: width },
-          sourceKeys: displayColMeta.sourceKeys,
-        },
-      })
-    },
-    [patchActiveScript, displayColMeta.order, displayColMeta.widths, displayColMeta.sourceKeys],
-  )
 
   const sql = activeScript?.sql ?? ''
   const limit = activeScript?.limit ?? PROBE_DEFAULT_ROW_LIMIT
@@ -481,7 +379,6 @@ export default function ProbePage() {
       message.info('已执行选中片段')
     }
     setLoading(true)
-    setResult(null)
     lastRunErrorRef.current = ''
     setResultPanelOpen(true)
     try {
@@ -529,34 +426,6 @@ export default function ProbePage() {
     }
   }
 
-  const { dataSource, tableColumns } = useMemo(() => {
-    if (!activeStmt?.columns?.length || activeStmt.error) {
-      return { dataSource: [] as ReturnType<typeof rowsToRecordDataSource>, tableColumns: buildQueryTableColumns([]) }
-    }
-    const colMetas = normalizeQueryColumns(activeStmt.columns, activeStmt.column_types)
-    const dataSource = rowsToRecordDataSource(activeStmt.columns, activeStmt.rows)
-    return {
-      dataSource,
-      tableColumns: buildQueryTableColumns(colMetas, {
-        order: displayColMeta.order,
-        widths: displayColMeta.widths,
-        dataSource,
-        onOrderChange: onResultColumnOrderChange,
-        onWidthChange: onResultColumnWidthChange,
-      }),
-    }
-  }, [activeStmt, displayColMeta, onResultColumnOrderChange, onResultColumnWidthChange])
-
-  const exportCsv = () => {
-    if (!activeStmt?.columns?.length || !activeScript || activeStmt.error) return
-    exportRowsToCsv(
-      activeStmt.columns,
-      activeStmt.rows as unknown[][],
-      `probe_${activeScript.id}_${activeStmt.index}_${Date.now()}`,
-    )
-    message.success('已导出 CSV（UTF-8，Excel 可直接打开）')
-  }
-
   const addFolder = (parentId: string | null) => {
     setFolderParentId(parentId)
     folderForm.resetFields()
@@ -602,7 +471,6 @@ export default function ProbePage() {
       ],
       activeScriptId: id,
     }))
-    setResult(null)
     message.success('已新建查询')
   }
 
@@ -617,7 +485,6 @@ export default function ProbePage() {
       if (activeScriptId === id) activeScriptId = scripts[0]?.id ?? null
       return { ...prev, scripts, activeScriptId }
     })
-    setResult(null)
     message.success('已删除')
   }
 
@@ -642,7 +509,6 @@ export default function ProbePage() {
       ],
       activeScriptId: id,
     }))
-    setResult(null)
     setResultPanelOpen(false)
     message.success(`已复制为「${name}」`)
   }
@@ -784,11 +650,6 @@ export default function ProbePage() {
         >
           定位
         </Button>
-        {activeStmt && !activeStmt.error && (
-          <Button icon={<DownloadOutlined />} onClick={exportCsv} title={`导出当前结果（至多 ${SQL_RESULT_ROW_CAP} 行）`}>
-            导出 CSV
-          </Button>
-        )}
         <div style={{ flex: 1 }} />
         <EditorAppearanceToolbar value={editorAppearance} onChange={setEditorAppearance} />
       </StudioWorkbenchToolbar>
@@ -900,7 +761,6 @@ export default function ProbePage() {
                 selectedLeafId={activeScript?.id ?? null}
                 onSelectLeaf={leaf => {
                   setProbeState(prev => ({ ...prev, activeScriptId: leaf.id }))
-                  setResult(null)
                   setResultPanelOpen(false)
                 }}
                 onCreateFolder={parentId => addFolder(parentId)}

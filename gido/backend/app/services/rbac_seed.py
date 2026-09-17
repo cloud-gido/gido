@@ -15,6 +15,8 @@ from app.models.workspace import (
     AdhocRunExport,
     AdhocRunLogChunk,
     AdhocRunResultChunk,
+    AdhocRunShare,
+    AdhocRunShareGrant,
     AdhocRunStatement,
     User,
 )
@@ -821,6 +823,28 @@ def migrate_dw_streaming_jobs(engine: Engine) -> None:
         conn.execute(
             text("UPDATE dw_streaming_jobs SET owner_id = created_by WHERE owner_id IS NULL AND created_by IS NOT NULL")
         )
+
+
+def migrate_publish_approval_snapshots(engine: Engine) -> None:
+    """审批 CR 不可变快照（MySQL/PostgreSQL/SQLite 幂等）。"""
+    insp = inspect(engine)
+    if not insp.has_table("dw_publish_approvals"):
+        return
+    cols = {c["name"] for c in insp.get_columns("dw_publish_approvals")}
+    json_type = "JSONB" if engine.dialect.name == "postgresql" else "JSON"
+    definitions = {
+        "submitted_snapshot": f"{json_type} NULL",
+        "baseline_snapshot": f"{json_type} NULL",
+        "submitted_hash": "VARCHAR(64) NULL",
+        "baseline_hash": "VARCHAR(64) NULL",
+        "snapshot_schema_version": "INTEGER NOT NULL DEFAULT 1",
+    }
+    with engine.begin() as conn:
+        for name, ddl in definitions.items():
+            if name not in cols:
+                conn.execute(
+                    text(f"ALTER TABLE dw_publish_approvals ADD COLUMN {name} {ddl}")
+                )
 
 
 def migrate_dw_streaming_release_lifecycle(engine: Engine) -> None:
@@ -2818,9 +2842,13 @@ def migrate_adhoc_async_runs(engine: Engine) -> None:
             AdhocRunStatement.__table__,
             AdhocRunResultChunk.__table__,
             AdhocRunExport.__table__,
+            AdhocRunShare.__table__,
+            AdhocRunShareGrant.__table__,
         ],
         checkfirst=True,
     )
+    migrate_adhoc_statement_professional_fields(engine)
+    migrate_adhoc_export_sharing(engine)
 
     index_specs = {
         "ux_adhoc_runs_execution_key": ("execution_key", True),
@@ -2856,6 +2884,44 @@ def migrate_adhoc_async_runs(engine: Engine) -> None:
                     f"ON dw_adhoc_runs ({columns})"
                 )
             )
+
+
+def migrate_adhoc_statement_professional_fields(engine: Engine) -> None:
+    """Idempotently add result metrics, query identity and explain snapshots."""
+    table = "dw_adhoc_run_statements"
+    insp = inspect(engine)
+    if not insp.has_table(table):
+        return
+    columns = {column["name"] for column in insp.get_columns(table)}
+    additions = (
+        ("execution_metrics", "JSON"),
+        ("query_id", "VARCHAR(256)"),
+        ("plan_snapshot", "JSON"),
+    )
+    with engine.begin() as conn:
+        for name, sql_type in additions:
+            if name not in columns:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}"))
+
+
+def migrate_adhoc_export_sharing(engine: Engine) -> None:
+    """Add export snapshot bindings and authenticated run-sharing tables."""
+    table = "dw_adhoc_run_exports"
+    insp = inspect(engine)
+    if insp.has_table(table):
+        columns = {column["name"] for column in insp.get_columns(table)}
+        with engine.begin() as conn:
+            if "query_spec" not in columns:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN query_spec JSON"))
+            if "statement_version" not in columns:
+                conn.execute(
+                    text(f"ALTER TABLE {table} ADD COLUMN statement_version VARCHAR(64)")
+                )
+    Base.metadata.create_all(
+        engine,
+        tables=[AdhocRunShare.__table__, AdhocRunShareGrant.__table__],
+        checkfirst=True,
+    )
 
 
 def run_rbac_bootstrap(db: Session):

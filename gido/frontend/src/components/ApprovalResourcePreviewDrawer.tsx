@@ -6,7 +6,7 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Alert, Button, Descriptions, Drawer, Space, Spin, Table, Tabs, Tag, Typography, message,
+  Alert, Button, Descriptions, Drawer, Space, Spin, Tabs, Tag, Typography, message,
 } from 'antd'
 import { ExportOutlined } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
@@ -17,54 +17,15 @@ import {
   approvalResourceOpenPath,
 } from '../utils/approvalOpenTarget'
 import { formatInTimeZone } from '../utils/datetime'
-import DwMonacoEditor from './DwMonacoEditor'
+import ApprovalDiffViewer, { type ApprovalDiffArtifact } from './ApprovalDiffViewer'
 
-const { Text, Paragraph } = Typography
-
-type DagNodeRow = { node_id: number; name: string; node_type: string }
+const { Paragraph } = Typography
 
 type Props = {
   approvalId: number | null
   open: boolean
   onClose: () => void
   displayTz?: string
-}
-
-function ScriptPane({ value, height = 320 }: { value: string; height?: number }) {
-  return (
-    <DwMonacoEditor
-      height={height}
-      language="sql"
-      value={value || '-- 空脚本'}
-      readOnly
-      findBar={false}
-      style={{ borderColor: '#f0f0f0' }}
-    />
-  )
-}
-
-function JsonPane({ value }: { value: unknown }) {
-  const text = useMemo(() => {
-    try {
-      return JSON.stringify(value ?? {}, null, 2)
-    } catch {
-      return String(value ?? '')
-    }
-  }, [value])
-  return (
-    <pre style={{
-      margin: 0,
-      padding: 12,
-      background: '#fafafa',
-      borderRadius: 6,
-      maxHeight: 280,
-      overflow: 'auto',
-      fontSize: 12,
-    }}
-    >
-      {text}
-    </pre>
-  )
 }
 
 export default function ApprovalResourcePreviewDrawer({
@@ -103,26 +64,11 @@ export default function ApprovalResourcePreviewDrawer({
   const preview = data?.preview
   const openPath = approval ? approvalResourceOpenPath(approval) : null
 
-  const scriptTabs = useMemo(() => {
-    if (!preview) return []
-    const pendingScript = preview.pending?.script_content
-    const baselineScript = preview.baseline?.script_content
-    if (pendingScript == null && baselineScript == null) return []
-    if (preview.has_diff && baselineScript != null) {
-      return [
-        { key: 'pending', label: '本次提交', children: <ScriptPane value={pendingScript || ''} /> },
-        {
-          key: 'baseline',
-          label: preview.baseline_label || '对比基准',
-          children: <ScriptPane value={baselineScript || ''} />,
-        },
-      ]
-    }
-    return [{ key: 'pending', label: '脚本内容', children: <ScriptPane value={pendingScript || ''} /> }]
-  }, [preview])
-
-  const dagNodes: DagNodeRow[] = preview?.pending?.dag?.nodes || []
-  const baselineDagNodes: DagNodeRow[] = preview?.baseline?.dag?.nodes || []
+  const artifacts: ApprovalDiffArtifact[] = preview?.artifacts || []
+  const firstChangedKey = useMemo(
+    () => artifacts.find(item => item.changed)?.key || artifacts[0]?.key,
+    [artifacts],
+  )
 
   const body = (() => {
     if (loading) {
@@ -162,48 +108,14 @@ export default function ApprovalResourcePreviewDrawer({
         )}
 
         {preview.kind === 'workflow' && (
-          <>
-            <Descriptions size="small" column={2} title="调度">
-              <Descriptions.Item label="调度类型">{preview.summary?.schedule_type || '—'}</Descriptions.Item>
-              <Descriptions.Item label="Cron">{preview.summary?.cron_expression || '—'}</Descriptions.Item>
-              <Descriptions.Item label="生命周期">{preview.summary?.status || '—'}</Descriptions.Item>
-              <Descriptions.Item label="节点数">{preview.pending?.dag?.node_count ?? 0}</Descriptions.Item>
-            </Descriptions>
-            {preview.has_diff && preview.baseline ? (
-              <Alert
-                type="warning"
-                showIcon
-                message={`与${preview.baseline_label}存在差异（节点 ${preview.pending?.dag?.node_count} → 基准 ${preview.baseline?.dag?.node_count}）`}
-              />
-            ) : null}
-            <Table<DagNodeRow>
-              size="small"
-              pagination={false}
-              rowKey="node_id"
-              dataSource={dagNodes}
-              columns={[
-                { title: '节点', dataIndex: 'name', ellipsis: true },
-                { title: '类型', dataIndex: 'node_type', width: 88 },
-                { title: 'ID', dataIndex: 'node_id', width: 72 },
-              ]}
-            />
-            {preview.has_diff && baselineDagNodes.length > 0 ? (
-              <>
-                <Text type="secondary">{preview.baseline_label} 节点清单</Text>
-                <Table<DagNodeRow>
-                  size="small"
-                  pagination={false}
-                  rowKey="node_id"
-                  dataSource={baselineDagNodes}
-                  columns={[
-                    { title: '节点', dataIndex: 'name', ellipsis: true },
-                    { title: '类型', dataIndex: 'node_type', width: 88 },
-                    { title: 'ID', dataIndex: 'node_id', width: 72 },
-                  ]}
-                />
-              </>
-            ) : null}
-          </>
+          <Descriptions size="small" column={2} title="调度">
+            <Descriptions.Item label="调度类型">{preview.summary?.schedule_type || '—'}</Descriptions.Item>
+            <Descriptions.Item label="Cron">{preview.summary?.cron_expression || '—'}</Descriptions.Item>
+            <Descriptions.Item label="生命周期">{preview.summary?.status || '—'}</Descriptions.Item>
+            <Descriptions.Item label="拓扑">
+              {preview.summary?.node_count ?? 0} 节点 / {preview.summary?.edge_count ?? 0} 连线
+            </Descriptions.Item>
+          </Descriptions>
         )}
 
         {preview.kind === 'stream_job' && (
@@ -221,41 +133,55 @@ export default function ApprovalResourcePreviewDrawer({
         )}
 
         {preview.kind === 'data_service_api' && (
-          <>
-            <Descriptions size="small" column={2} title="API">
-              <Descriptions.Item label="编码">{preview.summary?.api_code}</Descriptions.Item>
-              <Descriptions.Item label="模式">{preview.summary?.mode}</Descriptions.Item>
-              <Descriptions.Item label="当前状态">{preview.summary?.status}</Descriptions.Item>
-              <Descriptions.Item label="版本">v{preview.summary?.version ?? 1}</Descriptions.Item>
-            </Descriptions>
-            {approval.action === 'offline_api' ? (
-              <Alert type="warning" showIcon message="本次审批为 API 下线" />
-            ) : preview.has_diff ? (
-              <Tabs
-                items={[
-                  { key: 'pending', label: '待发布', children: <JsonPane value={preview.pending} /> },
-                  {
-                    key: 'baseline',
-                    label: preview.baseline_label || '线上版本',
-                    children: <JsonPane value={preview.baseline} />,
-                  },
-                ]}
-              />
-            ) : (
-              <JsonPane value={preview.pending} />
-            )}
-            {preview.pending?.sql_template ? (
-              <>
-                <Text strong>SQL 模板</Text>
-                <ScriptPane value={String(preview.pending.sql_template)} height={240} />
-              </>
-            ) : null}
-          </>
+          <Descriptions size="small" column={2} title="API">
+            <Descriptions.Item label="编码">{preview.summary?.api_code}</Descriptions.Item>
+            <Descriptions.Item label="模式">{preview.summary?.mode}</Descriptions.Item>
+            <Descriptions.Item label="当前状态">{preview.summary?.status}</Descriptions.Item>
+            <Descriptions.Item label="版本">v{preview.summary?.version ?? 1}</Descriptions.Item>
+          </Descriptions>
         )}
 
-        {scriptTabs.length > 0 ? (
-          scriptTabs.length > 1 ? <Tabs items={scriptTabs} /> : scriptTabs[0]?.children
+        {approval.action === 'offline_api' ? (
+          <Alert type="warning" showIcon message="本次审批将 API 下线，请确认调用方迁移情况" />
         ) : null}
+
+        <Alert
+          type={preview.has_diff ? 'warning' : 'success'}
+          showIcon
+          message={preview.has_diff
+            ? `${preview.summary?.changed_files ?? 0} 个变更项，+${preview.summary?.additions ?? 0} / -${preview.summary?.deletions ?? 0}`
+            : '与对比基准无内容差异'}
+          description={preview.snapshot_frozen
+            ? `评审内容已冻结；基准：${preview.baseline_label || '首次发布'}`
+            : '历史审批单未保存冻结快照，当前展示为兼容预览'}
+        />
+
+        {artifacts.length > 0 ? (
+          <Tabs
+            key={`${approval.id}:${firstChangedKey || ''}`}
+            defaultActiveKey={firstChangedKey}
+            items={artifacts.map(artifact => ({
+              key: artifact.key,
+              label: (
+                <Space size={4}>
+                  <span>{artifact.name}</span>
+                  {artifact.changed ? (
+                    <>
+                      <span style={{ color: '#389e0d' }}>+{artifact.additions}</span>
+                      <span style={{ color: '#cf1322' }}>-{artifact.deletions}</span>
+                    </>
+                  ) : <Tag bordered={false}>未变更</Tag>}
+                </Space>
+              ),
+              children: (
+                <ApprovalDiffViewer
+                  artifact={artifact}
+                  baselineLabel={preview.baseline_label || '空基线'}
+                />
+              ),
+            }))}
+          />
+        ) : <Alert type="info" showIcon message="该审批没有可预览的内容" />}
 
         {openPath ? (
           <Paragraph type="secondary" style={{ marginBottom: 0 }}>
@@ -269,7 +195,7 @@ export default function ApprovalResourcePreviewDrawer({
   return (
     <Drawer
       title={approval ? `审批预览 — ${approval.resource_name}` : '审批预览'}
-      width={Math.min(920, typeof window !== 'undefined' ? window.innerWidth - 48 : 920)}
+      width={Math.min(1280, typeof window !== 'undefined' ? window.innerWidth - 48 : 1280)}
       open={open}
       onClose={onClose}
       destroyOnClose

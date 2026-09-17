@@ -81,6 +81,7 @@ async def lifespan(app: FastAPI):
         migrate_default_workspace_to_infras,
         migrate_workspace_owner_members,
         migrate_dw_streaming_jobs,
+        migrate_publish_approval_snapshots,
         migrate_dw_streaming_release_lifecycle,
         migrate_dw_stream_pipeline,
         migrate_dw_streaming_job_history,
@@ -119,6 +120,8 @@ async def lifespan(app: FastAPI):
         migrate_dw_quality_dolphin_refs,
         migrate_dw_workspace_variables,
         migrate_adhoc_async_runs,
+        migrate_adhoc_export_sharing,
+        migrate_adhoc_statement_professional_fields,
         migrate_dw_users_avatar,
         migrate_scheduler_engine_fields,
         run_rbac_bootstrap,
@@ -142,6 +145,7 @@ async def lifespan(app: FastAPI):
     migrate_dw_workflow_instance_submitted_by(engine)
     migrate_dw_quality_dolphin_refs(engine)
     migrate_dw_streaming_jobs(engine)
+    migrate_publish_approval_snapshots(engine)
     migrate_dw_streaming_release_lifecycle(engine)
     migrate_dw_stream_pipeline(engine)
     migrate_dw_streaming_job_history(engine)
@@ -177,6 +181,8 @@ async def lifespan(app: FastAPI):
     migrate_platform_integration_public_url(engine)
     migrate_dw_workspace_variables(engine)
     migrate_adhoc_async_runs(engine)
+    migrate_adhoc_statement_professional_fields(engine)
+    migrate_adhoc_export_sharing(engine)
     migrate_dw_users_avatar(engine)
     migrate_scheduler_engine_fields(engine)
     db = SessionLocal()

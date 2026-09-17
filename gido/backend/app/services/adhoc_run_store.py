@@ -7,6 +7,8 @@ import logging
 import hashlib
 import json
 import base64
+from decimal import Decimal, InvalidOperation
+from functools import cmp_to_key
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -118,6 +120,34 @@ def _owned_statement(
     return row
 
 
+def _encode_result_rows(rows: List[List[Any]]) -> bytes:
+    return json.dumps(
+        {"rows": rows},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+
+
+def _fit_result_rows_to_bytes(
+    rows: List[List[Any]], max_bytes: int
+) -> tuple[List[List[Any]], bytes]:
+    raw = _encode_result_rows(rows)
+    if len(raw) <= max_bytes:
+        return rows, raw
+    low, high = 0, len(rows)
+    best_raw = _encode_result_rows([])
+    while low < high:
+        middle = (low + high + 1) // 2
+        candidate = _encode_result_rows(rows[:middle])
+        if len(candidate) <= max_bytes:
+            low = middle
+            best_raw = candidate
+        else:
+            high = middle - 1
+    return rows[:low], best_raw
+
+
 def start_run_statement(
     db: Session, run_id: int, statement_index: int, lease_token: str
 ) -> AdhocRunStatement:
@@ -140,6 +170,7 @@ def append_statement_result_chunk(
     *,
     columns: Optional[Iterable[str]] = None,
     column_types: Optional[Iterable[str]] = None,
+    fields: Optional[Iterable[Dict[str, Any]]] = None,
     truncated: bool = False,
     max_rows: Optional[int] = None,
     max_bytes: Optional[int] = None,
@@ -159,24 +190,25 @@ def append_statement_result_chunk(
         if columns is not None:
             schema["columns"] = list(columns)
             schema["column_types"] = list(column_types or [])
+            schema["fields"] = list(fields or _legacy_fields(schema))
         schema["truncated"] = bool(schema.get("truncated")) or bool(truncated) or submitted_count > 0
         statement.column_schema = schema
         db.commit()
         return None
 
-    payload = {"rows": materialized}
-    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+    raw = _encode_result_rows(materialized)
     if max_bytes is not None:
         remaining_bytes = max(0, int(max_bytes) - int(statement.result_bytes or 0))
-        while materialized and len(raw) > remaining_bytes:
-            materialized.pop()
-            payload["rows"] = materialized
-            raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+        materialized, raw = _fit_result_rows_to_bytes(
+            materialized,
+            remaining_bytes,
+        )
         if not materialized:
             schema = dict(statement.column_schema or {})
             if columns is not None:
                 schema["columns"] = list(columns)
                 schema["column_types"] = list(column_types or [])
+                schema["fields"] = list(fields or _legacy_fields(schema))
             schema["truncated"] = True
             statement.column_schema = schema
             db.commit()
@@ -188,7 +220,7 @@ def append_statement_result_chunk(
         chunk_index=chunk_index,
         row_offset=int(statement.result_rows or 0),
         row_count=len(materialized),
-        payload=payload,
+        payload={"rows": materialized},
         payload_bytes=len(raw),
     )
     db.add(chunk)
@@ -199,6 +231,7 @@ def append_statement_result_chunk(
     if columns is not None:
         schema["columns"] = list(columns)
         schema["column_types"] = list(column_types or [])
+        schema["fields"] = list(fields or _legacy_fields(schema))
     schema["truncated"] = (
         bool(schema.get("truncated"))
         or bool(truncated)
@@ -221,6 +254,9 @@ def finish_run_statement(
     error_message: Optional[str] = None,
     columns: Optional[Iterable[str]] = None,
     column_types: Optional[Iterable[str]] = None,
+    fields: Optional[Iterable[Dict[str, Any]]] = None,
+    execution_metrics: Optional[Dict[str, Any]] = None,
+    query_id: Optional[str] = None,
     truncated: bool = False,
 ) -> AdhocRunStatement:
     if status not in ("success", "failed", "skipped"):
@@ -237,7 +273,27 @@ def finish_run_statement(
             column_types=list(column_types or []),
             truncated=bool(schema.get("truncated")) or bool(truncated),
         )
+        if fields is not None:
+            schema["fields"] = list(fields)
+        if not schema.get("fields"):
+            schema["fields"] = _legacy_fields(schema)
         row.column_schema = schema
+    metrics = dict(row.execution_metrics or {})
+    metrics.update(execution_metrics or {})
+    metrics.setdefault("status", status)
+    metrics.setdefault("rows_returned", int(row.result_rows or 0))
+    metrics.setdefault("result_bytes", int(row.result_bytes or 0))
+    metrics.setdefault("chunk_count", int(row.result_chunk_count or 0))
+    if affected_rows is not None:
+        metrics.setdefault("affected_rows", int(affected_rows))
+    if row.started_at:
+        metrics.setdefault(
+            "duration_ms",
+            max(0, int((row.finished_at - row.started_at).total_seconds() * 1000)),
+        )
+    row.execution_metrics = metrics
+    if query_id is not None:
+        row.query_id = str(query_id)[:256] or None
     db.commit()
     db.refresh(row)
     run = _owned_run(db, run_id, lease_token)
@@ -275,6 +331,53 @@ def list_run_statements(db: Session, run_id: int) -> List[AdhocRunStatement]:
     )
 
 
+def _semantic_type_from_raw(raw_type: str) -> str:
+    normalized = raw_type.lower()
+    if any(token in normalized for token in ("int", "decimal", "numeric", "float", "double", "real")):
+        return "number"
+    if "bool" in normalized or normalized == "bit":
+        return "boolean"
+    if any(token in normalized for token in ("date", "time")):
+        return "datetime"
+    if any(token in normalized for token in ("json", "array", "map", "struct")):
+        return "json"
+    if any(token in normalized for token in ("binary", "blob", "bytea")):
+        return "binary"
+    return "string"
+
+
+def _legacy_fields(schema: Dict[str, Any]) -> List[Dict[str, Any]]:
+    columns = list(schema.get("columns") or [])
+    types = list(schema.get("column_types") or [])
+    return [
+        {
+            "name": str(name),
+            "raw_type": str(types[index]) if index < len(types) else "unknown",
+            "semantic_type": _semantic_type_from_raw(
+                str(types[index]) if index < len(types) else "unknown"
+            ),
+            "nullable": None,
+            "precision": None,
+            "scale": None,
+        }
+        for index, name in enumerate(columns)
+    ]
+
+
+def statement_snapshot_version(row: AdhocRunStatement) -> str:
+    state = (
+        int(row.id),
+        str(row.sql_hash or ""),
+        str(row.status),
+        int(row.result_rows or 0),
+        int(row.result_bytes or 0),
+        int(row.result_chunk_count or 0),
+        row.updated_at.isoformat() if row.updated_at else "",
+    )
+    raw = json.dumps(state, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:24]
+
+
 def serialize_run_statement(row: AdhocRunStatement) -> Dict[str, Any]:
     schema = row.column_schema if isinstance(row.column_schema, dict) else {}
     return {
@@ -286,6 +389,15 @@ def serialize_run_statement(row: AdhocRunStatement) -> Dict[str, Any]:
         "status": row.status,
         "columns": list(schema.get("columns") or []),
         "column_types": list(schema.get("column_types") or []),
+        "fields": list(schema.get("fields") or _legacy_fields(schema)),
+        "execution_metrics": row.execution_metrics
+        if isinstance(row.execution_metrics, dict)
+        else None,
+        "query_id": row.query_id,
+        "plan_snapshot": row.plan_snapshot
+        if isinstance(row.plan_snapshot, dict)
+        else None,
+        "statement_version": statement_snapshot_version(row),
         "affected_rows": row.affected_rows,
         "total": int(row.result_rows or 0),
         "result_bytes": int(row.result_bytes or 0),
@@ -386,12 +498,257 @@ def paginate_statement_rows(
         "snapshot": statement.status in ("success", "failed", "skipped"),
         "columns": list(schema.get("columns") or []),
         "column_types": list(schema.get("column_types") or []),
+        "fields": list(schema.get("fields") or _legacy_fields(schema)),
         "rows": rows,
         "total": int(statement.result_rows or 0),
         "truncated": bool(schema.get("truncated")),
         "next_cursor": (
             _encode_row_cursor(*next_position) if next_position is not None else None
         ),
+        "has_more": has_more,
+    }
+
+
+_QUERY_OPERATORS = frozenset(
+    ("eq", "ne", "in", "contains", "starts_with", "gt", "gte", "lt", "lte", "is_null", "not_null")
+)
+
+
+def _typed_value(value: Any, semantic_type: str) -> Any:
+    if value is None:
+        return None
+    if semantic_type == "number":
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError(f"无法将 {value!r} 转换为数值") from exc
+    if semantic_type == "boolean":
+        if isinstance(value, bool):
+            return value
+        lowered = str(value).strip().lower()
+        if lowered in ("true", "1"):
+            return True
+        if lowered in ("false", "0"):
+            return False
+        raise ValueError(f"无法将 {value!r} 转换为布尔值")
+    if semantic_type == "datetime":
+        return str(value).replace("T", " ")
+    return str(value)
+
+
+def _query_digest(search: Any, filters: Any, sort: Any) -> str:
+    raw = json.dumps(
+        {"search": search or "", "filters": filters or [], "sort": sort or []},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def _query_cursor(offset: int, digest: str, version: str) -> str:
+    raw = json.dumps(
+        {"offset": offset, "digest": digest, "version": version},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _query_offset(cursor: Optional[str], digest: str, version: str) -> int:
+    if not cursor:
+        return 0
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        data = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+        offset = int(data["offset"])
+        if offset < 0 or data["digest"] != digest or data["version"] != version:
+            raise ValueError
+        return offset
+    except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("无效或与当前查询不匹配的结果游标") from exc
+
+
+def query_statement_rows(
+    db: Session,
+    run_id: int,
+    statement_index: int,
+    *,
+    search: Optional[str] = None,
+    filters: Optional[List[Dict[str, Any]]] = None,
+    sort: Optional[List[Dict[str, Any]]] = None,
+    cursor: Optional[str] = None,
+    limit: int = 500,
+    statement_version: str,
+) -> Dict[str, Any]:
+    """Filter and sort the complete materialized, version-bound result snapshot."""
+    statement = (
+        db.query(AdhocRunStatement)
+        .filter(
+            AdhocRunStatement.run_id == run_id,
+            AdhocRunStatement.statement_index == statement_index,
+        )
+        .first()
+    )
+    if not statement:
+        raise ValueError("语句不存在")
+    version = statement_snapshot_version(statement)
+    if statement_version != version:
+        raise ValueError("语句版本已变化，请刷新结果后重试")
+    schema = statement.column_schema if isinstance(statement.column_schema, dict) else {}
+    columns = list(schema.get("columns") or [])
+    fields = list(schema.get("fields") or _legacy_fields(schema))
+    indexes: Dict[str, int] = {}
+    for index, name in enumerate(columns):
+        if name in indexes:
+            raise ValueError(f"结果包含重复列名，无法查询: {name}")
+        indexes[name] = index
+    field_map = {
+        str(field.get("name")): field for field in fields if isinstance(field, dict)
+    }
+    filter_items = list(filters or [])
+    sort_items = list(sort or [])
+    if len(filter_items) > 20:
+        raise ValueError("最多支持 20 个筛选条件")
+    if len(sort_items) > 2:
+        raise ValueError("最多支持两列排序")
+    for item in filter_items:
+        column = str(item.get("column") or "")
+        operator = str(item.get("operator") or "").lower()
+        if column not in indexes:
+            raise ValueError(f"未知结果列: {column}")
+        if operator not in _QUERY_OPERATORS:
+            raise ValueError(f"不支持的筛选操作符: {operator}")
+        semantic = str(field_map.get(column, {}).get("semantic_type") or "string")
+        if operator in ("contains", "starts_with") and semantic not in ("string", "json"):
+            raise ValueError(f"列 {column} 不支持文本筛选")
+        if operator in ("gt", "gte", "lt", "lte") and semantic in ("boolean", "json", "binary"):
+            raise ValueError(f"列 {column} 不支持范围筛选")
+        if operator == "in" and not isinstance(item.get("value"), list):
+            raise ValueError(f"筛选 {column}/in 的 value 必须是数组")
+        if operator not in ("is_null", "not_null") and "value" not in item:
+            raise ValueError(f"筛选 {column}/{operator} 缺少 value")
+    for item in sort_items:
+        column = str(item.get("column") or "")
+        direction = str(item.get("direction") or "").lower()
+        if column not in indexes:
+            raise ValueError(f"未知结果列: {column}")
+        if direction not in ("asc", "desc"):
+            raise ValueError(f"非法排序方向: {direction}")
+
+    all_rows: List[tuple[int, List[Any]]] = []
+    chunks = (
+        db.query(AdhocRunResultChunk)
+        .filter(AdhocRunResultChunk.statement_id == statement.id)
+        .order_by(AdhocRunResultChunk.chunk_index, AdhocRunResultChunk.id)
+        .all()
+    )
+    for chunk in chunks:
+        for raw_row in list((chunk.payload or {}).get("rows") or []):
+            all_rows.append((len(all_rows), list(raw_row)))
+    needle = str(search or "").casefold()
+
+    def matches(row: List[Any]) -> bool:
+        if needle and not any(
+            value is not None and needle in str(value).casefold() for value in row
+        ):
+            return False
+        for item in filter_items:
+            column = str(item["column"])
+            operator = str(item["operator"]).lower()
+            actual = row[indexes[column]] if indexes[column] < len(row) else None
+            if operator == "is_null":
+                if actual is not None:
+                    return False
+                continue
+            if operator == "not_null":
+                if actual is None:
+                    return False
+                continue
+            if operator == "in":
+                raw_values = list(item.get("value") or [])
+                if actual is None:
+                    if any(value is None for value in raw_values):
+                        continue
+                    return False
+                semantic = str(field_map.get(column, {}).get("semantic_type") or "string")
+                converted = _typed_value(actual, semantic)
+                expected_values = [
+                    _typed_value(value, semantic)
+                    for value in raw_values
+                    if value is not None
+                ]
+                if converted in expected_values:
+                    continue
+                return False
+            if actual is None:
+                if operator == "eq" and item.get("value") is None:
+                    continue
+                if operator == "ne" and item.get("value") is not None:
+                    continue
+                return False
+            semantic = str(field_map.get(column, {}).get("semantic_type") or "string")
+            expected = _typed_value(item.get("value"), semantic)
+            converted = _typed_value(actual, semantic)
+            if operator == "contains":
+                ok = str(expected).casefold() in str(converted).casefold()
+            elif operator == "starts_with":
+                ok = str(converted).casefold().startswith(str(expected).casefold())
+            elif operator == "eq":
+                ok = converted == expected
+            elif operator == "ne":
+                ok = converted != expected
+            elif operator == "gt":
+                ok = converted > expected
+            elif operator == "gte":
+                ok = converted >= expected
+            elif operator == "lt":
+                ok = converted < expected
+            else:
+                ok = converted <= expected
+            if not ok:
+                return False
+        return True
+
+    selected = [item for item in all_rows if matches(item[1])]
+    if sort_items:
+        def compare(left: tuple[int, List[Any]], right: tuple[int, List[Any]]) -> int:
+            for item in sort_items:
+                column = str(item["column"])
+                index = indexes[column]
+                lhs = left[1][index] if index < len(left[1]) else None
+                rhs = right[1][index] if index < len(right[1]) else None
+                if lhs is None or rhs is None:
+                    result = 0 if lhs is rhs else (1 if lhs is None else -1)
+                else:
+                    semantic = str(field_map.get(column, {}).get("semantic_type") or "string")
+                    lhs_t, rhs_t = _typed_value(lhs, semantic), _typed_value(rhs, semantic)
+                    result = (lhs_t > rhs_t) - (lhs_t < rhs_t)
+                    if str(item["direction"]).lower() == "desc":
+                        result = -result
+                if result:
+                    return result
+            return left[0] - right[0]
+
+        selected.sort(key=cmp_to_key(compare))
+    digest = _query_digest(search, filter_items, sort_items)
+    offset = _query_offset(cursor, digest, version)
+    page_size = min(max(int(limit), 1), 5000)
+    page = selected[offset : offset + page_size]
+    next_offset = offset + len(page)
+    has_more = next_offset < len(selected)
+    return {
+        "statement_id": statement.id,
+        "statement_index": statement.statement_index,
+        "statement_version": version,
+        "snapshot": True,
+        "columns": columns,
+        "column_types": list(schema.get("column_types") or []),
+        "fields": fields,
+        "rows": [item[1] for item in page],
+        "total": len(selected),
+        "source_total": len(all_rows),
+        "truncated": bool(schema.get("truncated")),
+        "next_cursor": _query_cursor(next_offset, digest, version) if has_more else None,
         "has_more": has_more,
     }
 
@@ -467,6 +824,7 @@ def build_result_preview_from_statements(
                     "status": statement.status,
                     "columns": columns,
                     "column_types": list(schema.get("column_types") or []),
+                    "fields": list(schema.get("fields") or _legacy_fields(schema)),
                     "rows": rows[:max_rows],
                     "total": int(statement.result_rows or 0),
                     "truncated": bool(schema.get("truncated"))
@@ -490,6 +848,7 @@ def build_result_preview_from_statements(
         or {
             "columns": [],
             "column_types": [],
+            "fields": [],
             "rows": [],
             "total": 0,
             "truncated": False,
@@ -566,11 +925,13 @@ def truncate_result_preview(result: Optional[Dict[str, Any]], max_rows: int = AD
     def truncate_one(item: Dict[str, Any]) -> Dict[str, Any]:
         columns = list(item.get("columns") or [])
         column_types = list(item.get("column_types") or [])
+        fields = list(item.get("fields") or _legacy_fields(item))
         rows = list(item.get("rows") or [])
         total = int(item.get("total") if item.get("total") is not None else len(rows))
         preview = {
             "columns": columns,
             "column_types": column_types,
+            "fields": fields,
             "rows": rows[:max_rows],
             "total": total,
             "truncated": bool(item.get("truncated")) or len(rows) > max_rows,

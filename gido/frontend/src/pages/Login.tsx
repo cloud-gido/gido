@@ -8,7 +8,7 @@ import { Form, Input, Button, Card, message, Modal } from 'antd'
 import { UserOutlined, LockOutlined } from '@ant-design/icons'
 import ProductBrandBlock from '../components/ProductBrandBlock'
 import GidoLoginBrand from '../components/GidoLoginBrand'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { authApi } from '../api'
 import { useAppStore } from '../store'
 import { R } from '../routes'
@@ -31,6 +31,7 @@ function WorkbenchCard({ variant, onClick }: { variant: 'batch' | 'stream' | 'se
 
 export default function LoginPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { setUser } = useAppStore()
 
   const onFinish = async (values: any) => {
@@ -39,6 +40,11 @@ export default function LoginPage() {
       localStorage.setItem('token', res.access_token)
       setUser(res.user)
       message.success('登录成功')
+      const returnTo = (location.state as { returnTo?: string } | null)?.returnTo
+      if (returnTo?.startsWith('/gido/')) {
+        navigate(returnTo, { replace: true })
+        return
+      }
 
       const u = res.user
       const cards = [

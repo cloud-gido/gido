@@ -10,16 +10,33 @@ import { adhocRunsApi } from '../api'
 
 vi.mock('../api', () => ({
   adhocRunsApi: {
-    statementRows: vi.fn(),
+    queryStatementRows: vi.fn(),
+    explainStatement: vi.fn(),
     createExport: vi.fn(),
     getExport: vi.fn(),
     downloadExport: vi.fn(),
+    cancelExport: vi.fn(),
+    createShare: vi.fn(),
+    revokeShare: vi.fn(),
   },
 }))
 
 vi.mock('./QueryResultPanel', () => ({
-  default: ({ toolbar, dataSource }: { toolbar?: ReactNode; dataSource: Array<Record<string, unknown>> }) => (
-    <div>{toolbar}<span>rows:{dataSource.map(row => row.id).join(',')}</span></div>
+  default: ({ toolbar, dataSource, onServerChange }: {
+    toolbar?: ReactNode
+    dataSource: Array<Record<string, unknown>>
+    onServerChange?: (change: any) => void
+  }) => (
+    <div>
+      {toolbar}
+      <span>rows:{dataSource.map(row => row.id).join(',')}</span>
+      <button onClick={() => onServerChange?.({
+        filters: { id: ['__contains:2'] },
+        sort: { column: 'id', direction: 'desc' },
+      })}>
+        apply server query
+      </button>
+    </div>
   ),
 }))
 
@@ -40,6 +57,7 @@ const run = {
     id: 80,
     run_id: 8,
     index: 0,
+    statement_version: 's1',
     status: 'success' as const,
     columns: ['id'],
     column_types: ['int'],
@@ -69,52 +87,31 @@ describe('InteractiveRunDock', () => {
       createObjectURL: vi.fn(() => 'blob:test'),
       revokeObjectURL: vi.fn(),
     })
-    vi.mocked(adhocRunsApi.statementRows)
+    vi.mocked(adhocRunsApi.queryStatementRows)
       .mockResolvedValueOnce({
-        run_id: 8,
-        run_status: 'success',
-        run_version: 3,
-        statement_id: 80,
-        statement_index: 0,
-        statement_status: 'success',
-        snapshot: true,
-        columns: ['id'],
-        column_types: ['int'],
+        fields: [{ name: 'id', type: 'int' }],
         rows: [[1], [2]],
         total: 201,
-        truncated: false,
+        source_total: 201,
+        statement_version: 's1',
         next_cursor: 'next',
         has_more: true,
       })
       .mockResolvedValueOnce({
-        run_id: 8,
-        run_status: 'success',
-        run_version: 3,
-        statement_id: 80,
-        statement_index: 0,
-        statement_status: 'success',
-        snapshot: true,
-        columns: ['id'],
-        column_types: ['int'],
+        fields: [{ name: 'id', type: 'int' }],
         rows: [[3]],
         total: 201,
-        truncated: false,
+        source_total: 201,
+        statement_version: 's1',
         next_cursor: null,
         has_more: false,
       })
       .mockResolvedValueOnce({
-        run_id: 8,
-        run_status: 'success',
-        run_version: 3,
-        statement_id: 80,
-        statement_index: 0,
-        statement_status: 'success',
-        snapshot: true,
-        columns: ['id'],
-        column_types: ['int'],
+        fields: [{ name: 'id', type: 'int' }],
         rows: [[3], [4]],
         total: 202,
-        truncated: false,
+        source_total: 202,
+        statement_version: 's2',
         next_cursor: null,
         has_more: false,
       })
@@ -136,25 +133,122 @@ describe('InteractiveRunDock', () => {
       download_ready: true,
     })
     vi.mocked(adhocRunsApi.downloadExport).mockResolvedValue(new Blob(['id\n1']))
+    vi.mocked(adhocRunsApi.explainStatement).mockResolvedValue({
+      run_id: 8,
+      statement_index: 0,
+      plan_snapshot: { scan: 'table' },
+      statement: { ...run.statements[0], plan_snapshot: { scan: 'table' } },
+    })
     const view = render(<div style={{ height: 500 }}><InteractiveRunDock run={run} scopeKey="test:scope" /></div>)
 
     await waitFor(() => expect(screen.getByText('rows:1,2')).toBeTruthy())
     expect(screen.getByText('耗时 1.00s')).toBeTruthy()
     fireEvent.click(screen.getByTitle('Next Page').querySelector('button')!)
     await waitFor(() => expect(screen.getByText('rows:3')).toBeTruthy())
-    expect(adhocRunsApi.statementRows).toHaveBeenLastCalledWith(8, 0, expect.objectContaining({ cursor: 'next' }))
+    expect(adhocRunsApi.queryStatementRows).toHaveBeenLastCalledWith(
+      8,
+      0,
+      expect.objectContaining({ cursor: 'next', statement_version: 's1' }),
+      expect.any(AbortSignal),
+    )
 
     view.rerender(
       <div style={{ height: 500 }}>
-        <InteractiveRunDock run={{ ...run, statementVersion: 's2' }} scopeKey="test:scope" />
+        <InteractiveRunDock
+          run={{
+            ...run,
+            statementVersion: 's2',
+            statements: [{ ...run.statements[0], statement_version: 's2' }],
+          }}
+          scopeKey="test:scope"
+        />
       </div>,
     )
     await waitFor(() => expect(screen.getByText('rows:3,4')).toBeTruthy())
-    expect(adhocRunsApi.statementRows).toHaveBeenLastCalledWith(8, 0, expect.objectContaining({ cursor: 'next' }))
+    expect(adhocRunsApi.queryStatementRows).toHaveBeenLastCalledWith(
+      8,
+      0,
+      expect.objectContaining({ statement_version: 's2' }),
+      expect.any(AbortSignal),
+    )
 
     fireEvent.click(screen.getByText('导出 CSV'))
     await waitFor(() => expect(screen.getByText('下载')).toBeTruthy())
+    expect(adhocRunsApi.createExport).toHaveBeenCalledWith(8, {
+      statement_index: 0,
+      format: 'csv',
+      search: undefined,
+      filters: undefined,
+      sort: undefined,
+      statement_version: 's2',
+    })
+    expect(screen.getByText('导出 XLSX')).toBeTruthy()
+    expect(screen.getByText('导出 Parquet')).toBeTruthy()
+    expect(screen.getByText('已物化快照')).toBeTruthy()
     fireEvent.click(screen.getByText('下载'))
     await waitFor(() => expect(adhocRunsApi.downloadExport).toHaveBeenCalledWith(8, 9))
+
+    fireEvent.click(screen.getByText('Explain'))
+    await waitFor(() => expect(screen.getByText(/"scan": "table"/)).toBeTruthy())
+  })
+
+  it('shows the first available result before the run reaches terminal status', async () => {
+    const running = {
+      ...run,
+      status: 'running' as const,
+      isActive: true,
+      statements: [{
+        ...run.statements[0],
+        status: 'running' as const,
+        finished_at: null,
+      }],
+    }
+
+    const view = render(<InteractiveRunDock run={running} scopeKey="test:running" />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: /运行结果/ }).getAttribute('aria-selected')).toBe('true')
+    })
+    fireEvent.click(screen.getByRole('tab', { name: /^日志/ }))
+    view.rerender(<InteractiveRunDock run={{ ...run, status: 'success' }} scopeKey="test:running" />)
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: /^日志/ }).getAttribute('aria-selected')).toBe('true')
+    })
+  })
+
+  it('creates, copies, and revokes a workspace share from the shared dock', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    })
+    vi.mocked(adhocRunsApi.createShare).mockResolvedValue({
+      id: 12,
+      run_id: 8,
+      created_by: 1,
+      expires_at: '2026-01-02T00:00:00Z',
+      created_at: '2026-01-01T00:00:00Z',
+      active: true,
+      token: 'share-token',
+    })
+    vi.mocked(adhocRunsApi.revokeShare).mockResolvedValue({
+      id: 12,
+      run_id: 8,
+      created_by: 1,
+      expires_at: '2026-01-02T00:00:00Z',
+      revoked_at: '2026-01-01T01:00:00Z',
+      created_at: '2026-01-01T00:00:00Z',
+      active: false,
+    })
+
+    render(<InteractiveRunDock run={run} scopeKey="test:share" />)
+    fireEvent.click(screen.getByText('空间内分享'))
+    await waitFor(() => expect(screen.getByText('复制链接')).toBeTruthy())
+    expect(adhocRunsApi.createShare).toHaveBeenCalledWith(8, 24)
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining('/gido/share/run/share-token'),
+    )
+    const revokeButton = screen.getByRole('button', { name: /撤\s*销/ })
+    fireEvent.click(revokeButton)
+    await waitFor(() => expect(adhocRunsApi.revokeShare).toHaveBeenCalledWith(8, 12))
   })
 })

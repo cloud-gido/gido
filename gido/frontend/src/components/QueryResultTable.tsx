@@ -11,7 +11,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { mergeColumnOrderWithKeys } from '../utils/resultTableMeta'
 import type { QueryColumnMeta } from '../utils/queryColumns'
 import { classifyColumnType } from '../utils/columnTypeBadge'
-import { formatCellDisplay } from '../utils/cellDisplay'
+import ResultCell from './ResultCell'
 import {
   ColumnFilterDropdown,
   columnFilterPredicate,
@@ -31,6 +31,9 @@ export type ResultColumnBuildOpts = {
   dataSource?: QueryRowRec[]
   onOrderChange?: (nextOrder: string[]) => void
   onWidthChange?: (key: string, width: number) => void
+  /** 由服务端执行筛选；这里只保留共享筛选 UI 与受控状态。 */
+  serverFilters?: Record<string, string[]>
+  serverQuery?: boolean
 }
 
 async function copyText(text: string): Promise<boolean> {
@@ -249,7 +252,9 @@ export function buildQueryTableColumns(
       ? (columns as QueryColumnMeta[])
       : (columns as string[]).map(name => ({ name }))
   const names = metas.map(m => m.name)
-  const typeByName = Object.fromEntries(metas.map(m => [m.name, m.type]))
+  const typeByName = Object.fromEntries(
+    metas.map(m => [m.name, m.type || m.raw_type || m.semantic_type || undefined]),
+  )
   const keys = mergeColumnOrderWithKeys(opts?.order ?? null, names)
   const canReorder = Boolean(opts?.onOrderChange)
   const onWidthChange = opts?.onWidthChange
@@ -288,21 +293,14 @@ export function buildQueryTableColumns(
       ellipsis: true,
       width: w,
       filterMultiple: true,
+      filteredValue: opts?.serverQuery ? (opts.serverFilters?.[col] ?? null) : undefined,
       filterDropdown: props => (
         <ColumnFilterDropdown col={col} distinctValues={distinctValues} {...props} />
       ),
-      onFilter: (value, record) => columnFilterPredicate(col, String(value), record),
-      render: (v: unknown) => {
-        if (v === null || v === 'None') {
-          return <span style={{ color: '#bfbfbf' }}>NULL</span>
-        }
-        const text = formatCellDisplay(v)
-        return (
-          <span style={{ fontFamily: 'monospace', fontSize: 12 }} title={text.length > 80 ? text : undefined}>
-            {text}
-          </span>
-        )
-      },
+      onFilter: opts?.serverQuery
+        ? undefined
+        : (value, record) => columnFilterPredicate(col, String(value), record),
+      render: (v: unknown) => <ResultCell value={v} type={typeByName[col]} />,
     }
   })
 }
@@ -311,7 +309,7 @@ export function rowsToRecordDataSource(columns: string[], rows: unknown[][]): Qu
   return rows.map((row, i) => {
     const obj: QueryRowRec = { _key: i }
     columns.forEach((c, ci) => {
-      obj[c] = row[ci] ?? ''
+      obj[c] = ci < row.length ? row[ci] : null
     })
     return obj
   })

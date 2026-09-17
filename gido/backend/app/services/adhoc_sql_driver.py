@@ -259,6 +259,20 @@ def tagged_sql(sql: str, binding: ExecutionBinding, ds_type: str) -> str:
     return f"/*{binding.tag}*/ {sql}"
 
 
+def connection_query_id(connection: Any, ds_type: str) -> Optional[str]:
+    """Return the stable server session identifier exposed by supported drivers."""
+    kind = (ds_type or "").strip().lower()
+    try:
+        if kind == "postgresql":
+            return str(connection.get_backend_pid())
+        thread_id = getattr(connection, "thread_id", None)
+        if callable(thread_id):
+            return str(thread_id())
+    except Exception:
+        logger.debug("query identifier discovery failed", exc_info=True)
+    return None
+
+
 def is_server_timeout_error(exc: Exception) -> bool:
     text = str(exc).lower()
     return any(

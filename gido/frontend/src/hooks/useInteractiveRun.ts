@@ -105,6 +105,11 @@ export function useInteractiveRun(opts: {
             log: prev.log + events.logs.chunks.map(item => item.content || '').join(''),
             statements: events.statements_changed ? events.statements : prev.statements,
             statementVersion: events.statement_version,
+            createdAt: events.timing?.created_at,
+            startedAt: events.timing?.started_at,
+            finishedAt: events.timing?.finished_at,
+            queueDurationMs: events.timing?.queue_duration_ms,
+            executionDurationMs: events.timing?.execution_duration_ms,
           }
           stateRef.current = next
           cacheScopeState(scopeKey, next)
@@ -234,9 +239,10 @@ export function useInteractiveRun(opts: {
     : scopeCache.get(scopeKey) ?? emptyState()
   const capabilities = useMemo<InteractiveRunCapabilities>(() => ({
     hasStatements: visibleState.statements.length > 0,
-    hasResults: visibleState.statements.some(item => item.columns.length > 0),
+    hasResults: visibleState.statements.some(item => item.columns.length > 0 || Boolean(item.fields?.length)),
     canExport: visibleState.statements.some(item =>
-      ['success', 'failed', 'skipped', 'cancelled'].includes(item.status) && item.columns.length > 0),
+      ['success', 'failed', 'skipped', 'cancelled'].includes(item.status)
+      && (item.columns.length > 0 || Boolean(item.fields?.length))),
     supportsMultipleStatements: visibleState.statements.length > 1,
   }), [visibleState.statements])
 

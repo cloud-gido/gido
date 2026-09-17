@@ -5,7 +5,7 @@
  * @date 2026-06-05
  */
 export function formatCellDisplay(v: unknown, maxLen = 240): string {
-  if (v === null || v === undefined || v === 'None') return ''
+  if (v === null || v === undefined) return ''
   let s: string
   if (typeof v === 'object') {
     try {

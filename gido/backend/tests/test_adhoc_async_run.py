@@ -18,6 +18,8 @@ from app.models.workspace import (
     AdhocRunExport,
     AdhocRunLogChunk,
     AdhocRunResultChunk,
+    AdhocRunShare,
+    AdhocRunShareGrant,
     AdhocRunStatement,
     NodeInstance,
     TaskNode,
@@ -189,6 +191,19 @@ def test_migrate_adhoc_async_runs_upgrades_existing_table():
                 """
             )
         )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE dw_adhoc_run_statements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL,
+                    statement_index INTEGER NOT NULL,
+                    sql_text TEXT NOT NULL,
+                    status VARCHAR(32) NOT NULL
+                )
+                """
+            )
+        )
 
     migrate_adhoc_async_runs(engine)
     migrate_adhoc_async_runs(engine)
@@ -216,7 +231,18 @@ def test_migrate_adhoc_async_runs_upgrades_existing_table():
         AdhocRunStatement.__tablename__,
         AdhocRunResultChunk.__tablename__,
         AdhocRunExport.__tablename__,
+        AdhocRunShare.__tablename__,
+        AdhocRunShareGrant.__tablename__,
     } <= set(migrated.get_table_names())
+    export_columns = {
+        item["name"] for item in migrated.get_columns(AdhocRunExport.__tablename__)
+    }
+    assert {"query_spec", "statement_version"} <= export_columns
+    statement_columns = {
+        item["name"]
+        for item in migrated.get_columns(AdhocRunStatement.__tablename__)
+    }
+    assert {"execution_metrics", "query_id", "plan_snapshot"} <= statement_columns
     index_names = {
         item["name"] for item in migrated.get_indexes(AdhocRun.__tablename__)
     }

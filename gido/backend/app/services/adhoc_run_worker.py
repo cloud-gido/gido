@@ -655,6 +655,7 @@ def _run_probe(row: AdhocRun, lease_token: str, db: Any) -> Dict[str, Any]:
     from app.models.workspace import DataSource
     from app.services.adhoc_sql_driver import (
         ExecutionBinding,
+        connection_query_id,
         is_server_timeout_error,
         registered_connection,
         statement_handle,
@@ -670,10 +671,12 @@ def _run_probe(row: AdhocRun, lease_token: str, db: Any) -> Dict[str, Any]:
     )
     from app.services.sql_readonly import (
         apply_readonly_row_limit,
+        column_fields_from_description,
         column_types_from_description,
         json_cell_value,
         parse_readonly_statements,
     )
+    from app.services.result_fetch import fetch_result_batch
     from app.services.workspace_variables import substitute_script_variables
 
     ds = db.query(DataSource).filter(DataSource.id == row.datasource_id).first()
@@ -685,7 +688,8 @@ def _run_probe(row: AdhocRun, lease_token: str, db: Any) -> Dict[str, Any]:
         max(int((row.request_payload or {}).get("limit") or 1000), 1),
         max(1, int(settings.ADHOC_RESULT_MAX_ROWS)),
     )
-    chunk_rows = max(1, int(settings.ADHOC_RESULT_CHUNK_ROWS))
+    first_chunk_rows = max(1, int(settings.ADHOC_RESULT_FIRST_CHUNK_ROWS))
+    chunk_rows = max(first_chunk_rows, int(settings.ADHOC_RESULT_CHUNK_ROWS))
     initialize_run_statements(db, row.id, statements, lease_token)
     started = time.monotonic()
     for index, stmt in enumerate(statements):
@@ -695,6 +699,7 @@ def _run_probe(row: AdhocRun, lease_token: str, db: Any) -> Dict[str, Any]:
             raise TimeoutError("数据探查运行超过 300 秒")
         append_log(row.id, f"[INFO] 执行语句 {index + 1}/{len(statements)}\n", lease_token=lease_token)
         try:
+            statement_started = time.monotonic()
             start_run_statement(db, row.id, index, lease_token)
             binding = ExecutionBinding(row.id, lease_token, index)
             with registered_connection(ds, binding, timeout_seconds=300) as opened:
@@ -702,33 +707,45 @@ def _run_probe(row: AdhocRun, lease_token: str, db: Any) -> Dict[str, Any]:
                 cur = conn.cursor()
                 try:
                     with statement_handle(conn, ds.ds_type, binding):
+                        execute_started = time.monotonic()
                         cur.execute(
                             tagged_sql(
-                                apply_readonly_row_limit(stmt, limit),
+                                apply_readonly_row_limit(
+                                    stmt,
+                                    limit,
+                                    overflow_probe=True,
+                                ),
                                 binding,
                                 ds.ds_type,
                             )
                         )
+                        execute_finished = time.monotonic()
                     columns = [item[0] for item in (cur.description or [])]
                     column_types = column_types_from_description(
                         ds.ds_type, cur.description or []
                     )
+                    fields = column_fields_from_description(
+                        ds.ds_type, cur.description or []
+                    )
+                    query_id = connection_query_id(conn, ds.ds_type)
                     fetched_rows = 0
                     truncated = False
                     preview_rows = []
                     while fetched_rows < limit:
                         if _is_cancelled(row.id, lease_token):
                             raise InterruptedError("运行已取消")
-                        batch = cur.fetchmany(
-                            min(chunk_rows, limit - fetched_rows)
-                            + (1 if fetched_rows + chunk_rows >= limit else 0)
+                        batch = fetch_result_batch(
+                            cur,
+                            fetched_rows=fetched_rows,
+                            max_rows=limit,
+                            first_chunk_rows=first_chunk_rows,
+                            chunk_rows=chunk_rows,
                         )
-                        if not batch:
+                        if not batch.rows:
                             break
-                        accepted = batch[: limit - fetched_rows]
                         converted = [
                             [json_cell_value(value) for value in item]
-                            for item in accepted
+                            for item in batch.rows
                         ]
                         persisted = append_statement_result_chunk(
                             db,
@@ -738,28 +755,35 @@ def _run_probe(row: AdhocRun, lease_token: str, db: Any) -> Dict[str, Any]:
                             lease_token,
                             columns=columns,
                             column_types=column_types,
-                            truncated=len(batch) > len(accepted),
+                            fields=fields,
+                            truncated=batch.overflow,
                             max_rows=limit,
                             max_bytes=max(1, int(settings.ADHOC_RESULT_MAX_BYTES)),
                         )
+                        if persisted is not None and int(persisted.row_count or 0) < len(
+                            converted
+                        ):
+                            converted = converted[: int(persisted.row_count or 0)]
                         preview_rows.extend(converted[: max(0, 200 - len(preview_rows))])
                         fetched_rows += len(converted)
                         if converted and persisted is None:
                             truncated = True
                             break
-                        if len(batch) > len(accepted):
+                        if not converted and batch.rows:
                             truncated = True
                             break
-                        if len(batch) < min(chunk_rows, limit - fetched_rows + len(batch)):
+                        if batch.overflow:
+                            truncated = True
                             break
-                    if fetched_rows >= limit and not truncated:
-                        truncated = bool(cur.fetchmany(1))
+                        if batch.exhausted:
+                            break
                 finally:
                     cur.close()
             if _is_cancelled(row.id, lease_token):
                 raise InterruptedError("运行已取消")
             if time.monotonic() - started > 300:
                 raise TimeoutError("数据探查运行超过 300 秒")
+            statement_finished = time.monotonic()
             complete_run_statement_success(
                 db,
                 row.id,
@@ -767,7 +791,15 @@ def _run_probe(row: AdhocRun, lease_token: str, db: Any) -> Dict[str, Any]:
                 lease_token,
                 columns=columns,
                 column_types=column_types,
+                fields=fields,
                 truncated=truncated,
+                query_id=query_id,
+                execution_metrics={
+                    "execution_ms": max(0, int((execute_finished - execute_started) * 1000)),
+                    "fetch_ms": max(0, int((statement_finished - execute_finished) * 1000)),
+                    "duration_ms": max(0, int((statement_finished - statement_started) * 1000)),
+                    "rows_returned": fetched_rows,
+                },
             )
             append_log(
                 row.id,

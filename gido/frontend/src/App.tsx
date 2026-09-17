@@ -4,7 +4,7 @@
  * @author felixzhu
  * @date 2026-06-05
  */
-import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom'
 import LoginPage from './pages/Login'
 import AboutPage from './pages/About'
 import ProductWorkspaceShell from './components/shell/ProductWorkspaceShell'
@@ -18,6 +18,7 @@ import IntegrationPage from './pages/Integration'
 import OperationPage from './pages/Operation'
 import RunHistoryPage from './pages/RunHistory'
 import RunHistoryDetailPage from './pages/RunHistoryDetail'
+import RunShareRedeemPage from './pages/RunShareRedeem'
 import AlertCenterPage from './pages/AlertCenter'
 import ApprovalPage from './pages/Approval'
 import DatasourcePage from './pages/Datasource'
@@ -46,7 +47,10 @@ import { defaultServiceHome } from './serviceMenuPolicy'
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const token = localStorage.getItem('token')
-  return token ? children : <Navigate to={R.login} replace />
+  const location = useLocation()
+  return token
+    ? children
+    : <Navigate to={R.login} replace state={{ returnTo: `${location.pathname}${location.search}` }} />
 }
 
 function RootRedirect() {
@@ -86,6 +90,7 @@ export default function App() {
 
           {/* 统一工作台壳：/gido/* 下切批/流/服不卸载空间顶栏 */}
           <Route path="/gido" element={<RequireAuth><ProductWorkspaceShell /></RequireAuth>}>
+            <Route path="share/run/:token" element={<RunShareRedeemPage />} />
             <Route path="batch">
               <Route index element={<BatchIndexRedirect />} />
               <Route path="studio" element={<RequireGidoBatchRoute><StudioPage /></RequireGidoBatchRoute>} />

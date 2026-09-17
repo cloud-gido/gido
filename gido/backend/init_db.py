@@ -16,6 +16,7 @@ import app.models.data_service  # noqa: F401
 from app.services.rbac_seed import (
     migrate_schema,
     migrate_dw_streaming_jobs,
+    migrate_publish_approval_snapshots,
     migrate_dw_streaming_release_lifecycle,
     migrate_dw_stream_pipeline,
     migrate_dw_streaming_job_history,
@@ -56,6 +57,8 @@ from app.services.rbac_seed import (
     migrate_platform_integration_public_url,
     migrate_dw_workspace_variables,
     migrate_adhoc_async_runs,
+    migrate_adhoc_export_sharing,
+    migrate_adhoc_statement_professional_fields,
     migrate_dw_users_avatar,
     migrate_scheduler_engine_fields,
     migrate_schedule_runtime_policy,
@@ -76,6 +79,7 @@ migrate_dw_workflow_updated_by(engine)
 migrate_dw_workflow_instance_submitted_by(engine)
 migrate_dw_quality_dolphin_refs(engine)
 migrate_dw_streaming_jobs(engine)
+migrate_publish_approval_snapshots(engine)
 migrate_dw_streaming_release_lifecycle(engine)
 migrate_dw_stream_pipeline(engine)
 migrate_dw_streaming_job_history(engine)
@@ -108,6 +112,8 @@ migrate_platform_integration_copilot(engine)
 migrate_platform_integration_public_url(engine)
 migrate_dw_workspace_variables(engine)
 migrate_adhoc_async_runs(engine)
+migrate_adhoc_statement_professional_fields(engine)
+migrate_adhoc_export_sharing(engine)
 migrate_dw_users_avatar(engine)
 migrate_scheduler_engine_fields(engine)
 

@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, isValidElement, startTransition } from 'react'
 import { Pagination, Table, message, Descriptions } from 'antd'
 import { TableOutlined } from '@ant-design/icons'
-import type { ColumnType, ColumnsType, SorterResult } from 'antd/es/table/interface'
+import type { ColumnType, ColumnsType, FilterValue, SorterResult } from 'antd/es/table/interface'
 import type { TableProps } from 'antd'
 import type { QueryRowRec } from './QueryResultTable'
 import { queryResultTableComponents } from './QueryResultTable'
@@ -41,7 +41,19 @@ async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
-type CtxMenu = { x: number; y: number; cellText: string; tsvText: string }
+type CtxMenu = {
+  x: number
+  y: number
+  cellText: string
+  tsvText: string
+  rowText: string
+  rowWithHeaderText: string
+}
+
+export type QueryResultServerChange = {
+  filters: Record<string, FilterValue | null>
+  sort: { column: string; direction: 'asc' | 'desc' } | null
+}
 
 type Props = {
   columns: ColumnsType<QueryRowRec>
@@ -61,6 +73,9 @@ type Props = {
   showViewModeToggle?: boolean
   /** 保留向后兼容。 @deprecated */
   viewModeStorageKey?: string
+  serverQuery?: boolean
+  serverSort?: { column: string; direction: 'asc' | 'desc' } | null
+  onServerChange?: (change: QueryResultServerChange) => void
 }
 
 /**
@@ -74,6 +89,9 @@ export default function QueryResultPanel({
   toolbar,
   empty,
   pagination,
+  serverQuery = false,
+  serverSort,
+  onServerChange,
 }: Props) {
   /** 当前展开行的 _key；null = 未选中，不显示 KV 面板 */
   const [kvKey, setKvKey] = useState<number | null>(null)
@@ -139,7 +157,7 @@ export default function QueryResultPanel({
     : (pagination?.pageSizeOptions ?? ['50', '100', '200', '500'])
 
   const sortedData = useMemo(() => {
-    if (!sort?.field || !sort.order) return dataSource
+    if (serverQuery || !sort?.field || !sort.order) return dataSource
     const cached = ascendCacheRef.current
     let ascendRows: QueryRowRec[]
     if (cached && cached.field === sort.field && cached.fp === dataFingerprint) {
@@ -152,7 +170,7 @@ export default function QueryResultPanel({
     const desc = new Array<QueryRowRec>(ascendRows.length)
     for (let i = 0, j = ascendRows.length - 1; j >= 0; i++, j--) desc[i] = ascendRows[j]
     return desc
-  }, [dataSource, dataFingerprint, sort])
+  }, [dataSource, dataFingerprint, serverQuery, sort])
 
   const pagedData = useMemo(() => {
     if (!pagingEnabled) return sortedData
@@ -260,6 +278,14 @@ export default function QueryResultPanel({
     setCtx(null)
   }, [])
 
+  const leafKeys = useMemo(
+    () => columns
+      .filter(c => !('children' in (c as any)))
+      .map(c => String((c as any).dataIndex ?? (c as any).key ?? ''))
+      .filter(Boolean),
+    [columns],
+  )
+
   const columnsWithCopy = useMemo((): ColumnsType<QueryRowRec> => {
     return columns.map(col => {
       if ('children' in col && col.children) return col
@@ -269,7 +295,9 @@ export default function QueryResultPanel({
       return {
         ...leaf,
         sorter: field ? { compare: () => 0 } : undefined,
-        sortOrder: sort && field && sort.field === field ? sort.order : null,
+        sortOrder: serverQuery
+          ? (serverSort?.column === field ? (serverSort.direction === 'asc' ? 'ascend' : 'descend') : null)
+          : (sort && field && sort.field === field ? sort.order : null),
         sortDirections: ['ascend', 'descend'] as const,
         showSorterTooltip: { title: '点击升序 · 再点降序 · 再点取消' },
         render: (value: unknown, record: QueryRowRec, index: number) => {
@@ -283,7 +311,7 @@ export default function QueryResultPanel({
             } else {
               inner = <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{text}</span>
             }
-          } else if (value === null || value === 'None') {
+          } else if (value === null || value === undefined) {
             inner = <span style={{ color: '#bfbfbf' }}>NULL</span>
           } else {
             inner = <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{text}</span>
@@ -292,6 +320,14 @@ export default function QueryResultPanel({
             <div
               className={`dw-cell-value${copiedKey === cellKey ? ' dw-cell-value--copied' : ''}`}
               title="双击复制；右键更多选项；可拖选后 ⌘C"
+              tabIndex={0}
+              role="button"
+              aria-label={`复制 ${field} 单元格`}
+              onKeyDown={e => {
+                if (e.key !== 'Enter' && e.key !== ' ') return
+                e.preventDefault()
+                void doCopy(text, '已复制单元格')
+              }}
               onDoubleClick={e => {
                 e.stopPropagation()
                 void doCopy(text, '已复制单元格')
@@ -301,8 +337,16 @@ export default function QueryResultPanel({
               onContextMenu={e => {
                 e.preventDefault()
                 e.stopPropagation()
+                const rowText = leafKeys.map(key => formatQueryCellValue(record[key])).join('\t')
                 const tsv = `${field}\t${text}`
-                setCtx({ x: e.clientX, y: e.clientY, cellText: text, tsvText: tsv })
+                setCtx({
+                  x: e.clientX,
+                  y: e.clientY,
+                  cellText: text,
+                  tsvText: tsv,
+                  rowText,
+                  rowWithHeaderText: `${leafKeys.join('\t')}\n${rowText}`,
+                })
               }}
             >
               {inner}
@@ -311,7 +355,7 @@ export default function QueryResultPanel({
         },
       }
     })
-  }, [columns, copiedKey, doCopy, sort])
+  }, [columns, copiedKey, doCopy, leafKeys, serverQuery, serverSort, sort])
 
   /** 行号列：点击切换 KV 展开；再次点击同一行关闭 */
   const rowNumColumn: ColumnType<QueryRowRec> = useMemo(() => ({
@@ -352,11 +396,20 @@ export default function QueryResultPanel({
     [rowNumColumn, columnsWithCopy],
   )
 
-  const onTableChange: TableProps<QueryRowRec>['onChange'] = useCallback((_pag, _filters, sorter) => {
+  const onTableChange: TableProps<QueryRowRec>['onChange'] = useCallback((_pag, filters, sorter) => {
     if (shouldSuppressHeaderInteraction()) return
     const s = (Array.isArray(sorter) ? sorter[0] : sorter) as SorterResult<QueryRowRec>
     const field = s?.field != null ? String(s.field) : (s?.columnKey != null ? String(s.columnKey) : '')
     const order = s?.order
+    if (serverQuery) {
+      onServerChange?.({
+        filters,
+        sort: field && (order === 'ascend' || order === 'descend')
+          ? { column: field, direction: order === 'ascend' ? 'asc' : 'desc' }
+          : null,
+      })
+      return
+    }
     startTransition(() => {
       if (field && (order === 'ascend' || order === 'descend')) {
         setSort({ field, order })
@@ -365,20 +418,12 @@ export default function QueryResultPanel({
         setSort(null)
       }
     })
-  }, [])
+  }, [onServerChange, serverQuery])
 
   /** 当前选中行的数据 */
   const kvRowData = useMemo(
     () => kvKey != null ? dataSource.find(r => (r as any)._key === kvKey) ?? null : null,
     [dataSource, kvKey],
-  )
-
-  const leafKeys = useMemo(
-    () => columns
-      .filter(c => !('children' in (c as any)))
-      .map(c => String((c as any).dataIndex ?? (c as any).key ?? ''))
-      .filter(Boolean),
-    [columns],
   )
 
   if (!dataSource.length && empty) {
@@ -481,6 +526,12 @@ export default function QueryResultPanel({
           </button>
           <button type="button" onClick={() => void doCopy(ctx.tsvText, '已复制（列名 + 制表符 + 值）')}>
             复制为 TSV
+          </button>
+          <button type="button" onClick={() => void doCopy(ctx.rowText, '已复制整行')}>
+            复制整行
+          </button>
+          <button type="button" onClick={() => void doCopy(ctx.rowWithHeaderText, '已复制带表头 TSV')}>
+            复制整行（带表头 TSV）
           </button>
         </div>
       )}

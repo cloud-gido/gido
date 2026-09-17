@@ -5,10 +5,11 @@
 """只读 SQL 拆分、校验与结果集列类型元数据。"""
 from __future__ import annotations
 
+import base64
 import re
 from datetime import date, datetime, time
 from decimal import Decimal
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -168,10 +169,7 @@ def json_cell_value(v: Any) -> Any:
     if isinstance(v, UUID):
         return str(v)
     if isinstance(v, (bytes, bytearray, memoryview)):
-        try:
-            return bytes(v).decode("utf-8", errors="replace")
-        except Exception:
-            return str(v)
+        return "base64:" + base64.b64encode(bytes(v)).decode("ascii")
     if isinstance(v, (list, dict)):
         return v
     return str(v)
@@ -228,7 +226,12 @@ def parse_readonly_statements(sql: str) -> List[str]:
     return [assert_readonly_statement(p) for p in valid_parts]
 
 
-def apply_readonly_row_limit(stmt: str, lim: int) -> str:
+def apply_readonly_row_limit(
+    stmt: str,
+    lim: int,
+    *,
+    overflow_probe: bool = False,
+) -> str:
     """在只读语句末尾追加 LIMIT，避免子查询包装导致 ORDER BY 被优化器丢弃。"""
     core = (stmt or "").strip().rstrip(";").strip()
     if not core:
@@ -237,7 +240,7 @@ def apply_readonly_row_limit(stmt: str, lim: int) -> str:
     if re.search(r"\bLIMIT\s+\d", cleaned, re.IGNORECASE):
         return core
     cap = min(max(int(lim), 1), 10000)
-    return f"{core} LIMIT {cap}"
+    return f"{core} LIMIT {cap + 1 if overflow_probe else cap}"
 
 
 def column_types_from_description(ds_type: str, description: Optional[Sequence]) -> List[str]:
@@ -299,6 +302,47 @@ def column_types_from_description(ds_type: str, description: Optional[Sequence])
     return out
 
 
+def _semantic_type(raw_type: str) -> str:
+    normalized = (raw_type or "").lower()
+    if any(token in normalized for token in ("int", "decimal", "numeric", "float", "double", "real")):
+        return "number"
+    if "bool" in normalized or normalized == "bit":
+        return "boolean"
+    if any(token in normalized for token in ("date", "time")):
+        return "datetime"
+    if any(token in normalized for token in ("json", "array", "map", "struct")):
+        return "json"
+    if any(token in normalized for token in ("binary", "blob", "bytea")):
+        return "binary"
+    return "string"
+
+
+def column_fields_from_description(
+    ds_type: str, description: Optional[Sequence]
+) -> List[Dict[str, Any]]:
+    """Build a portable DB-API column schema for MySQL, Doris and PostgreSQL."""
+    if not description:
+        return []
+    raw_types = column_types_from_description(ds_type, description)
+    fields: List[Dict[str, Any]] = []
+    for index, column in enumerate(description):
+        raw_type = raw_types[index] if index < len(raw_types) else "unknown"
+        precision = column[4] if len(column) > 4 else None
+        scale = column[5] if len(column) > 5 else None
+        null_ok = column[6] if len(column) > 6 else None
+        fields.append(
+            {
+                "name": str(column[0]),
+                "raw_type": raw_type,
+                "semantic_type": _semantic_type(raw_type),
+                "nullable": bool(null_ok) if null_ok is not None else None,
+                "precision": int(precision) if precision is not None else None,
+                "scale": int(scale) if scale is not None else None,
+            }
+        )
+    return fields
+
+
 def result_set_from_cursor(ds_type: str, description: Optional[Sequence], rows: List, limit: int) -> dict:
     cols = [d[0] for d in description] if description else []
     types = column_types_from_description(ds_type, description)
@@ -306,6 +350,7 @@ def result_set_from_cursor(ds_type: str, description: Optional[Sequence], rows: 
     return {
         "columns": cols,
         "column_types": types,
+        "fields": column_fields_from_description(ds_type, description),
         "rows": [[json_cell_value(v) for v in row] for row in capped],
         "total": len(rows),
         "truncated": len(rows) >= limit,

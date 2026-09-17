@@ -616,6 +616,9 @@ class AdhocRunStatement(Base):
     sql_hash = Column(String(64), nullable=True)
     status = Column(String(32), nullable=False, default="pending")
     column_schema = Column(JSON, nullable=True)
+    execution_metrics = Column(JSON, nullable=True)
+    query_id = Column(String(256), nullable=True)
+    plan_snapshot = Column(JSON, nullable=True)
     affected_rows = Column(BigInteger, nullable=True)
     result_rows = Column(BigInteger, nullable=False, default=0)
     result_bytes = Column(BigInteger, nullable=False, default=0)
@@ -686,6 +689,8 @@ class AdhocRunExport(Base):
     format = Column(String(16), nullable=False)
     status = Column(String(32), nullable=False, default="queued")
     snapshot_scope = Column(String(32), nullable=False, default="current")
+    query_spec = Column(JSON, nullable=True)
+    statement_version = Column(String(64), nullable=True)
     row_count = Column(BigInteger, nullable=False, default=0)
     size_bytes = Column(BigInteger, nullable=False, default=0)
     storage_key = Column(String(1024), nullable=True)
@@ -701,6 +706,51 @@ class AdhocRunExport(Base):
         onupdate=datetime.utcnow,
         nullable=False,
     )
+
+
+class AdhocRunShare(Base):
+    """Workspace-scoped share link; only the token digest is persisted."""
+    __tablename__ = "dw_adhoc_run_shares"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_adhoc_run_share_token_hash"),
+        Index("ix_adhoc_run_shares_run_created", "run_id", "created_at"),
+        Index("ix_adhoc_run_shares_expiry", "expires_at", "revoked_at"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(
+        Integer,
+        ForeignKey("dw_adhoc_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_by = Column(Integer, ForeignKey("dw_users.id"), nullable=False, index=True)
+    token_hash = Column(String(64), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+    revoked_by = Column(Integer, ForeignKey("dw_users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class AdhocRunShareGrant(Base):
+    """A redeemed share grants one authenticated user access to one run."""
+    __tablename__ = "dw_adhoc_run_share_grants"
+    __table_args__ = (
+        UniqueConstraint("share_id", "user_id", name="uq_adhoc_run_share_grant_user"),
+        Index("ix_adhoc_run_share_grants_run_user", "run_id", "user_id"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    share_id = Column(
+        Integer,
+        ForeignKey("dw_adhoc_run_shares.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    run_id = Column(
+        Integer,
+        ForeignKey("dw_adhoc_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id = Column(Integer, ForeignKey("dw_users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class ProbeQueryTree(Base):
@@ -893,6 +943,12 @@ class PublishApproval(Base):
     resource_id = Column(Integer, nullable=False, index=True)
     # 实时作业审批绑定不可变 release，避免审批期间新提交版本被误批准。
     release_id = Column(Integer, nullable=True, index=True)
+    # 审批提交时冻结候选与生产基线；评审看到的内容不得随活动草稿漂移。
+    submitted_snapshot = Column(JSON, nullable=True)
+    baseline_snapshot = Column(JSON, nullable=True)
+    submitted_hash = Column(String(64), nullable=True)
+    baseline_hash = Column(String(64), nullable=True)
+    snapshot_schema_version = Column(Integer, nullable=False, default=1)
     resource_name = Column(String(256))
     action = Column(String(64), nullable=False)  # publish_to_ds | publish_node
     status = Column(String(32), default="pending", index=True)  # pending/approved/rejected/cancelled

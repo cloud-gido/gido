@@ -25,6 +25,12 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
   timed_out: { label: '已超时', color: 'red' },
 }
 
+function formatDuration(value?: number | null): string | null {
+  if (value == null) return null
+  if (value < 1000) return `${value}ms`
+  return `${(value / 1000).toFixed(value < 10_000 ? 2 : 1)}s`
+}
+
 export default function LiveRunPanel({
   runId,
   status,
@@ -32,6 +38,8 @@ export default function LiveRunPanel({
   error,
   isActive,
   onCancel,
+  queueDurationMs,
+  executionDurationMs,
   compact = false,
 }: {
   runId: number | null
@@ -40,12 +48,16 @@ export default function LiveRunPanel({
   error?: string
   isActive: boolean
   onCancel?: () => void | Promise<void>
+  queueDurationMs?: number | null
+  executionDurationMs?: number | null
   compact?: boolean
 }) {
   const boxRef = useRef<HTMLPreElement>(null)
   const [follow, setFollow] = useState(true)
   const meta = STATUS_META[status] || STATUS_META.idle
   const text = log || (isActive ? '等待运行日志…' : error || '暂无日志')
+  const queueDuration = formatDuration(queueDurationMs)
+  const executionDuration = formatDuration(executionDurationMs)
 
   useEffect(() => {
     if (follow && boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight
@@ -66,6 +78,8 @@ export default function LiveRunPanel({
       <Space size={8} wrap style={{ padding: '8px 10px', borderBottom: '1px solid var(--ant-color-border-secondary, #f0f0f0)' }}>
         <Tag color={meta.color}>{meta.label}</Tag>
         {runId && <Typography.Text type="secondary">Run #{runId}</Typography.Text>}
+        {queueDuration && <Typography.Text type="secondary">排队 {queueDuration}</Typography.Text>}
+        {executionDuration && <Typography.Text type="secondary">执行 {executionDuration}</Typography.Text>}
         <Button
           size="small"
           type="text"

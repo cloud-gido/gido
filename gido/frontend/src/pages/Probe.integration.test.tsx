@@ -112,6 +112,8 @@ describe('Probe hydrate integration', () => {
     expect(screen.queryByText(/加载探查目录与脚本/)).not.toBeInTheDocument()
     expect(await screen.findByTestId('probe-active-script-title')).toHaveTextContent('缓存查询')
     expect(screen.getByTestId('monaco-probe')).toHaveTextContent('SELECT 99 AS x')
+    expect(screen.getByRole('button', { name: /运行/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /导出 CSV/ })).not.toBeInTheDocument()
   })
 
   it('cold start waits for remote then shows editor without sticky loading', async () => {

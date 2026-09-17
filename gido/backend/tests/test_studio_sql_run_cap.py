@@ -54,6 +54,11 @@ def test_apply_readonly_row_limit_caps_at_10000():
     assert out.endswith("LIMIT 10000")
 
 
+def test_apply_readonly_row_limit_can_fetch_one_over_cap_for_truncation():
+    out = apply_readonly_row_limit("SELECT 1", 10000, overflow_probe=True)
+    assert out.endswith("LIMIT 10001")
+
+
 def test_run_sql_with_result_uses_fetchmany_not_fetchall(monkeypatch):
     """回归：结果集不得 fetchall 全量载入内存。"""
     from app.services import studio_sql_run as mod

@@ -19,8 +19,12 @@ from sqlalchemy.pool import StaticPool
 from app.core.database import Base, get_db
 from app.core.security import get_password_hash
 from app.models.data_service import DataApi
-from app.models.workspace import DataSource, JobVersion, User, Workflow, Workspace, WorkspaceMember
-from app.services.publish_approval import get_publish_approval_preview, submit_publish_approval
+from app.models.workspace import DataSource, JobVersion, TaskNode, User, Workflow, Workspace, WorkspaceMember
+from app.services.publish_approval import (
+    approve_publish_approval,
+    get_publish_approval_preview,
+    submit_publish_approval,
+)
 from app.services.rbac_seed import run_rbac_bootstrap
 import app.api.studio  # noqa: F401
 import app.api.streaming  # noqa: F401
@@ -141,6 +145,8 @@ def test_approval_preview_studio_node(client):
 
     assert preview["preview"]["kind"] == "studio_node"
     assert preview["preview"]["pending"]["script_content"] == "SELECT 1"
+    assert preview["preview"]["snapshot_frozen"] is True
+    assert preview["preview"]["artifacts"][0]["additions"] == 1
     assert preview["approval"]["submit_note"] == "请审批脚本"
 
     api_prev = c.get(f"/api/approvals/{row.id}/preview", headers=h)
@@ -175,6 +181,19 @@ def test_approval_preview_workflow_with_baseline(client):
     try:
         dev = db.query(User).filter(User.username == "dev").first()
         wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
+        node = TaskNode(
+            workspace_id=ws_id,
+            name="n1",
+            node_type="SQL",
+            script_content="SELECT 1",
+            created_by=dev.id,
+        )
+        db.add(node)
+        db.flush()
+        wf.dag_config = {
+            "nodes": [{"node_id": node.id, "name": "n1", "node_type": "SQL"}],
+            "edges": [],
+        }
         base_ver = JobVersion(
             workflow_id=wf.id,
             version_no=1,
@@ -197,7 +216,7 @@ def test_approval_preview_workflow_with_baseline(client):
         db.close()
 
     assert preview["preview"]["kind"] == "workflow"
-    assert preview["preview"]["pending"]["dag"]["node_count"] == 1
+    assert len(preview["preview"]["pending"]["dag"]["nodes"]) == 1
     assert preview["preview"]["baseline"] is not None
     assert preview["preview"]["baseline_label"] == "生产版本 v1"
     assert preview["preview"]["has_diff"] is True
@@ -288,7 +307,10 @@ def test_approval_preview_data_service_api_pending_diff(client):
             version=1,
             datasource_id=ds.id,
             sql_template="SELECT 1",
-            pending_definition={"sql_template": "SELECT 2"},
+            pending_definition={
+                "schema_version": 1,
+                "definition": {"sql_template": "SELECT 2"},
+            },
             created_by=admin.id,
         )
         db.add(api)
@@ -309,6 +331,43 @@ def test_approval_preview_data_service_api_pending_diff(client):
 
     api_prev = c.get(f"/api/approvals/{row.id}/preview", headers=h)
     assert api_prev.status_code == 200
+
+
+def test_approval_preview_is_frozen_and_rejects_drift(client):
+    c, SessionLocal = client
+    token, ws_id = _login(c)
+    h = _auth_headers(token)
+    created = c.post(
+        "/api/studio/nodes",
+        headers=h,
+        json={
+            "workspace_id": ws_id,
+            "name": "frozen_node",
+            "node_type": "SQL",
+            "script_content": "SELECT 1",
+        },
+    )
+    nid = created.json()["id"]
+
+    db = SessionLocal()
+    try:
+        dev = db.query(User).filter(User.username == "dev").first()
+        admin = db.query(User).filter(User.username == "admin").first()
+        row = submit_publish_approval(
+            db, dev, ws_id, "studio_node", nid, "publish_node", "freeze"
+        )
+        approval_id = row.id
+        node = db.query(TaskNode).filter_by(id=nid).one()
+        node.script_content = "SELECT 2"
+        db.commit()
+
+        preview = get_publish_approval_preview(db, admin, approval_id)
+        assert preview["preview"]["pending"]["script_content"] == "SELECT 1"
+        with pytest.raises(Exception) as exc:
+            approve_publish_approval(db, admin, approval_id, "approve")
+        assert getattr(exc.value, "status_code", None) == 409
+    finally:
+        db.close()
 
 
 def test_approval_preview_not_found(client):
