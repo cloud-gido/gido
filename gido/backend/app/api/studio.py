@@ -1067,10 +1067,19 @@ def _run_python(node: TaskNode, db: Session, bizdate: str = None) -> list:
     return run_python_node(node, db, bizdate=bizdate)
 
 
-def _require_internal_token(authorization: Optional[str]) -> None:
+def _require_internal_callback_auth(
+    authorization: Optional[str],
+    *,
+    node_id: int,
+    callback_signature: Optional[str] = None,
+) -> None:
+    from app.services.ds_callback_auth import verify_node_callback_signature
+
     token = (authorization or "").replace("Bearer ", "").strip()
-    if not settings.INTERNAL_TOKEN or token != settings.INTERNAL_TOKEN:
-        raise HTTPException(status_code=401, detail="无效的内部令牌")
+    bearer_valid = bool(settings.INTERNAL_TOKEN) and token == settings.INTERNAL_TOKEN
+    signature_valid = verify_node_callback_signature(node_id, callback_signature)
+    if not bearer_valid and not signature_valid:
+        raise HTTPException(status_code=401, detail="无效的内部回调凭证")
 
 
 @router.post("/internal/nodes/{node_id}/runs", status_code=202)
@@ -1078,13 +1087,18 @@ def submit_internal_node_run(
     node_id: int,
     body: RunNodeBody = Body(default_factory=RunNodeBody),
     authorization: Optional[str] = Header(None),
+    x_gido_callback_signature: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ):
     """供 Dolphin 快速提交任务；执行由 GIDO 后台队列接管。"""
     from app.services.adhoc_run_worker import submit_node_run
     from app.services.business_date import normalize_business_date
 
-    _require_internal_token(authorization)
+    _require_internal_callback_auth(
+        authorization,
+        node_id=node_id,
+        callback_signature=x_gido_callback_signature,
+    )
     if not settings.ADHOC_ASYNC_ENABLED:
         raise HTTPException(status_code=503, detail="异步运行尚未启用")
     node = db.query(TaskNode).filter(TaskNode.id == node_id).first()
@@ -1116,12 +1130,12 @@ def poll_internal_node_run(
     run_id: int,
     after_seq: int = Query(0, ge=0),
     authorization: Optional[str] = Header(None),
+    x_gido_callback_signature: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ):
     """Shell-friendly response: status, next sequence, then new log text."""
     from app.models.workspace import AdhocRun, AdhocRunLogChunk
 
-    _require_internal_token(authorization)
     row = (
         db.query(AdhocRun)
         .filter(AdhocRun.id == run_id, AdhocRun.source == "scheduler")
@@ -1129,6 +1143,11 @@ def poll_internal_node_run(
     )
     if not row:
         raise HTTPException(status_code=404, detail="调度运行不存在")
+    _require_internal_callback_auth(
+        authorization,
+        node_id=int(row.node_id),
+        callback_signature=x_gido_callback_signature,
+    )
     chunks = (
         db.query(AdhocRunLogChunk)
         .filter(
@@ -1170,13 +1189,13 @@ def poll_internal_node_run(
 def cancel_internal_node_run(
     run_id: int,
     authorization: Optional[str] = Header(None),
+    x_gido_callback_signature: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ):
     """Cancel a queued/running callback when Dolphin terminates its task."""
     from app.models.workspace import AdhocRun
     from app.services.adhoc_run_worker import request_cancel
 
-    _require_internal_token(authorization)
     row = (
         db.query(AdhocRun)
         .filter(AdhocRun.id == run_id, AdhocRun.source == "scheduler")
@@ -1184,6 +1203,11 @@ def cancel_internal_node_run(
     )
     if not row:
         raise HTTPException(status_code=404, detail="调度运行不存在")
+    _require_internal_callback_auth(
+        authorization,
+        node_id=int(row.node_id),
+        callback_signature=x_gido_callback_signature,
+    )
     row = request_cancel(db, row)
     return PlainTextResponse(row.status)
 
@@ -1201,7 +1225,7 @@ def internal_run_node(
     """
     from app.services.business_date import normalize_business_date
 
-    _require_internal_token(authorization)
+    _require_internal_callback_auth(authorization, node_id=node_id)
     node = db.query(TaskNode).filter(TaskNode.id == node_id).first()
     if not node:
         raise HTTPException(status_code=404, detail="节点不存在")

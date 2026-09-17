@@ -105,9 +105,12 @@ def _ds_callback_curl(path: str, *, json_body: Optional[str] = None) -> str:
 
 def _ds_async_node_callback(node_id: int) -> str:
     """Submit to GIDO, stream incremental logs, and mirror the terminal status."""
+    from app.services.ds_callback_auth import node_callback_signature
+
     base = ds_callback_base_url()
     submit_url = f"{base}/api/studio/internal/nodes/{int(node_id)}/runs"
     poll_base = f"{base}/api/studio/internal/runs"
+    signature = node_callback_signature(node_id)
     body = '{"bizdate":"$[yyyy-MM-dd]"}'
     curl_common = (
         "curl --fail --silent --show-error --connect-timeout 10 "
@@ -116,28 +119,25 @@ def _ds_async_node_callback(node_id: int) -> str:
     return "\n".join(
         [
             "set -eu",
-            'token="${GIDO_INTERNAL_TOKEN:-}"',
-            'if [ -z "$token" ] && [ -n "${GIDO_INTERNAL_TOKEN_FILE:-}" ]; then '
-            'token="$(cat -- "$GIDO_INTERNAL_TOKEN_FILE")"; fi',
-            '[ -n "$token" ] || { echo "GIDO callback token is not configured" >&2; exit 2; }',
+            f"callback_signature={shlex.quote(signature)}",
             "run_id=",
             "done_flag=0",
             "cancel_run() {",
             '  if [ "$done_flag" -eq 0 ] && [ -n "${run_id:-}" ]; then',
-            f'    {curl_common} -X POST -H "Authorization: Bearer $token" '
+            f'    {curl_common} -X POST -H "X-Gido-Callback-Signature: $callback_signature" '
             f'"{poll_base}/$run_id/cancel" >/dev/null 2>&1 || true',
             "  fi",
             "}",
             "trap cancel_run EXIT",
             f'run_id="$({curl_common} -X POST '
             f"-H {shlex.quote('Content-Type: application/json')} "
-            f'-H "Authorization: Bearer $token" '
+            f'-H "X-Gido-Callback-Signature: $callback_signature" '
             f"--data {shlex.quote(body)} {shlex.quote(submit_url)})\"",
             "case \"$run_id\" in ''|*[!0-9]*) echo \"GIDO returned invalid run_id: $run_id\" >&2; exit 3;; esac",
             'echo "[GIDO] submitted run_id=$run_id"',
             "seq=0",
             "while :; do",
-            f'  payload="$({curl_common} -H "Authorization: Bearer $token" '
+            f'  payload="$({curl_common} -H "X-Gido-Callback-Signature: $callback_signature" '
             f'"{poll_base}/$run_id/poll?after_seq=$seq")"',
             "  status=\"$(printf '%s\\n' \"$payload\" | sed -n '1p')\"",
             "  next_seq=\"$(printf '%s\\n' \"$payload\" | sed -n '2p')\"",

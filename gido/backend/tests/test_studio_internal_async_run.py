@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from app.api import studio
 from app.core.database import Base
 from app.models.workspace import AdhocRun, AdhocRunLogChunk, TaskNode
+from app.services.ds_callback_auth import node_callback_signature
 
 
 def _db():
@@ -33,11 +34,13 @@ def test_internal_callback_submits_polls_and_cancels(monkeypatch):
     db.refresh(node)
     monkeypatch.setattr(studio.settings, "INTERNAL_TOKEN", "shared-token")
     monkeypatch.setattr(studio.settings, "ADHOC_ASYNC_ENABLED", True)
+    signature = node_callback_signature(node.id)
 
     submitted = studio.submit_internal_node_run(
         node.id,
         studio.RunNodeBody(bizdate="2026-09-17"),
-        authorization="Bearer shared-token",
+        authorization=None,
+        x_gido_callback_signature=signature,
         db=db,
     )
     run_id = int(submitted.body.decode())
@@ -59,14 +62,16 @@ def test_internal_callback_submits_polls_and_cancels(monkeypatch):
     polled = studio.poll_internal_node_run(
         run_id,
         after_seq=0,
-        authorization="Bearer shared-token",
+        authorization=None,
+        x_gido_callback_signature=signature,
         db=db,
     )
     assert polled.body.decode() == "running\n1\nscheduled log\n"
 
     cancelled = studio.cancel_internal_node_run(
         run_id,
-        authorization="Bearer shared-token",
+        authorization=None,
+        x_gido_callback_signature=signature,
         db=db,
     )
     assert cancelled.body.decode() == "cancel_requested"

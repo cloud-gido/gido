@@ -34,4 +34,4 @@ data:
 #   namespace: gido
 # stringData:
 #   FLINK_OPERATOR_ARTIFACT_TOKEN: "<random-32+ chars>"
-#   INTERNAL_TOKEN: "<same token injected into Dolphin Worker>"
+#   INTERNAL_TOKEN: "<random internal-service token>"

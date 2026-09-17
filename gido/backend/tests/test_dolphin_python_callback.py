@@ -6,6 +6,10 @@ import os
 import subprocess
 
 from app.services.dolphin import _ds_async_node_callback
+from app.services.ds_callback_auth import (
+    node_callback_signature,
+    verify_node_callback_signature,
+)
 
 
 def _fake_curl(tmp_path, terminal_status: str) -> str:
@@ -48,7 +52,6 @@ def test_async_callback_streams_logs_and_exits_success(tmp_path):
     env = {
         **os.environ,
         "PATH": f"{_fake_curl(tmp_path, 'success')}:{os.environ['PATH']}",
-        "GIDO_INTERNAL_TOKEN": "test-token",
     }
 
     result = subprocess.run(
@@ -70,7 +73,6 @@ def test_async_callback_propagates_failed_status(tmp_path):
     env = {
         **os.environ,
         "PATH": f"{_fake_curl(tmp_path, 'failed')}:{os.environ['PATH']}",
-        "GIDO_INTERNAL_TOKEN": "test-token",
     }
 
     result = subprocess.run(
@@ -85,16 +87,24 @@ def test_async_callback_propagates_failed_status(tmp_path):
     assert "last log" in result.stdout
 
 
-def test_async_callback_does_not_embed_token_or_block_submit():
+def test_async_callback_uses_scoped_signature_and_does_not_need_worker_token():
     script = _ds_async_node_callback(17)
     lowered = script.lower()
 
     assert "/api/studio/internal/nodes/17/runs" in script
     assert "/poll?after_seq=$seq" in script
     assert "/cancel" in script
-    assert "GIDO_INTERNAL_TOKEN" in script
-    assert "literal-token" not in script
+    assert "X-Gido-Callback-Signature" in script
+    assert "callback_signature=v1=" in script
+    assert "GIDO_INTERNAL_TOKEN" not in script
     assert "--max-time 30" in script
     assert "--max-time 3600" not in script
     assert "$[yyyy-MM-dd]" in script
     assert "python" not in lowered
+
+
+def test_callback_signature_is_scoped_to_one_node():
+    signature = node_callback_signature(17)
+
+    assert verify_node_callback_signature(17, signature)
+    assert not verify_node_callback_signature(18, signature)
