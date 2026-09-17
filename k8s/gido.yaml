@@ -104,8 +104,6 @@ data:
   DS_URL: ""
   DS_UI_URL: ""
   DS_PROJECT_NAME: "GIDO"
-  # Dolphin 的 Python 节点以轻量 SHELL 调用 GIDO 异步接口。
-  GIDO_DS_CALLBACK_BASE_URL: "http://backend.gido.svc.cluster.local:8001"
   # 实例热账本留存天数（终态）；0=关闭。清理为高频小批，改完需滚动 backend
   INSTANCE_RETENTION_DAYS: "7"
   INSTANCE_RETENTION_INTERVAL_MINUTES: "15"
