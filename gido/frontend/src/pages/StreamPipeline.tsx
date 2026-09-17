@@ -28,6 +28,9 @@ import StreamRuntimeConfig, {
 import {
   buildLocalPipelineExplain, pipelineModeMeta, sanitizePipelineArtifact,
 } from '../utils/streamPipeline'
+import StreamRiskAssessmentPanel, {
+  type StreamRiskAssessment,
+} from '../components/StreamRiskAssessmentPanel'
 
 const { Paragraph, Text, Title } = Typography
 const PIPELINE_NAME_PATTERN = /^[a-z][a-z0-9-]{1,48}[a-z0-9]$/
@@ -587,6 +590,28 @@ export default function StreamPipelinePage() {
   const requiredRisks = explain?.risks.filter(risk => risk.requires_confirmation) || []
   const releaseReady = Boolean(explain?.valid)
     && requiredRisks.every(risk => confirmedRisks.includes(risk.code))
+  const pipelineRiskAssessment = useMemo<StreamRiskAssessment | null>(() => {
+    if (!explain) return null
+    const rank: Record<string, number> = { low: 0, medium: 1, high: 2, blocker: 3 }
+    const level = explain.risks.reduce<string>(
+      (highest, risk) => rank[risk.level] > rank[highest] ? risk.level : highest,
+      'low',
+    )
+    return {
+      schema_version: 'pipeline-explain-v1',
+      level,
+      assessment_hash: 'pipeline-explain',
+      sql_hash: 'pipeline-generated-artifact',
+      requires_confirmation: explain.risks.some(risk => Boolean(risk.requires_confirmation)),
+      risks: explain.risks.map(risk => ({
+        ...risk,
+        is_paimon: true,
+        object_name: draft.sink.table
+          ? `${draft.sink.database || 'default'}.${draft.sink.table}`
+          : undefined,
+      })),
+    }
+  }, [explain, draft.sink.database, draft.sink.table])
 
   const schemaColumns = useMemo(() => draft.schema.columns.map(column => ({
     ...column,
@@ -978,23 +1003,11 @@ export default function StreamPipelinePage() {
               </Col>
             </Row>
             <Card size="small" title="风险确认" style={{ marginTop: 16 }}>
-              {!explain.risks?.length ? <Alert showIcon type="success" message="未发现需要确认的风险" /> : (
-                <Space direction="vertical" style={{ width: '100%' }}>
-                  {explain.risks.map(risk => (
-                    <Alert key={risk.code} showIcon
-                      type={risk.level === 'blocker' ? 'error' : risk.level === 'high' ? 'warning' : 'info'}
-                      message={<Space>
-                        <Tag color={risk.level === 'blocker' ? 'red' : risk.level === 'high' ? 'orange' : 'blue'}>{risk.level.toUpperCase()}</Tag>
-                        {risk.message}
-                      </Space>}
-                      action={risk.requires_confirmation ? <Checkbox
-                        checked={confirmedRisks.includes(risk.code)}
-                        onChange={event => setConfirmedRisks(current => event.target.checked
-                          ? [...new Set([...current, risk.code])]
-                          : current.filter(code => code !== risk.code))}>我已理解并确认</Checkbox> : undefined} />
-                  ))}
-                </Space>
-              )}
+              <StreamRiskAssessmentPanel
+                assessment={pipelineRiskAssessment}
+                confirmedRiskCodes={confirmedRisks}
+                onConfirmedRiskCodesChange={setConfirmedRisks}
+              />
             </Card>
           </>
         )}

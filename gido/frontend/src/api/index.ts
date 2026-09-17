@@ -18,6 +18,7 @@ import type {
   InteractiveStatementList,
   InteractiveStatementRows,
 } from '../types/interactiveRun'
+import type { StreamRiskAssessment } from '../components/StreamRiskAssessmentPanel'
 
 // 认证
 export const authApi = {
@@ -756,6 +757,17 @@ export const streamingApi = {
       scriptContent !== undefined ? { script_content: scriptContent } : {},
     ),
   listReleases: (id: number) => request.get(`/streaming/jobs/${id}/releases`),
+  assessJobRisk: (
+    id: number,
+    data: {
+      action: 'submit' | 'deploy' | 'restart'
+      script_content?: string
+      release_id?: number | string
+      restore_mode?: string
+      allow_non_restored_state?: boolean
+    },
+  ): Promise<StreamRiskAssessment> =>
+    request.post(`/streaming/jobs/${id}/risk-assessment`, data),
   createRelease: (id: number, data?: Record<string, unknown>) =>
     request.post(`/streaming/jobs/${id}/releases`, data || {}),
   deployJob: (id: number, data: Record<string, unknown>) =>

@@ -57,6 +57,11 @@ from app.services.rbac import (
     workspace_data_full_control,
 )
 from app.services.publish_approval import assert_can_publish_production
+from app.services.stream_sql_risk import (
+    assess_stream_sql,
+    assert_risk_confirmation,
+    combine_operation_risks,
+)
 import os
 import requests
 import logging
@@ -827,6 +832,8 @@ class StreamingJobRelease(Base):
     compiler_version = Column(String(64), nullable=True)
     generated_artifact = Column(JSON, nullable=True)
     spec_hash = Column(String(64), nullable=True)
+    risk_assessment = Column(JSON, nullable=True)
+    risk_assessment_hash = Column(String(64), nullable=True)
     content_hash = Column(String(64), nullable=False)
     release_note = Column(Text, nullable=True)
     approval_status = Column(String(24), nullable=False, default="pending")
@@ -918,6 +925,8 @@ _STREAMING_RELEASE_MODEL_SNAPSHOT_FIELDS = (
     "compiler_version",
     "generated_artifact",
     "spec_hash",
+    "risk_assessment",
+    "risk_assessment_hash",
     "content_hash",
     "release_note",
 )
@@ -1904,6 +1913,8 @@ class JobUpdate(BaseModel):
 class SubmitJobBody(BaseModel):
     """POST /streaming/jobs/{id}/submit：大段 SQL 请放 body，勿用 query（易超长或被代理截断）。"""
     script_content: Optional[str] = None
+    risk_assessment_hash: Optional[str] = Field(default=None, max_length=64)
+    confirmed_risk_codes: List[str] = Field(default_factory=list)
 
 
 class ReleaseSubmitBody(BaseModel):
@@ -1911,6 +1922,24 @@ class ReleaseSubmitBody(BaseModel):
 
     script_content: Optional[str] = None
     release_note: Optional[str] = Field(default=None, max_length=4000)
+    risk_assessment_hash: Optional[str] = Field(default=None, max_length=64)
+    confirmed_risk_codes: List[str] = Field(default_factory=list)
+
+
+class StreamingRiskAssessmentBody(BaseModel):
+    action: str
+    script_content: Optional[str] = None
+    release_id: Optional[int] = None
+    restore_mode: Optional[str] = None
+    allow_non_restored_state: bool = False
+
+    @field_validator("action")
+    @classmethod
+    def _validate_action(cls, value: str) -> str:
+        action = (value or "").strip().lower()
+        if action not in ("submit", "deploy", "restart"):
+            raise ValueError("action 须为 submit、deploy 或 restart")
+        return action
 
 
 class StreamingReleaseResponse(BaseModel):
@@ -1937,6 +1966,8 @@ class StreamingReleaseResponse(BaseModel):
     compiler_version: Optional[str] = None
     generated_artifact: Optional[Dict[str, Any]] = None
     spec_hash: Optional[str] = None
+    risk_assessment: Optional[Dict[str, Any]] = None
+    risk_assessment_hash: Optional[str] = None
     content_hash: str
     release_note: Optional[str] = None
     approval_status: str
@@ -1993,6 +2024,8 @@ class StreamingDeployBody(BaseModel):
     parallelism: Optional[int] = Field(default=None, ge=1)
     streaming_properties: Optional[str] = None
     idempotency_key: Optional[str] = Field(default=None, max_length=128)
+    risk_assessment_hash: Optional[str] = Field(default=None, max_length=64)
+    confirmed_risk_codes: List[str] = Field(default_factory=list)
 
 
 class StreamingRestartBody(StreamingDeployBody):
@@ -3371,6 +3404,8 @@ def create_streaming_job_release(
     *,
     script_content: Optional[str] = None,
     release_note: Optional[str] = None,
+    risk_assessment_hash: Optional[str] = None,
+    confirmed_risk_codes: Optional[List[str]] = None,
 ) -> StreamingJobRelease:
     """创建不可变候选发布；仅 flush，由调用方控制事务与审批/部署。"""
     if getattr(job, "definition_kind", None) == "pipeline":
@@ -3405,6 +3440,15 @@ def create_streaming_job_release(
         raise HTTPException(status_code=400, detail="SQL 内容为空，无法创建发布")
     if job.job_type not in ("SQL", "JAR"):
         raise HTTPException(status_code=400, detail=f"不支持的任务类型: {job.job_type}")
+    risk_assessment = assess_stream_sql(
+        snapshot.get("script_content"),
+        definition_kind=snapshot.get("definition_kind"),
+    )
+    assert_risk_confirmation(
+        risk_assessment,
+        risk_assessment_hash,
+        confirmed_risk_codes,
+    )
     # 串行化同一作业的版本号分配；唯一约束仍是最后一道保护。
     (
         db.query(StreamingJob.id)
@@ -3421,6 +3465,8 @@ def create_streaming_job_release(
         job_id=job.id,
         version=int(last_version or 0) + 1,
         content_hash=_streaming_release_hash(snapshot),
+        risk_assessment=risk_assessment,
+        risk_assessment_hash=risk_assessment["assessment_hash"],
         release_note=(release_note or "").strip() or None,
         approval_status="pending",
         submitted_by=submitted_by,
@@ -3492,6 +3538,7 @@ def _streaming_release_public_dict(
     umap = username_by_id
     if umap is None:
         umap = _username_map(db, [release.submitted_by, release.approved_by])
+    risk_assessment = _streaming_release_risk_assessment(release)
     return {
         "id": release.id,
         "job_id": release.job_id,
@@ -3502,6 +3549,8 @@ def _streaming_release_public_dict(
             release.dependency_file_version_ids
         ),
         "content_hash": release.content_hash,
+        "risk_assessment": risk_assessment,
+        "risk_assessment_hash": risk_assessment["assessment_hash"],
         "release_note": release.release_note,
         "approval_status": release.approval_status,
         "submitted_by": release.submitted_by,
@@ -3512,6 +3561,19 @@ def _streaming_release_public_dict(
         "approved_at": release.approved_at,
         "approval_comment": release.approval_comment,
     }
+
+
+def _streaming_release_risk_assessment(
+    release: StreamingJobRelease,
+) -> Dict[str, Any]:
+    """Return the frozen assessment, recomputing only legacy empty snapshots."""
+    assessment = getattr(release, "risk_assessment", None)
+    if isinstance(assessment, dict) and assessment.get("assessment_hash"):
+        return assessment
+    return assess_stream_sql(
+        getattr(release, "script_content", None),
+        definition_kind=getattr(release, "definition_kind", None),
+    )
 
 
 def create_streaming_operation(
@@ -3886,6 +3948,48 @@ def _assert_durable_restore_path(path: str) -> str:
     return value
 
 
+@router.post("/jobs/{job_id}/risk-assessment")
+def assess_streaming_job_risk(
+    job_id: int,
+    body: StreamingRiskAssessmentBody,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    capability = (
+        PC.GIDO_STREAM_WRITE if body.action == "submit" else PC.GIDO_STREAM_RUN
+    )
+    job = require_streaming_job(db, current_user, job_id, "developer", capability)
+    if body.action == "submit":
+        sql = job.script_content if body.script_content is None else body.script_content
+        assessment = assess_stream_sql(
+            sql,
+            definition_kind=getattr(job, "definition_kind", None),
+        )
+    else:
+        if body.release_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="deploy/restart 风险评估必须指定 release_id",
+            )
+        release = (
+            db.query(StreamingJobRelease)
+            .filter(
+                StreamingJobRelease.id == body.release_id,
+                StreamingJobRelease.job_id == job.id,
+            )
+            .first()
+        )
+        if not release:
+            raise HTTPException(status_code=404, detail="发布版本不存在")
+        assessment = _streaming_release_risk_assessment(release)
+    return combine_operation_risks(
+        assessment,
+        action=body.action,
+        restore_mode=body.restore_mode,
+        allow_non_restored_state=body.allow_non_restored_state,
+    )
+
+
 @router.post(
     "/jobs/{job_id}/releases",
     response_model=StreamingReleaseResponse,
@@ -3907,6 +4011,8 @@ def submit_streaming_job_release(
         current_user.id,
         script_content=body.script_content,
         release_note=body.release_note,
+        risk_assessment_hash=body.risk_assessment_hash,
+        confirmed_risk_codes=body.confirmed_risk_codes,
     )
     if workspace_data_full_control(db, current_user, job.workspace_id):
         approve_streaming_job_release(
@@ -4079,6 +4185,15 @@ def deploy_streaming_job_release(
     if str(job.status or "").lower() == "running":
         raise HTTPException(status_code=409, detail="作业正在运行，请使用重启/恢复")
     release = _approved_release_for_operation(db, job, body.release_id)
+    operation_assessment = combine_operation_risks(
+        _streaming_release_risk_assessment(release),
+        action="deploy",
+    )
+    assert_risk_confirmation(
+        operation_assessment,
+        body.risk_assessment_hash,
+        body.confirmed_risk_codes,
+    )
     operation = create_streaming_operation(
         db,
         job,
@@ -4580,14 +4695,21 @@ def restart_streaming_job(
         db, current_user, job_id, "developer", PC.GIDO_STREAM_RUN
     )
     release = _approved_release_for_operation(db, job, body.release_id)
+    operation_assessment = combine_operation_risks(
+        _streaming_release_risk_assessment(release),
+        action="restart",
+        restore_mode=body.restore_mode,
+        allow_non_restored_state=body.allow_non_restored_state,
+    )
+    assert_risk_confirmation(
+        operation_assessment,
+        body.risk_assessment_hash,
+        body.confirmed_risk_codes,
+    )
     restore: Optional[StreamingRestorePoint] = None
     restore_path: Optional[str] = None
     if body.restore_mode == "stateless":
-        if not body.confirm_stateless:
-            raise HTTPException(
-                status_code=400,
-                detail="无状态启动会丢弃已有状态，必须显式确认",
-            )
+        pass
     elif body.restore_mode == "last-state":
         # Operator last-state：从 HA / 最近 checkpoint 恢复，无需平台 Savepoint 记录
         restore = None
@@ -4991,6 +5113,19 @@ def submit_job(
     """兼容旧客户端的直接部署接口；新客户端应先创建 release，再从作业运维部署。"""
     job = require_streaming_job(db, current_user, job_id, "developer", PC.GIDO_STREAM_RUN)
     assert_can_publish_production(db, current_user, job.workspace_id)
+    if job.job_type == "SQL":
+        assessment = combine_operation_risks(
+            assess_stream_sql(
+                job.script_content if body.script_content is None else body.script_content,
+                definition_kind=getattr(job, "definition_kind", None),
+            ),
+            action="deploy",
+        )
+        assert_risk_confirmation(
+            assessment,
+            body.risk_assessment_hash,
+            body.confirmed_risk_codes,
+        )
     try:
         return execute_streaming_job_submit(db, job, current_user, script_content=body.script_content)
     except HTTPException:

@@ -37,6 +37,12 @@ import StreamRuntimeConfig, {
   parseStreamRuntimeConfig,
   type OperatorResourceForm,
 } from '../components/StreamRuntimeConfig'
+import StreamRiskAssessmentPanel, {
+  requiredRiskCodes,
+  riskNeedsStrongConfirmation,
+  type StreamRiskAssessment,
+} from '../components/StreamRiskAssessmentPanel'
+import StreamRiskConfirmationModal from '../components/StreamRiskConfirmationModal'
 
 const { Paragraph, Text } = Typography
 
@@ -281,6 +287,12 @@ export default function StreamMonitorPage() {
   const [actionKind, setActionKind] = useState<'deploy' | 'restart'>('deploy')
   const [actionRow, setActionRow] = useState<any | null>(null)
   const [actionLoading, setActionLoading] = useState(false)
+  const [riskAssessment, setRiskAssessment] = useState<StreamRiskAssessment | null>(null)
+  const [riskLoading, setRiskLoading] = useState(false)
+  const [riskError, setRiskError] = useState<string | null>(null)
+  const [confirmedRiskCodes, setConfirmedRiskCodes] = useState<string[]>([])
+  const [riskConfirmOpen, setRiskConfirmOpen] = useState(false)
+  const [pendingLifecyclePayload, setPendingLifecyclePayload] = useState<Record<string, unknown> | null>(null)
   const [releaseId, setReleaseId] = useState<number | string | undefined>()
   const [parallelism, setParallelism] = useState(1)
   const [advancedJson, setAdvancedJson] = useState('{}')
@@ -583,6 +595,100 @@ export default function StreamMonitorPage() {
     return st === 'running' || lc === 'RUNNING'
   }, [actionRow])
 
+  useEffect(() => {
+    if (!actionOpen) return
+    if (!actionRow || String(actionRow.job_type).toUpperCase() === 'JAR') {
+      setRiskAssessment(null)
+      setRiskError(null)
+      setRiskLoading(false)
+      return
+    }
+    let active = true
+    const timer = window.setTimeout(() => {
+      setRiskLoading(true)
+      setRiskError(null)
+      setConfirmedRiskCodes([])
+      streamingApi.assessJobRisk(actionRow.id, {
+        action: actionKind,
+        release_id: releaseId,
+        restore_mode: actionKind === 'restart' ? restoreMode : undefined,
+        allow_non_restored_state: actionKind === 'restart' ? allowNonRestoredState : undefined,
+      }).then(assessment => {
+        if (active) setRiskAssessment(assessment)
+      }).catch((error: any) => {
+        if (!active) return
+        setRiskAssessment(null)
+        setRiskError(error?.response?.data?.detail || error?.message || '无法完成风险分析')
+      }).finally(() => {
+        if (active) setRiskLoading(false)
+      })
+    }, 250)
+    return () => {
+      active = false
+      window.clearTimeout(timer)
+    }
+  }, [actionOpen, actionRow?.id, actionRow?.job_type, actionKind, releaseId, restoreMode, allowNonRestoredState])
+
+  const executeLifecycleAction = async (
+    payload: Record<string, unknown>,
+    riskCodes: string[],
+  ) => {
+    if (!actionRow) return
+    const safePayload = {
+      ...payload,
+      risk_assessment_hash: riskAssessment?.assessment_hash,
+      confirmed_risk_codes: riskCodes,
+    }
+    setActionLoading(true)
+    const loadingKey = actionKind === 'deploy' ? 'stream-deploy' : 'stream-restart'
+    // 风险确认完成后才能关闭弹窗或写入 optimistic 状态。
+    if (actionKind === 'deploy') {
+      setActionOpen(false)
+      message.loading({ content: '正在提交部署…', key: loadingKey, duration: 0 })
+    } else {
+      message.loading({
+        content: '正在恢复，等待作业 RUNNING（最长约 3 分钟）…',
+        key: loadingKey,
+        duration: 0,
+      })
+    }
+    setJobs(prev => prev.map(j => (
+      j.id === actionRow.id
+        ? {
+            ...j,
+            status: 'running',
+            lifecycle_state: actionKind === 'restart' ? 'RESTORING' : 'DEPLOYING',
+          }
+        : j
+    )))
+    try {
+      const res: any = actionKind === 'deploy'
+        ? await streamingApi.deployJob(actionRow.id, safePayload)
+        : await streamingApi.restartJob(actionRow.id, safePayload)
+      message.success({
+        content: res?.message || (actionKind === 'deploy' ? '已提交部署，状态将自动更新' : '已提交重启/恢复'),
+        key: loadingKey,
+      })
+      if (actionKind !== 'deploy') setActionOpen(false)
+      await loadJobs()
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail || e?.message
+      const nextAssessment = detail?.assessment_hash ? detail : detail?.assessment
+      if (nextAssessment) {
+        setRiskAssessment(nextAssessment)
+        setConfirmedRiskCodes([])
+        setActionOpen(true)
+      }
+      const text = typeof detail === 'string'
+        ? detail
+        : (actionKind === 'deploy' ? '部署失败' : '重启失败')
+      message.error({ content: text, key: loadingKey })
+      await loadJobs(false)
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
   const submitLifecycleAction = async () => {
     if (!actionRow) return
     let streamingProperties: string
@@ -631,53 +737,23 @@ export default function StreamMonitorPage() {
           allow_non_restored_state: allowNonRestoredState,
           confirm_stateless: restoreMode === 'stateless',
         }
-    setActionLoading(true)
-    const loadingKey = actionKind === 'deploy' ? 'stream-deploy' : 'stream-restart'
-    // 部署：提交即关弹窗，只靠行状态「正在部署」反馈；重启仍可能等集群就绪
-    if (actionKind === 'deploy') {
-      setActionOpen(false)
-      message.loading({ content: '正在提交部署…', key: loadingKey, duration: 0 })
-    } else {
-      message.loading({
-        content: '正在恢复，等待作业 RUNNING（最长约 3 分钟）…',
-        key: loadingKey,
-        duration: 0,
-      })
+    if (String(actionRow.job_type).toUpperCase() !== 'JAR') {
+      if (riskLoading || !riskAssessment || riskError) {
+        message.warning(riskLoading ? '请等待风险分析完成' : '风险分析未完成，暂不能执行')
+        return
+      }
+      if (riskNeedsStrongConfirmation(riskAssessment)) {
+        const required = requiredRiskCodes(riskAssessment)
+        const allChecked = required.every(code => confirmedRiskCodes.includes(code))
+        const critical = String(riskAssessment.level).toLowerCase() === 'critical'
+        if (!allChecked || critical) {
+          setPendingLifecyclePayload(payload)
+          setRiskConfirmOpen(true)
+          return
+        }
+      }
     }
-    // 立刻反映到列表，避免弹窗长时间无反馈像「没点上」
-    if (actionKind === 'restart') {
-      setJobs(prev => prev.map(j => (
-        j.id === actionRow.id
-          ? { ...j, status: 'running', lifecycle_state: 'RESTORING' }
-          : j
-      )))
-    } else {
-      setJobs(prev => prev.map(j => (
-        j.id === actionRow.id
-          ? { ...j, status: 'running', lifecycle_state: 'DEPLOYING' }
-          : j
-      )))
-    }
-    try {
-      const res: any = actionKind === 'deploy'
-        ? await streamingApi.deployJob(actionRow.id, payload)
-        : await streamingApi.restartJob(actionRow.id, payload)
-      message.success({
-        content: res?.message || (actionKind === 'deploy' ? '已提交部署，状态将自动更新' : '已提交重启/恢复'),
-        key: loadingKey,
-      })
-      if (actionKind !== 'deploy') setActionOpen(false)
-      await loadJobs()
-    } catch (e: any) {
-      const detail = e?.response?.data?.detail || e?.message
-      const text = typeof detail === 'string'
-        ? detail
-        : (actionKind === 'deploy' ? '部署失败' : '重启失败')
-      message.error({ content: text, key: loadingKey })
-      await loadJobs(false)
-    } finally {
-      setActionLoading(false)
-    }
+    await executeLifecycleAction(payload, confirmedRiskCodes)
   }
 
   const openRestorePoints = async (row: any) => {
@@ -1457,6 +1533,10 @@ export default function StreamMonitorPage() {
         onOk={submitLifecycleAction}
         okText={actionKind === 'deploy' ? '确认部署' : '确认重启'}
         confirmLoading={actionLoading}
+        okButtonProps={{
+          disabled: String(actionRow?.job_type).toUpperCase() !== 'JAR'
+            && (riskLoading || Boolean(riskError) || !riskAssessment),
+        }}
         width={720}
         destroyOnClose
       >
@@ -1585,7 +1665,38 @@ export default function StreamMonitorPage() {
             showAdvanced={false}
           />
         </Form>
+        {String(actionRow?.job_type).toUpperCase() !== 'JAR' ? (
+          <StreamRiskAssessmentPanel
+            assessment={riskAssessment}
+            loading={riskLoading}
+            error={riskError}
+            confirmedRiskCodes={confirmedRiskCodes}
+            onConfirmedRiskCodesChange={setConfirmedRiskCodes}
+            compact
+          />
+        ) : null}
       </Modal>
+
+      <StreamRiskConfirmationModal
+        open={riskConfirmOpen}
+        assessment={riskAssessment}
+        jobName={actionRow?.name || ''}
+        actionLabel={actionKind === 'deploy' ? '部署' : '重启'}
+        loading={actionLoading}
+        initialConfirmedRiskCodes={confirmedRiskCodes}
+        onCancel={() => {
+          setRiskConfirmOpen(false)
+          setPendingLifecyclePayload(null)
+        }}
+        onConfirm={async codes => {
+          if (!pendingLifecyclePayload) return
+          setConfirmedRiskCodes(codes)
+          setRiskConfirmOpen(false)
+          const payload = pendingLifecyclePayload
+          setPendingLifecyclePayload(null)
+          await executeLifecycleAction(payload, codes)
+        }}
+      />
 
       <Drawer
         title={`恢复点历史 · ${operationRow?.name || ''}`}

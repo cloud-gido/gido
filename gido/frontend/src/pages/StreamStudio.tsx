@@ -77,6 +77,12 @@ import StreamRuntimeConfig, {
   parseStreamRuntimeConfig,
   type OperatorResourceForm,
 } from '../components/StreamRuntimeConfig'
+import StreamRiskAssessmentPanel, {
+  requiredRiskCodes,
+  riskNeedsStrongConfirmation,
+  type StreamRiskAssessment,
+} from '../components/StreamRiskAssessmentPanel'
+import StreamRiskConfirmationModal from '../components/StreamRiskConfirmationModal'
 
 const { Paragraph, Text } = Typography
 const STREAM_JOB_NAME_RULE = '3-50 位小写字母、数字、短横线，字母开头，字母或数字结尾，例如 s3-copy-users'
@@ -262,6 +268,11 @@ export default function StreamStudioPage() {
   const [previewResult, setPreviewResult] = useState<any | null>(null)
   const [previewLimit, setPreviewLimit] = useState(100)
   const [submitDrawerOpen, setSubmitDrawerOpen] = useState(false)
+  const [riskAssessment, setRiskAssessment] = useState<StreamRiskAssessment | null>(null)
+  const [riskLoading, setRiskLoading] = useState(false)
+  const [riskError, setRiskError] = useState<string | null>(null)
+  const [confirmedRiskCodes, setConfirmedRiskCodes] = useState<string[]>([])
+  const [riskConfirmOpen, setRiskConfirmOpen] = useState(false)
   const [resultPanelOpen, setResultPanelOpen] = useState(false)
   const [depsDrawerOpen, setDepsDrawerOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -913,16 +924,35 @@ export default function StreamStudioPage() {
     setSubmitDrawerOpen(true)
   }
 
-  const handleSubmit = async () => {
+  useEffect(() => {
+    if (!submitDrawerOpen) return
+    if (!selected || selected.job_type !== 'SQL') {
+      setRiskAssessment(null)
+      setRiskError(null)
+      setRiskLoading(false)
+      return
+    }
+    let active = true
+    setRiskLoading(true)
+    setRiskError(null)
+    setConfirmedRiskCodes([])
+    streamingApi.assessJobRisk(selected.id, {
+      action: 'submit',
+      script_content: scriptDraft,
+    }).then(assessment => {
+      if (active) setRiskAssessment(assessment)
+    }).catch((error: any) => {
+      if (!active) return
+      setRiskAssessment(null)
+      setRiskError(error?.response?.data?.detail || error?.message || '无法完成风险分析')
+    }).finally(() => {
+      if (active) setRiskLoading(false)
+    })
+    return () => { active = false }
+  }, [submitDrawerOpen, selected?.id, selected?.job_type, scriptDraft])
+
+  const performSubmit = async (riskCodes: string[]) => {
     if (!selected) return
-    if (!canWrite) {
-      message.warning('缺少实时作业写入权限')
-      return
-    }
-    if (selected.is_locked) {
-      message.warning('作业仍有历史锁定，请先「解除历史锁定」后再提交')
-      return
-    }
     setSubmitDrawerOpen(false)
     if (!canPublishDirect) {
       const saved = await handleSave()
@@ -937,16 +967,50 @@ export default function StreamStudioPage() {
       if (!saved) return
       await streamingApi.createRelease(selected.id, {
         release_note: '由作业开发提交',
+        risk_assessment_hash: riskAssessment?.assessment_hash,
+        confirmed_risk_codes: riskCodes,
       })
       await load()
       message.success('发布版本已提交，可在作业运维中部署')
     } catch (e: any) {
-      const d = e?.response?.data?.detail || '提交发布失败'
-      message.error(typeof d === 'string' ? d : '提交发布失败')
+      const detail = e?.response?.data?.detail
+      const nextAssessment = detail?.assessment_hash ? detail : detail?.assessment
+      if (nextAssessment) {
+        setRiskAssessment(nextAssessment)
+        setConfirmedRiskCodes([])
+        setSubmitDrawerOpen(true)
+      }
+      message.error(typeof detail === 'string' ? detail : '提交发布失败')
       await load()
     } finally {
       setSubmitting(false)
     }
+  }
+
+  const handleSubmit = async () => {
+    if (!selected) return
+    if (!canWrite) {
+      message.warning('缺少实时作业写入权限')
+      return
+    }
+    if (selected.is_locked) {
+      message.warning('作业仍有历史锁定，请先「解除历史锁定」后再提交')
+      return
+    }
+    if (selected.job_type === 'SQL' && (riskLoading || !riskAssessment || riskError)) {
+      message.warning(riskLoading ? '请等待风险分析完成' : '风险分析未完成，暂不能提交')
+      return
+    }
+    if (riskNeedsStrongConfirmation(riskAssessment)) {
+      const required = requiredRiskCodes(riskAssessment)
+      const allChecked = required.every(code => confirmedRiskCodes.includes(code))
+      const critical = String(riskAssessment?.level).toLowerCase() === 'critical'
+      if (!allChecked || critical) {
+        setRiskConfirmOpen(true)
+        return
+      }
+    }
+    await performSubmit(confirmedRiskCodes)
   }
 
   const submitPublishApproval = async () => {
@@ -957,6 +1021,8 @@ export default function StreamStudioPage() {
       if (!saved) return
       const release: any = await streamingApi.createRelease(selected.id, {
         release_note: approvalNote || '提交发布审批',
+        risk_assessment_hash: riskAssessment?.assessment_hash,
+        confirmed_risk_codes: confirmedRiskCodes,
       })
       await approvalApi.submit({
         workspace_id: wsId,
@@ -1685,7 +1751,12 @@ export default function StreamStudioPage() {
               type="primary"
               icon={<CloudUploadOutlined />}
               loading={submitting}
-              disabled={!canWrite || Boolean(selected?.is_locked) || isJobPendingApproval}
+              disabled={
+                !canWrite
+                || Boolean(selected?.is_locked)
+                || isJobPendingApproval
+                || (selected?.job_type === 'SQL' && (riskLoading || Boolean(riskError) || !riskAssessment))
+              }
               onClick={handleSubmit}
             >
               {isJobPendingApproval ? '审批中' : canPublishDirect ? '确认提交发布' : '提交审批'}
@@ -1768,6 +1839,18 @@ export default function StreamStudioPage() {
                 disabled={!canWrite || selected.is_locked}
               />
             </Form>
+            {selected.job_type === 'SQL' ? (
+              <>
+                <Divider style={{ margin: '4px 0' }} />
+                <StreamRiskAssessmentPanel
+                  assessment={riskAssessment}
+                  loading={riskLoading}
+                  error={riskError}
+                  confirmedRiskCodes={confirmedRiskCodes}
+                  onConfirmedRiskCodesChange={setConfirmedRiskCodes}
+                />
+              </>
+            ) : null}
             <Divider style={{ margin: '4px 0' }} />
             <div style={{ fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>
               <div>Operator CR：<code>{selected.flink_operator_deployment_name || '提交后生成'}</code></div>
@@ -1778,6 +1861,21 @@ export default function StreamStudioPage() {
           <Text type="secondary">请先选择作业。</Text>
         )}
       </Drawer>
+
+      <StreamRiskConfirmationModal
+        open={riskConfirmOpen}
+        assessment={riskAssessment}
+        jobName={selected?.name || ''}
+        actionLabel={canPublishDirect ? '提交发布' : '提交审批'}
+        loading={submitting}
+        initialConfirmedRiskCodes={confirmedRiskCodes}
+        onCancel={() => setRiskConfirmOpen(false)}
+        onConfirm={async codes => {
+          setConfirmedRiskCodes(codes)
+          setRiskConfirmOpen(false)
+          await performSubmit(codes)
+        }}
+      />
 
       <Modal title="版本历史" open={historyModal} onCancel={() => setHistoryModal(false)} footer={null} width={780} destroyOnClose>
         {historyList.length === 0 && (

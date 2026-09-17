@@ -24,4 +24,15 @@ describe('StreamStudio chrome deferral', () => {
     expect(loadFn).toContain('listFolders')
     expect(loadFn).not.toContain('approvalApi.list')
   })
+
+  it('adopts shared SQL risk assessment without coupling autosave', () => {
+    const src = read('pages/StreamStudio.tsx')
+    expect(src).toContain('StreamRiskAssessmentPanel')
+    expect(src).toContain('StreamRiskConfirmationModal')
+    expect(src).toContain('streamingApi.assessJobRisk')
+    expect(src).toContain("action: 'submit'")
+    expect(src).toContain('risk_assessment_hash')
+    expect(src).toContain('confirmed_risk_codes')
+    expect(src).toContain("selected.job_type !== 'SQL'")
+  })
 })

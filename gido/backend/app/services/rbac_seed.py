@@ -938,6 +938,8 @@ def migrate_dw_streaming_release_lifecycle(engine: Engine) -> None:
                     jar_version_id INT NULL,
                     connector_version_ids TEXT NULL,
                     dependency_file_version_ids TEXT NULL,
+                    risk_assessment JSON NULL,
+                    risk_assessment_hash VARCHAR(64) NULL,
                     content_hash VARCHAR(64) NOT NULL,
                     release_note TEXT NULL,
                     approval_status VARCHAR(24) NOT NULL DEFAULT 'pending',
@@ -973,6 +975,8 @@ def migrate_dw_streaming_release_lifecycle(engine: Engine) -> None:
                     jar_version_id INTEGER,
                     connector_version_ids TEXT,
                     dependency_file_version_ids TEXT,
+                    risk_assessment JSONB,
+                    risk_assessment_hash VARCHAR(64),
                     content_hash VARCHAR(64) NOT NULL,
                     release_note TEXT,
                     approval_status VARCHAR(24) NOT NULL DEFAULT 'pending',
@@ -1007,6 +1011,8 @@ def migrate_dw_streaming_release_lifecycle(engine: Engine) -> None:
                     jar_version_id INTEGER,
                     connector_version_ids TEXT,
                     dependency_file_version_ids TEXT,
+                    risk_assessment JSON,
+                    risk_assessment_hash VARCHAR(64),
                     content_hash VARCHAR(64) NOT NULL,
                     release_note TEXT,
                     approval_status VARCHAR(24) NOT NULL DEFAULT 'pending',
@@ -1022,6 +1028,27 @@ def migrate_dw_streaming_release_lifecycle(engine: Engine) -> None:
             """
         with engine.begin() as conn:
             conn.execute(text(ddl))
+
+    release_cols = {
+        col["name"]
+        for col in inspect(engine).get_columns("dw_streaming_job_releases")
+    }
+    risk_json_type = "JSONB" if dialect == "postgresql" else "JSON"
+    with engine.begin() as conn:
+        if "risk_assessment" not in release_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE dw_streaming_job_releases "
+                    f"ADD COLUMN risk_assessment {risk_json_type} NULL"
+                )
+            )
+        if "risk_assessment_hash" not in release_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE dw_streaming_job_releases "
+                    "ADD COLUMN risk_assessment_hash VARCHAR(64) NULL"
+                )
+            )
 
     with engine.begin() as conn:
         conn.execute(

@@ -49,4 +49,15 @@ describe('StreamMonitor job list adoption', () => {
     const hook = read('hooks/useResizableTableColumns.tsx')
     expect(hook).toContain('ResizableColumnTitle')
   })
+
+  it('assesses only the selected SQL lifecycle action before mutation', () => {
+    const src = read('pages/StreamMonitor.tsx')
+    expect(src).toContain('StreamRiskAssessmentPanel')
+    expect(src).toContain('StreamRiskConfirmationModal')
+    expect(src).toContain('streamingApi.assessJobRisk')
+    expect(src).toContain('risk_assessment_hash')
+    expect(src).toContain('confirmed_risk_codes')
+    expect(src).toContain("String(actionRow.job_type).toUpperCase() !== 'JAR'")
+    expect(src).toContain('风险确认完成后才能关闭弹窗或写入 optimistic 状态')
+  })
 })
