@@ -143,7 +143,7 @@ describe('InteractiveRunDock', () => {
 
     await waitFor(() => expect(screen.getByText('rows:1,2')).toBeTruthy())
     expect(screen.getByText('耗时 1.00s')).toBeTruthy()
-    fireEvent.click(screen.getByTitle('Next Page').querySelector('button')!)
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }))
     await waitFor(() => expect(screen.getByText('rows:3')).toBeTruthy())
     expect(adhocRunsApi.queryStatementRows).toHaveBeenLastCalledWith(
       8,

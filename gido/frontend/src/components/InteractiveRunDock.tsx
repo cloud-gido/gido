@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Drawer, Dropdown, Empty, Input, Pagination, Select, Space, Spin, Tabs, Tag, Tooltip, Tree, Checkbox, message } from 'antd'
+import { Button, Drawer, Dropdown, Empty, Input, Select, Space, Spin, Tabs, Tag, Tooltip, Tree, Checkbox, message } from 'antd'
 import { CopyOutlined, ExperimentOutlined, LinkOutlined, TableOutlined, PushpinOutlined, SortAscendingOutlined, ClearOutlined } from '@ant-design/icons'
 import { adhocRunsApi } from '../api'
 import type { useInteractiveRun } from '../hooks/useInteractiveRun'
@@ -602,10 +602,6 @@ export default function InteractiveRunDock({
           .filter(([, values]) => Array.isArray(values) && values.length > 0)
           .map(([column]) => column)
         const hasQueryMods = Boolean(search.trim() || activeFilterCols.length || sort.length)
-        const batchTotal = Math.max(
-          page.total,
-          (query.pageNumber - 1) * RESULT_PAGE_SIZE + page.rows.length + (page.has_more ? 1 : 0),
-        )
         const statusBar = (
           <div className="dw-interactive-run__status-bar" role="status">
             <div className="dw-interactive-run__status-bar-main">
@@ -685,25 +681,35 @@ export default function InteractiveRunDock({
             </div>
             {isQueryGrid ? (
               <div className="dw-interactive-run__status-bar-actions">
-                <Tooltip title={`服务端每批最多 ${RESULT_PAGE_SIZE} 行；表格底部分页控制视口渲染`}>
+                <Tooltip title={`每页最多 ${RESULT_PAGE_SIZE} 行；表格内滚动浏览当前页，翻页向服务端加载下一段结果`}>
                   <span className="dw-interactive-run__status-muted">
-                    批次 {query.pageNumber}/{Math.max(1, Math.ceil(Math.max(page.total, 1) / RESULT_PAGE_SIZE))}
-                    {' · '}
-                    {page.rows.length}/{page.total}
+                    {(() => {
+                      const start = page.rows.length
+                        ? (query.pageNumber - 1) * RESULT_PAGE_SIZE + 1
+                        : 0
+                      const end = page.rows.length
+                        ? (query.pageNumber - 1) * RESULT_PAGE_SIZE + page.rows.length
+                        : 0
+                      return start
+                        ? `${start}–${end} / ${page.total}`
+                        : `0 / ${page.total}`
+                    })()}
                   </span>
                 </Tooltip>
-                <Pagination
+                <Button
                   size="small"
-                  simple
-                  current={query.pageNumber}
-                  pageSize={RESULT_PAGE_SIZE}
-                  showSizeChanger={false}
-                  total={batchTotal}
-                  onChange={next => {
-                    if (next < query.pageNumber) query.previous()
-                    else if (next === query.pageNumber + 1) query.next()
-                  }}
-                />
+                  disabled={query.pageNumber <= 1 || query.loading}
+                  onClick={() => query.previous()}
+                >
+                  上一页
+                </Button>
+                <Button
+                  size="small"
+                  disabled={!page.has_more || query.loading}
+                  onClick={() => query.next()}
+                >
+                  下一页
+                </Button>
               </div>
             ) : null}
           </div>
@@ -730,10 +736,8 @@ export default function InteractiveRunDock({
               <QueryResultPanel
                   dataSource={dataSource}
                   columns={tableColumns}
-                  pagination={{
-                    pageSize: columnNames.length >= 40 ? 50 : 100,
-                    pageSizeOptions: columnNames.length >= 40 ? ['50', '100'] : ['50', '100', '200'],
-                  }}
+                  pagination={false}
+                  rowNumberOffset={(query.pageNumber - 1) * RESULT_PAGE_SIZE}
                   serverQuery
                   serverSort={sort[0] ?? null}
                   onServerChange={handleServerChange}

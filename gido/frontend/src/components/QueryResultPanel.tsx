@@ -81,6 +81,8 @@ type Props = {
   /** 当前视口轻量柱/折线预览（非全量 BI） */
   enableQuickChart?: boolean
   chartFields?: QueryChartField[]
+  /** 行号起始偏移（结果翻页时用，0-based） */
+  rowNumberOffset?: number
 }
 
 /**
@@ -99,6 +101,7 @@ export default function QueryResultPanel({
   onServerChange,
   enableQuickChart = false,
   chartFields,
+  rowNumberOffset = 0,
 }: Props) {
   /** 当前展开行的 _key；null = 未选中，不显示 KV 面板 */
   const [kvKey, setKvKey] = useState<number | null>(null)
@@ -216,8 +219,12 @@ export default function QueryResultPanel({
     [columns],
   )
   // Virtualize large viewports or very wide schemas so Ant Table does not paint every cell.
-  const useVirtual = pagedData.length > 100 || leafColumnCount >= 40
+  const useVirtual = pagedData.length > 80 || leafColumnCount >= 40
   const virtualBodyHeight = Math.max(160, viewportHeight - 40)
+  const hasPinnedDataColumns = useMemo(
+    () => columns.some(col => (col as ColumnType<QueryRowRec>).fixed === 'left'),
+    [columns],
+  )
 
   const tableMinWidth = useMemo(() => {
     let w = 40 + 44 // 行号列 44px
@@ -438,7 +445,7 @@ export default function QueryResultPanel({
     render: (_: unknown, record: QueryRowRec, index: number) => {
       const k = (record as any)._key as number
       const active = kvKey === k
-      const displayNum = (page - 1) * pageSize + index + 1
+      const displayNum = rowNumberOffset + (page - 1) * pageSize + index + 1
       return (
         <button
           type="button"
@@ -453,7 +460,7 @@ export default function QueryResultPanel({
         </button>
       )
     },
-  }), [kvKey, page, pageSize])
+  }), [kvKey, page, pageSize, rowNumberOffset])
 
   const allColumns = useMemo(
     () => [rowNumColumn, ...columnsWithCopy],
@@ -528,7 +535,11 @@ export default function QueryResultPanel({
       <div className="dw-query-result__viewport">
         <div
           ref={mainRef}
-          className={`dw-query-result__main${useVirtual ? ' dw-query-result__main--virtual' : ''}`}
+          className={[
+            'dw-query-result__main',
+            useVirtual ? 'dw-query-result__main--virtual' : '',
+            hasPinnedDataColumns ? 'dw-query-result__main--has-pinned' : '',
+          ].filter(Boolean).join(' ')}
           title="滚轮滚动；表头随横向滚动对齐"
         >
           <Table
