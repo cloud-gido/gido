@@ -153,6 +153,7 @@ export default function InteractiveRunDock({
     runId: run.runId,
     statementIndex: selected?.index ?? null,
     statementVersion: selected?.statement_version,
+    statementStatus: selected?.status,
     search,
     filters,
     sort,
@@ -199,12 +200,12 @@ export default function InteractiveRunDock({
     if (!selected) return
 
     const presentation = statementPresentation(selected)
-    // Keep the log tab until the first result page (or non-query summary) is ready.
-    // Jumping earlier shows an empty grid while rows/query is still in flight.
+    // Stay on logs until the first result page is ready (incl. 0-row success),
+    // matching BigQuery/Databricks job UIs that switch only when rows are viewable.
     if (presentation.kind === 'query') {
-      if (!run.capabilities.hasResults && !(run.status === 'success' && selected.columns.length)) return
-      if (query.loading && !page.rows.length && !query.error) return
-      if (!page.rows.length && !query.error && !page.statement_version) return
+      if (query.error) return
+      if (query.loading && !page.rows.length && !page.statement_version) return
+      if (!page.statement_version && !page.rows.length) return
     } else if (!['success', 'failed', 'cancelled', 'skipped'].includes(selected.status)) {
       return
     }
@@ -212,11 +213,9 @@ export default function InteractiveRunDock({
   }, [
     autoShowResult,
     manualTab,
-    run.status,
-    run.capabilities.hasResults,
     selected,
-    query.loading,
     query.error,
+    query.loading,
     page.rows.length,
     page.statement_version,
   ])
@@ -589,6 +588,7 @@ export default function InteractiveRunDock({
                         第 {query.pageNumber} 页 · 本页 {page.rows.length} ·
                         筛选 {page.total} / 总计 {page.source_total} 行
                       </span>
+                      {statement.status === 'running' && <Tag color="processing">预览中</Tag>}
                       {(statement.truncated || page.truncated) && <Tag color="orange">结果已截断</Tag>}
                       <Pagination
                         size="small"

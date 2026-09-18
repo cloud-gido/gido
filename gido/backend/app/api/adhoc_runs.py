@@ -81,7 +81,9 @@ class AdhocRowQuery(BaseModel):
     sort: List[AdhocRowSort] = Field(default_factory=list)
     cursor: Optional[str] = None
     limit: int = Field(500, ge=1, le=5000)
-    statement_version: str
+    # Optional: omit or send a stale version for the first page; the server soft-upgrades
+    # while rows are still materializing. Cursor pages still require a matching version.
+    statement_version: Optional[str] = None
 
 
 def _allowed_sources(db: Session, user: User, workspace_id: int) -> list[str]:
@@ -547,6 +549,16 @@ def query_adhoc_statement_rows(
         status_code = 409 if "版本" in detail or "尚未完成" in detail else 400
         if "不存在" in detail:
             status_code = 404
+        if status_code == 409 and "current=" in detail:
+            current = detail.rsplit("current=", 1)[-1].strip()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "statement_version_mismatch",
+                    "message": "语句版本已变化，请回到第 1 页后重试",
+                    "current_statement_version": current,
+                },
+            ) from exc
         raise HTTPException(status_code=status_code, detail=detail) from exc
     return {
         "run_id": run_id,

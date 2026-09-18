@@ -578,9 +578,15 @@ def query_statement_rows(
     sort: Optional[List[Dict[str, Any]]] = None,
     cursor: Optional[str] = None,
     limit: int = 500,
-    statement_version: str,
+    statement_version: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Filter and sort the complete materialized, version-bound result snapshot."""
+    """Filter and sort the materialized, version-bound result snapshot.
+
+    Industry-aligned progressive contract:
+    - First page (no cursor): soft-upgrade when the client version is missing/stale so
+      progressive chunk appends never blank the grid with 409.
+    - Cursor pages: require an exact version match so offsets stay consistent.
+    """
     statement = (
         db.query(AdhocRunStatement)
         .filter(
@@ -592,8 +598,18 @@ def query_statement_rows(
     if not statement:
         raise ValueError("语句不存在")
     version = statement_snapshot_version(statement)
-    if statement_version != version:
-        raise ValueError("语句版本已变化，请刷新结果后重试")
+    requested = (statement_version or "").strip() or None
+    using_cursor = bool((cursor or "").strip())
+    if requested and requested != version:
+        if using_cursor:
+            raise ValueError(
+                "语句版本已变化，请回到第 1 页后重试:"
+                f"current={version}"
+            )
+        # Soft-upgrade: progressive materialization and terminal completion both bump
+        # the snapshot version; page-1 reads should follow the latest snapshot.
+    elif not requested and using_cursor:
+        raise ValueError("分页游标查询必须携带 statement_version")
     schema = statement.column_schema if isinstance(statement.column_schema, dict) else {}
     columns = list(schema.get("columns") or [])
     fields = list(schema.get("fields") or _legacy_fields(schema))
@@ -740,7 +756,9 @@ def query_statement_rows(
         "statement_id": statement.id,
         "statement_index": statement.statement_index,
         "statement_version": version,
+        "version_upgraded": bool(requested and requested != version),
         "snapshot": True,
+        "statement_status": statement.status,
         "columns": columns,
         "column_types": list(schema.get("column_types") or []),
         "fields": fields,

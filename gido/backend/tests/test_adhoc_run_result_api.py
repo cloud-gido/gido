@@ -335,6 +335,72 @@ def test_rows_query_supports_progressive_version_bound_results(api):
     assert multi_sorted.json()["rows"] == [[3, "c"], [2, "b"], [1, "a"]]
 
 
+def test_rows_query_soft_upgrades_page_one_when_snapshot_advances(api):
+    """Page-1 reads soft-upgrade across progressive chunk bumps (no 409)."""
+    client, factory, ids, _current = api
+    db = factory()
+    try:
+        statement = db.query(AdhocRunStatement).filter(
+            AdhocRunStatement.run_id == ids["run"],
+            AdhocRunStatement.statement_index == 0,
+        ).one()
+        statement.status = "running"
+        statement.result_chunk_count = 1
+        statement.result_rows = 2
+        statement.updated_at = datetime.utcnow()
+        db.commit()
+        stale_version = client.get(
+            f"/api/adhoc-runs/{ids['run']}/statements"
+        ).json()["statements"][0]["statement_version"]
+
+        statement.result_chunk_count = 2
+        statement.result_rows = 3
+        statement.updated_at = datetime.utcnow()
+        db.commit()
+        current_version = client.get(
+            f"/api/adhoc-runs/{ids['run']}/statements"
+        ).json()["statements"][0]["statement_version"]
+        assert stale_version != current_version
+    finally:
+        db.close()
+
+    page1 = client.post(
+        f"/api/adhoc-runs/{ids['run']}/statements/0/rows/query",
+        json={"limit": 2, "statement_version": stale_version},
+    )
+    assert page1.status_code == 200
+    body = page1.json()
+    assert body["statement_version"] == current_version
+    assert body["version_upgraded"] is True
+    assert body["rows"] == [[1, "a"], [2, "b"]]
+    assert body["has_more"] is True
+
+    cursor_stale = client.post(
+        f"/api/adhoc-runs/{ids['run']}/statements/0/rows/query",
+        json={
+            "cursor": body["next_cursor"],
+            "limit": 2,
+            "statement_version": stale_version,
+        },
+    )
+    assert cursor_stale.status_code == 409
+    detail = cursor_stale.json()["detail"]
+    assert detail["code"] == "statement_version_mismatch"
+    assert detail["current_statement_version"] == current_version
+
+    cursor_ok = client.post(
+        f"/api/adhoc-runs/{ids['run']}/statements/0/rows/query",
+        json={
+            "cursor": body["next_cursor"],
+            "limit": 2,
+            "statement_version": current_version,
+        },
+    )
+    assert cursor_ok.status_code == 200
+    assert cursor_ok.json()["rows"] == [[3, "c"]]
+    assert cursor_ok.json()["version_upgraded"] is False
+
+
 def test_rows_query_rejects_unknown_columns_operators_and_three_sorts(api):
     client, _factory, ids, _current = api
     version = client.get(

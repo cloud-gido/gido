@@ -111,6 +111,8 @@ export interface InteractiveRowsQueryResponse {
   next_cursor: string | null
   has_more: boolean
   statement_version: string
+  version_upgraded?: boolean
+  statement_status?: string
   truncated?: boolean
 }
 
