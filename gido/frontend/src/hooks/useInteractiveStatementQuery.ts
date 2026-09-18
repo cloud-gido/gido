@@ -19,6 +19,8 @@ const EMPTY: InteractiveRowsQueryResponse = {
   statement_version: '',
 }
 
+const PAGE_CACHE_LIMIT = 24
+
 export function useInteractiveStatementQuery(opts: {
   runId: number | null
   statementIndex: number | null
@@ -34,22 +36,34 @@ export function useInteractiveStatementQuery(opts: {
   const [error, setError] = useState('')
   const [pageNumber, setPageNumber] = useState(1)
   const [cursorStack, setCursorStack] = useState<Array<string | null>>([null])
+  const pageCacheRef = useRef(new Map<string, InteractiveRowsQueryResponse>())
   const requestKey = useMemo(
     () => JSON.stringify([runId, statementIndex, statementVersion, search || '', filters || [], sort || [], limit]),
     [runId, statementIndex, statementVersion, search, filters, sort, limit],
   )
-  const previousKey = useRef(requestKey)
+  const [activeRequestKey, setActiveRequestKey] = useState(requestKey)
 
   useEffect(() => {
-    if (previousKey.current === requestKey) return
-    previousKey.current = requestKey
+    if (activeRequestKey === requestKey) return
+    setActiveRequestKey(requestKey)
     setPageNumber(1)
     setCursorStack([null])
-    setData(EMPTY)
-  }, [requestKey])
+    setData(pageCacheRef.current.get(`${requestKey}:1`) || EMPTY)
+  }, [activeRequestKey, requestKey])
 
   useEffect(() => {
-    if (!runId || statementIndex == null) return
+    if (!runId || statementIndex == null || activeRequestKey !== requestKey) return
+    const pageCacheKey = `${requestKey}:${pageNumber}`
+    const cached = pageCacheRef.current.get(pageCacheKey)
+    if (cached) {
+      // Immutable statement_version makes revisiting a page safe and instant.
+      pageCacheRef.current.delete(pageCacheKey)
+      pageCacheRef.current.set(pageCacheKey, cached)
+      setData(cached)
+      setLoading(false)
+      setError('')
+      return
+    }
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
       setLoading(true)
@@ -62,7 +76,41 @@ export function useInteractiveStatementQuery(opts: {
         limit,
         statement_version: statementVersion,
       }, controller.signal)
-        .then(setData)
+        .then(response => {
+          pageCacheRef.current.set(pageCacheKey, response)
+          while (pageCacheRef.current.size > PAGE_CACHE_LIMIT) {
+            const oldest = pageCacheRef.current.keys().next().value
+            if (oldest === undefined) break
+            pageCacheRef.current.delete(oldest)
+          }
+          setData(response)
+          // Prefetch only the adjacent page. It hides normal next-page latency
+          // without downloading the full result or growing memory unboundedly.
+          if (response.has_more && response.next_cursor) {
+            const nextPageCacheKey = `${requestKey}:${pageNumber + 1}`
+            if (!pageCacheRef.current.has(nextPageCacheKey)) {
+              void adhocRunsApi.queryStatementRows(runId, statementIndex, {
+                search: search?.trim() || undefined,
+                filters: filters?.length ? filters : undefined,
+                sort: sort?.length ? sort : undefined,
+                cursor: response.next_cursor,
+                limit,
+                statement_version: statementVersion,
+              }, controller.signal).then(nextPage => {
+                if (!controller.signal.aborted) {
+                  pageCacheRef.current.set(nextPageCacheKey, nextPage)
+                  while (pageCacheRef.current.size > PAGE_CACHE_LIMIT) {
+                    const oldest = pageCacheRef.current.keys().next().value
+                    if (oldest === undefined) break
+                    pageCacheRef.current.delete(oldest)
+                  }
+                }
+              }).catch(() => {
+                // Prefetch is an optimization; foreground navigation owns errors.
+              })
+            }
+          }
+        })
         .catch((reason: any) => {
           if (reason?.code !== 'ERR_CANCELED') {
             setError(reason?.response?.data?.detail || reason?.message || '加载结果失败')
@@ -84,6 +132,8 @@ export function useInteractiveStatementQuery(opts: {
     filters,
     sort,
     limit,
+    requestKey,
+    activeRequestKey,
     pageNumber,
     cursorStack,
   ])

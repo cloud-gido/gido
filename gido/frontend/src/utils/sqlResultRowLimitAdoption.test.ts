@@ -32,9 +32,12 @@ describe('sql result row limit adoption', () => {
   it('Probe delegates snapshot export to the shared dock', () => {
     const probe = read('pages/Probe.tsx')
     const dock = read('components/InteractiveRunDock.tsx')
+    const exportButton = read('components/InteractiveExportButton.tsx')
     expect(probe).not.toContain('导出 CSV（最多 {activeStmt.rows.length} 行）')
     expect(probe).not.toContain('exportRowsToCsv')
-    expect(dock).toContain('导出 CSV')
+    expect(dock).toContain('InteractiveExportButton')
+    expect(exportButton).toContain("csv: 'CSV'")
+    expect(exportButton).toContain('onExport(format)')
     expect(dock).toContain('已物化快照')
   })
 })

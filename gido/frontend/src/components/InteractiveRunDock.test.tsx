@@ -82,7 +82,7 @@ const run = {
 
 describe('InteractiveRunDock', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    vi.resetAllMocks()
     vi.stubGlobal('URL', {
       createObjectURL: vi.fn(() => 'blob:test'),
       revokeObjectURL: vi.fn(),
@@ -173,7 +173,8 @@ describe('InteractiveRunDock', () => {
     )
 
     fireEvent.click(screen.getByText('导出 CSV'))
-    await waitFor(() => expect(screen.getByText('下载')).toBeTruthy())
+    await waitFor(() => expect(adhocRunsApi.downloadExport).toHaveBeenCalledWith(8, 9))
+    expect(screen.getByText('再次下载')).toBeTruthy()
     expect(adhocRunsApi.createExport).toHaveBeenCalledWith(8, {
       statement_index: 0,
       format: 'csv',
@@ -182,11 +183,15 @@ describe('InteractiveRunDock', () => {
       sort: undefined,
       statement_version: 's2',
     })
-    expect(screen.getByText('导出 XLSX')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /导出 CSV/ }))
+    await waitFor(() => expect(adhocRunsApi.downloadExport).toHaveBeenCalledTimes(2))
+    expect(adhocRunsApi.createExport).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: '选择导出格式' }))
+    expect(await screen.findByText('导出 XLSX')).toBeTruthy()
     expect(screen.getByText('导出 Parquet')).toBeTruthy()
     expect(screen.getByText('已物化快照')).toBeTruthy()
-    fireEvent.click(screen.getByText('下载'))
-    await waitFor(() => expect(adhocRunsApi.downloadExport).toHaveBeenCalledWith(8, 9))
+    fireEvent.click(screen.getByText('再次下载'))
+    await waitFor(() => expect(adhocRunsApi.downloadExport).toHaveBeenCalledTimes(3))
 
     fireEvent.click(screen.getByText('Explain'))
     await waitFor(() => expect(screen.getByText(/"scan": "table"/)).toBeTruthy())
@@ -214,6 +219,34 @@ describe('InteractiveRunDock', () => {
     await waitFor(() => {
       expect(screen.getByRole('tab', { name: /^日志/ }).getAttribute('aria-selected')).toBe('true')
     })
+  })
+
+  it('offers an explicit retry when automatic download fails', async () => {
+    vi.mocked(adhocRunsApi.createExport).mockResolvedValue({
+      id: 10,
+      run_id: 8,
+      statement_id: 80,
+      requested_by: 1,
+      format: 'csv',
+      status: 'success',
+      snapshot_scope: 'statement:0',
+      row_count: 3,
+      size_bytes: 10,
+      file_name: 'result.csv',
+      created_at: '',
+      download_ready: true,
+    })
+    vi.mocked(adhocRunsApi.downloadExport)
+      .mockRejectedValueOnce(new Error('browser blocked'))
+      .mockResolvedValueOnce(new Blob(['id\n1']))
+
+    render(<InteractiveRunDock run={run} scopeKey="test:export-retry" />)
+    await waitFor(() => expect(screen.getByText('rows:1,2')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /导出 CSV/ }))
+    expect(await screen.findByText('点击下载')).toBeTruthy()
+    fireEvent.click(screen.getByText('点击下载'))
+    await waitFor(() => expect(adhocRunsApi.downloadExport).toHaveBeenCalledTimes(2))
+    expect(screen.getByText('再次下载')).toBeTruthy()
   })
 
   it('creates, copies, and revokes a workspace share from the shared dock', async () => {

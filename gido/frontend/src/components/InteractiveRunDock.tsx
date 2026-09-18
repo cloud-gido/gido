@@ -4,7 +4,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Drawer, Empty, Input, Pagination, Select, Space, Spin, Tabs, Tag, Tooltip, Tree, message } from 'antd'
-import { CopyOutlined, DownloadOutlined, ExperimentOutlined, LinkOutlined, StopOutlined } from '@ant-design/icons'
+import { CopyOutlined, ExperimentOutlined, LinkOutlined } from '@ant-design/icons'
 import { adhocRunsApi } from '../api'
 import type { useInteractiveRun } from '../hooks/useInteractiveRun'
 import type {
@@ -28,11 +28,25 @@ import { SQL_RESULT_ROW_CAP } from '../utils/sqlResultRowLimit'
 import { useInteractiveStatementQuery } from '../hooks/useInteractiveStatementQuery'
 import type { QueryResultServerChange } from './QueryResultPanel'
 import { NULL_FILTER_KEY } from './ColumnFilterDropdown'
+import InteractiveExportButton, {
+  type InteractiveExportDownloadState,
+} from './InteractiveExportButton'
 
 type RunController = ReturnType<typeof useInteractiveRun>
 type TabKey = 'log' | 'result'
 type Layout = { order: string[]; widths: Record<string, number>; sourceKeys?: string[] }
 const RESULT_PAGE_SIZE = Math.min(200, SQL_RESULT_ROW_CAP)
+const EXPORT_FORMAT_STORAGE_KEY = 'gido.interactiveRun.exportFormat'
+
+function readExportFormat(): InteractiveExportFormat {
+  try {
+    const value = localStorage.getItem(EXPORT_FORMAT_STORAGE_KEY)
+    if (value === 'csv' || value === 'jsonl' || value === 'xlsx' || value === 'parquet') return value
+  } catch {
+    // Storage may be unavailable in private/restricted browser contexts.
+  }
+  return 'csv'
+}
 
 function explainPlanTree(snapshot: unknown): Array<{ key: string; title: string; children?: any[] }> {
   const rows = snapshot && typeof snapshot === 'object' && Array.isArray((snapshot as any).rows)
@@ -119,6 +133,9 @@ export default function InteractiveRunDock({
   const [explainOpen, setExplainOpen] = useState(false)
   const [explainLoading, setExplainLoading] = useState(false)
   const [exportJob, setExportJob] = useState<InteractiveRunExport | null>(null)
+  const [exportFormat, setExportFormat] = useState<InteractiveExportFormat>(readExportFormat)
+  const [exportStarting, setExportStarting] = useState(false)
+  const [exportDownloadState, setExportDownloadState] = useState<InteractiveExportDownloadState>('idle')
   const [share, setShare] = useState<InteractiveRunShare | null>(null)
   const [shareUrl, setShareUrl] = useState('')
   const [shareTtlHours, setShareTtlHours] = useState(24)
@@ -127,6 +144,7 @@ export default function InteractiveRunDock({
   const previousRunRef = useRef<number | null>(run.runId)
   const exportGenerationRef = useRef(0)
   const exportControllerRef = useRef<AbortController | null>(null)
+  const exportCacheRef = useRef(new Map<string, InteractiveRunExport>())
   const selected = run.statements.find(item => String(item.index) === statementKey) ?? run.statements[0] ?? null
   const selectedKey = selected ? String(selected.index) : statementKey
   const previousSelectionRef = useRef(selectedKey)
@@ -161,6 +179,9 @@ export default function InteractiveRunDock({
     setSort([])
     setExplain(null)
     setExportJob(null)
+    setExportStarting(false)
+    setExportDownloadState('idle')
+    exportCacheRef.current.clear()
     setShare(null)
     setShareUrl('')
     exportGenerationRef.current += 1
@@ -198,6 +219,8 @@ export default function InteractiveRunDock({
     setSort([])
     setExplain(null)
     setExportJob(null)
+    setExportStarting(false)
+    setExportDownloadState('idle')
     exportGenerationRef.current += 1
     exportControllerRef.current?.abort()
     exportControllerRef.current = null
@@ -292,12 +315,68 @@ export default function InteractiveRunDock({
     }
   }
 
+  const downloadExportJob = async (
+    job: InteractiveRunExport,
+    automatic = false,
+  ): Promise<boolean> => {
+    if (!run.runId || !job.download_ready) return false
+    setExportDownloadState('downloading')
+    try {
+      const blob = await adhocRunsApi.downloadExport(run.runId, job.id)
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = job.file_name || `run-${run.runId}.${job.format}`
+      anchor.style.display = 'none'
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setExportDownloadState('downloaded')
+      message.success(automatic
+        ? `${job.format.toUpperCase()} 导出完成，已开始下载`
+        : '已重新开始下载')
+      return true
+    } catch (error: any) {
+      setExportDownloadState('failed')
+      message.warning(automatic
+        ? '导出文件已生成，但浏览器未能自动下载，请点击“点击下载”'
+        : (error?.response?.data?.detail || error?.message || '下载导出文件失败'))
+      return false
+    }
+  }
+
   const requestExport = async (format: InteractiveExportFormat) => {
     if (!run.runId || !selected) return
+    setExportFormat(format)
+    try {
+      localStorage.setItem(EXPORT_FORMAT_STORAGE_KEY, format)
+    } catch {
+      // Remembering the preferred format is optional.
+    }
+    const statementVersion = page.statement_version || selected.statement_version
+    const exportKey = JSON.stringify([
+      run.runId,
+      selected.index,
+      statementVersion,
+      format,
+      search.trim(),
+      filters,
+      sort,
+    ])
+    const reusable = exportCacheRef.current.get(exportKey)
+    if (reusable?.status === 'success' && reusable.download_ready) {
+      setExportJob(reusable)
+      await downloadExportJob(reusable, true)
+      return
+    }
+
     exportControllerRef.current?.abort()
     const controller = new AbortController()
     exportControllerRef.current = controller
     const generation = ++exportGenerationRef.current
+    setExportStarting(true)
+    setExportDownloadState('idle')
     setExportJob(null)
     try {
       let job = await adhocRunsApi.createExport(run.runId, {
@@ -306,9 +385,10 @@ export default function InteractiveRunDock({
         search: search.trim() || undefined,
         filters: filters.length ? filters : undefined,
         sort: sort.length ? sort : undefined,
-        statement_version: page.statement_version || selected.statement_version,
+        statement_version: statementVersion,
       })
       if (controller.signal.aborted || generation !== exportGenerationRef.current) return
+      setExportStarting(false)
       setExportJob(job)
       while (['queued', 'running', 'cancel_requested'].includes(job.status)) {
         await new Promise(resolve => window.setTimeout(resolve, 600))
@@ -317,8 +397,10 @@ export default function InteractiveRunDock({
         if (controller.signal.aborted || generation !== exportGenerationRef.current) return
         setExportJob(job)
       }
-      if (job.status === 'success') message.success(`${format.toUpperCase()} 导出已就绪`)
-      else if (job.status === 'failed') message.error(job.error_message || '导出失败')
+      if (job.status === 'success') {
+        exportCacheRef.current.set(exportKey, job)
+        await downloadExportJob(job, true)
+      } else if (job.status === 'failed') message.error(job.error_message || '导出失败')
       else if (job.status === 'cancelled') message.info('导出已取消')
       else if (job.status === 'expired') message.warning('导出文件已过期，请重新导出')
     } catch (error: any) {
@@ -326,25 +408,14 @@ export default function InteractiveRunDock({
         message.error(error?.response?.data?.detail || error?.message || '创建导出失败')
       }
     } finally {
+      setExportStarting(false)
       if (exportControllerRef.current === controller) exportControllerRef.current = null
     }
   }
 
   const downloadExport = async () => {
-    if (!run.runId || !exportJob?.download_ready) return
-    try {
-      const blob = await adhocRunsApi.downloadExport(run.runId, exportJob.id)
-      const url = URL.createObjectURL(blob)
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = exportJob.file_name || `run-${run.runId}.${exportJob.format}`
-      document.body.appendChild(anchor)
-      anchor.click()
-      anchor.remove()
-      window.setTimeout(() => URL.revokeObjectURL(url), 0)
-    } catch (error: any) {
-      message.error(error?.response?.data?.detail || error?.message || '下载导出文件失败')
-    }
+    if (!exportJob) return
+    await downloadExportJob(exportJob)
   }
 
   const cancelExport = async () => {
@@ -354,6 +425,8 @@ export default function InteractiveRunDock({
       exportControllerRef.current?.abort()
       const cancelled = await adhocRunsApi.cancelExport(run.runId, exportJob.id)
       setExportJob(cancelled)
+      setExportStarting(false)
+      setExportDownloadState('idle')
       message.info('已请求取消导出')
     } catch (error: any) {
       message.error(error?.response?.data?.detail || error?.message || '取消导出失败')
@@ -450,9 +523,8 @@ export default function InteractiveRunDock({
             )}
           </Space>
           {!statement.error && (statement.columns.length || statement.fields?.length) ? (
-            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-              {query.loading ? <Spin style={{ margin: 24 }} /> : (
-                <QueryResultPanel
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
+              <QueryResultPanel
                   dataSource={dataSource}
                   columns={tableColumns}
                   pagination={false}
@@ -508,54 +580,35 @@ export default function InteractiveRunDock({
                           else if (next === query.pageNumber + 1) query.next()
                         }}
                       />
-                      <Button
-                        size="small"
-                        disabled={Boolean(exportJob && ['queued', 'running', 'cancel_requested'].includes(exportJob.status))}
-                        onClick={() => void requestExport('csv')}
-                      >
-                        导出 CSV
-                      </Button>
-                      <Button
-                        size="small"
-                        disabled={Boolean(exportJob && ['queued', 'running', 'cancel_requested'].includes(exportJob.status))}
-                        onClick={() => void requestExport('jsonl')}
-                      >
-                        导出 JSONL
-                      </Button>
-                      <Button
-                        size="small"
-                        disabled={Boolean(exportJob && ['queued', 'running', 'cancel_requested'].includes(exportJob.status))}
-                        onClick={() => void requestExport('xlsx')}
-                      >
-                        导出 XLSX
-                      </Button>
-                      <Button
-                        size="small"
-                        disabled={Boolean(exportJob && ['queued', 'running', 'cancel_requested'].includes(exportJob.status))}
-                        onClick={() => void requestExport('parquet')}
-                      >
-                        导出 Parquet
-                      </Button>
+                      <InteractiveExportButton
+                        format={exportFormat}
+                        job={exportJob}
+                        starting={exportStarting}
+                        downloadState={exportDownloadState}
+                        onExport={format => void requestExport(format)}
+                        onCancel={() => void cancelExport()}
+                        onDownload={() => void downloadExport()}
+                      />
                       <Tooltip title="导出基于已物化的不可变语句结果，并应用当前搜索、筛选与排序">
                         <Tag color="blue">已物化快照</Tag>
                       </Tooltip>
-                      {exportJob && <Tag>{exportJob.status}</Tag>}
-                      {exportJob && ['queued', 'running', 'cancel_requested'].includes(exportJob.status) && (
-                        <Button
-                          size="small"
-                          icon={<StopOutlined />}
-                          disabled={exportJob.status === 'cancel_requested'}
-                          onClick={() => void cancelExport()}
-                        >
-                          取消导出
-                        </Button>
-                      )}
-                      {exportJob?.download_ready && (
-                        <Button size="small" icon={<DownloadOutlined />} onClick={() => void downloadExport()}>下载</Button>
-                      )}
                     </Space>
                   )}
                 />
+              {query.loading && (
+                <div style={{
+                  position: 'absolute',
+                  top: 8,
+                  right: 12,
+                  zIndex: 10,
+                  padding: '4px 10px',
+                  borderRadius: 12,
+                  background: 'rgba(255, 255, 255, 0.92)',
+                  boxShadow: '0 1px 4px rgba(0, 0, 0, 0.12)',
+                  fontSize: 12,
+                }}>
+                  <Space size={6}><Spin size="small" />加载中</Space>
+                </div>
               )}
               {query.error && <div style={{ padding: 12, color: '#ff4d4f' }}>{query.error}</div>}
             </div>
