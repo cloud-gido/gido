@@ -7,6 +7,8 @@ import {
   PROBE_DEFAULT_ROW_LIMIT,
   SQL_RESULT_ROW_CAP,
   clampSqlResultRowLimit,
+  formatSqlResultRowLimitShort,
+  sqlRunWithRowLimitLabel,
 } from './sqlResultRowLimit'
 
 describe('sqlResultRowLimit', () => {
@@ -20,5 +22,13 @@ describe('sqlResultRowLimit', () => {
     expect(clampSqlResultRowLimit(0)).toBe(1)
     expect(clampSqlResultRowLimit(50_000)).toBe(10000)
     expect(clampSqlResultRowLimit(138)).toBe(138)
+  })
+
+  it('formats run button short labels', () => {
+    expect(formatSqlResultRowLimitShort(10000)).toBe('1万')
+    expect(formatSqlResultRowLimitShort(1000)).toBe('1千')
+    expect(formatSqlResultRowLimitShort(500)).toBe('500')
+    expect(sqlRunWithRowLimitLabel(10000)).toBe('运行 · 1万')
+    expect(sqlRunWithRowLimitLabel(100, true)).toBe('运行中...')
   })
 })

@@ -189,7 +189,6 @@ describe('InteractiveRunDock', () => {
     fireEvent.click(screen.getByRole('button', { name: '选择导出格式' }))
     expect(await screen.findByText('导出 XLSX')).toBeTruthy()
     expect(screen.getByText('导出 Parquet')).toBeTruthy()
-    expect(screen.getByText('已物化快照')).toBeTruthy()
     fireEvent.click(screen.getByText('再次下载'))
     await waitFor(() => expect(adhocRunsApi.downloadExport).toHaveBeenCalledTimes(3))
 

@@ -9,8 +9,41 @@
 
 .dw-query-result__toolbar {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
   border-bottom: 1px solid #f0f0f0;
   background: #fafafa;
+}
+
+.dw-query-result__toolbar-start,
+.dw-query-result__toolbar-end {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.dw-query-result__toolbar-end {
+  margin-left: auto;
+}
+
+/* Opaque fixed columns so wide tables don't bleed under pins */
+.dw-query-result__main .ant-table-thead > tr > th.ant-table-cell-fix-left,
+.dw-query-result__main .ant-table-tbody > tr > td.ant-table-cell-fix-left {
+  background: #fff !important;
+}
+
+.dw-query-result__main .ant-table-thead > tr > th.ant-table-cell-fix-left {
+  background: #fafafa !important;
+}
+
+.dw-query-result__main .ant-table-cell-fix-left-last::after {
+  box-shadow: inset -8px 0 8px -8px rgba(0, 0, 0, 0.12);
 }
 
 .dw-query-result__pager {
@@ -74,6 +107,26 @@
   z-index: 3;
   background: #fafafa !important;
   box-shadow: 0 1px 0 #f0f0f0;
+}
+
+/* Virtual mode: Ant Table owns the body scroller; keep sticky header inside rc-table. */
+.dw-query-result__main--virtual {
+  overflow: hidden;
+}
+
+.dw-query-result__main--virtual .ant-table-wrapper {
+  min-width: 0;
+  height: 100%;
+}
+
+.dw-query-result__main--virtual .ant-table-container,
+.dw-query-result__main--virtual .ant-table-content {
+  overflow: hidden !important;
+}
+
+.dw-query-result__main--virtual .ant-table-thead > tr > th {
+  position: sticky;
+  top: 0;
 }
 
 .dw-query-result__main .ant-table-cell {
@@ -200,7 +253,7 @@
 
 .dw-col-filter-dropdown {
   padding: 8px;
-  width: 220px;
+  width: 240px;
 }
 
 .dw-col-filter-values {

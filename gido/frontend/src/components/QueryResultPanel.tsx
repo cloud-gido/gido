@@ -5,12 +5,14 @@
  * @date 2026-06-05
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, isValidElement, startTransition } from 'react'
-import { Pagination, Table, message, Descriptions } from 'antd'
-import { TableOutlined } from '@ant-design/icons'
+import { Button, Pagination, Table, Tooltip, message, Descriptions } from 'antd'
+import { BarChartOutlined, TableOutlined } from '@ant-design/icons'
 import type { ColumnType, ColumnsType, FilterValue, SorterResult } from 'antd/es/table/interface'
 import type { TableProps } from 'antd'
 import type { QueryRowRec } from './QueryResultTable'
 import { queryResultTableComponents } from './QueryResultTable'
+import QueryResultChartDrawer from './QueryResultChartDrawer'
+import type { QueryChartField } from '../utils/queryResultChart'
 import { formatCellDisplay } from '../utils/cellDisplay'
 import { sortQueryRows, queryResultDataFingerprint, type QuerySortOrder } from '../utils/queryCellSort'
 import { shouldSuppressHeaderInteraction } from '../utils/columnResizeGesture'
@@ -76,6 +78,9 @@ type Props = {
   serverQuery?: boolean
   serverSort?: { column: string; direction: 'asc' | 'desc' } | null
   onServerChange?: (change: QueryResultServerChange) => void
+  /** 当前视口轻量柱/折线预览（非全量 BI） */
+  enableQuickChart?: boolean
+  chartFields?: QueryChartField[]
 }
 
 /**
@@ -92,10 +97,13 @@ export default function QueryResultPanel({
   serverQuery = false,
   serverSort,
   onServerChange,
+  enableQuickChart = false,
+  chartFields,
 }: Props) {
   /** 当前展开行的 _key；null = 未选中，不显示 KV 面板 */
   const [kvKey, setKvKey] = useState<number | null>(null)
   const [kvHeight, setKvHeight] = useState<number>(240)
+  const [chartOpen, setChartOpen] = useState(false)
   const kvHeightClamp = useMemo(() => ({ min: 120, max: 420 }), [])
   const resizingKvRef = useRef(false)
 
@@ -146,9 +154,17 @@ export default function QueryResultPanel({
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(pagination === false ? 100 : (pagination?.pageSize ?? 100))
   const [sort, setSort] = useState<{ field: string; order: QuerySortOrder } | null>(null)
+  const [viewportHeight, setViewportHeight] = useState(360)
 
   const ascendCacheRef = useRef<{ field: string; rows: QueryRowRec[]; fp: string } | null>(null)
   const dataFingerprint = useMemo(() => queryResultDataFingerprint(dataSource), [dataSource])
+
+  useEffect(() => {
+    if (pagination === false) return
+    const next = pagination?.pageSize ?? 100
+    setPageSize(previous => (previous === next ? previous : next))
+    setPage(1)
+  }, [pagination === false ? null : (pagination?.pageSize ?? 100)])
 
   useEffect(() => {
     setPage(1)
@@ -183,6 +199,26 @@ export default function QueryResultPanel({
     return sortedData.slice(start, start + pageSize)
   }, [sortedData, pagingEnabled, page, pageSize])
 
+  const resolvedChartFields = useMemo<QueryChartField[]>(() => {
+    if (chartFields?.length) return chartFields
+    return columns
+      .map(col => {
+        const name = String((col as ColumnType<QueryRowRec>).dataIndex
+          ?? (col as ColumnType<QueryRowRec>).key
+          ?? '')
+        return name && name !== '#' ? { name } : null
+      })
+      .filter((item): item is QueryChartField => Boolean(item))
+  }, [chartFields, columns])
+
+  const leafColumnCount = useMemo(
+    () => columns.filter(col => !('children' in (col as any))).length,
+    [columns],
+  )
+  // Virtualize large viewports or very wide schemas so Ant Table does not paint every cell.
+  const useVirtual = pagedData.length > 100 || leafColumnCount >= 40
+  const virtualBodyHeight = Math.max(160, viewportHeight - 40)
+
   const tableMinWidth = useMemo(() => {
     let w = 40 + 44 // 行号列 44px
     for (const c of columns) {
@@ -196,8 +232,10 @@ export default function QueryResultPanel({
     const hInner = hInnerRef.current
     const vInner = vInnerRef.current
     if (!main || !hInner || !vInner) return
-    hInner.style.width = `${main.scrollWidth}px`
-    vInner.style.height = `${main.scrollHeight}px`
+    const body = main.querySelector('.ant-table-body') as HTMLElement | null
+    const source = body || main
+    hInner.style.width = `${Math.max(main.scrollWidth, source.scrollWidth)}px`
+    vInner.style.height = `${Math.max(main.scrollHeight, source.scrollHeight)}px`
   }, [])
 
   // Bind once: rebinding on every page change restarts listeners mid-drag and feels sticky.
@@ -210,12 +248,19 @@ export default function QueryResultPanel({
     let syncing = false
     let frame = 0
     let sizeFrame = 0
+    let bodyEl: HTMLElement | null = null
+
+    const scrollSource = () => {
+      bodyEl = (main.querySelector('.ant-table-body') as HTMLElement | null) || bodyEl
+      return useVirtual && bodyEl ? bodyEl : main
+    }
 
     const scheduleSizeSync = () => {
       if (sizeFrame) return
       sizeFrame = window.requestAnimationFrame(() => {
         sizeFrame = 0
         syncScrollbarSizes()
+        setViewportHeight(main.clientHeight || 360)
       })
     }
 
@@ -225,8 +270,9 @@ export default function QueryResultPanel({
       frame = window.requestAnimationFrame(() => {
         frame = 0
         syncing = true
-        hTrack.scrollLeft = main.scrollLeft
-        vTrack.scrollTop = main.scrollTop
+        const source = scrollSource()
+        hTrack.scrollLeft = source.scrollLeft
+        vTrack.scrollTop = source.scrollTop
         syncing = false
       })
     }
@@ -234,17 +280,20 @@ export default function QueryResultPanel({
     const fromH = () => {
       if (syncing) return
       syncing = true
-      main.scrollLeft = hTrack.scrollLeft
+      const source = scrollSource()
+      source.scrollLeft = hTrack.scrollLeft
+      if (source !== main) main.scrollLeft = hTrack.scrollLeft
       syncing = false
     }
     const fromV = () => {
       if (syncing) return
       syncing = true
-      main.scrollTop = vTrack.scrollTop
+      scrollSource().scrollTop = vTrack.scrollTop
       syncing = false
     }
 
     syncScrollbarSizes()
+    setViewportHeight(main.clientHeight || 360)
     main.addEventListener('scroll', fromMain, { passive: true })
     hTrack.addEventListener('scroll', fromH, { passive: true })
     vTrack.addEventListener('scroll', fromV, { passive: true })
@@ -253,16 +302,22 @@ export default function QueryResultPanel({
     ro.observe(main)
     const tableEl = main.querySelector('.ant-table')
     if (tableEl) ro.observe(tableEl)
+    bodyEl = main.querySelector('.ant-table-body') as HTMLElement | null
+    if (bodyEl) {
+      bodyEl.addEventListener('scroll', fromMain, { passive: true })
+      ro.observe(bodyEl)
+    }
 
     return () => {
       if (frame) window.cancelAnimationFrame(frame)
       if (sizeFrame) window.cancelAnimationFrame(sizeFrame)
       main.removeEventListener('scroll', fromMain)
+      bodyEl?.removeEventListener('scroll', fromMain)
       hTrack.removeEventListener('scroll', fromH)
       vTrack.removeEventListener('scroll', fromV)
       ro.disconnect()
     }
-  }, [syncScrollbarSizes])
+  }, [syncScrollbarSizes, useVirtual, pagedData.length, leafColumnCount, virtualBodyHeight])
 
   useEffect(() => {
     const t = window.requestAnimationFrame(() => syncScrollbarSizes())
@@ -441,13 +496,41 @@ export default function QueryResultPanel({
 
   return (
     <div className="dw-query-result">
-      {toolbar ? (
-        <div className="dw-query-result__toolbar" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          {toolbar}
+      {(toolbar || enableQuickChart) ? (
+        <div className="dw-query-result__toolbar">
+          <div className="dw-query-result__toolbar-start">
+            {toolbar}
+          </div>
+          {enableQuickChart ? (
+            <div className="dw-query-result__toolbar-end">
+              <Tooltip title="基于当前视口已显示的行画轻量柱/折线，非全量分析">
+                <Button
+                  size="small"
+                  icon={<BarChartOutlined />}
+                  disabled={!pagedData.length || resolvedChartFields.length < 1}
+                  onClick={() => setChartOpen(true)}
+                >
+                  图表
+                </Button>
+              </Tooltip>
+            </div>
+          ) : null}
         </div>
       ) : null}
+      {enableQuickChart ? (
+        <QueryResultChartDrawer
+          open={chartOpen}
+          onClose={() => setChartOpen(false)}
+          rows={pagedData as Array<Record<string, unknown>>}
+          fields={resolvedChartFields}
+        />
+      ) : null}
       <div className="dw-query-result__viewport">
-        <div ref={mainRef} className="dw-query-result__main" title="滚轮滚动；表头随横向滚动对齐">
+        <div
+          ref={mainRef}
+          className={`dw-query-result__main${useVirtual ? ' dw-query-result__main--virtual' : ''}`}
+          title="滚轮滚动；表头随横向滚动对齐"
+        >
           <Table
             size="small"
             rowKey="_key"
@@ -455,9 +538,13 @@ export default function QueryResultPanel({
             dataSource={pagedData}
             pagination={false}
             tableLayout="fixed"
-            style={{ minWidth: tableMinWidth }}
+            style={{ minWidth: useVirtual ? undefined : tableMinWidth }}
             components={queryResultTableComponents}
             onChange={onTableChange}
+            virtual={useVirtual}
+            scroll={useVirtual
+              ? { x: tableMinWidth, y: virtualBodyHeight }
+              : undefined}
             rowClassName={record => {
               const k = (record as any)._key as number
               return k === kvKey ? 'dw-row--selected' : ''

@@ -6,10 +6,10 @@
  */
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, type Key } from 'react'
 import {
-  Button, Select, InputNumber, Alert, message, Input, Modal, Form, Tooltip, Tag, Spin,
+  Button, Select, Alert, message, Input, Modal, Form, Tooltip, Tag, Spin,
 } from 'antd'
 import {
-  PlayCircleOutlined, PlusOutlined, FolderAddOutlined,
+  PlusOutlined, FolderAddOutlined,
   FormatPainterOutlined, MenuFoldOutlined, AimOutlined,
 } from '@ant-design/icons'
 import '../monacoSetup'
@@ -35,7 +35,8 @@ import {
 import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from '../components/MonacoFindBar'
 import { bindMonacoScriptKeybindings } from '../utils/monacoScriptKeybindings'
 import { useSqlSchemaCompletion } from '../hooks/useSqlSchemaCompletion'
-import { PROBE_DEFAULT_ROW_LIMIT, SQL_RESULT_ROW_CAP, clampSqlResultRowLimit } from '../utils/sqlResultRowLimit'
+import { PROBE_DEFAULT_ROW_LIMIT, clampSqlResultRowLimit } from '../utils/sqlResultRowLimit'
+import SqlRunWithRowLimitButton from '../components/SqlRunWithRowLimitButton'
 import {
   datasourceTagText,
   hasExplicitDatasource,
@@ -623,13 +624,6 @@ export default function ProbePage() {
             {datasourceTagText(probeDsResolve)}
           </Tag>
         ) : null}
-        <span style={{ color: '#8c8c8c', fontSize: 12 }}>最大行数</span>
-        <InputNumber
-          min={1}
-          max={SQL_RESULT_ROW_CAP}
-          value={limit}
-          onChange={v => patchActiveScript({ limit: clampSqlResultRowLimit(v, PROBE_DEFAULT_ROW_LIMIT) })}
-        />
         <Button icon={<FormatPainterOutlined />} onClick={formatSql} disabled={!sql.trim()}>
           格式化
         </Button>
@@ -639,9 +633,14 @@ export default function ProbePage() {
           hint={scriptAutosave.hint}
           localAuthority
         />
-        <Button type="primary" icon={<PlayCircleOutlined />} loading={loading} onClick={() => { void run() }}>
-          运行
-        </Button>
+        <SqlRunWithRowLimitButton
+          size="middle"
+          limit={limit}
+          loading={loading}
+          disabled={!sql.trim()}
+          onRun={() => { void run() }}
+          onLimitChange={v => patchActiveScript({ limit: clampSqlResultRowLimit(v, PROBE_DEFAULT_ROW_LIMIT) })}
+        />
         <Button
           icon={<AimOutlined />}
           onClick={locateActiveInTree}

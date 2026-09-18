@@ -5,6 +5,9 @@
  * @date 2026-06-05
  */
 
+/** 结果表左侧固定列上限（宽表护栏，对标 IDE 常用习惯） */
+export const MAX_PINNED_RESULT_COLUMNS = 3
+
 /** 列名序列签名：用于判断是否为同一次结果的列集合（同名同序） */
 export function columnKeysSignature(keys: string[] | undefined | null): string {
   return (keys ?? []).join('\x1e')

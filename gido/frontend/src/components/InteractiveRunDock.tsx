@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Drawer, Dropdown, Empty, Input, Pagination, Select, Space, Spin, Tabs, Tag, Tooltip, Tree, Alert, Checkbox, message } from 'antd'
-import { CopyOutlined, ExperimentOutlined, LinkOutlined, TableOutlined, PushpinOutlined } from '@ant-design/icons'
+import { Button, Drawer, Dropdown, Empty, Input, Pagination, Select, Space, Spin, Tabs, Tag, Tooltip, Tree, Checkbox, message } from 'antd'
+import { CopyOutlined, ExperimentOutlined, LinkOutlined, TableOutlined, PushpinOutlined, SortAscendingOutlined, ClearOutlined } from '@ant-design/icons'
 import { adhocRunsApi } from '../api'
 import type { useInteractiveRun } from '../hooks/useInteractiveRun'
 import type {
@@ -22,7 +22,7 @@ import StatementExecutionSummary from './StatementExecutionSummary'
 import QueryResultPanel from './QueryResultPanel'
 import { buildQueryTableColumns, rowsToRecordDataSource } from './QueryResultTable'
 import { normalizeQueryColumns } from '../utils/queryColumns'
-import { pruneNamedList, pruneWidths, resolveResultColumnOrder } from '../utils/resultTableMeta'
+import { pruneNamedList, pruneWidths, resolveResultColumnOrder, MAX_PINNED_RESULT_COLUMNS } from '../utils/resultTableMeta'
 import { statementPresentation } from '../utils/statementPresentation'
 import { SQL_RESULT_ROW_CAP } from '../utils/sqlResultRowLimit'
 import { buildExplainPlanTree } from '../utils/explainPlanTree'
@@ -32,6 +32,7 @@ import { NULL_FILTER_KEY, valueToFilterKey } from './ColumnFilterDropdown'
 import InteractiveExportButton, {
   type InteractiveExportDownloadState,
 } from './InteractiveExportButton'
+import './interactiveRunDock.css'
 
 type RunController = ReturnType<typeof useInteractiveRun>
 type TabKey = 'log' | 'result'
@@ -270,7 +271,7 @@ export default function InteractiveRunDock({
     const normalizedOrder = resolveResultColumnOrder(layout.order, names, layout.sourceKeys)
     const normalizedWidths = pruneWidths(layout.widths, names)
     const normalizedHidden = pruneNamedList(layout.hidden, names)
-    const normalizedPinned = pruneNamedList(layout.pinned, names)
+    const normalizedPinned = pruneNamedList(layout.pinned, names).slice(0, MAX_PINNED_RESULT_COLUMNS)
     const semanticTypes = Object.fromEntries(
       fields.map(field => [field.name, field.semantic_type || undefined]),
     )
@@ -398,7 +399,7 @@ export default function InteractiveRunDock({
       ...patch,
     }
     next.hidden = pruneNamedList(next.hidden, names)
-    next.pinned = pruneNamedList(next.pinned, names)
+    next.pinned = pruneNamedList(next.pinned, names).slice(0, MAX_PINNED_RESULT_COLUMNS)
     if ((next.hidden?.length ?? 0) >= names.length) {
       next.hidden = (next.hidden || []).filter(name => name !== names[0])
     }
@@ -589,44 +590,128 @@ export default function InteractiveRunDock({
       activeKey={selectedKey}
       onChange={setStatementKey}
     >
-      {statement => statement ? (
+      {statement => {
+        if (!statement) return null
+        const presentation = statementPresentation(statement)
+        const isQueryGrid = !statement.error && Boolean(statement.columns.length || statement.fields?.length)
+        const truncated = Boolean(statement.truncated || page.truncated || (statement.total ?? 0) >= SQL_RESULT_ROW_CAP)
+        const previewing = statement.status === 'running'
+        const execMs = statement.execution_metrics?.execution_ms
+          ?? statement.execution_metrics?.duration_ms
+        const activeFilterCols = Object.entries(serverFilters)
+          .filter(([, values]) => Array.isArray(values) && values.length > 0)
+          .map(([column]) => column)
+        const hasQueryMods = Boolean(search.trim() || activeFilterCols.length || sort.length)
+        const batchTotal = Math.max(
+          page.total,
+          (query.pageNumber - 1) * RESULT_PAGE_SIZE + page.rows.length + (page.has_more ? 1 : 0),
+        )
+        const statusBar = (
+          <div className="dw-interactive-run__status-bar" role="status">
+            <div className="dw-interactive-run__status-bar-main">
+              <Space size={8} wrap split={<span className="dw-interactive-run__status-sep">·</span>}>
+                <Tag
+                  color={(STATEMENT_META[statement.status] ?? STATEMENT_META.pending).color}
+                  style={{ margin: 0 }}
+                >
+                  {(STATEMENT_META[statement.status] ?? STATEMENT_META.pending).label}
+                </Tag>
+                <span>{presentation.type}</span>
+                <span>耗时 {duration(statement)}</span>
+                {execMs != null && <span>执行 {execMs}ms</span>}
+                {statement.execution_metrics?.fetch_ms != null && (
+                  <span>取数 {statement.execution_metrics.fetch_ms}ms</span>
+                )}
+                {presentation.kind === 'dml'
+                  && statement.affected_rows != null
+                  && statement.affected_rows >= 0 && (
+                  <span>影响 {statement.affected_rows} 行</span>
+                )}
+                {presentation.kind === 'query' && (
+                  <span>结果 {statement.total} 行</span>
+                )}
+                <span>{formatBytes(statement.execution_metrics?.result_bytes ?? statement.result_bytes)}</span>
+                {previewing && (
+                  <Tooltip title="结果仍在物化，当前网格为预览；完成后可导出完整快照">
+                    <Tag color="processing" style={{ margin: 0 }}>预览中</Tag>
+                  </Tooltip>
+                )}
+                {!previewing && truncated && (
+                  <Tooltip title={`已截断（上限 ${SQL_RESULT_ROW_CAP} 行）。网格为预览，完整数据请导出。`}>
+                    <Tag color="orange" style={{ margin: 0 }}>已截断</Tag>
+                  </Tooltip>
+                )}
+                {search.trim() ? <Tag style={{ margin: 0 }}>搜索中</Tag> : null}
+                {activeFilterCols.length > 0 ? (
+                  <Tooltip title={activeFilterCols.join(', ')}>
+                    <Tag style={{ margin: 0 }}>筛选 {activeFilterCols.length} 列</Tag>
+                  </Tooltip>
+                ) : null}
+                {sort.length > 0 ? <Tag style={{ margin: 0 }}>排序 {sort.length}</Tag> : null}
+                {hasQueryMods ? (
+                  <Button
+                    type="link"
+                    size="small"
+                    style={{ padding: 0, height: 'auto' }}
+                    icon={<ClearOutlined />}
+                    onClick={() => {
+                      setSearch('')
+                      setServerFilters({})
+                      setFilters([])
+                      setSort([])
+                    }}
+                  >
+                    清除条件
+                  </Button>
+                ) : null}
+                {statement.query_id && (
+                  <Tooltip title={statement.query_id}>
+                    <span className="dw-interactive-run__status-muted">Query ID {statement.query_id}</span>
+                  </Tooltip>
+                )}
+                {presentation.kind === 'query' && (
+                  <Button
+                    size="small"
+                    type="link"
+                    style={{ padding: 0, height: 'auto' }}
+                    icon={<ExperimentOutlined />}
+                    loading={explainLoading}
+                    onClick={() => void requestExplain()}
+                  >
+                    Explain
+                  </Button>
+                )}
+              </Space>
+            </div>
+            {isQueryGrid ? (
+              <div className="dw-interactive-run__status-bar-actions">
+                <Tooltip title={`服务端每批最多 ${RESULT_PAGE_SIZE} 行；表格底部分页控制视口渲染`}>
+                  <span className="dw-interactive-run__status-muted">
+                    批次 {query.pageNumber}/{Math.max(1, Math.ceil(Math.max(page.total, 1) / RESULT_PAGE_SIZE))}
+                    {' · '}
+                    {page.rows.length}/{page.total}
+                  </span>
+                </Tooltip>
+                <Pagination
+                  size="small"
+                  simple
+                  current={query.pageNumber}
+                  pageSize={RESULT_PAGE_SIZE}
+                  showSizeChanger={false}
+                  total={batchTotal}
+                  onChange={next => {
+                    if (next < query.pageNumber) query.previous()
+                    else if (next === query.pageNumber + 1) query.next()
+                  }}
+                />
+              </div>
+            ) : null}
+          </div>
+        )
+
+        return (
         <div style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-          <Space size={6} wrap style={{ padding: '6px 12px', borderBottom: '1px solid #f0f0f0' }}>
-            <Tag color={(STATEMENT_META[statement.status] ?? STATEMENT_META.pending).color}>
-              {(STATEMENT_META[statement.status] ?? STATEMENT_META.pending).label}
-            </Tag>
-            <Tag>{statementPresentation(statement).type}</Tag>
-            <span>耗时 {duration(statement)}</span>
-            {statementPresentation(statement).kind === 'dml'
-              && statement.affected_rows != null
-              && statement.affected_rows >= 0 && (
-              <span>影响 {statement.affected_rows} 行</span>
-              )}
-            {statementPresentation(statement).kind === 'query' && <span>结果 {statement.total} 行</span>}
-            {statement.truncated && <Tag color="orange">已截断</Tag>}
-            {statement.query_id && <span title={statement.query_id}>Query ID: {statement.query_id}</span>}
-            <span>
-              执行 {statement.execution_metrics?.execution_ms != null
-                ? `${statement.execution_metrics.execution_ms}ms`
-                : statement.execution_metrics?.duration_ms != null
-                  ? `${statement.execution_metrics.duration_ms}ms`
-                  : duration(statement)}
-            </span>
-            {statement.execution_metrics?.fetch_ms != null && <span>取数 {statement.execution_metrics.fetch_ms}ms</span>}
-            <span>结果大小 {formatBytes(statement.execution_metrics?.result_bytes ?? statement.result_bytes)}</span>
-            {statementPresentation(statement).kind === 'query' && (
-              <Button
-                size="small"
-                type="link"
-                icon={<ExperimentOutlined />}
-                loading={explainLoading}
-                onClick={() => void requestExplain()}
-              >
-                Explain
-              </Button>
-            )}
-          </Space>
-          {!statement.error && (statement.columns.length || statement.fields?.length) ? (
+          {isQueryGrid ? (
             <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
               {query.loading && !dataSource.length ? (
                 <div style={{
@@ -645,71 +730,82 @@ export default function InteractiveRunDock({
               <QueryResultPanel
                   dataSource={dataSource}
                   columns={tableColumns}
-                  pagination={false}
+                  pagination={{
+                    pageSize: columnNames.length >= 40 ? 50 : 100,
+                    pageSizeOptions: columnNames.length >= 40 ? ['50', '100'] : ['50', '100', '200'],
+                  }}
                   serverQuery
                   serverSort={sort[0] ?? null}
                   onServerChange={handleServerChange}
+                  enableQuickChart
+                  chartFields={page.fields.map(field => ({
+                    name: field.name,
+                    type: field.type,
+                    semantic_type: field.semantic_type,
+                  }))}
                   toolbar={(
-                    <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                      {(statement.status === 'running'
-                        || statement.truncated
-                        || page.truncated
-                        || (statement.total ?? 0) >= SQL_RESULT_ROW_CAP) && (
-                        <Alert
-                          type={statement.status === 'running' ? 'info' : 'warning'}
-                          showIcon
-                          banner
-                          message={statement.status === 'running'
-                            ? '结果仍在物化，当前为预览；完成后可导出完整快照。'
-                            : `结果已截断至 ${Math.min(statement.total || page.source_total || 0, SQL_RESULT_ROW_CAP)} 行（上限 ${SQL_RESULT_ROW_CAP}）。网格仅为预览，完整数据请导出。`}
-                        />
-                      )}
-                      <Space wrap>
+                    <div className="dw-interactive-run__result-tools">
                       <Input.Search
                         allowClear
                         size="small"
                         aria-label="全局搜索查询结果"
-                        placeholder="全局搜索"
+                        placeholder="搜索结果"
                         value={search}
                         onChange={event => setSearch(event.target.value)}
-                        style={{ width: 220 }}
-                      />
-                      <Select
-                        mode="multiple"
-                        aria-label="多列排序"
-                        placeholder="多列排序（最多 2 列）"
-                        value={sort.map(item => JSON.stringify(item))}
-                        options={sortOptions}
-                        style={{ minWidth: 220, maxWidth: 420 }}
-                        maxTagCount={2}
-                        onChange={values => {
-                          const parsed = values
-                            .map(value => JSON.parse(value) as { column: string; direction: 'asc' | 'desc' })
-                            .filter((item, index, all) => (
-                              all.slice(index + 1).every(candidate => candidate.column !== item.column)
-                            ))
-                            .slice(-2)
-                          setSort(parsed)
-                        }}
+                        style={{ width: 180 }}
                       />
                       <Dropdown
                         trigger={['click']}
                         popupRender={() => (
-                          <div style={{
-                            background: '#fff',
-                            border: '1px solid #f0f0f0',
-                            borderRadius: 8,
-                            padding: 8,
-                            maxHeight: 280,
-                            overflow: 'auto',
-                            minWidth: 220,
-                          }}>
+                          <div
+                            className="dw-interactive-run__column-menu"
+                            onClick={event => event.stopPropagation()}
+                          >
+                            <div className="dw-interactive-run__column-menu-hint">
+                              最多 2 列；也可点击表头排序
+                            </div>
+                            <Select
+                              mode="multiple"
+                              aria-label="多列排序"
+                              placeholder="选择排序列"
+                              value={sort.map(item => JSON.stringify(item))}
+                              options={sortOptions}
+                              style={{ width: '100%' }}
+                              maxTagCount={2}
+                              onChange={values => {
+                                const parsed = values
+                                  .map(value => JSON.parse(value) as { column: string; direction: 'asc' | 'desc' })
+                                  .filter((item, index, all) => (
+                                    all.slice(index + 1).every(candidate => candidate.column !== item.column)
+                                  ))
+                                  .slice(-2)
+                                setSort(parsed)
+                              }}
+                            />
+                          </div>
+                        )}
+                      >
+                        <Button size="small" icon={<SortAscendingOutlined />}>
+                          {sort.length ? `排序 · ${sort.length}` : '排序'}
+                        </Button>
+                      </Dropdown>
+                      <Dropdown
+                        trigger={['click']}
+                        popupRender={() => (
+                          <div
+                            className="dw-interactive-run__column-menu"
+                            onClick={event => event.stopPropagation()}
+                          >
+                            <div className="dw-interactive-run__column-menu-hint">
+                              固定列最多 {MAX_PINNED_RESULT_COLUMNS} 个，便于宽表横向对照
+                            </div>
                             {columnNames.map(name => {
                               const hidden = new Set(layout.hidden || [])
                               const pinned = new Set(layout.pinned || [])
                               const visible = !hidden.has(name)
+                              const isPinned = pinned.has(name)
                               return (
-                                <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0' }}>
+                                <div key={name} className="dw-interactive-run__column-row">
                                   <Checkbox
                                     checked={visible}
                                     onChange={event => {
@@ -719,18 +815,25 @@ export default function InteractiveRunDock({
                                       updateColumnLayout({ hidden: [...nextHidden] })
                                     }}
                                   >
-                                    {name}
+                                    <span title={name}>{name}</span>
                                   </Checkbox>
                                   <Button
                                     size="small"
-                                    type={pinned.has(name) ? 'link' : 'text'}
+                                    type={isPinned ? 'link' : 'text'}
                                     icon={<PushpinOutlined />}
-                                    title={pinned.has(name) ? '取消固定' : '固定到左侧'}
+                                    title={isPinned ? '取消固定' : '固定到左侧'}
                                     onClick={() => {
-                                      const nextPinned = new Set(pinned)
-                                      if (nextPinned.has(name)) nextPinned.delete(name)
-                                      else nextPinned.add(name)
-                                      updateColumnLayout({ pinned: [...nextPinned] })
+                                      const nextPinned = [...(layout.pinned || [])]
+                                      const idx = nextPinned.indexOf(name)
+                                      if (idx >= 0) {
+                                        nextPinned.splice(idx, 1)
+                                      } else if (nextPinned.length >= MAX_PINNED_RESULT_COLUMNS) {
+                                        message.warning(`最多固定 ${MAX_PINNED_RESULT_COLUMNS} 列`)
+                                        return
+                                      } else {
+                                        nextPinned.push(name)
+                                      }
+                                      updateColumnLayout({ pinned: nextPinned })
                                     }}
                                   />
                                 </div>
@@ -739,31 +842,14 @@ export default function InteractiveRunDock({
                           </div>
                         )}
                       >
-                        <Button size="small" icon={<TableOutlined />}>列</Button>
+                        <Button size="small" icon={<TableOutlined />}>
+                          {((layout.hidden?.length || 0) > 0 || (layout.pinned?.length || 0) > 0)
+                            ? `列 · ${(layout.pinned?.length || 0)}钉/${columnNames.length - (layout.hidden?.length || 0)}显`
+                            : '列'}
+                        </Button>
                       </Dropdown>
-                      <span>
-                        第 {query.pageNumber} 页 · 本页 {page.rows.length} ·
-                        筛选 {page.total} / 总计 {page.source_total} 行
-                      </span>
-                      {statement.status === 'running' && <Tag color="processing">预览中</Tag>}
-                      {(statement.truncated || page.truncated) && <Tag color="orange">结果已截断</Tag>}
-                      <Pagination
-                        size="small"
-                        simple
-                        current={query.pageNumber}
-                        pageSize={RESULT_PAGE_SIZE}
-                        showSizeChanger={false}
-                        total={Math.max(
-                          page.total,
-                          (query.pageNumber - 1) * RESULT_PAGE_SIZE + page.rows.length + (page.has_more ? 1 : 0),
-                        )}
-                        onChange={next => {
-                          if (next < query.pageNumber) query.previous()
-                          else if (next === query.pageNumber + 1) query.next()
-                        }}
-                      />
                       <Tooltip title={canExportSelected
-                        ? '导出基于已物化的不可变语句结果，并应用当前搜索、筛选与排序'
+                        ? '导出当前搜索/筛选/排序下的物化快照'
                         : '运行完成后方可导出'}>
                         <span>
                           <InteractiveExportButton
@@ -778,11 +864,7 @@ export default function InteractiveRunDock({
                           />
                         </span>
                       </Tooltip>
-                      <Tooltip title="导出基于已物化的不可变语句结果，并应用当前搜索、筛选与排序">
-                        <Tag color="blue">已物化快照</Tag>
-                      </Tooltip>
-                      </Space>
-                    </Space>
+                    </div>
                   )}
                 />
               )}
@@ -802,12 +884,19 @@ export default function InteractiveRunDock({
                 </div>
               )}
               {query.error && <div style={{ padding: 12, color: '#ff4d4f' }}>{query.error}</div>}
+              {statusBar}
             </div>
           ) : (
-            <StatementExecutionSummary statement={statement} />
+            <>
+              <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+                <StatementExecutionSummary statement={statement} />
+              </div>
+              {statusBar}
+            </>
           )}
         </div>
-      ) : null}
+        )
+      }}
     </StatementResultTabs>
   ) : (
     <Empty

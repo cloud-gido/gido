@@ -7,7 +7,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, type Key, type PointerEvent } from 'react'
 import {
   Button, Input, Select, Tag, message, Spin, Tooltip, Skeleton,
-  Modal, Form, Tabs, Space, Badge, Table, DatePicker, InputNumber
+  Modal, Form, Tabs, Space, Badge, Table, DatePicker
 } from 'antd'
 import {
   PlayCircleOutlined, SaveOutlined, CloudUploadOutlined, PlusOutlined,
@@ -74,6 +74,7 @@ import {
 import NodeConfigModal from '../components/NodeConfigModal'
 import { useInteractiveRun } from '../hooks/useInteractiveRun'
 import InteractiveRunDock from '../components/InteractiveRunDock'
+import SqlRunWithRowLimitButton from '../components/SqlRunWithRowLimitButton'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
 import { sortLeavesByOrderThenName } from '../utils/treeSort'
 import WorkspaceFolderTree, { locateLeafInFolderTree } from '../components/WorkspaceFolderTree'
@@ -1511,16 +1512,35 @@ export default function StudioPage() {
                 variant="chip"
                 testId="studio-active-script-title"
               />
-              <Button
-                type="primary"
-                icon={isRunning ? <LoadingOutlined /> : <PlayCircleOutlined />}
-                onClick={() => { void handleRun() }}
-                disabled={isRunning || !canRun || activeContentPending || Boolean(activeContentError)}
-                size="small"
-                title={canRun ? undefined : '无运行权限'}
-              >
-                {isRunning ? '运行中...' : '运行'}
-              </Button>
+              {activeNode?.node_type === 'SQL' ? (
+                <SqlRunWithRowLimitButton
+                  limit={runRowLimit}
+                  loading={isRunning}
+                  disabled={isRunning || !canRun || activeContentPending || Boolean(activeContentError)}
+                  title={canRun ? undefined : '无运行权限'}
+                  onRun={() => { void handleRun() }}
+                  onLimitChange={next => {
+                    const value = clampSqlResultRowLimit(next, SQL_RESULT_ROW_CAP)
+                    setRunRowLimit(value)
+                    try {
+                      localStorage.setItem(`${STUDIO_ROW_LIMIT_KEY}:${wsId ?? 'default'}`, String(value))
+                    } catch {
+                      // ignore
+                    }
+                  }}
+                />
+              ) : (
+                <Button
+                  type="primary"
+                  icon={isRunning ? <LoadingOutlined /> : <PlayCircleOutlined />}
+                  onClick={() => { void handleRun() }}
+                  disabled={isRunning || !canRun || activeContentPending || Boolean(activeContentError)}
+                  size="small"
+                  title={canRun ? undefined : '无运行权限'}
+                >
+                  {isRunning ? '运行中...' : '运行'}
+                </Button>
+              )}
               <Button
                 icon={<SaveOutlined />}
                 onClick={handleSave}
@@ -1561,27 +1581,6 @@ export default function StudioPage() {
                     placeholder="业务日期"
                   />
                 </Tooltip>
-              )}
-              {activeNode?.node_type === 'SQL' && (
-                <>
-                  <span style={{ color: '#8c8c8c', fontSize: 12 }}>最大行数</span>
-                  <InputNumber
-                    size="small"
-                    min={1}
-                    max={SQL_RESULT_ROW_CAP}
-                    value={runRowLimit}
-                    onChange={value => {
-                      const next = clampSqlResultRowLimit(value, SQL_RESULT_ROW_CAP)
-                      setRunRowLimit(next)
-                      try {
-                        localStorage.setItem(`${STUDIO_ROW_LIMIT_KEY}:${wsId ?? 'default'}`, String(next))
-                      } catch {
-                        // ignore
-                      }
-                    }}
-                    style={{ width: 100 }}
-                  />
-                </>
               )}
               {(activeNode?.node_type === 'SQL' || activeNode?.node_type === 'PYTHON') && dsResolve && (
                 <Tag
