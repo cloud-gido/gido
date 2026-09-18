@@ -68,6 +68,7 @@ export interface InteractiveRunStatement {
 export interface InteractiveResultField {
   name: string
   type?: string | null
+  semantic_type?: string | null
   nullable?: boolean
   [key: string]: unknown
 }

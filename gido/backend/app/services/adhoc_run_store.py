@@ -771,6 +771,86 @@ def query_statement_rows(
     }
 
 
+def sample_statement_column_values(
+    db: Session,
+    run_id: int,
+    statement_index: int,
+    column: str,
+    *,
+    limit: int = 200,
+    statement_version: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Sample distinct cell values for a column filter dropdown.
+
+    Scans the materialized snapshot (not the warehouse). Page-1 style soft-upgrade
+    applies when the client version is stale or missing.
+    """
+    statement = (
+        db.query(AdhocRunStatement)
+        .filter(
+            AdhocRunStatement.run_id == run_id,
+            AdhocRunStatement.statement_index == statement_index,
+        )
+        .first()
+    )
+    if not statement:
+        raise ValueError("语句不存在")
+    version = statement_snapshot_version(statement)
+    requested = (statement_version or "").strip() or None
+    schema = statement.column_schema if isinstance(statement.column_schema, dict) else {}
+    columns = list(schema.get("columns") or [])
+    if column not in columns:
+        raise ValueError(f"未知结果列: {column}")
+    col_index = columns.index(column)
+    max_values = min(max(int(limit), 1), 500)
+    seen: Dict[str, Any] = {}
+    scanned = 0
+    truncated = False
+    chunks = (
+        db.query(AdhocRunResultChunk)
+        .filter(AdhocRunResultChunk.statement_id == statement.id)
+        .order_by(AdhocRunResultChunk.chunk_index, AdhocRunResultChunk.id)
+        .all()
+    )
+    for chunk in chunks:
+        for raw_row in list((chunk.payload or {}).get("rows") or []):
+            scanned += 1
+            row = list(raw_row)
+            value = row[col_index] if col_index < len(row) else None
+            if value is None:
+                key = "\x00null"
+                token: Any = None
+            else:
+                key = json.dumps(value, ensure_ascii=True, sort_keys=True, default=str)
+                token = value
+            if key in seen:
+                continue
+            if len(seen) >= max_values:
+                truncated = True
+                break
+            seen[key] = token
+        if truncated:
+            break
+
+    def sort_key(item: Any) -> tuple:
+        if item is None:
+            return (0, "")
+        return (1, str(item))
+
+    values = sorted(seen.values(), key=sort_key)
+    return {
+        "statement_id": statement.id,
+        "statement_index": statement.statement_index,
+        "column": column,
+        "values": values,
+        "truncated": truncated,
+        "scanned_rows": scanned,
+        "statement_version": version,
+        "version_upgraded": bool(requested and requested != version),
+        "statement_status": statement.status,
+    }
+
+
 def paginate_statement_result_chunks(
     db: Session,
     run_id: int,

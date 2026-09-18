@@ -76,6 +76,7 @@ def _node_execution_key(
     params: Optional[Dict[str, Any]],
     datasource_id: Optional[int],
     source: str = "studio",
+    limit: Optional[int] = None,
 ) -> str:
     raw = _stable_json(
         {
@@ -86,6 +87,7 @@ def _node_execution_key(
             "script_hash": _hash(script),
             "params": params or {},
             "datasource_id": datasource_id,
+            "limit": int(limit) if limit is not None else None,
         }
     )
     return _hash(raw)
@@ -135,12 +137,17 @@ def submit_node_run(
     params: Optional[Dict[str, Any]] = None,
     datasource_id: Optional[int] = None,
     source: str = "studio",
+    limit: Optional[int] = None,
 ) -> tuple[AdhocRun, bool]:
     """创建运行与节点实例；同节点、业务日、脚本活动运行只返回已有记录。"""
+    from app.core.config import settings
+
     script = node.script_content or "" if script_content is None else script_content
     effective_datasource_id = (
         datasource_id if datasource_id is not None else node.datasource_id
     )
+    cap = max(1, int(settings.ADHOC_RESULT_MAX_ROWS))
+    effective_limit = min(max(int(limit or cap), 1), cap)
     execution_key = _node_execution_key(
         node.id,
         user_id,
@@ -149,6 +156,7 @@ def submit_node_run(
         params,
         effective_datasource_id,
         source,
+        effective_limit,
     )
     existing = (
         db.query(AdhocRun)
@@ -177,6 +185,7 @@ def submit_node_run(
         execution_key=execution_key,
         request_payload={
             "bizdate": bizdate,
+            "limit": effective_limit,
             **({"params": params} if params is not None else {}),
             **({"datasource_id": datasource_id} if datasource_id is not None else {}),
         },
@@ -913,6 +922,10 @@ def _execute_run(run_id: int, lease_token: str) -> None:
                     timeout_seconds=sql_timeout,
                     run_id=run_id,
                     lease_token=lease_token,
+                    max_rows=min(
+                        max(int((row.request_payload or {}).get("limit") or settings.ADHOC_RESULT_MAX_ROWS), 1),
+                        max(1, int(settings.ADHOC_RESULT_MAX_ROWS)),
+                    ),
                 )
             elif kind == "SYNC":
                 from app.services.integration_node import run_sync_for_node_blocking

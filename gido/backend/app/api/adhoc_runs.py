@@ -34,6 +34,7 @@ from app.services.adhoc_run_store import (
     paginate_statement_rows,
     paginate_statement_result_chunks,
     query_statement_rows,
+    sample_statement_column_values,
     serialize_adhoc_run,
     serialize_run_statement,
     statement_collection_version,
@@ -83,6 +84,11 @@ class AdhocRowQuery(BaseModel):
     limit: int = Field(500, ge=1, le=5000)
     # Optional: omit or send a stale version for the first page; the server soft-upgrades
     # while rows are still materializing. Cursor pages still require a matching version.
+    statement_version: Optional[str] = None
+
+
+class AdhocColumnValuesQuery(BaseModel):
+    limit: int = Field(200, ge=1, le=500)
     statement_version: Optional[str] = None
 
 
@@ -565,6 +571,40 @@ def query_adhoc_statement_rows(
         "run_status": run.status,
         "run_version": int(run.status_version or 0),
         **page,
+    }
+
+
+@router.post("/{run_id}/statements/{statement_index}/columns/{column}/values")
+def sample_adhoc_statement_column_values(
+    run_id: int,
+    statement_index: int,
+    column: str,
+    request: AdhocColumnValuesQuery,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    run = db.query(AdhocRun).filter(AdhocRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    _assert_can_view_run(db, current_user, run)
+    try:
+        payload = sample_statement_column_values(
+            db,
+            run_id,
+            statement_index,
+            column,
+            limit=request.limit,
+            statement_version=request.statement_version,
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 404 if "不存在" in detail or "未知结果列" in detail else 400
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    return {
+        "run_id": run_id,
+        "run_status": run.status,
+        "run_version": int(run.status_version or 0),
+        **payload,
     }
 
 

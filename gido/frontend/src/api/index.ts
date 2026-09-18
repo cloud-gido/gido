@@ -128,7 +128,7 @@ export const studioApi = {
     id: number,
     scriptContent?: string,
     bizdate?: string,
-    overrides?: { params?: Record<string, unknown>; datasource_id?: number },
+    overrides?: { params?: Record<string, unknown>; datasource_id?: number; limit?: number },
   ) =>
     request.post(`/studio/nodes/${id}/runs`, {
       ...(scriptContent !== undefined ? { script_content: scriptContent } : {}),
@@ -481,6 +481,24 @@ export const adhocRunsApi = {
       body,
       { signal },
     ) as unknown as Promise<InteractiveRowsQueryResponse>,
+  sampleStatementColumnValues: (
+    id: number,
+    statementIndex: number,
+    column: string,
+    body?: { limit?: number; statement_version?: string | null },
+    signal?: AbortSignal,
+  ) =>
+    request.post(
+      `/adhoc-runs/${id}/statements/${statementIndex}/columns/${encodeURIComponent(column)}/values`,
+      body || {},
+      { signal },
+    ) as unknown as Promise<{
+      column: string
+      values: unknown[]
+      truncated: boolean
+      scanned_rows: number
+      statement_version: string
+    }>,
   explainStatement: (id: number, statementIndex: number, signal?: AbortSignal) =>
     request.post(
       `/adhoc-runs/${id}/statements/${statementIndex}/explain`,

@@ -7,7 +7,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, type Key, type PointerEvent } from 'react'
 import {
   Button, Input, Select, Tag, message, Spin, Tooltip, Skeleton,
-  Modal, Form, Tabs, Space, Badge, Table, DatePicker
+  Modal, Form, Tabs, Space, Badge, Table, DatePicker, InputNumber
 } from 'antd'
 import {
   PlayCircleOutlined, SaveOutlined, CloudUploadOutlined, PlusOutlined,
@@ -88,12 +88,14 @@ import {
   saveTreeListCache,
   treeListReadyFromCache,
 } from '../utils/workspaceTreeListCache'
+import { SQL_RESULT_ROW_CAP, clampSqlResultRowLimit } from '../utils/sqlResultRowLimit'
 
 const NODE_TYPES = ['SQL', 'PYTHON', 'SHELL', 'SYNC', 'VIRTUAL', 'DEPENDENT']
 const LANG_MAP: Record<string, string> = { SQL: 'sql', PYTHON: 'python', SHELL: 'shell', SYNC: 'json', DEPENDENT: 'plaintext' }
 const TYPE_COLOR: Record<string, string> = {
   SQL: 'blue', PYTHON: 'green', SHELL: 'orange', SYNC: 'purple', VIRTUAL: 'default', DEPENDENT: 'magenta',
 }
+const STUDIO_ROW_LIMIT_KEY = 'gido.studio.sqlResultRowLimit'
 
 function sortNodesList(list: any[]): any[] {
   return sortLeavesByOrderThenName(list)
@@ -163,6 +165,14 @@ export default function StudioPage() {
   const [diffHistory, setDiffHistory] = useState<{ saved_at?: string; script_content?: string } | null>(null)
   const [schemaBrowserOpen, setSchemaBrowserOpen] = useState(false)
   const [runBizdate, setRunBizdate] = useState<Dayjs | null>(null)
+  const [runRowLimit, setRunRowLimit] = useState(() => {
+    try {
+      const raw = localStorage.getItem(`${STUDIO_ROW_LIMIT_KEY}:${wsId ?? 'default'}`)
+      return clampSqlResultRowLimit(raw, SQL_RESULT_ROW_CAP)
+    } catch {
+      return SQL_RESULT_ROW_CAP
+    }
+  })
   const [workflows, setWorkflows] = useState<any[]>([])
   /** 当前用户是否持有各节点的协作编辑锁（与发布锁定 is_locked 独立） */
   const [editLockHeld, setEditLockHeld] = useState<Record<number, boolean>>({})
@@ -977,6 +987,7 @@ export default function StudioPage() {
           activeNode.id,
           latestScript,
           runBizdate ? runBizdate.format('YYYY-MM-DD') : undefined,
+          activeNode.node_type === 'SQL' ? { limit: runRowLimit } : undefined,
         ),
       )
       if (res?.reused) message.info('该节点已有相同运行，已打开实时日志')
@@ -1550,6 +1561,27 @@ export default function StudioPage() {
                     placeholder="业务日期"
                   />
                 </Tooltip>
+              )}
+              {activeNode?.node_type === 'SQL' && (
+                <>
+                  <span style={{ color: '#8c8c8c', fontSize: 12 }}>最大行数</span>
+                  <InputNumber
+                    size="small"
+                    min={1}
+                    max={SQL_RESULT_ROW_CAP}
+                    value={runRowLimit}
+                    onChange={value => {
+                      const next = clampSqlResultRowLimit(value, SQL_RESULT_ROW_CAP)
+                      setRunRowLimit(next)
+                      try {
+                        localStorage.setItem(`${STUDIO_ROW_LIMIT_KEY}:${wsId ?? 'default'}`, String(next))
+                      } catch {
+                        // ignore
+                      }
+                    }}
+                    style={{ width: 100 }}
+                  />
+                </>
               )}
               {(activeNode?.node_type === 'SQL' || activeNode?.node_type === 'PYTHON') && dsResolve && (
                 <Tag

@@ -27,13 +27,17 @@ export type QueryRowRec = Record<string, unknown> & { _key: number }
 export type ResultColumnBuildOpts = {
   order?: string[] | null
   widths?: Record<string, number> | null
-  /** 当前结果行，用于列筛选去重值列表 */
+  hidden?: string[] | null
+  pinned?: string[] | null
+  /** 当前结果行，用于列筛选去重值列表（client 模式） */
   dataSource?: QueryRowRec[]
   onOrderChange?: (nextOrder: string[]) => void
   onWidthChange?: (key: string, width: number) => void
   /** 由服务端执行筛选；这里只保留共享筛选 UI 与受控状态。 */
   serverFilters?: Record<string, string[]>
   serverQuery?: boolean
+  loadDistinctValues?: (column: string) => Promise<{ values: string[]; truncated?: boolean }>
+  semanticTypes?: Record<string, string | undefined>
 }
 
 async function copyText(text: string): Promise<boolean> {
@@ -256,6 +260,12 @@ export function buildQueryTableColumns(
     metas.map(m => [m.name, m.type || m.raw_type || m.semantic_type || undefined]),
   )
   const keys = mergeColumnOrderWithKeys(opts?.order ?? null, names)
+  const hidden = new Set(opts?.hidden ?? [])
+  const pinned = new Set(opts?.pinned ?? [])
+  const visibleKeys = [
+    ...keys.filter(key => pinned.has(key) && !hidden.has(key)),
+    ...keys.filter(key => !pinned.has(key) && !hidden.has(key)),
+  ]
   const canReorder = Boolean(opts?.onOrderChange)
   const onWidthChange = opts?.onWidthChange
 
@@ -273,9 +283,12 @@ export function buildQueryTableColumns(
 
   const rowData = opts?.dataSource ?? []
 
-  return keys.map(col => {
+  return visibleKeys.map(col => {
     const w = opts?.widths?.[col] ?? 148
     const distinctValues = distinctValuesForColumn(rowData, col)
+    const semanticType = opts?.semanticTypes?.[col]
+      || classifyColumnType(typeByName[col] || '')?.kind
+      || undefined
     return {
       title: (
         <ColumnHeaderChrome
@@ -292,10 +305,19 @@ export function buildQueryTableColumns(
       key: col,
       ellipsis: true,
       width: w,
+      fixed: pinned.has(col) ? ('left' as const) : undefined,
       filterMultiple: true,
       filteredValue: opts?.serverQuery ? (opts.serverFilters?.[col] ?? null) : undefined,
       filterDropdown: props => (
-        <ColumnFilterDropdown col={col} distinctValues={distinctValues} {...props} />
+        <ColumnFilterDropdown
+          col={col}
+          distinctValues={distinctValues}
+          semanticType={semanticType}
+          loadDistinctValues={opts?.loadDistinctValues
+            ? () => opts.loadDistinctValues!(col)
+            : undefined}
+          {...props}
+        />
       ),
       onFilter: opts?.serverQuery
         ? undefined

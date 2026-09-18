@@ -60,3 +60,15 @@ export function pruneWidths(widths: Record<string, number>, keys: string[]): Rec
   }
   return next
 }
+
+export function pruneNamedList(list: string[] | undefined | null, keys: string[]): string[] {
+  const allowed = new Set(keys)
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const item of list ?? []) {
+    if (!allowed.has(item) || seen.has(item)) continue
+    seen.add(item)
+    out.push(item)
+  }
+  return out
+}

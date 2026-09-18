@@ -5,7 +5,7 @@
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session, load_only
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Any, Dict, List, Tuple
 from datetime import datetime
 import json
@@ -900,6 +900,7 @@ class RunNodeBody(BaseModel):
     bizdate: Optional[str] = None  # YYYY-MM-DD；补数据/调度回调传入，宏相对该日展开
     params: Optional[Dict[str, Any]] = None
     datasource_id: Optional[int] = None
+    limit: Optional[int] = Field(None, ge=1, le=10000)
 
 
 @router.post("/nodes/{node_id}/runs", status_code=202)
@@ -929,6 +930,7 @@ def submit_node_run_async(
         bizdate=normalize_business_date(body.bizdate),
         params=body.params,
         datasource_id=body.datasource_id,
+        limit=body.limit,
     )
     if reused and row.triggered_by != current_user.id:
         raise HTTPException(

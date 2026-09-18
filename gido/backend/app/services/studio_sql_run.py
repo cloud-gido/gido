@@ -96,6 +96,7 @@ def run_sql_with_result(
     run_id: Optional[int] = None,
     lease_token: Optional[str] = None,
     statement_callbacks: Optional[Dict[str, Callable[..., Any]]] = None,
+    max_rows: Optional[int] = None,
 ) -> Tuple[List[str], Optional[Dict[str, Any]]]:
     """
     执行节点脚本，返回 (log_lines, result_meta)。
@@ -173,7 +174,7 @@ def run_sql_with_result(
                 index,
                 rows,
                 lease_token,
-                max_rows=max(1, int(settings.ADHOC_RESULT_MAX_ROWS)),
+                max_rows=max(1, int(max_rows if max_rows is not None else settings.ADHOC_RESULT_MAX_ROWS)),
                 max_bytes=max(1, int(settings.ADHOC_RESULT_MAX_BYTES)),
                 **meta,
             ),
@@ -193,7 +194,10 @@ def run_sql_with_result(
     result_data: Optional[Dict[str, Any]] = None
     last_select_result: Optional[Dict[str, Any]] = None
     statement_results: List[Dict[str, Any]] = []
-    _cap = max(1, int(settings.ADHOC_RESULT_MAX_ROWS))
+    _cap = min(
+        max(1, int(max_rows if max_rows is not None else settings.ADHOC_RESULT_MAX_ROWS)),
+        max(1, int(settings.ADHOC_RESULT_MAX_ROWS)),
+    )
     first_chunk_rows = max(1, int(settings.ADHOC_RESULT_FIRST_CHUNK_ROWS))
     chunk_rows = max(first_chunk_rows, int(settings.ADHOC_RESULT_CHUNK_ROWS))
     effective_timeout = max(

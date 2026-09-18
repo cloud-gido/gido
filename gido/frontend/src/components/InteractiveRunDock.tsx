@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Drawer, Dropdown, Empty, Input, Pagination, Select, Space, Spin, Tabs, Tag, Tooltip, Tree, message } from 'antd'
-import { CopyOutlined, ExperimentOutlined, LinkOutlined } from '@ant-design/icons'
+import { Button, Drawer, Dropdown, Empty, Input, Pagination, Select, Space, Spin, Tabs, Tag, Tooltip, Tree, Alert, Checkbox, message } from 'antd'
+import { CopyOutlined, ExperimentOutlined, LinkOutlined, TableOutlined, PushpinOutlined } from '@ant-design/icons'
 import { adhocRunsApi } from '../api'
 import type { useInteractiveRun } from '../hooks/useInteractiveRun'
 import type {
@@ -22,21 +22,29 @@ import StatementExecutionSummary from './StatementExecutionSummary'
 import QueryResultPanel from './QueryResultPanel'
 import { buildQueryTableColumns, rowsToRecordDataSource } from './QueryResultTable'
 import { normalizeQueryColumns } from '../utils/queryColumns'
-import { pruneWidths, resolveResultColumnOrder } from '../utils/resultTableMeta'
+import { pruneNamedList, pruneWidths, resolveResultColumnOrder } from '../utils/resultTableMeta'
 import { statementPresentation } from '../utils/statementPresentation'
 import { SQL_RESULT_ROW_CAP } from '../utils/sqlResultRowLimit'
+import { buildExplainPlanTree } from '../utils/explainPlanTree'
 import { useInteractiveStatementQuery } from '../hooks/useInteractiveStatementQuery'
 import type { QueryResultServerChange } from './QueryResultPanel'
-import { NULL_FILTER_KEY } from './ColumnFilterDropdown'
+import { NULL_FILTER_KEY, valueToFilterKey } from './ColumnFilterDropdown'
 import InteractiveExportButton, {
   type InteractiveExportDownloadState,
 } from './InteractiveExportButton'
 
 type RunController = ReturnType<typeof useInteractiveRun>
 type TabKey = 'log' | 'result'
-type Layout = { order: string[]; widths: Record<string, number>; sourceKeys?: string[] }
+type Layout = {
+  order: string[]
+  widths: Record<string, number>
+  hidden?: string[]
+  pinned?: string[]
+  sourceKeys?: string[]
+}
 const RESULT_PAGE_SIZE = Math.min(200, SQL_RESULT_ROW_CAP)
 const EXPORT_FORMAT_STORAGE_KEY = 'gido.interactiveRun.exportFormat'
+const STATEMENT_TERMINAL = new Set(['success', 'failed', 'cancelled', 'skipped'])
 
 function readExportFormat(): InteractiveExportFormat {
   try {
@@ -48,28 +56,22 @@ function readExportFormat(): InteractiveExportFormat {
   return 'csv'
 }
 
-function explainPlanTree(snapshot: unknown): Array<{ key: string; title: string; children?: any[] }> {
-  const rows = snapshot && typeof snapshot === 'object' && Array.isArray((snapshot as any).rows)
-    ? (snapshot as any).rows as unknown[]
-    : []
-  const roots: Array<{ key: string; title: string; children?: any[] }> = []
-  const stack: Array<{ depth: number; node: { key: string; title: string; children?: any[] } }> = []
-  rows.forEach((row, index) => {
-    const values = Array.isArray(row) ? row : [row]
-    const title = values.map(value => typeof value === 'string' ? value : JSON.stringify(value)).join(' | ')
-    const leading = title.match(/^\s*/)?.[0].length ?? 0
-    const depth = title.includes('->') ? Math.max(1, Math.floor(leading / 2) + 1) : 0
-    const node = { key: String(index), title: title.trim() || '(空计划行)' }
-    while (stack.length && stack[stack.length - 1].depth >= depth) stack.pop()
-    if (stack.length) {
-      stack[stack.length - 1].node.children ??= []
-      stack[stack.length - 1].node.children!.push(node)
-    } else {
-      roots.push(node)
+function explainTreeData(snapshot: unknown) {
+  return buildExplainPlanTree(snapshot).map(function mapNode(node): any {
+    const tags = []
+    if (node.metrics?.cost) tags.push(<Tag key="cost" style={{ marginInlineStart: 6 }}>cost={node.metrics.cost}</Tag>)
+    if (node.metrics?.rows) tags.push(<Tag key="rows" style={{ marginInlineStart: 4 }}>rows={node.metrics.rows}</Tag>)
+    return {
+      key: node.key,
+      title: (
+        <span>
+          <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12 }}>{node.title}</span>
+          {tags}
+        </span>
+      ),
+      children: node.children?.map(mapNode),
     }
-    stack.push({ depth, node })
   })
-  return roots
 }
 
 const STATEMENT_META: Record<string, { color: string; label: string }> = {
@@ -105,7 +107,7 @@ function readLayout(key: string): Layout {
   try {
     return JSON.parse(localStorage.getItem(key) || '') as Layout
   } catch {
-    return { order: [], widths: {} }
+    return { order: [], widths: {}, hidden: [], pinned: [] }
   }
 }
 
@@ -140,13 +142,18 @@ export default function InteractiveRunDock({
   const [shareUrl, setShareUrl] = useState('')
   const [shareTtlHours, setShareTtlHours] = useState(24)
   const [shareLoading, setShareLoading] = useState(false)
-  const [layout, setLayout] = useState<Layout>({ order: [], widths: {} })
+  const [layout, setLayout] = useState<Layout>({ order: [], widths: {}, hidden: [], pinned: [] })
   const previousRunRef = useRef<number | null>(run.runId)
   const exportGenerationRef = useRef(0)
   const exportControllerRef = useRef<AbortController | null>(null)
   const exportCacheRef = useRef(new Map<string, InteractiveRunExport>())
   const selected = run.statements.find(item => String(item.index) === statementKey) ?? run.statements[0] ?? null
   const selectedKey = selected ? String(selected.index) : statementKey
+  const canExportSelected = Boolean(
+    selected
+    && STATEMENT_TERMINAL.has(selected.status)
+    && (selected.columns.length > 0 || Boolean(selected.fields?.length)),
+  )
   const previousSelectionRef = useRef(selectedKey)
   const currentTab = internalTab
   const query = useInteractiveStatementQuery({
@@ -161,7 +168,7 @@ export default function InteractiveRunDock({
   })
   const page = query.data
   const displayedPlan = explain?.plan_snapshot ?? selected?.plan_snapshot
-  const planTree = useMemo(() => explainPlanTree(displayedPlan), [displayedPlan])
+  const planTree = useMemo(() => explainTreeData(displayedPlan), [displayedPlan])
 
   const changeTab = (key: TabKey, manual = true) => {
     if (manual) setManualTab(true)
@@ -262,20 +269,61 @@ export default function InteractiveRunDock({
     }
     const normalizedOrder = resolveResultColumnOrder(layout.order, names, layout.sourceKeys)
     const normalizedWidths = pruneWidths(layout.widths, names)
+    const normalizedHidden = pruneNamedList(layout.hidden, names)
+    const normalizedPinned = pruneNamedList(layout.pinned, names)
+    const semanticTypes = Object.fromEntries(
+      fields.map(field => [field.name, field.semantic_type || undefined]),
+    )
     return buildQueryTableColumns(fields, {
       order: normalizedOrder,
       widths: normalizedWidths,
+      hidden: normalizedHidden,
+      pinned: normalizedPinned,
       dataSource,
       serverQuery: true,
       serverFilters,
-      onOrderChange: order => persist({ order, widths: normalizedWidths, sourceKeys: names }),
+      semanticTypes,
+      loadDistinctValues: run.runId != null && selected
+        ? async (column: string) => {
+            const response = await adhocRunsApi.sampleStatementColumnValues(
+              run.runId!,
+              selected.index,
+              column,
+              {
+                limit: 200,
+                statement_version: page.statement_version || selected.statement_version,
+              },
+            )
+            return {
+              values: (response.values || []).map(valueToFilterKey),
+              truncated: response.truncated,
+            }
+          }
+        : undefined,
+      onOrderChange: order => persist({
+        order,
+        widths: normalizedWidths,
+        hidden: normalizedHidden,
+        pinned: normalizedPinned,
+        sourceKeys: names,
+      }),
       onWidthChange: (key, width) => persist({
         order: normalizedOrder,
         widths: { ...normalizedWidths, [key]: width },
+        hidden: normalizedHidden,
+        pinned: normalizedPinned,
         sourceKeys: names,
       }),
     })
-  }, [page, dataSource, layout, scopeKey, selected, serverFilters])
+  }, [page, dataSource, layout, scopeKey, selected, serverFilters, run.runId])
+
+  const columnNames = useMemo(() => {
+    const fields = page.fields.length
+      ? page.fields
+      : (selected?.fields ?? normalizeQueryColumns(selected?.columns ?? [], selected?.column_types ?? []))
+    return fields.map(field => field.name)
+  }, [page.fields, selected?.columns, selected?.column_types, selected?.fields])
+
   const sortOptions = useMemo(() => {
     const names = page.fields.length
       ? page.fields.map(field => field.name)
@@ -294,7 +342,12 @@ export default function InteractiveRunDock({
       if (!keys.length) return
       controlled[column] = keys
       const selectedValues = keys
-        .filter(value => !value.startsWith('__contains:'))
+        .filter(value => !(
+          value.startsWith('__contains:')
+          || value.startsWith('__starts_with:')
+          || value.startsWith('__gte:')
+          || value.startsWith('__lte:')
+        ))
         .map(value => value === NULL_FILTER_KEY ? null : value)
       if (selectedValues.length) {
         requestFilters.push({ column, operator: 'in', value: selectedValues })
@@ -306,10 +359,51 @@ export default function InteractiveRunDock({
           operator: 'contains',
           value: value.slice('__contains:'.length),
         }))
+      keys
+        .filter(value => value.startsWith('__starts_with:'))
+        .forEach(value => requestFilters.push({
+          column,
+          operator: 'starts_with',
+          value: value.slice('__starts_with:'.length),
+        }))
+      keys
+        .filter(value => value.startsWith('__gte:'))
+        .forEach(value => requestFilters.push({
+          column,
+          operator: 'gte',
+          value: value.slice('__gte:'.length),
+        }))
+      keys
+        .filter(value => value.startsWith('__lte:'))
+        .forEach(value => requestFilters.push({
+          column,
+          operator: 'lte',
+          value: value.slice('__lte:'.length),
+        }))
     })
     setServerFilters(controlled)
     setFilters(requestFilters)
     setSort(nextSort ? [nextSort] : [])
+  }
+
+  const updateColumnLayout = (patch: Partial<Layout>) => {
+    if (!selected) return
+    const names = columnNames
+    const next: Layout = {
+      order: resolveResultColumnOrder(layout.order, names, layout.sourceKeys),
+      widths: pruneWidths(layout.widths, names),
+      hidden: pruneNamedList(layout.hidden, names),
+      pinned: pruneNamedList(layout.pinned, names),
+      sourceKeys: names,
+      ...patch,
+    }
+    next.hidden = pruneNamedList(next.hidden, names)
+    next.pinned = pruneNamedList(next.pinned, names)
+    if ((next.hidden?.length ?? 0) >= names.length) {
+      next.hidden = (next.hidden || []).filter(name => name !== names[0])
+    }
+    setLayout(next)
+    localStorage.setItem(layoutKey(scopeKey, selected), JSON.stringify(next))
   }
 
   const requestExplain = async () => {
@@ -556,7 +650,21 @@ export default function InteractiveRunDock({
                   serverSort={sort[0] ?? null}
                   onServerChange={handleServerChange}
                   toolbar={(
-                    <Space wrap>
+                    <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                      {(statement.status === 'running'
+                        || statement.truncated
+                        || page.truncated
+                        || (statement.total ?? 0) >= SQL_RESULT_ROW_CAP) && (
+                        <Alert
+                          type={statement.status === 'running' ? 'info' : 'warning'}
+                          showIcon
+                          banner
+                          message={statement.status === 'running'
+                            ? '结果仍在物化，当前为预览；完成后可导出完整快照。'
+                            : `结果已截断至 ${Math.min(statement.total || page.source_total || 0, SQL_RESULT_ROW_CAP)} 行（上限 ${SQL_RESULT_ROW_CAP}）。网格仅为预览，完整数据请导出。`}
+                        />
+                      )}
+                      <Space wrap>
                       <Input.Search
                         allowClear
                         size="small"
@@ -584,6 +692,55 @@ export default function InteractiveRunDock({
                           setSort(parsed)
                         }}
                       />
+                      <Dropdown
+                        trigger={['click']}
+                        popupRender={() => (
+                          <div style={{
+                            background: '#fff',
+                            border: '1px solid #f0f0f0',
+                            borderRadius: 8,
+                            padding: 8,
+                            maxHeight: 280,
+                            overflow: 'auto',
+                            minWidth: 220,
+                          }}>
+                            {columnNames.map(name => {
+                              const hidden = new Set(layout.hidden || [])
+                              const pinned = new Set(layout.pinned || [])
+                              const visible = !hidden.has(name)
+                              return (
+                                <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0' }}>
+                                  <Checkbox
+                                    checked={visible}
+                                    onChange={event => {
+                                      const nextHidden = new Set(hidden)
+                                      if (event.target.checked) nextHidden.delete(name)
+                                      else nextHidden.add(name)
+                                      updateColumnLayout({ hidden: [...nextHidden] })
+                                    }}
+                                  >
+                                    {name}
+                                  </Checkbox>
+                                  <Button
+                                    size="small"
+                                    type={pinned.has(name) ? 'link' : 'text'}
+                                    icon={<PushpinOutlined />}
+                                    title={pinned.has(name) ? '取消固定' : '固定到左侧'}
+                                    onClick={() => {
+                                      const nextPinned = new Set(pinned)
+                                      if (nextPinned.has(name)) nextPinned.delete(name)
+                                      else nextPinned.add(name)
+                                      updateColumnLayout({ pinned: [...nextPinned] })
+                                    }}
+                                  />
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+                      >
+                        <Button size="small" icon={<TableOutlined />}>列</Button>
+                      </Dropdown>
                       <span>
                         第 {query.pageNumber} 页 · 本页 {page.rows.length} ·
                         筛选 {page.total} / 总计 {page.source_total} 行
@@ -605,18 +762,26 @@ export default function InteractiveRunDock({
                           else if (next === query.pageNumber + 1) query.next()
                         }}
                       />
-                      <InteractiveExportButton
-                        format={exportFormat}
-                        job={exportJob}
-                        starting={exportStarting}
-                        downloadState={exportDownloadState}
-                        onExport={format => void requestExport(format)}
-                        onCancel={() => void cancelExport()}
-                        onDownload={() => void downloadExport()}
-                      />
+                      <Tooltip title={canExportSelected
+                        ? '导出基于已物化的不可变语句结果，并应用当前搜索、筛选与排序'
+                        : '运行完成后方可导出'}>
+                        <span>
+                          <InteractiveExportButton
+                            format={exportFormat}
+                            job={exportJob}
+                            starting={exportStarting}
+                            downloadState={exportDownloadState}
+                            disabled={!canExportSelected}
+                            onExport={format => void requestExport(format)}
+                            onCancel={() => void cancelExport()}
+                            onDownload={() => void downloadExport()}
+                          />
+                        </span>
+                      </Tooltip>
                       <Tooltip title="导出基于已物化的不可变语句结果，并应用当前搜索、筛选与排序">
                         <Tag color="blue">已物化快照</Tag>
                       </Tooltip>
+                      </Space>
                     </Space>
                   )}
                 />

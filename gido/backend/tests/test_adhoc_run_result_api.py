@@ -401,6 +401,38 @@ def test_rows_query_soft_upgrades_page_one_when_snapshot_advances(api):
     assert cursor_ok.json()["version_upgraded"] is False
 
 
+def test_column_values_samples_distinct_across_chunks(api):
+    client, _factory, ids, _current = api
+    version = client.get(
+        f"/api/adhoc-runs/{ids['run']}/statements"
+    ).json()["statements"][0]["statement_version"]
+    response = client.post(
+        f"/api/adhoc-runs/{ids['run']}/statements/0/columns/label/values",
+        json={"limit": 10, "statement_version": version},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["column"] == "label"
+    assert body["values"] == ["a", "b", "c"]
+    assert body["truncated"] is False
+    assert body["scanned_rows"] == 3
+    assert body["statement_version"] == version
+
+    limited = client.post(
+        f"/api/adhoc-runs/{ids['run']}/statements/0/columns/label/values",
+        json={"limit": 2},
+    )
+    assert limited.status_code == 200
+    assert limited.json()["truncated"] is True
+    assert len(limited.json()["values"]) == 2
+
+    missing = client.post(
+        f"/api/adhoc-runs/{ids['run']}/statements/0/columns/missing/values",
+        json={},
+    )
+    assert missing.status_code == 404
+
+
 def test_rows_query_rejects_unknown_columns_operators_and_three_sorts(api):
     client, _factory, ids, _current = api
     version = client.get(

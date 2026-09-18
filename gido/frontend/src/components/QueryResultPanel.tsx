@@ -111,16 +111,21 @@ export default function QueryResultPanel({
       const startY = e.clientY
       const startH = kvHeight
       resizingKvRef.current = true
+      document.body.style.cursor = 'row-resize'
+      document.body.style.userSelect = 'none'
 
       const onMove = (ev: MouseEvent) => {
         if (!resizingKvRef.current) return
         const dy = ev.clientY - startY
-        const next = Math.max(kvHeightClamp.min, Math.min(kvHeightClamp.max, startH + dy))
+        // Bottom panel: drag the top divider down → panel shorter (same as ResizableVerticalSplit).
+        const next = Math.max(kvHeightClamp.min, Math.min(kvHeightClamp.max, startH - dy))
         setKvHeight(next)
       }
 
       const onUp = () => {
         resizingKvRef.current = false
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
         window.removeEventListener('mousemove', onMove)
         window.removeEventListener('mouseup', onUp)
       }
@@ -471,6 +476,13 @@ export default function QueryResultPanel({
       {/* KV 详情面板：点击行号后在底部展开，两区域同时可见（DBeaver 风格） */}
       {kvRowData && (
         <div className="dw-query-result__kv" style={{ height: kvHeight }}>
+          <div
+            className="dw-query-result__kv-resize-handle"
+            role="separator"
+            aria-orientation="horizontal"
+            onMouseDown={startKvResize}
+            title="拖拽调整详情面板高度"
+          />
           <div className="dw-query-result__kv-header">
             <span>行详情</span>
             <button
@@ -482,7 +494,6 @@ export default function QueryResultPanel({
               ✕
             </button>
           </div>
-          <div className="dw-query-result__kv-resize-handle" onMouseDown={startKvResize} title="拖拽调整详情面板高度" />
           <div className="dw-query-result__kv-body">
             <Descriptions size="small" bordered column={1}>
               {leafKeys.map((k, idx) => (

@@ -139,6 +139,76 @@ def test_run_sql_with_result_uses_fetchmany_not_fetchall(monkeypatch):
     assert any("已追加 LIMIT" in line for line in logs)
 
 
+def test_run_sql_with_result_respects_custom_max_rows(monkeypatch):
+    from app.services import studio_sql_run as mod
+
+    node = SimpleNamespace(
+        workspace_id=1,
+        datasource_id=7,
+        script_content="SELECT id FROM big_table",
+        params=None,
+    )
+    ds = SimpleNamespace(
+        id=7,
+        name="doris_demo",
+        ds_type="doris",
+        host="127.0.0.1",
+        port=9030,
+    )
+    monkeypatch.setattr(mod, "resolve_sql_datasource", lambda db, n: ds)
+    monkeypatch.setattr(mod, "normalize_ds_type", lambda d: "mysql")
+
+    class _WsQ:
+        def filter(self, *a, **k):
+            return self
+
+        def first(self):
+            return SimpleNamespace(timezone="Asia/Shanghai")
+
+    class _Db:
+        def query(self, *_a, **_k):
+            return _WsQ()
+
+    rows = [(i,) for i in range(20)]
+    cur = MagicMock()
+    cur.description = (("id", None, None, None, None, None, None),)
+    cur.rowcount = -1
+    executed: list[str] = []
+
+    def _execute(sql):
+        executed.append(sql)
+
+    cur.execute.side_effect = _execute
+    cur.fetchmany.side_effect = lambda n: rows[:n]
+    cur.fetchall.side_effect = lambda: (_ for _ in ()).throw(
+        AssertionError("fetchall must not be used")
+    )
+    cur.close = MagicMock()
+    conn = MagicMock()
+    conn.cursor.return_value = cur
+
+    @contextmanager
+    def _open(_ds):
+        yield ("mysql", conn)
+
+    monkeypatch.setattr(mod, "open_connection", _open)
+    monkeypatch.setattr(
+        "app.services.workspace_variables.substitute_script_variables",
+        lambda db, ws_id, script, scope, bizdate=None: script,
+    )
+
+    logs, result = run_sql_with_result(
+        node,
+        _Db(),
+        bizdate=None,
+        resolve_date_expr=lambda *a, **k: None,
+        max_rows=123,
+    )
+    assert result is not None
+    assert any("LIMIT 123" in s.upper() for s in executed)
+    assert any("已追加 LIMIT 123" in line for line in logs)
+
+
 def test_run_sql_with_result_truncates_when_fetchmany_overflows(monkeypatch):
     from app.services import studio_sql_run as mod
 

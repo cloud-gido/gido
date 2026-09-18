@@ -237,6 +237,26 @@ describe('InteractiveRunDock', () => {
     })
   })
 
+  it('disables export while the selected statement is still running', async () => {
+    const running = {
+      ...run,
+      status: 'running' as const,
+      isActive: true,
+      statements: [{
+        ...run.statements[0],
+        status: 'running' as const,
+        finished_at: null,
+      }],
+      capabilities: {
+        ...run.capabilities,
+        canExport: false,
+      },
+    }
+    render(<InteractiveRunDock run={running} scopeKey="test:export-gate" />)
+    await waitFor(() => expect(screen.getByText('rows:1,2')).toBeTruthy())
+    expect(screen.getByRole('button', { name: /导出 CSV/ })).toBeDisabled()
+  })
+
   it('offers an explicit retry when automatic download fails', async () => {
     vi.mocked(adhocRunsApi.createExport).mockResolvedValue({
       id: 10,

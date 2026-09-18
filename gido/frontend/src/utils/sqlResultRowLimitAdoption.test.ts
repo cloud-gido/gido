@@ -24,6 +24,8 @@ describe('sql result row limit adoption', () => {
     expect(probe).toContain('SQL_RESULT_ROW_CAP')
     expect(probe).toContain('PROBE_DEFAULT_ROW_LIMIT')
     expect(studio).toContain('InteractiveRunDock')
+    expect(studio).toContain('sqlResultRowLimit')
+    expect(studio).toContain('最大行数')
     expect(dock).toContain('SQL_RESULT_ROW_CAP')
     expect(SQL_RESULT_ROW_CAP).toBe(10000)
     expect(PROBE_DEFAULT_ROW_LIMIT).toBe(10000)
