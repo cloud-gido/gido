@@ -257,6 +257,9 @@
   border-top: none;
   background: #f5f5f5;
   min-width: 0;
+  /* Prefer compositor scrolling; avoid layout work while the thumb is dragged. */
+  overscroll-behavior-x: contain;
+  scrollbar-gutter: stable;
 }
 
 .dw-query-result__hscroll-inner {

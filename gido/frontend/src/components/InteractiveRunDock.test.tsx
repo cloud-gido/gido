@@ -197,7 +197,11 @@ describe('InteractiveRunDock', () => {
     await waitFor(() => expect(screen.getByText(/"scan": "table"/)).toBeTruthy())
   })
 
-  it('shows the first available result before the run reaches terminal status', async () => {
+  it('keeps the log tab until the first result page is ready', async () => {
+    let resolveRows: ((value: any) => void) | null = null
+    vi.mocked(adhocRunsApi.queryStatementRows).mockImplementation(
+      () => new Promise(resolve => { resolveRows = resolve }),
+    )
     const running = {
       ...run,
       status: 'running' as const,
@@ -211,6 +215,18 @@ describe('InteractiveRunDock', () => {
 
     const view = render(<InteractiveRunDock run={running} scopeKey="test:running" />)
 
+    expect(screen.getByRole('tab', { name: /^日志/ }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('tab', { name: /运行结果/ }).getAttribute('aria-selected')).toBe('false')
+
+    resolveRows?.({
+      fields: [{ name: 'id', type: 'int' }],
+      rows: [[1], [2]],
+      total: 201,
+      source_total: 201,
+      statement_version: 's1',
+      next_cursor: 'next',
+      has_more: true,
+    })
     await waitFor(() => {
       expect(screen.getByRole('tab', { name: /运行结果/ }).getAttribute('aria-selected')).toBe('true')
     })
@@ -274,7 +290,7 @@ describe('InteractiveRunDock', () => {
     })
 
     render(<InteractiveRunDock run={run} scopeKey="test:share" />)
-    fireEvent.click(screen.getByText('空间内分享'))
+    fireEvent.click(screen.getByRole('button', { name: /空间内分享/ }))
     await waitFor(() => expect(screen.getByText('复制链接')).toBeTruthy())
     expect(adhocRunsApi.createShare).toHaveBeenCalledWith(8, 24)
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(

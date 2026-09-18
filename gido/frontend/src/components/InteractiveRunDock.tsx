@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Drawer, Empty, Input, Pagination, Select, Space, Spin, Tabs, Tag, Tooltip, Tree, message } from 'antd'
+import { Button, Drawer, Dropdown, Empty, Input, Pagination, Select, Space, Spin, Tabs, Tag, Tooltip, Tree, message } from 'antd'
 import { CopyOutlined, ExperimentOutlined, LinkOutlined } from '@ant-design/icons'
 import { adhocRunsApi } from '../api'
 import type { useInteractiveRun } from '../hooks/useInteractiveRun'
@@ -195,19 +195,30 @@ export default function InteractiveRunDock({
   }, [run.statements, selected, statementKey])
 
   useEffect(() => {
-    const completedOutcome = run.status === 'success' && run.statements.length > 0
-    if (
-      !autoShowResult
-      || manualTab
-      || (!run.capabilities.hasResults && !completedOutcome)
-    ) return
+    if (!autoShowResult || manualTab) return
+    if (!selected) return
+
+    const presentation = statementPresentation(selected)
+    // Keep the log tab until the first result page (or non-query summary) is ready.
+    // Jumping earlier shows an empty grid while rows/query is still in flight.
+    if (presentation.kind === 'query') {
+      if (!run.capabilities.hasResults && !(run.status === 'success' && selected.columns.length)) return
+      if (query.loading && !page.rows.length && !query.error) return
+      if (!page.rows.length && !query.error && !page.statement_version) return
+    } else if (!['success', 'failed', 'cancelled', 'skipped'].includes(selected.status)) {
+      return
+    }
     changeTab('result', false)
   }, [
     autoShowResult,
     manualTab,
     run.status,
-    run.statements.length,
     run.capabilities.hasResults,
+    selected,
+    query.loading,
+    query.error,
+    page.rows.length,
+    page.statement_version,
   ])
 
   useEffect(() => {
@@ -524,6 +535,20 @@ export default function InteractiveRunDock({
           </Space>
           {!statement.error && (statement.columns.length || statement.fields?.length) ? (
             <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
+              {query.loading && !dataSource.length ? (
+                <div style={{
+                  flex: 1,
+                  minHeight: 160,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#8c8c8c',
+                  gap: 8,
+                }}>
+                  <Spin size="small" />
+                  <span>正在加载结果首页…</span>
+                </div>
+              ) : (
               <QueryResultPanel
                   dataSource={dataSource}
                   columns={tableColumns}
@@ -595,7 +620,8 @@ export default function InteractiveRunDock({
                     </Space>
                   )}
                 />
-              {query.loading && (
+              )}
+              {query.loading && dataSource.length > 0 && (
                 <div style={{
                   position: 'absolute',
                   top: 8,
@@ -635,30 +661,33 @@ export default function InteractiveRunDock({
         extra={(
           <Space size={4}>
             {!share?.active ? (
-              <>
-                <Select
-                  size="small"
-                  aria-label="分享链接有效期"
-                  value={shareTtlHours}
-                  style={{ width: 92 }}
-                  onChange={setShareTtlHours}
-                  options={[
-                    { value: 1, label: '1 小时' },
-                    { value: 24, label: '1 天' },
-                    { value: 24 * 7, label: '7 天' },
-                    { value: 24 * 30, label: '30 天' },
-                  ]}
-                />
-                <Button
+              <Tooltip title="创建工作空间内可访问的结果分享链接；右侧菜单可改有效期">
+                <Dropdown.Button
                   size="small"
                   icon={<LinkOutlined />}
                   loading={shareLoading}
                   disabled={!run.runId}
                   onClick={() => void createShare()}
+                  menu={{
+                    selectable: true,
+                    selectedKeys: [String(shareTtlHours)],
+                    items: [
+                      { key: '1', label: '有效期 1 小时' },
+                      { key: '24', label: '有效期 1 天' },
+                      { key: String(24 * 7), label: '有效期 7 天' },
+                      { key: String(24 * 30), label: '有效期 30 天' },
+                    ],
+                    onClick: ({ key }) => setShareTtlHours(Number(key)),
+                  }}
                 >
-                  空间内分享
-                </Button>
-              </>
+                  {`空间内分享 · ${
+                    shareTtlHours === 1 ? '1小时'
+                      : shareTtlHours === 24 ? '1天'
+                        : shareTtlHours === 24 * 7 ? '7天'
+                          : '30天'
+                  }`}
+                </Dropdown.Button>
+              </Tooltip>
             ) : (
               <>
                 <Tooltip title={`有效至 ${new Date(share.expires_at).toLocaleString()}`}>

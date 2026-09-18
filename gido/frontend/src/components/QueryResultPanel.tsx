@@ -195,52 +195,63 @@ export default function QueryResultPanel({
     vInner.style.height = `${main.scrollHeight}px`
   }, [])
 
-  const bindScrollSync = useCallback(() => {
+  // Bind once: rebinding on every page change restarts listeners mid-drag and feels sticky.
+  useEffect(() => {
     const main = mainRef.current
     const hTrack = hTrackRef.current
     const vTrack = vTrackRef.current
-    if (!main || !hTrack || !vTrack) return () => {}
-
-    syncScrollbarSizes()
+    if (!main || !hTrack || !vTrack) return
 
     let syncing = false
-    const apply = (left: number, top: number) => {
-      main.scrollLeft = left
-      main.scrollTop = top
-      hTrack.scrollLeft = left
-      vTrack.scrollTop = top
+    let frame = 0
+    let sizeFrame = 0
+
+    const scheduleSizeSync = () => {
+      if (sizeFrame) return
+      sizeFrame = window.requestAnimationFrame(() => {
+        sizeFrame = 0
+        syncScrollbarSizes()
+      })
     }
 
     const fromMain = () => {
       if (syncing) return
-      syncing = true
-      hTrack.scrollLeft = main.scrollLeft
-      vTrack.scrollTop = main.scrollTop
-      syncing = false
+      if (frame) return
+      frame = window.requestAnimationFrame(() => {
+        frame = 0
+        syncing = true
+        hTrack.scrollLeft = main.scrollLeft
+        vTrack.scrollTop = main.scrollTop
+        syncing = false
+      })
     }
+    // Dragging the fake bar only drives the main viewport; writing back causes lag.
     const fromH = () => {
       if (syncing) return
       syncing = true
-      apply(hTrack.scrollLeft, main.scrollTop)
+      main.scrollLeft = hTrack.scrollLeft
       syncing = false
     }
     const fromV = () => {
       if (syncing) return
       syncing = true
-      apply(main.scrollLeft, vTrack.scrollTop)
+      main.scrollTop = vTrack.scrollTop
       syncing = false
     }
 
+    syncScrollbarSizes()
     main.addEventListener('scroll', fromMain, { passive: true })
     hTrack.addEventListener('scroll', fromH, { passive: true })
     vTrack.addEventListener('scroll', fromV, { passive: true })
 
-    const ro = new ResizeObserver(() => syncScrollbarSizes())
+    const ro = new ResizeObserver(scheduleSizeSync)
     ro.observe(main)
     const tableEl = main.querySelector('.ant-table')
     if (tableEl) ro.observe(tableEl)
 
     return () => {
+      if (frame) window.cancelAnimationFrame(frame)
+      if (sizeFrame) window.cancelAnimationFrame(sizeFrame)
       main.removeEventListener('scroll', fromMain)
       hTrack.removeEventListener('scroll', fromH)
       vTrack.removeEventListener('scroll', fromV)
@@ -249,16 +260,9 @@ export default function QueryResultPanel({
   }, [syncScrollbarSizes])
 
   useEffect(() => {
-    let unbind: (() => void) | undefined
-    const t = window.setTimeout(() => {
-      syncScrollbarSizes()
-      unbind = bindScrollSync()
-    }, 0)
-    return () => {
-      window.clearTimeout(t)
-      unbind?.()
-    }
-  }, [bindScrollSync, syncScrollbarSizes, pagedData, columns, tableMinWidth])
+    const t = window.requestAnimationFrame(() => syncScrollbarSizes())
+    return () => window.cancelAnimationFrame(t)
+  }, [syncScrollbarSizes, pagedData, columns, tableMinWidth])
 
   useEffect(() => {
     if (!ctx) return
