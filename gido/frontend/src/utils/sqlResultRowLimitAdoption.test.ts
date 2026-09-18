@@ -2,7 +2,7 @@
  * Copyright 2026 玑渡 GIDO Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * 回归：探查与数据开发共用 SQL 结果行上限 10000，且经 Run ▾ 配置（不常驻顶栏）。
+ * 回归：探查与数据开发共用默认 SQL 结果行上限 10000，编辑头不暴露可调控件。
  */
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -16,18 +16,17 @@ function read(rel: string) {
 }
 
 describe('sql result row limit adoption', () => {
-  it('Probe and Studio tuck row limit into SqlRunWithRowLimitButton', () => {
+  it('Probe and Studio use the shared default cap without a toolbar control', () => {
     const probe = read('pages/Probe.tsx')
     const studio = read('pages/Studio.tsx')
     const dock = read('components/InteractiveRunDock.tsx')
-    const runButton = read('components/SqlRunWithRowLimitButton.tsx')
-    expect(probe).toContain('SqlRunWithRowLimitButton')
-    expect(studio).toContain('SqlRunWithRowLimitButton')
-    expect(runButton).toContain('试跑行上限')
+    expect(probe).toContain('PROBE_DEFAULT_ROW_LIMIT')
+    expect(studio).toContain('SQL_RESULT_ROW_CAP')
     expect(probe).not.toContain('最大行数')
     expect(studio).not.toContain('最大行数')
+    expect(probe).not.toContain('SqlRunWithRowLimitButton')
+    expect(studio).not.toContain('SqlRunWithRowLimitButton')
     expect(probe).toContain('sqlResultRowLimit')
-    expect(probe).toContain('PROBE_DEFAULT_ROW_LIMIT')
     expect(studio).toContain('InteractiveRunDock')
     expect(studio).toContain('sqlResultRowLimit')
     expect(dock).toContain('SQL_RESULT_ROW_CAP')

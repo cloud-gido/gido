@@ -74,7 +74,6 @@ import {
 import NodeConfigModal from '../components/NodeConfigModal'
 import { useInteractiveRun } from '../hooks/useInteractiveRun'
 import InteractiveRunDock from '../components/InteractiveRunDock'
-import SqlRunWithRowLimitButton from '../components/SqlRunWithRowLimitButton'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
 import { sortLeavesByOrderThenName } from '../utils/treeSort'
 import WorkspaceFolderTree, { locateLeafInFolderTree } from '../components/WorkspaceFolderTree'
@@ -89,14 +88,13 @@ import {
   saveTreeListCache,
   treeListReadyFromCache,
 } from '../utils/workspaceTreeListCache'
-import { SQL_RESULT_ROW_CAP, clampSqlResultRowLimit } from '../utils/sqlResultRowLimit'
+import { SQL_RESULT_ROW_CAP } from '../utils/sqlResultRowLimit'
 
 const NODE_TYPES = ['SQL', 'PYTHON', 'SHELL', 'SYNC', 'VIRTUAL', 'DEPENDENT']
 const LANG_MAP: Record<string, string> = { SQL: 'sql', PYTHON: 'python', SHELL: 'shell', SYNC: 'json', DEPENDENT: 'plaintext' }
 const TYPE_COLOR: Record<string, string> = {
   SQL: 'blue', PYTHON: 'green', SHELL: 'orange', SYNC: 'purple', VIRTUAL: 'default', DEPENDENT: 'magenta',
 }
-const STUDIO_ROW_LIMIT_KEY = 'gido.studio.sqlResultRowLimit'
 
 function sortNodesList(list: any[]): any[] {
   return sortLeavesByOrderThenName(list)
@@ -166,14 +164,6 @@ export default function StudioPage() {
   const [diffHistory, setDiffHistory] = useState<{ saved_at?: string; script_content?: string } | null>(null)
   const [schemaBrowserOpen, setSchemaBrowserOpen] = useState(false)
   const [runBizdate, setRunBizdate] = useState<Dayjs | null>(null)
-  const [runRowLimit, setRunRowLimit] = useState(() => {
-    try {
-      const raw = localStorage.getItem(`${STUDIO_ROW_LIMIT_KEY}:${wsId ?? 'default'}`)
-      return clampSqlResultRowLimit(raw, SQL_RESULT_ROW_CAP)
-    } catch {
-      return SQL_RESULT_ROW_CAP
-    }
-  })
   const [workflows, setWorkflows] = useState<any[]>([])
   /** 当前用户是否持有各节点的协作编辑锁（与发布锁定 is_locked 独立） */
   const [editLockHeld, setEditLockHeld] = useState<Record<number, boolean>>({})
@@ -988,7 +978,7 @@ export default function StudioPage() {
           activeNode.id,
           latestScript,
           runBizdate ? runBizdate.format('YYYY-MM-DD') : undefined,
-          activeNode.node_type === 'SQL' ? { limit: runRowLimit } : undefined,
+          activeNode.node_type === 'SQL' ? { limit: SQL_RESULT_ROW_CAP } : undefined,
         ),
       )
       if (res?.reused) message.info('该节点已有相同运行，已打开实时日志')
@@ -1512,35 +1502,16 @@ export default function StudioPage() {
                 variant="chip"
                 testId="studio-active-script-title"
               />
-              {activeNode?.node_type === 'SQL' ? (
-                <SqlRunWithRowLimitButton
-                  limit={runRowLimit}
-                  loading={isRunning}
-                  disabled={isRunning || !canRun || activeContentPending || Boolean(activeContentError)}
-                  title={canRun ? undefined : '无运行权限'}
-                  onRun={() => { void handleRun() }}
-                  onLimitChange={next => {
-                    const value = clampSqlResultRowLimit(next, SQL_RESULT_ROW_CAP)
-                    setRunRowLimit(value)
-                    try {
-                      localStorage.setItem(`${STUDIO_ROW_LIMIT_KEY}:${wsId ?? 'default'}`, String(value))
-                    } catch {
-                      // ignore
-                    }
-                  }}
-                />
-              ) : (
-                <Button
-                  type="primary"
-                  icon={isRunning ? <LoadingOutlined /> : <PlayCircleOutlined />}
-                  onClick={() => { void handleRun() }}
-                  disabled={isRunning || !canRun || activeContentPending || Boolean(activeContentError)}
-                  size="small"
-                  title={canRun ? undefined : '无运行权限'}
-                >
-                  {isRunning ? '运行中...' : '运行'}
-                </Button>
-              )}
+              <Button
+                type="primary"
+                icon={isRunning ? <LoadingOutlined /> : <PlayCircleOutlined />}
+                onClick={() => { void handleRun() }}
+                disabled={isRunning || !canRun || activeContentPending || Boolean(activeContentError)}
+                size="small"
+                title={canRun ? undefined : '无运行权限'}
+              >
+                {isRunning ? '运行中...' : '运行'}
+              </Button>
               <Button
                 icon={<SaveOutlined />}
                 onClick={handleSave}

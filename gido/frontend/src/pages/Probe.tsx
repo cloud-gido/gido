@@ -9,7 +9,7 @@ import {
   Button, Select, Alert, message, Input, Modal, Form, Tooltip, Tag, Spin,
 } from 'antd'
 import {
-  PlusOutlined, FolderAddOutlined,
+  PlayCircleOutlined, PlusOutlined, FolderAddOutlined,
   FormatPainterOutlined, MenuFoldOutlined, AimOutlined,
 } from '@ant-design/icons'
 import '../monacoSetup'
@@ -35,8 +35,7 @@ import {
 import MonacoFindBar, { bindMonacoFindKeybindings, type MonacoFindBarApi } from '../components/MonacoFindBar'
 import { bindMonacoScriptKeybindings } from '../utils/monacoScriptKeybindings'
 import { useSqlSchemaCompletion } from '../hooks/useSqlSchemaCompletion'
-import { PROBE_DEFAULT_ROW_LIMIT, clampSqlResultRowLimit } from '../utils/sqlResultRowLimit'
-import SqlRunWithRowLimitButton from '../components/SqlRunWithRowLimitButton'
+import { PROBE_DEFAULT_ROW_LIMIT } from '../utils/sqlResultRowLimit'
 import {
   datasourceTagText,
   hasExplicitDatasource,
@@ -302,7 +301,6 @@ export default function ProbePage() {
   }, [])
 
   const sql = activeScript?.sql ?? ''
-  const limit = activeScript?.limit ?? PROBE_DEFAULT_ROW_LIMIT
 
   const activeScriptIdRef = useRef<string | null>(null)
   activeScriptIdRef.current = probeState.activeScriptId
@@ -387,7 +385,7 @@ export default function ProbePage() {
         workspace_id: wsId,
         datasource_id: runDs,
         sql: sqlToRun,
-        limit: activeScript.limit,
+        limit: PROBE_DEFAULT_ROW_LIMIT,
         client_key: activeScript.id,
       }))
       if (res?.reused) message.info('相同查询正在运行，已恢复进度')
@@ -633,14 +631,9 @@ export default function ProbePage() {
           hint={scriptAutosave.hint}
           localAuthority
         />
-        <SqlRunWithRowLimitButton
-          size="middle"
-          limit={limit}
-          loading={loading}
-          disabled={!sql.trim()}
-          onRun={() => { void run() }}
-          onLimitChange={v => patchActiveScript({ limit: clampSqlResultRowLimit(v, PROBE_DEFAULT_ROW_LIMIT) })}
-        />
+        <Button type="primary" icon={<PlayCircleOutlined />} loading={loading} onClick={() => { void run() }}>
+          运行
+        </Button>
         <Button
           icon={<AimOutlined />}
           onClick={locateActiveInTree}
