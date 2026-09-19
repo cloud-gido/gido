@@ -904,46 +904,48 @@ export default function DataMapPage() {
                     key: 'info',
                     label: '基本信息',
                     children: (
-                      <Descriptions column={2} bordered size="small">
-                        <Descriptions.Item label="限定名" span={2}>
-                          {selectedTable.qualified_name || `${selectedTable.db_name}.${selectedTable.table_name}`}
-                        </Descriptions.Item>
-                        <Descriptions.Item label="数据源">{selectedTable.datasource_name || selectedDs?.name || '—'}</Descriptions.Item>
-                        <Descriptions.Item label="类型">{selectedTable.ds_type || selectedDs?.ds_type || '—'}</Descriptions.Item>
-                        <Descriptions.Item label="表名">{selectedTable.table_name}</Descriptions.Item>
-                        <Descriptions.Item label="数据库/Catalog">{selectedTable.catalog || selectedTable.db_name}</Descriptions.Item>
-                        <Descriptions.Item label="行数">{selectedTable.row_count ?? '—'}</Descriptions.Item>
-                        <Descriptions.Item label="引擎注释" span={2}>{selectedTable.table_comment || '—'}</Descriptions.Item>
-                      </Descriptions>
-                      {selectedTable.id && canWrite ? (
-                        <Form form={bizForm} layout="vertical" style={{ marginTop: 16, maxWidth: 640 }} onFinish={() => { void saveBusiness() }}>
-                          <Form.Item name="owner" label="负责人">
-                            <Input maxLength={64} placeholder="谁负责这张表" />
-                          </Form.Item>
-                          <Form.Item name="tags" label="标签">
-                            <Select mode="tags" placeholder="业务标签，回车添加" tokenSeparators={[',']} />
-                          </Form.Item>
-                          <Form.Item name="business_description" label="业务说明">
-                            <Input.TextArea
-                              rows={4}
-                              maxLength={4000}
-                              showCount
-                              placeholder="这张表是什么、给谁用。同步结构不会覆盖这里。"
-                            />
-                          </Form.Item>
-                          <Button type="primary" htmlType="submit" loading={bizSaving}>保存</Button>
-                        </Form>
-                      ) : (
-                        <Descriptions column={2} bordered size="small" style={{ marginTop: 12 }}>
-                          <Descriptions.Item label="负责人">{selectedTable.owner || '—'}</Descriptions.Item>
-                          <Descriptions.Item label="标签">
-                            {Array.isArray(selectedTable.tags) && selectedTable.tags.length
-                              ? selectedTable.tags.map((tag: string) => <Tag key={tag}>{tag}</Tag>)
-                              : '—'}
+                      <>
+                        <Descriptions column={2} bordered size="small">
+                          <Descriptions.Item label="限定名" span={2}>
+                            {selectedTable.qualified_name || `${selectedTable.db_name}.${selectedTable.table_name}`}
                           </Descriptions.Item>
-                          <Descriptions.Item label="业务说明" span={2}>{selectedTable.business_description || '—'}</Descriptions.Item>
+                          <Descriptions.Item label="数据源">{selectedTable.datasource_name || selectedDs?.name || '—'}</Descriptions.Item>
+                          <Descriptions.Item label="类型">{selectedTable.ds_type || selectedDs?.ds_type || '—'}</Descriptions.Item>
+                          <Descriptions.Item label="表名">{selectedTable.table_name}</Descriptions.Item>
+                          <Descriptions.Item label="数据库/Catalog">{selectedTable.catalog || selectedTable.db_name}</Descriptions.Item>
+                          <Descriptions.Item label="行数">{selectedTable.row_count ?? '—'}</Descriptions.Item>
+                          <Descriptions.Item label="引擎注释" span={2}>{selectedTable.table_comment || '—'}</Descriptions.Item>
                         </Descriptions>
-                      )}
+                        {selectedTable.id && canWrite ? (
+                          <Form form={bizForm} layout="vertical" style={{ marginTop: 16, maxWidth: 640 }} onFinish={() => { void saveBusiness() }}>
+                            <Form.Item name="owner" label="负责人">
+                              <Input maxLength={64} placeholder="谁负责这张表" />
+                            </Form.Item>
+                            <Form.Item name="tags" label="标签">
+                              <Select mode="tags" placeholder="业务标签，回车添加" tokenSeparators={[',']} />
+                            </Form.Item>
+                            <Form.Item name="business_description" label="业务说明">
+                              <Input.TextArea
+                                rows={4}
+                                maxLength={4000}
+                                showCount
+                                placeholder="这张表是什么、给谁用。同步结构不会覆盖这里。"
+                              />
+                            </Form.Item>
+                            <Button type="primary" htmlType="submit" loading={bizSaving}>保存</Button>
+                          </Form>
+                        ) : (
+                          <Descriptions column={2} bordered size="small" style={{ marginTop: 12 }}>
+                            <Descriptions.Item label="负责人">{selectedTable.owner || '—'}</Descriptions.Item>
+                            <Descriptions.Item label="标签">
+                              {Array.isArray(selectedTable.tags) && selectedTable.tags.length
+                                ? selectedTable.tags.map((tag: string) => <Tag key={tag}>{tag}</Tag>)
+                                : '—'}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="业务说明" span={2}>{selectedTable.business_description || '—'}</Descriptions.Item>
+                          </Descriptions>
+                        )}
+                      </>
                     ),
                   },
                   {
