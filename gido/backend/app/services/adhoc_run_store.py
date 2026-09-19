@@ -332,18 +332,9 @@ def list_run_statements(db: Session, run_id: int) -> List[AdhocRunStatement]:
 
 
 def _semantic_type_from_raw(raw_type: str) -> str:
-    normalized = raw_type.lower()
-    if any(token in normalized for token in ("int", "decimal", "numeric", "float", "double", "real")):
-        return "number"
-    if "bool" in normalized or normalized == "bit":
-        return "boolean"
-    if any(token in normalized for token in ("date", "time")):
-        return "datetime"
-    if any(token in normalized for token in ("json", "array", "map", "struct")):
-        return "json"
-    if any(token in normalized for token in ("binary", "blob", "bytea")):
-        return "binary"
-    return "string"
+    from app.services.sql_readonly import semantic_type
+
+    return semantic_type(raw_type)
 
 
 def _legacy_fields(schema: Dict[str, Any]) -> List[Dict[str, Any]]:

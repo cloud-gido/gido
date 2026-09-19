@@ -62,7 +62,7 @@ export function classifyColumnType(typeLabel?: string): ColumnTypeBadge | null {
   if (/char|text|varchar|string|uuid|enum|name|bpchar|clob/.test(t)) {
     return { kind: 'string', badge: 'abc', title: raw }
   }
-  if (/bytea|blob|binary/.test(t)) {
+  if (/\b(bytea|tinyblob|blob|mediumblob|longblob|varbinary|binary)\b/.test(t)) {
     return { kind: 'other', badge: '01', title: raw }
   }
   return { kind: 'other', badge: '···', title: raw }

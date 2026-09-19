@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List, Any, Dict
 from datetime import datetime
+import re
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.core import perm_codes as PC
@@ -31,6 +32,109 @@ def _qualified_name(ds_name: str, catalog: str, table_name: str) -> str:
     if catalog:
         return f"{ds_name}.{catalog}.{table_name}"
     return f"{ds_name}.{table_name}"
+
+
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+
+def _require_ident(name: str, label: str) -> str:
+    text = (name or "").strip()
+    if not _IDENT_RE.match(text):
+        raise ValueError(f"{label}含非法字符，无法生成语句")
+    return text
+
+
+def build_select_sql(ds_type: str, catalog: str, table_name: str, limit: int = 100) -> str:
+    """只读探查语句。标识符白名单，避免把表名拼进可执行 SQL 时被注入。"""
+    table = _require_ident(table_name, "表名")
+    schema = _require_ident(catalog, "库名")
+    capped = max(1, min(int(limit or 100), 1000))
+    if (ds_type or "").lower() == "postgresql":
+        return f'SELECT *\nFROM "{schema}"."{table}"\nLIMIT {capped}'
+    return f"SELECT *\nFROM `{schema}`.`{table}`\nLIMIT {capped}"
+
+
+def merge_column_hits(
+    rows: List[dict],
+    hits: List[dict],
+    *,
+    datasource_id: int,
+    datasource_name: str,
+    ds_type: str,
+    meta_by_key: Dict,
+) -> None:
+    """字段名/注释命中时，给已有表打上 match_columns；表本身没命中则补一行。"""
+    index: Dict[tuple, dict] = {}
+    for row in rows:
+        if row.get("datasource_id") == datasource_id and row.get("table_name"):
+            index[(str(row.get("catalog") or ""), row["table_name"])] = row
+    for hit in hits:
+        catalog = str(hit.get("catalog") or "")
+        table_name = str(hit.get("table_name") or "")
+        column_name = str(hit.get("column_name") or "").strip()
+        if not table_name or not column_name:
+            continue
+        comment = str(hit.get("column_comment") or "").strip()
+        label = f"{column_name}（{comment}）" if comment else column_name
+        existing = index.get((catalog, table_name))
+        if existing is not None:
+            matched = existing.setdefault("match_columns", [])
+            if label not in matched and len(matched) < 3:
+                matched.append(label)
+            continue
+        meta = meta_by_key.get((datasource_id, catalog, table_name))
+        row = {
+            "row_key": f"{'m' if meta else 'p'}-{datasource_id}-{catalog}-{table_name}",
+            "registered": meta is not None,
+            "meta_table_id": meta.id if meta else None,
+            "datasource_id": datasource_id,
+            "datasource_name": datasource_name,
+            "ds_type": ds_type,
+            "catalog": catalog,
+            "table_name": table_name,
+            "qualified_name": _qualified_name(datasource_name, catalog, table_name),
+            "table_comment": (meta.table_comment if meta else "") or "",
+            "table_type": (meta.table_type if meta else None) or "table",
+            "row_count": meta.row_count if meta else None,
+            "tags": meta.tags if meta else None,
+            "owner": meta.owner if meta else None,
+            "last_updated": meta.last_updated if meta else None,
+            "match_columns": [label],
+        }
+        rows.append(row)
+        index[(catalog, table_name)] = row
+
+
+def _partition_summary(fetched) -> Optional[dict]:
+    parts = [row for row in fetched if row and row[0]]
+    if not parts:
+        return None
+    names = [str(row[0]) for row in parts]
+    return {
+        "method": parts[0][1] or None,
+        "expression": parts[0][2] or None,
+        "count": len(parts),
+        "names": names[-8:],
+    }
+
+
+_SEARCH_HIT_CAP = 40
+
+
+def _fetch_mysql_keyword_tables(cur, catalogs: List[str], keyword: str):
+    """一次查出所有库里命中的表，避免按库逐条往返。"""
+    like = f"%{keyword}%"
+    marks = ",".join(["%s"] * len(catalogs))
+    cur.execute(
+        f"SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE, TABLE_COMMENT "
+        f"FROM information_schema.TABLES "
+        f"WHERE TABLE_SCHEMA IN ({marks}) AND ("
+        f"LOWER(TABLE_NAME) LIKE %s OR LOWER(IFNULL(TABLE_COMMENT,'')) LIKE %s "
+        f"OR LOWER(TABLE_SCHEMA) LIKE %s"
+        f") ORDER BY TABLE_SCHEMA, TABLE_NAME LIMIT %s",
+        (*catalogs, like, like, like, _SEARCH_HIT_CAP),
+    )
+    return list(cur.fetchall())
 
 
 def _explicit_datamap_catalogs(ds: DataSource) -> List[str]:
@@ -210,6 +314,7 @@ def _serialize_table_detail(db: Session, table: MetaTable) -> dict:
         "size_bytes": table.size_bytes,
         "tags": table.tags,
         "owner": table.owner,
+        "business_description": table.business_description,
         "last_updated": table.last_updated,
         "columns": [
             {
@@ -439,7 +544,12 @@ def workspace_catalog(
     rows: List[dict] = []
     kw = (keyword or "").strip().lower()
 
+    def _hit_count() -> int:
+        return sum(1 for row in rows if row.get("table_name"))
+
     for ds in datasources:
+        if kw and _hit_count() >= _SEARCH_HIT_CAP:
+            break
         lt = (ds.ds_type or "").lower()
         if lt not in _CATALOG_DS_TYPES:
             continue
@@ -466,31 +576,9 @@ def workspace_catalog(
                 cur = conn.cursor()
                 catalogs = _mysql_catalogs_to_scan(ds, cur)
                 scanned_ok = 0
-                for schema in catalogs:
+                if kw and catalogs:
                     try:
-                        if kw and kw in schema.lower():
-                            # 关键字命中库名：列出该库全部表
-                            cur.execute(
-                                "SELECT TABLE_NAME, TABLE_TYPE, TABLE_COMMENT FROM information_schema.TABLES "
-                                "WHERE TABLE_SCHEMA = %s ORDER BY TABLE_NAME",
-                                (schema,),
-                            )
-                        elif kw:
-                            like = f"%{kw}%"
-                            cur.execute(
-                                "SELECT TABLE_NAME, TABLE_TYPE, TABLE_COMMENT FROM information_schema.TABLES "
-                                "WHERE TABLE_SCHEMA = %s AND ("
-                                "LOWER(TABLE_NAME) LIKE %s OR LOWER(IFNULL(TABLE_COMMENT,'')) LIKE %s"
-                                ") ORDER BY TABLE_NAME",
-                                (schema, like, like),
-                            )
-                        else:
-                            cur.execute(
-                                "SELECT TABLE_NAME, TABLE_TYPE, TABLE_COMMENT FROM information_schema.TABLES "
-                                "WHERE TABLE_SCHEMA = %s ORDER BY TABLE_NAME",
-                                (schema,),
-                            )
-                        for tn, tt, tc in cur.fetchall():
+                        for schema, tn, tt, tc in _fetch_mysql_keyword_tables(cur, catalogs, kw):
                             tc = tc or ""
                             meta = meta_by_key.get((ds.id, schema, tn))
                             qual = _qualified_name(ds.name, schema, tn)
@@ -511,19 +599,91 @@ def workspace_catalog(
                                 "owner": meta.owner if meta else None,
                                 "last_updated": meta.last_updated if meta else None,
                             })
-                        scanned_ok += 1
-                    except Exception as schema_err:
+                        scanned_ok = len(catalogs)
+                    except Exception as search_err:
                         rows.append({
-                            "row_key": f"err-{ds.id}-{schema}",
+                            "row_key": f"err-{ds.id}-search",
                             "registered": False,
                             "meta_table_id": None,
                             "datasource_id": ds.id,
                             "datasource_name": ds.name,
-                            "error": f"库 {schema}：{schema_err}",
-                            "qualified_name": f"{ds.name}.{schema}",
-                            "catalog": schema,
+                            "error": str(search_err),
+                            "qualified_name": f"{ds.name}·搜索",
+                            "catalog": "",
                             "table_name": "",
                         })
+                else:
+                    for schema in catalogs:
+                        try:
+                            cur.execute(
+                                "SELECT TABLE_NAME, TABLE_TYPE, TABLE_COMMENT FROM information_schema.TABLES "
+                                "WHERE TABLE_SCHEMA = %s ORDER BY TABLE_NAME",
+                                (schema,),
+                            )
+                            for tn, tt, tc in cur.fetchall():
+                                tc = tc or ""
+                                meta = meta_by_key.get((ds.id, schema, tn))
+                                qual = _qualified_name(ds.name, schema, tn)
+                                rows.append({
+                                    "row_key": f"{'m' if meta else 'p'}-{ds.id}-{schema}-{tn}",
+                                    "registered": meta is not None,
+                                    "meta_table_id": meta.id if meta else None,
+                                    "datasource_id": ds.id,
+                                    "datasource_name": ds.name,
+                                    "ds_type": ds.ds_type,
+                                    "catalog": schema,
+                                    "table_name": tn,
+                                    "qualified_name": qual,
+                                    "table_comment": (meta.table_comment if meta else tc) or "",
+                                    "table_type": (meta.table_type if meta else tt) or "table",
+                                    "row_count": meta.row_count if meta else None,
+                                    "tags": meta.tags if meta else None,
+                                    "owner": meta.owner if meta else None,
+                                    "last_updated": meta.last_updated if meta else None,
+                                })
+                            scanned_ok += 1
+                        except Exception as schema_err:
+                            rows.append({
+                                "row_key": f"err-{ds.id}-{schema}",
+                                "registered": False,
+                                "meta_table_id": None,
+                                "datasource_id": ds.id,
+                                "datasource_name": ds.name,
+                                "error": f"库 {schema}：{schema_err}",
+                                "qualified_name": f"{ds.name}.{schema}",
+                                "catalog": schema,
+                                "table_name": "",
+                            })
+                if kw and catalogs:
+                    try:
+                        marks = ",".join(["%s"] * len(catalogs))
+                        like = f"%{kw}%"
+                        cur.execute(
+                            f"SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, COLUMN_COMMENT "
+                            f"FROM information_schema.COLUMNS "
+                            f"WHERE TABLE_SCHEMA IN ({marks}) AND ("
+                            f"LOWER(COLUMN_NAME) LIKE %s OR LOWER(IFNULL(COLUMN_COMMENT,'')) LIKE %s"
+                            f") ORDER BY TABLE_SCHEMA, TABLE_NAME LIMIT %s",
+                            (*catalogs, like, like, _SEARCH_HIT_CAP),
+                        )
+                        merge_column_hits(
+                            rows,
+                            [
+                                {
+                                    "catalog": item[0],
+                                    "table_name": item[1],
+                                    "column_name": item[2],
+                                    "column_comment": item[3],
+                                }
+                                for item in cur.fetchall()
+                            ],
+                            datasource_id=ds.id,
+                            datasource_name=ds.name,
+                            ds_type=ds.ds_type,
+                            meta_by_key=meta_by_key,
+                        )
+                    except Exception:
+                        pass
                 if not catalogs:
                     rows.append({
                         "row_key": f"err-{ds.id}-nocat",
@@ -547,7 +707,7 @@ def workspace_catalog(
                         "datasource_id": ds.id,
                         "datasource_name": ds.name,
                         "error": (
-                            f"在已扫 {scanned_ok} 个库中未找到含「{kw}」的表名/注释；"
+                            f"在已扫 {scanned_ok} 个库中未找到含「{kw}」的表名、注释或字段；"
                             f"已扫：{', '.join(catalogs[:12])}{'…' if len(catalogs) > 12 else ''}。"
                             "可清空关键字看全量，或到数据源核对库白名单是否含 bigdata_dw 等。"
                         ),
@@ -618,6 +778,33 @@ def workspace_catalog(
                     "owner": meta.owner if meta else None,
                     "last_updated": meta.last_updated if meta else None,
                 })
+            if kw:
+                try:
+                    like = f"%{kw}%"
+                    cur.execute(
+                        "SELECT table_name, column_name FROM information_schema.columns "
+                        "WHERE table_schema = %s AND LOWER(column_name) LIKE %s "
+                        "ORDER BY table_name LIMIT 80",
+                        (pg_schema, like),
+                    )
+                    merge_column_hits(
+                        rows,
+                        [
+                            {
+                                "catalog": pg_schema,
+                                "table_name": item[0],
+                                "column_name": item[1],
+                                "column_comment": "",
+                            }
+                            for item in cur.fetchall()
+                        ],
+                        datasource_id=ds.id,
+                        datasource_name=ds.name,
+                        ds_type=ds.ds_type,
+                        meta_by_key=meta_by_key,
+                    )
+                except Exception:
+                    pass
             conn.close()
         except Exception as e:
             rows.append({
@@ -632,7 +819,57 @@ def workspace_catalog(
                 "table_name": "",
             })
 
+    if kw:
+        seen_tables = {
+            (r.get("datasource_id"), str(r.get("catalog") or "").strip(), r.get("table_name"))
+            for r in rows
+            if r.get("table_name")
+        }
+        ds_by_id = {ds.id: ds for ds in datasources}
+        meta_q = db.query(MetaTable).filter(MetaTable.workspace_id == workspace_id)
+        if datasource_id is not None:
+            meta_q = meta_q.filter(MetaTable.datasource_id == datasource_id)
+        for mt in meta_q.all():
+            tags = mt.tags if isinstance(mt.tags, list) else []
+            haystack = " ".join([
+                mt.table_name or "",
+                mt.business_description or "",
+                mt.owner or "",
+                " ".join(str(tag) for tag in tags),
+            ]).lower()
+            if kw not in haystack or not mt.table_name:
+                continue
+            schema = (mt.db_name or "").strip()
+            key = (mt.datasource_id, schema, mt.table_name)
+            if key in seen_tables:
+                continue
+            ds = ds_by_id.get(mt.datasource_id)
+            if not ds:
+                continue
+            rows.append({
+                "row_key": f"m-{ds.id}-{schema}-{mt.table_name}",
+                "registered": True,
+                "meta_table_id": mt.id,
+                "datasource_id": ds.id,
+                "datasource_name": ds.name,
+                "ds_type": ds.ds_type,
+                "catalog": schema,
+                "table_name": mt.table_name,
+                "qualified_name": _qualified_name(ds.name, schema, mt.table_name),
+                "table_comment": mt.table_comment or mt.business_description or "",
+                "table_type": mt.table_type or "table",
+                "row_count": mt.row_count,
+                "tags": mt.tags,
+                "owner": mt.owner,
+                "last_updated": mt.last_updated,
+            })
+            seen_tables.add(key)
+
     rows.sort(key=lambda x: (x.get("error") is not None, x.get("qualified_name") or ""))
+    if kw:
+        tables = [row for row in rows if row.get("table_name")][:_SEARCH_HIT_CAP]
+        notes = [row for row in rows if row.get("error") and not row.get("table_name")][:2]
+        return tables or notes
     return rows
 
 
@@ -692,6 +929,203 @@ def get_table_detail(table_id: int, db: Session = Depends(get_db), current_user:
     return _serialize_table_detail(db, table)
 
 
+class MetaTableBusinessUpdate(BaseModel):
+    owner: Optional[str] = None
+    tags: Optional[List[str]] = None
+    business_description: Optional[str] = None
+
+
+def _leaf_table_name(raw: Optional[str]) -> str:
+    text = (raw or "").strip().strip("`").strip('"')
+    if "." in text:
+        text = text.rsplit(".", 1)[-1].strip("`").strip('"')
+    return text.lower()
+
+
+def _sql_mentions_table(sql: Optional[str], table_name: str) -> bool:
+    name = (table_name or "").strip()
+    if not sql or not name:
+        return False
+    return re.search(rf"(?i)(?:^|[^0-9A-Za-z_]){re.escape(name)}(?:[^0-9A-Za-z_]|$)", sql) is not None
+
+
+def migrate_meta_table_business(engine) -> None:
+    """业务说明与引擎表注释分开存，同步结构时不会被覆盖。"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if not insp.has_table("dw_meta_tables"):
+        return
+    cols = {col["name"] for col in insp.get_columns("dw_meta_tables")}
+    if "business_description" in cols:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE dw_meta_tables ADD COLUMN business_description TEXT"))
+
+
+def migrate_lineage_producers(engine) -> None:
+    """血缘边可以指向同步任务或实时作业，而不只是开发 SQL 节点。"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if not insp.has_table("dw_lineage"):
+        return
+    cols = {col["name"] for col in insp.get_columns("dw_lineage")}
+    statements = []
+    if "sync_task_id" not in cols:
+        statements.append("ALTER TABLE dw_lineage ADD COLUMN sync_task_id INTEGER")
+    if "stream_job_id" not in cols:
+        statements.append("ALTER TABLE dw_lineage ADD COLUMN stream_job_id INTEGER")
+    if not statements:
+        return
+    with engine.begin() as conn:
+        for statement in statements:
+            conn.execute(text(statement))
+
+
+@router.patch("/tables/{table_id}")
+def update_table_business(
+    table_id: int,
+    body: MetaTableBusinessUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """负责人、标签、业务说明。引擎表注释仍由同步结构维护。"""
+    table = require_meta_table(db, current_user, table_id, "developer", PC.GIDO_BATCH_DATAMAP_WRITE)
+    fields = body.model_fields_set
+    if "owner" in fields:
+        owner = (body.owner or "").strip()
+        table.owner = owner[:64] or None
+    if "tags" in fields:
+        cleaned = []
+        for tag in body.tags or []:
+            text = str(tag).strip()
+            if text and text not in cleaned:
+                cleaned.append(text[:32])
+            if len(cleaned) >= 12:
+                break
+        table.tags = cleaned
+    if "business_description" in fields:
+        note = (body.business_description or "").strip()
+        table.business_description = note[:4000] or None
+    db.commit()
+    db.refresh(table)
+    return _serialize_table_detail(db, table)
+
+
+@router.get("/tables/{table_id}/context")
+def table_context(table_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """这张表被谁生产、谁消费：SQL 任务、同步任务、质量规则、数据服务。"""
+    from app.models.data_service import DataApi
+    from app.models.workspace import QualityRule, SyncTask
+    from app.services.lineage import refresh_lineage_for_table, stream_jobs_for_table
+
+    table = require_meta_table(db, current_user, table_id)
+    refresh_lineage_for_table(db, table)
+    name = table.table_name
+
+    sql_tasks = []
+    by_node: Dict[int, Dict[str, Any]] = {}
+    edges = (
+        db.query(Lineage)
+        .filter((Lineage.src_table_id == table.id) | (Lineage.dst_table_id == table.id))
+        .all()
+    )
+    for edge in edges:
+        if not edge.task_node_id:
+            continue
+        bucket = by_node.setdefault(edge.task_node_id, {"writes": False, "reads": False, "peers": []})
+        if edge.dst_table_id == table.id:
+            bucket["writes"] = True
+            if edge.src_table_id and edge.src_table_id not in bucket["peers"]:
+                bucket["peers"].append(edge.src_table_id)
+        if edge.src_table_id == table.id:
+            bucket["reads"] = True
+            if edge.dst_table_id and edge.dst_table_id not in bucket["peers"]:
+                bucket["peers"].append(edge.dst_table_id)
+    for node_id, bucket in by_node.items():
+        node = db.query(TaskNode).filter(TaskNode.id == node_id).first()
+        if not node:
+            continue
+        if bucket["writes"] and bucket["reads"]:
+            role = "读写"
+        elif bucket["writes"]:
+            role = "写入"
+        else:
+            role = "读取"
+        peer_names = []
+        for peer_id in bucket["peers"][:3]:
+            peer = db.query(MetaTable).filter(MetaTable.id == peer_id).first()
+            if peer and peer.table_name:
+                peer_names.append(peer.table_name)
+        sql_tasks.append({
+            "id": node.id,
+            "name": node.name,
+            "role": role,
+            "peer_table": "、".join(peer_names) or None,
+        })
+
+    sync_tasks = []
+    leaf = name.lower()
+    for task in db.query(SyncTask).filter(SyncTask.workspace_id == table.workspace_id).all():
+        src_hit = (
+            task.src_datasource_id == table.datasource_id
+            and _leaf_table_name(task.src_table) == leaf
+        )
+        dst_hit = (
+            task.dst_datasource_id == table.datasource_id
+            and _leaf_table_name(task.dst_table) == leaf
+        )
+        if not src_hit and not dst_hit:
+            continue
+        sync_tasks.append({
+            "id": task.id,
+            "name": task.name,
+            "role": "同步来源" if src_hit and not dst_hit else "同步目标" if dst_hit and not src_hit else "同步来源和目标",
+            "peer_table": task.dst_table if src_hit else task.src_table,
+            "last_run_status": task.last_run_status,
+        })
+
+    quality_rules = [
+        {
+            "id": rule.id,
+            "name": rule.rule_name,
+            "role": rule.rule_type or "质量规则",
+            "active": bool(rule.is_active),
+        }
+        for rule in db.query(QualityRule).filter(QualityRule.table_id == table.id).all()
+    ]
+
+    data_apis = []
+    for api in db.query(DataApi).filter(DataApi.workspace_id == table.workspace_id).all():
+        if api.datasource_id and api.datasource_id != table.datasource_id:
+            continue
+        wizard = api.wizard_config if isinstance(api.wizard_config, dict) else {}
+        wizard_raw = str(wizard.get("table") or "")
+        wizard_hit = _leaf_table_name(wizard_raw) == name.lower()
+        if wizard_hit and "." in wizard_raw and table.db_name:
+            qualifier = wizard_raw.rsplit(".", 1)[0].rsplit(".", 1)[-1].strip("`").strip('"')
+            if qualifier and qualifier.lower() != table.db_name.lower():
+                wizard_hit = False
+        if not wizard_hit and not _sql_mentions_table(api.sql_template, name):
+            continue
+        data_apis.append({
+            "id": api.id,
+            "name": api.name,
+            "api_code": api.api_code,
+            "status": api.status,
+            "role": "数据服务",
+        })
+
+    return {
+        "sql_tasks": sql_tasks,
+        "sync_tasks": sync_tasks,
+        "quality_rules": quality_rules,
+        "data_apis": data_apis,
+        "stream_jobs": stream_jobs_for_table(db, table),
+    }
+
+
 @router.post("/tables/{table_id}/columns")
 def add_column(table_id: int, col_in: MetaColumnCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     require_meta_table(db, current_user, table_id, "developer", PC.GIDO_BATCH_DATAMAP_WRITE)
@@ -745,6 +1179,11 @@ def add_lineage(lineage_in: LineageCreate, db: Session = Depends(get_db), curren
 def get_lineage_graph(table_id: int, depth: int = 3, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """获取血缘图谱（上下游）"""
     require_meta_table(db, current_user, table_id)
+    table = db.query(MetaTable).filter(MetaTable.id == table_id).first()
+    from app.services.lineage import refresh_lineage_for_table
+
+    if table:
+        refresh_lineage_for_table(db, table)
     visited = set()
     nodes = {}
     edges = []
@@ -754,7 +1193,13 @@ def get_lineage_graph(table_id: int, depth: int = 3, db: Session = Depends(get_d
             return
         t = db.query(MetaTable).filter(MetaTable.id == tid).first()
         if t:
-            nodes[tid] = {"id": tid, "name": f"{t.db_name}.{t.table_name}" if t.db_name else t.table_name}
+            nodes[tid] = {
+                "id": tid,
+                "name": f"{t.db_name}.{t.table_name}" if t.db_name else t.table_name,
+                "datasource_id": t.datasource_id,
+                "db_name": t.db_name,
+                "table_name": t.table_name,
+            }
 
     def _traverse_upstream(tid, d):
         if d <= 0 or tid in visited:
@@ -762,7 +1207,14 @@ def get_lineage_graph(table_id: int, depth: int = 3, db: Session = Depends(get_d
         visited.add(tid)
         _get_table_info(tid)
         for lin in db.query(Lineage).filter(Lineage.dst_table_id == tid).all():
-            edges.append({"source": lin.src_table_id, "target": lin.dst_table_id})
+            edges.append({
+                "source": lin.src_table_id,
+                "target": lin.dst_table_id,
+                "task_node_id": lin.task_node_id,
+                "task_name": _lineage_edge_name(db, lin),
+                "sync_task_id": lin.sync_task_id,
+                "stream_job_id": lin.stream_job_id,
+            })
             _get_table_info(lin.src_table_id)
             _traverse_upstream(lin.src_table_id, d - 1)
 
@@ -772,22 +1224,40 @@ def get_lineage_graph(table_id: int, depth: int = 3, db: Session = Depends(get_d
         visited.add(tid)
         _get_table_info(tid)
         for lin in db.query(Lineage).filter(Lineage.src_table_id == tid).all():
-            edges.append({"source": lin.src_table_id, "target": lin.dst_table_id})
+            edges.append({
+                "source": lin.src_table_id,
+                "target": lin.dst_table_id,
+                "task_node_id": lin.task_node_id,
+                "task_name": _lineage_edge_name(db, lin),
+                "sync_task_id": lin.sync_task_id,
+                "stream_job_id": lin.stream_job_id,
+            })
             _get_table_info(lin.dst_table_id)
             _traverse_downstream(lin.dst_table_id, d - 1)
 
     _traverse_upstream(table_id, depth)
     visited.clear()
     _traverse_downstream(table_id, depth)
-
-    return {"nodes": list(nodes.values()), "edges": edges}
+    uniq = []
+    seen_edges = set()
+    for edge in edges:
+        key = (edge.get("source"), edge.get("target"), edge.get("task_node_id"))
+        if key in seen_edges:
+            continue
+        seen_edges.add(key)
+        uniq.append(edge)
+    return {"nodes": list(nodes.values()), "edges": uniq}
 
 
 @router.get("/lineage/{table_id}/impact")
 def get_impact_analysis(table_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """影响分析：该表变更会影响哪些下游"""
-    require_meta_table(db, current_user, table_id)
+    """影响分析：该表变更会影响哪些下游表，以及哪条 SQL 任务在写它们。"""
+    table = require_meta_table(db, current_user, table_id)
+    from app.services.lineage import refresh_lineage_for_table
+
+    refresh_lineage_for_table(db, table)
     impacted = []
+    seen = set()
     queue = [table_id]
     visited = set()
     while queue:
@@ -796,11 +1266,174 @@ def get_impact_analysis(table_id: int, db: Session = Depends(get_db), current_us
             continue
         visited.add(tid)
         for lin in db.query(Lineage).filter(Lineage.src_table_id == tid).all():
+            key = (lin.dst_table_id, lin.task_node_id)
             t = db.query(MetaTable).filter(MetaTable.id == lin.dst_table_id).first()
-            if t:
-                impacted.append({"table_id": t.id, "table_name": t.table_name, "db_name": t.db_name})
+            if t and key not in seen and t.id != table_id:
+                seen.add(key)
+                impacted.append({
+                    "table_id": t.id,
+                    "table_name": t.table_name,
+                    "db_name": t.db_name,
+                    "datasource_id": t.datasource_id,
+                    "task_node_id": lin.task_node_id,
+                    "task_name": _lineage_edge_name(db, lin),
+                "sync_task_id": lin.sync_task_id,
+                "stream_job_id": lin.stream_job_id,
+                })
             queue.append(lin.dst_table_id)
     return {"impacted_tables": impacted}
+
+
+def _lineage_edge_name(db: Session, edge) -> Optional[str]:
+    if edge.task_node_id:
+        node = db.query(TaskNode).filter(TaskNode.id == edge.task_node_id).first()
+        if node:
+            return node.name
+    if getattr(edge, "sync_task_id", None):
+        from app.models.workspace import SyncTask
+
+        task = db.query(SyncTask).filter(SyncTask.id == edge.sync_task_id).first()
+        if task:
+            return task.name
+    if getattr(edge, "stream_job_id", None):
+        try:
+            from app.api.streaming import StreamingJob
+        except Exception:
+            return None
+        job = db.query(StreamingJob).filter(StreamingJob.id == edge.stream_job_id).first()
+        if job:
+            return job.name
+    return None
+
+
+def partition_column_names(summary: Optional[dict]) -> List[str]:
+    if not summary:
+        return []
+    found: List[str] = []
+    for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", str(summary.get("expression") or "")):
+        if token.lower() in {"range", "list", "hash", "key"}:
+            continue
+        if token not in found:
+            found.append(token)
+        if len(found) >= 8:
+            break
+    return found
+
+
+def _preview_rows(raw_rows) -> List[List[Any]]:
+    from app.services.sql_readonly import json_cell_value
+
+    return [[json_cell_value(value) for value in row] for row in raw_rows]
+
+
+def _pg_create_table(schema: str, table_name: str, columns: List[dict]) -> str:
+    schema = _require_ident(schema, "库名")
+    table = _require_ident(table_name, "表名")
+    lines = []
+    pk = []
+    for col in columns:
+        name = _require_ident(str(col.get("name") or ""), "字段名")
+        col_type = str(col.get("type") or "text").replace(";", " ")
+        null_sql = "" if col.get("nullable", True) else " NOT NULL"
+        lines.append(f'    "{name}" {col_type}{null_sql}')
+        if str(col.get("key") or "").upper() == "PRI":
+            pk.append(f'"{name}"')
+    if pk:
+        lines.append(f"    PRIMARY KEY ({', '.join(pk)})")
+    body = ",\n".join(lines) if lines else "    -- 无字段"
+    return f'CREATE TABLE "{schema}"."{table}" (\n{body}\n);'
+
+
+def _mysql_definition(ds: DataSource, catalog: str, table_name: str) -> dict:
+    import pymysql
+
+    catalog = _require_ident(catalog, "库名")
+    table_name = _require_ident(table_name, "表名")
+    conn = pymysql.connect(
+        host=ds.host,
+        port=ds.port or 3306,
+        user=mysql_protocol_connect_user(ds),
+        password=ds.password or "",
+        database=catalog,
+        connect_timeout=15,
+        read_timeout=30,
+    )
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SHOW CREATE TABLE `{catalog}`.`{table_name}`")
+        created = cur.fetchone()
+        ddl = created[1] if created and len(created) > 1 else None
+        engine = None
+        try:
+            cur.execute(
+                "SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s",
+                (catalog, table_name),
+            )
+            engine_row = cur.fetchone()
+            engine = engine_row[0] if engine_row else None
+        except Exception:
+            engine = None
+        partitions = None
+        for sql in (
+            "SELECT PARTITION_NAME, PARTITION_METHOD, PARTITION_EXPRESSION, PARTITION_DESCRIPTION "
+            "FROM information_schema.PARTITIONS "
+            "WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND PARTITION_NAME IS NOT NULL "
+            "ORDER BY PARTITION_ORDINAL_POSITION",
+            "SELECT PARTITION_NAME, PARTITION_METHOD, PARTITION_EXPRESSION, PARTITION_DESCRIPTION "
+            "FROM information_schema.PARTITIONS "
+            "WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND PARTITION_NAME IS NOT NULL",
+        ):
+            try:
+                cur.execute(sql, (catalog, table_name))
+                partitions = _partition_summary(cur.fetchall())
+                break
+            except Exception:
+                partitions = None
+        return {"ddl": ddl, "engine": engine, "partitions": partitions, "ddl_note": None}
+    finally:
+        conn.close()
+
+
+@router.get("/tables/{table_id}/definition")
+def table_definition(table_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """建表语句、只读 SELECT、分区摘要。MySQL/Doris 用引擎 DDL；PostgreSQL 由字段生成。"""
+    table = require_meta_table(db, current_user, table_id)
+    ds = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="数据源不存在")
+    catalog = (table.db_name or ds.database or "").strip()
+    if not catalog:
+        raise HTTPException(status_code=400, detail="未配置库名，无法生成语句")
+    lt = (ds.ds_type or "").lower()
+    try:
+        select_sql = build_select_sql(lt, catalog, table.table_name, 100)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    try:
+        if lt in ("mysql", "doris"):
+            detail = _mysql_definition(ds, catalog, table.table_name)
+        elif lt == "postgresql":
+            from app.services.integration_runtime import list_columns
+
+            ex = ds.extra_config if isinstance(ds.extra_config, dict) else {}
+            schema = (table.db_name or ex.get("schema") or "public").strip() or "public"
+            columns = list_columns(ds, table.table_name, catalog=schema)
+            detail = {
+                "ddl": _pg_create_table(schema, table.table_name, columns),
+                "engine": None,
+                "partitions": None,
+                "ddl_note": "由字段生成，不含索引和分区细节",
+            }
+        else:
+            raise HTTPException(status_code=400, detail=f"暂不支持该数据源类型: {ds.ds_type}")
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取建表语句失败: {e}") from e
+    detail["partition_columns"] = partition_column_names(detail.get("partitions"))
+    return {"select_sql": select_sql, **detail}
 
 
 @router.get("/tables/{table_id}/preview")
@@ -836,9 +1469,9 @@ def preview_table_data(
                 (limit,),
             )
             rows = cursor.fetchall()
-            columns = [d[0] for d in cursor.description]
+            columns = [d[0] for d in cursor.description] if cursor.description else []
             conn.close()
-            return {"columns": columns, "rows": [list(row) for row in rows], "total": len(rows)}
+            return {"columns": columns, "rows": _preview_rows(rows), "total": len(rows)}
 
         if lt == "postgresql":
             import psycopg2
@@ -862,9 +1495,9 @@ def preview_table_data(
             )
             cur.execute(q, (limit,))
             rows = cur.fetchall()
-            columns = [d[0] for d in cur.description]
+            columns = [d[0] for d in cur.description] if cur.description else []
             conn.close()
-            return {"columns": columns, "rows": [list(row) for row in rows], "total": len(rows)}
+            return {"columns": columns, "rows": _preview_rows(rows), "total": len(rows)}
 
         raise HTTPException(status_code=400, detail=f"暂不支持该数据源类型的预览: {ds.ds_type}")
     except HTTPException:

@@ -13,11 +13,14 @@ interface LineageGraphProps {
   data: { nodes: any[], edges: any[] }
   currentTableId?: number
   height?: number
+  onNodeClick?: (tableId: number) => void
 }
 
-export default function LineageGraph({ data, currentTableId, height = 400 }: LineageGraphProps) {
+export default function LineageGraph({ data, currentTableId, height = 400, onNodeClick }: LineageGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const graphRef = useRef<any>(null)
+  const onNodeClickRef = useRef(onNodeClick)
+  onNodeClickRef.current = onNodeClick
   const [engineLoading, setEngineLoading] = useState(false)
 
   useEffect(() => {
@@ -51,7 +54,7 @@ export default function LineageGraph({ data, currentTableId, height = 400 }: Lin
         defaultNode: {
           type: 'rect',
           size: [160, 48],
-          style: { fill: '#fff', stroke: '#1677ff', lineWidth: 2, radius: 6 },
+          style: { fill: '#fff', stroke: '#1677ff', lineWidth: 2, radius: 6, cursor: 'pointer' },
           labelCfg: { style: { fill: '#333', fontSize: 13 } },
         },
         defaultEdge: {
@@ -79,11 +82,17 @@ export default function LineageGraph({ data, currentTableId, height = 400 }: Lin
           id: `edge_${idx}`,
           source: String(e.source),
           target: String(e.target),
+          label: e.task_name || '',
+          labelCfg: { style: { fill: '#8c8c8c', fontSize: 11 } },
         })),
       }
 
       graph.data(graphData)
       graph.render()
+      graph.on('node:click', (evt: any) => {
+        const id = Number(evt?.item?.getModel?.()?.id)
+        if (Number.isFinite(id)) onNodeClickRef.current?.(id)
+      })
       graphRef.current = graph
 
       resizeObserver = new ResizeObserver(() => {
@@ -107,10 +116,10 @@ export default function LineageGraph({ data, currentTableId, height = 400 }: Lin
     }
   }, [data, currentTableId, height])
 
-  if (!data.nodes.length) {
+  if (!data.edges?.length) {
     return (
       <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#bbb', border: '1px dashed #d9d9d9', borderRadius: 4 }}>
-        暂无血缘数据
+        暂无血缘。保存引用这张表的 SQL、同步任务或实时作业后，这里会显示上下游。
       </div>
     )
   }
@@ -123,6 +132,9 @@ export default function LineageGraph({ data, currentTableId, height = 400 }: Lin
         </div>
       )}
       <div ref={containerRef} style={{ minHeight: height }} />
+      {onNodeClick && (
+        <div style={{ padding: '6px 10px', fontSize: 12, color: '#8c8c8c' }}>单击节点打开对应表</div>
+      )}
     </div>
   )
 }

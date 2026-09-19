@@ -144,6 +144,9 @@ async def lifespan(app: FastAPI):
     migrate_dw_workflow_updated_by(engine)
     migrate_dw_workflow_instance_submitted_by(engine)
     migrate_dw_quality_dolphin_refs(engine)
+    from app.api.datamap import migrate_lineage_producers, migrate_meta_table_business
+    migrate_meta_table_business(engine)
+    migrate_lineage_producers(engine)
     migrate_dw_streaming_jobs(engine)
     migrate_publish_approval_snapshots(engine)
     migrate_dw_streaming_release_lifecycle(engine)

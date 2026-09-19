@@ -373,12 +373,16 @@ export const datamapApi = {
     }
   },
   getTable: (id: number) => request.get(`/datamap/tables/${id}`),
+  updateBusiness: (id: number, data: { owner?: string; tags?: string[]; business_description?: string }) =>
+    request.patch(`/datamap/tables/${id}`, data),
+  getContext: (id: number) => request.get(`/datamap/tables/${id}/context`),
   syncSchema: (id: number) => request.post(`/datamap/tables/${id}/sync-schema`),
   addColumn: (tableId: number, data: any) => request.post(`/datamap/tables/${tableId}/columns`, data),
   addLineage: (data: any) => request.post('/datamap/lineage', data),
   getLineage: (tableId: number, depth?: number) => request.get(`/datamap/lineage/${tableId}`, { params: { depth } }),
   getImpact: (tableId: number) => request.get(`/datamap/lineage/${tableId}/impact`),
   previewData: (tableId: number, limit?: number) => request.get(`/datamap/tables/${tableId}/preview`, { params: { limit } }),
+  getDefinition: (tableId: number) => request.get(`/datamap/tables/${tableId}/definition`),
 }
 
 // 数据质量

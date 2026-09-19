@@ -145,7 +145,7 @@ def _execute_one(ds: DataSource, stmt: str, lim: int) -> Dict[str, Any]:
             cur = conn.cursor()
             cur.execute(apply_readonly_row_limit(stmt, lim))
             rows = cur.fetchall()
-            base = result_set_from_cursor(lt, cur.description, rows, lim)
+            base = result_set_from_cursor(lt, cur.description, rows, lim, cursor=cur)
             base["sql"] = stmt
             return base
         finally:
@@ -169,7 +169,7 @@ def _execute_one(ds: DataSource, stmt: str, lim: int) -> Dict[str, Any]:
             cur = conn.cursor()
             cur.execute(apply_readonly_row_limit(stmt, lim))
             rows = cur.fetchall()
-            base = result_set_from_cursor(lt, cur.description, rows, lim)
+            base = result_set_from_cursor(lt, cur.description, rows, lim, cursor=cur)
             base["sql"] = stmt
             return base
         finally:

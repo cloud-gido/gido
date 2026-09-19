@@ -78,12 +78,66 @@
   font-weight: 600;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   word-break: break-all;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .datamap-detail-sub {
   margin-top: 4px;
   font-size: 12px;
   color: #8c8c8c;
+}
+
+.datamap-detail-desc {
+  margin-top: 8px;
+  max-width: 720px;
+  color: #595959;
+  font-size: 13px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.datamap-type-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.datamap-type-badge {
+  flex: none;
+  min-width: 28px;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.datamap-type-badge--number { color: #0958d9; background: #e6f4ff; }
+.datamap-type-badge--string { color: #389e0d; background: #f6ffed; }
+.datamap-type-badge--datetime { color: #d46b08; background: #fff7e6; }
+.datamap-type-badge--boolean { color: #531dab; background: #f9f0ff; }
+.datamap-type-badge--json { color: #c41d7f; background: #fff0f6; }
+.datamap-type-badge--other { color: #595959; background: #f5f5f5; }
+
+.datamap-ddl {
+  margin: 0;
+  padding: 12px;
+  max-height: 420px;
+  overflow: auto;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
 }
 
 @media (max-width: 960px) {

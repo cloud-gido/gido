@@ -9,13 +9,14 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Table, Input, Button, Modal, Form, Select, Tag, Space, message, Descriptions, Tabs, Alert, Spin,
+  Table, Input, Button, Select, Tag, Space, message, Descriptions, Tabs, Alert, Spin, Form,
 } from 'antd'
-import { PlusOutlined, SyncOutlined, UploadOutlined, ReloadOutlined } from '@ant-design/icons'
+import { SyncOutlined, UploadOutlined, ReloadOutlined, CopyOutlined, StarOutlined, StarFilled } from '@ant-design/icons'
 import { datamapApi, datasourceApi } from '../api'
 import { useAppStore } from '../store'
 import { can, P } from '../perm'
 import { formatCellDisplay } from '../utils/cellDisplay'
+import { classifyColumnType } from '../utils/columnTypeBadge'
 import LineageGraph from '../components/LineageGraph'
 import DataMapCatalogPanel, { type DataMapTableSelection } from '../components/DataMapCatalogPanel'
 import { invalidateSqlSchemaCache } from '../utils/sqlSchemaCache'
@@ -23,13 +24,86 @@ import { tableKey } from '../utils/sqlSchemaTree'
 import { R } from '../routes'
 import { peekCachedDatasources, rememberDatasources } from '../utils/workspaceDatasource'
 import { catalogCapableDatasources, isCatalogCapableDatasource } from '../utils/dataMapCatalogLoad'
+import { pushRecent, readShortcuts, togglePin, type DataMapShortcut } from '../utils/dataMapPins'
+import { queuePendingProbeScript } from '../utils/probePendingScript'
 import '../components/DataMapCatalogPanel.css'
+
+function usageRowsFromContext(res: any) {
+  const rows: Array<{ key: string; kind: string; name: string; relation: string; peer: string; href?: string }> = []
+  for (const item of res?.sql_tasks || []) {
+    rows.push({
+      key: `sql-${item.id}-${item.role}`,
+      kind: 'SQL 任务',
+      name: item.name,
+      relation: item.role,
+      peer: item.peer_table || '—',
+      href: `${R.batch.studio}?node_id=${item.id}`,
+    })
+  }
+  for (const item of res?.sync_tasks || []) {
+    rows.push({
+      key: `sync-${item.id}`,
+      kind: '同步任务',
+      name: item.name,
+      relation: item.role,
+      peer: item.peer_table || item.last_run_status || '—',
+      href: R.batch.integration,
+    })
+  }
+  for (const item of res?.quality_rules || []) {
+    rows.push({
+      key: `quality-${item.id}`,
+      kind: '质量规则',
+      name: item.name,
+      relation: item.role,
+      peer: item.active ? '启用' : '停用',
+      href: R.batch.quality,
+    })
+  }
+  for (const item of res?.data_apis || []) {
+    rows.push({
+      key: `api-${item.id}`,
+      kind: '数据服务',
+      name: item.name,
+      relation: item.api_code || item.role,
+      peer: item.status || '—',
+      href: `${R.service.apis}?api_id=${item.id}`,
+    })
+  }
+  for (const item of res?.stream_jobs || []) {
+    rows.push({
+      key: `stream-${item.id}`,
+      kind: '实时作业',
+      name: item.name,
+      relation: item.role,
+      peer: item.status || '—',
+      href: `${R.stream.studio}?job_id=${item.id}`,
+    })
+  }
+  return rows
+}
+
+function previewRecords(columns: string[], rows: unknown[]): Record<string, unknown>[] {
+  return (rows || []).map((row, index) => {
+    const record: Record<string, unknown> = { _key: index }
+    if (Array.isArray(row)) {
+      columns.forEach((column, columnIndex) => {
+        record[column] = row[columnIndex]
+      })
+      return record
+    }
+    if (row && typeof row === 'object') {
+      return { ...(row as Record<string, unknown>), _key: index }
+    }
+    return record
+  })
+}
 
 function datamapErrMsg(e: any, fallback: string) {
   const detail = e?.response?.data?.detail
   if (typeof detail === 'string' && detail.trim()) return detail
   const status = e?.response?.status
-  if (status === 403) return '无权限：只读角色可浏览目录；收录/同步需具备数据字典写权限'
+  if (status === 403) return '无权限：只读角色可浏览库表；同步字段需具备数据字典写权限'
   if (status === 401) return '登录已失效，请重新登录后再试'
   return fallback
 }
@@ -63,10 +137,25 @@ export default function DataMapPage() {
   const [detailExtrasLoaded, setDetailExtrasLoaded] = useState<{ lineage?: boolean; impact?: boolean }>({})
   const [previewData, setPreviewData] = useState<any>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
-  const [registerModal, setRegisterModal] = useState(false)
-  const [form] = Form.useForm()
+  const [usageRows, setUsageRows] = useState<ReturnType<typeof usageRowsFromContext>>([])
+  const [usageLoading, setUsageLoading] = useState(false)
+  const [usageLoaded, setUsageLoaded] = useState(false)
+  const [searchHits, setSearchHits] = useState<any[]>([])
+  const [searching, setSearching] = useState(false)
+  const [searchValue, setSearchValue] = useState<string | undefined>()
+  const [searchText, setSearchText] = useState('')
+  const [columnQuery, setColumnQuery] = useState('')
+  const [definition, setDefinition] = useState<any>(null)
+  const [definitionLoading, setDefinitionLoading] = useState(false)
+  const [openingProbe, setOpeningProbe] = useState(false)
+  const [pins, setPins] = useState<DataMapShortcut[]>([])
+  const [recents, setRecents] = useState<DataMapShortcut[]>([])
+  const [bizSaving, setBizSaving] = useState(false)
+  const [bizForm] = Form.useForm()
   const commentHealTriedRef = useRef<Set<number>>(new Set())
   const selectGenRef = useRef(0)
+  const searchGenRef = useRef(0)
+  const searchTimerRef = useRef<number | null>(null)
 
   const loadDatasources = useCallback(async () => {
     if (!wsId) return []
@@ -102,6 +191,10 @@ export default function DataMapPage() {
 
   useEffect(() => { void loadDatasources() }, [loadDatasources])
   useEffect(() => { void loadRegistered() }, [loadRegistered])
+  useEffect(() => {
+    setPins(readShortcuts(wsId, 'pins'))
+    setRecents(readShortcuts(wsId, 'recent'))
+  }, [wsId])
 
   useEffect(() => {
     if (!capableDs.length) {
@@ -138,6 +231,10 @@ export default function DataMapPage() {
     setImpactData([])
     setDetailExtrasLoaded({})
     setPreviewData(null)
+    setUsageRows([])
+    setUsageLoaded(false)
+    setColumnQuery('')
+    setDefinition(null)
     try {
       let metaId = sel.metaTableId
       if (!metaId && canWrite && wsId) {
@@ -164,7 +261,7 @@ export default function DataMapPage() {
       }
       if (!metaId) {
         if (gen !== selectGenRef.current) return
-        // 只读且未收录：用物理列即时展示（不落库）
+        // 只读账号不写字典：直接展示引擎字段。有写权限时 openSelection 已在后台补齐字典行。
         const { fetchColumns } = await import('../utils/sqlSchemaCache')
         const cols = await fetchColumns(sel.datasourceId, sel.tableName, sel.catalog)
         setSelectedTable({
@@ -186,11 +283,28 @@ export default function DataMapPage() {
           })),
           _physicalOnly: true,
         })
+        if (wsId) {
+          setRecents(pushRecent(wsId, {
+            datasourceId: sel.datasourceId,
+            catalog: sel.catalog,
+            tableName: sel.tableName,
+            comment: sel.comment,
+          }))
+        }
         return
       }
       const detail: any = await datamapApi.getTable(metaId)
       if (gen !== selectGenRef.current) return
       setSelectedTable(detail)
+      if (wsId) {
+        setRecents(pushRecent(wsId, {
+          datasourceId: sel.datasourceId,
+          catalog: sel.catalog,
+          tableName: sel.tableName,
+          comment: sel.comment || detail.table_comment,
+          metaTableId: metaId,
+        }))
+      }
       scheduleCommentHeal(detail, (next) => {
         if (gen === selectGenRef.current) setSelectedTable(next)
       })
@@ -222,40 +336,6 @@ export default function DataMapPage() {
       setSelectedTable(detail)
     } catch (e: any) {
       message.error(datamapErrMsg(e, '同步失败'))
-    }
-  }
-
-  const handleRegister = async () => {
-    if (!canWrite) {
-      message.warning('当前为只读角色，无法收录表')
-      return
-    }
-    try {
-      const values = await form.validateFields()
-      values.workspace_id = wsId
-      const created: any = await datamapApi.ensureTable(values)
-      if (created?.sync_warning) {
-        message.warning(`已收录，但字段同步失败：${created.sync_warning}`)
-      } else if (created?.created === false) {
-        message.success('该表已在数据字典中')
-      } else {
-        message.success(`已收录，同步 ${created?.columns_synced ?? created?.columns?.length ?? 0} 个字段`)
-      }
-      setRegisterModal(false)
-      await loadRegistered()
-      if (created?.id && values.datasource_id && values.table_name) {
-        void openSelection({
-          datasourceId: values.datasource_id,
-          catalog: values.db_name || '',
-          tableName: values.table_name,
-          comment: values.table_comment,
-          metaTableId: created.id,
-          registered: true,
-        })
-      }
-    } catch (e: any) {
-      if (e?.errorFields) return
-      message.error(datamapErrMsg(e, '收录失败'))
     }
   }
 
@@ -297,17 +377,244 @@ export default function DataMapPage() {
     setPreviewLoading(false)
   }
 
+  const loadUsage = async (tableId: number) => {
+    setUsageLoading(true)
+    try {
+      const res: any = await datamapApi.getContext(tableId)
+      setUsageRows(usageRowsFromContext(res))
+      setUsageLoaded(true)
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '加载使用情况失败')
+    } finally {
+      setUsageLoading(false)
+    }
+  }
+
+  const saveBusiness = async () => {
+    if (!selectedTable?.id) return
+    const values = await bizForm.validateFields()
+    setBizSaving(true)
+    try {
+      const next: any = await datamapApi.updateBusiness(selectedTable.id, {
+        owner: values.owner || '',
+        tags: values.tags || [],
+        business_description: values.business_description || '',
+      })
+      setSelectedTable(next)
+      message.success('已保存业务信息')
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '保存失败')
+    } finally {
+      setBizSaving(false)
+    }
+  }
+
+  const onCatalogSearch = (value: string) => {
+    if (searchTimerRef.current) window.clearTimeout(searchTimerRef.current)
+    const q = value.trim()
+    setSearchText(q)
+    if (!wsId || q.length < 2) {
+      setSearchHits([])
+      setSearching(false)
+      return
+    }
+    setSearching(true)
+    const gen = ++searchGenRef.current
+    searchTimerRef.current = window.setTimeout(() => {
+      void datamapApi.catalog(wsId, { keyword: q })
+        .then((raw: any) => {
+          if (gen !== searchGenRef.current) return
+          const list = (Array.isArray(raw) ? raw : []).filter((row) => row.table_name && !row.error).slice(0, 40)
+          setSearchHits(list)
+        })
+        .catch(() => {
+          if (gen === searchGenRef.current) setSearchHits([])
+        })
+        .finally(() => {
+          if (gen === searchGenRef.current) setSearching(false)
+        })
+    }, 300)
+  }
+
+  useEffect(() => {
+    if (!selectedTable?.id) return
+    bizForm.setFieldsValue({
+      owner: selectedTable.owner || undefined,
+      tags: Array.isArray(selectedTable.tags) ? selectedTable.tags : [],
+      business_description: selectedTable.business_description || '',
+    })
+  }, [bizForm, selectedTable])
+
   const colColumns = [
-    { title: '字段名', dataIndex: 'name', width: 160, ellipsis: true },
-    { title: '类型', dataIndex: 'type', width: 120, ellipsis: true },
+    { title: '字段名', dataIndex: 'name', width: 180, ellipsis: true, render: (name: string) => {
+      const partitions = Array.isArray(definition?.partition_columns) ? definition.partition_columns : []
+      const hit = partitions.some((column: string) => column.toLowerCase() === String(name || '').toLowerCase())
+      return (
+        <span>
+          {name}
+          {hit ? <Tag color="blue" style={{ marginLeft: 6 }}>分区</Tag> : null}
+        </span>
+      )
+    } },
+    {
+      title: '类型',
+      dataIndex: 'type',
+      width: 160,
+      ellipsis: true,
+      render: (type: string) => {
+        const badge = classifyColumnType(type)
+        return (
+          <span className="datamap-type-cell" title={type}>
+            {badge ? <span className={`datamap-type-badge datamap-type-badge--${badge.kind}`}>{badge.badge}</span> : null}
+            <span>{type || '—'}</span>
+          </span>
+        )
+      },
+    },
     { title: '描述', dataIndex: 'comment', ellipsis: true, render: (c: string) => c || <span style={{ color: '#bfbfbf' }}>—</span> },
     { title: '可空', dataIndex: 'nullable', width: 64, render: (v: boolean) => (v ? '是' : '否') },
     { title: '主键', dataIndex: 'primary_key', width: 64, render: (v: boolean) => (v ? <Tag color="gold">PK</Tag> : '') },
   ]
 
+  const visibleColumns = useMemo(() => {
+    const q = columnQuery.trim().toLowerCase()
+    const cols = Array.isArray(selectedTable?.columns) ? selectedTable.columns : []
+    if (!q) return cols
+    return cols.filter((col: any) => {
+      const haystack = `${col.name || ''} ${col.comment || ''} ${col.type || ''}`.toLowerCase()
+      return haystack.includes(q)
+    })
+  }, [columnQuery, selectedTable])
+
+  const openRelatedTable = (row: {
+    id?: number
+    table_id?: number
+    datasource_id?: number
+    db_name?: string
+    table_name?: string
+    table_comment?: string
+  }) => {
+    const tableName = row.table_name
+    const datasourceId = Number(row.datasource_id)
+    if (!tableName || !Number.isFinite(datasourceId)) return
+    if (datasourceId !== dsId) setDsId(datasourceId)
+    void openSelection({
+      datasourceId,
+      catalog: row.db_name || '',
+      tableName,
+      comment: row.table_comment,
+      metaTableId: row.id || row.table_id,
+      registered: true,
+    })
+  }
+
+  const loadDefinition = async (tableId: number) => {
+    setDefinitionLoading(true)
+    try {
+      const res: any = await datamapApi.getDefinition(tableId)
+      setDefinition(res)
+      return res
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '读取建表语句失败')
+      return null
+    } finally {
+      setDefinitionLoading(false)
+    }
+  }
+
+  const openInProbe = async () => {
+    if (!selectedTable?.id) return
+    setOpeningProbe(true)
+    try {
+      const def = definition || await loadDefinition(selectedTable.id)
+      if (!def?.select_sql) return
+      queuePendingProbeScript({
+        name: selectedTable.table_name,
+        sql: def.select_sql,
+        datasourceId: selectedTable.datasource_id,
+      })
+      navigate(R.batch.probe)
+    } finally {
+      setOpeningProbe(false)
+    }
+  }
+
+  const currentShortcut = (): DataMapShortcut | null => {
+    if (!selectedTable || !selection) return null
+    return {
+      datasourceId: selection.datasourceId,
+      catalog: selection.catalog,
+      tableName: selection.tableName,
+      comment: selectedTable.business_description || selectedTable.table_comment || selection.comment,
+      metaTableId: selectedTable.id || undefined,
+    }
+  }
+
+  const pinned = Boolean(currentShortcut() && pins.some((item) => (
+    item.datasourceId === selection?.datasourceId
+    && item.catalog === selection?.catalog
+    && item.tableName === selection?.tableName
+  )))
+
+  const onTogglePin = () => {
+    const pin = currentShortcut()
+    if (!wsId || !pin) return
+    setPins(togglePin(wsId, pin))
+  }
+
+  const openShortcut = (item: DataMapShortcut) => {
+    if (item.datasourceId !== dsId) setDsId(item.datasourceId)
+    void openSelection({
+      datasourceId: item.datasourceId,
+      catalog: item.catalog,
+      tableName: item.tableName,
+      comment: item.comment,
+      metaTableId: item.metaTableId,
+      registered: Boolean(item.metaTableId),
+    })
+  }
+
+  const copyQualifiedName = async () => {
+    const text = selectedTable?.qualified_name || `${selection?.catalog || ''}.${selection?.tableName || ''}`
+    try {
+      await navigator.clipboard.writeText(text)
+      message.success('已复制表名')
+    } catch {
+      message.error('复制失败')
+    }
+  }
+
   const impactColumns = [
-    { title: '数据库', dataIndex: 'db_name' },
-    { title: '表名', dataIndex: 'table_name' },
+    { title: '数据库', dataIndex: 'db_name', render: (v: string) => v || '—' },
+    {
+      title: '下游表',
+      dataIndex: 'table_name',
+      render: (name: string, row: any) => (
+        <Button type="link" size="small" style={{ padding: 0 }} onClick={() => openRelatedTable(row)}>
+          {name}
+        </Button>
+      ),
+    },
+    {
+      title: '写入任务',
+      dataIndex: 'task_name',
+      render: (name: string, row: any) => {
+        if (!name) return '—'
+        const href = row.stream_job_id
+          ? `${R.stream.studio}?job_id=${row.stream_job_id}`
+          : row.task_node_id
+            ? `${R.batch.studio}?node_id=${row.task_node_id}`
+            : row.sync_task_id
+              ? R.batch.integration
+              : ''
+        if (!href) return name
+        return (
+          <Button type="link" size="small" style={{ padding: 0 }} onClick={() => navigate(href)}>
+            {name}
+          </Button>
+        )
+      },
+    },
   ]
 
   const selectedTreeKey = selection
@@ -329,20 +636,53 @@ export default function DataMapPage() {
               setDsId(v)
               setSelection(null)
               setSelectedTable(null)
+              setSearchValue(undefined)
+              setSearchHits([])
             }}
             options={capableDs.map((d: any) => ({ label: d.name, value: d.id }))}
             notFoundContent={datasources.length ? '无可枚举库表的数据源' : '加载中…'}
           />
+          <Select
+            showSearch
+            allowClear
+            filterOption={false}
+            placeholder="搜索工作空间的表和字段"
+            style={{ width: 260 }}
+            value={searchValue}
+            loading={searching}
+            onSearch={onCatalogSearch}
+            options={searchHits.map((row) => {
+              const columnHit = Array.isArray(row.match_columns) && row.match_columns.length
+                ? `字段 ${row.match_columns.join('、')}`
+                : ''
+              const bits = [row.datasource_name, `${row.catalog}.${row.table_name}`].filter(Boolean)
+              if (columnHit) bits.push(columnHit)
+              else if (row.table_comment) bits.push(row.table_comment)
+              return { value: row.row_key, label: bits.join(' · ') }
+            })}
+            notFoundContent={searching ? <Spin size="small" /> : (searchText.length >= 2 ? '没有匹配的表' : '输入至少 2 个字符')}
+            onChange={(key) => {
+              setSearchValue(key)
+              const row = searchHits.find((item) => item.row_key === key)
+              if (!row) return
+              if (row.datasource_id && row.datasource_id !== dsId) setDsId(row.datasource_id)
+              void openSelection({
+                datasourceId: row.datasource_id,
+                catalog: row.catalog,
+                tableName: row.table_name,
+                comment: row.table_comment,
+                metaTableId: row.meta_table_id || undefined,
+                registered: Boolean(row.registered),
+              })
+            }}
+          />
           {canWrite && (
-            <>
-              <Button icon={<PlusOutlined />} onClick={() => setRegisterModal(true)}>高级收录</Button>
-              <Button
-                icon={<UploadOutlined />}
-                onClick={() => navigate(`${R.batch.integration}?action=file-import`)}
-              >
-                从本地文件建表
-              </Button>
-            </>
+            <Button
+              icon={<UploadOutlined />}
+              onClick={() => navigate(`${R.batch.integration}?action=file-import`)}
+            >
+              从本地文件建表
+            </Button>
           )}
           <Button icon={<ReloadOutlined />} onClick={() => { void handleRefresh() }}>
             刷新目录
@@ -355,7 +695,7 @@ export default function DataMapPage() {
           type="warning"
           showIcon
           style={{ marginBottom: 12, flexShrink: 0 }}
-          message="当前角色为只读：可浏览物理库表树与已收录字典；单击表自动收录与同步结构需「数据字典写」权限。"
+          message="当前角色为只读：可浏览库表与字段。血缘和样例在有写权限的成员打开该表后可用。"
         />
       )}
       <Alert
@@ -365,8 +705,8 @@ export default function DataMapPage() {
         style={{ marginBottom: 12, flexShrink: 0 }}
         message={
           canWrite
-            ? '左侧库表树与数据开发「库表」同源（可见库懒加载）。单击表即打开右侧字典并自动收录；行数为估算值。共享集群可在数据源配置库白名单。'
-            : '左侧浏览物理库表；已收录表可查看血缘与样例。未收录表仅展示实时字段（不落库）。'
+            ? '左侧是数据源里的全部库表，与数据开发「库表」同源。单击表查看字段、血缘与样例。行数为估算值。共享集群可在数据源配置库白名单。'
+            : '左侧浏览数据源里的全部库表。只读账号查看字段；血缘与样例在表被打开同步后可用。'
         }
       />
 
@@ -377,6 +717,8 @@ export default function DataMapPage() {
             defaultCatalog={selectedDs?.database || null}
             registeredMap={registeredMap}
             selectedKey={selectedTreeKey}
+            locateCatalog={selection?.catalog}
+            locateTable={selection?.tableName}
             onSelectTable={(sel) => { void openSelection(sel) }}
             refreshToken={refreshToken}
           />
@@ -385,11 +727,35 @@ export default function DataMapPage() {
           {!selection && !detailLoading && (
             <div className="datamap-detail-empty">
               <div>
-                <div style={{ marginBottom: 8, color: '#595959' }}>从左侧选择一张表</div>
+                <div style={{ marginBottom: 8, color: '#595959' }}>从左侧选择一张表，或搜索表名、字段、负责人</div>
                 <div style={{ fontSize: 12 }}>
-                  将展示字段注释、血缘与样例
+                  将展示字段注释、血缘、建表语句与样例
                   {isCatalogCapableDatasource(selectedDs) ? '' : '；请先选择 MySQL / Doris / PostgreSQL 数据源'}
                 </div>
+                {pins.length > 0 && (
+                  <div style={{ marginTop: 16 }}>
+                    <div style={{ fontSize: 12, marginBottom: 6 }}>收藏</div>
+                    <Space wrap size={6}>
+                      {pins.map((item) => (
+                        <Button key={`pin-${item.datasourceId}-${item.catalog}-${item.tableName}`} size="small" onClick={() => openShortcut(item)}>
+                          {item.catalog}.{item.tableName}
+                        </Button>
+                      ))}
+                    </Space>
+                  </div>
+                )}
+                {recents.length > 0 && (
+                  <div style={{ marginTop: 16 }}>
+                    <div style={{ fontSize: 12, marginBottom: 6 }}>最近浏览</div>
+                    <Space wrap size={6}>
+                      {recents.map((item) => (
+                        <Button key={`recent-${item.datasourceId}-${item.catalog}-${item.tableName}`} size="small" type="text" onClick={() => openShortcut(item)}>
+                          {item.catalog}.{item.tableName}
+                        </Button>
+                      ))}
+                    </Space>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -399,65 +765,139 @@ export default function DataMapPage() {
           {!detailLoading && selectedTable && selection && (
             <>
               <div className="datamap-detail-header">
-                <div>
+                <div style={{ minWidth: 0, flex: 1 }}>
                   <div className="datamap-detail-title">
-                    {selectedTable.qualified_name || `${selection.catalog}.${selection.tableName}`}
+                    <span>{selectedTable.qualified_name || `${selection.catalog}.${selection.tableName}`}</span>
+                    <Button type="text" size="small" icon={<CopyOutlined />} onClick={() => { void copyQualifiedName() }} title="复制表名" />
                   </div>
                   <div className="datamap-detail-sub">
-                    {physicalOnly ? (
-                      <Tag>目录（未收录）</Tag>
-                    ) : (
-                      <Tag color="green">已收录</Tag>
-                    )}
-                    <span style={{ marginLeft: 8 }}>
-                      {selectedTable.table_type || 'table'}
-                      {selectedTable.row_count != null ? ` · 约 ${selectedTable.row_count} 行` : ''}
-                    </span>
+                    {selectedTable.datasource_name || selectedDs?.name || '数据源'}
+                    {' · '}
+                    {selectedTable.table_type || 'table'}
+                    {selectedTable.row_count != null ? ` · 约 ${selectedTable.row_count} 行` : ''}
                   </div>
+                  {(selectedTable.owner || (Array.isArray(selectedTable.tags) && selectedTable.tags.length > 0)) && (
+                    <Space size={4} wrap style={{ marginTop: 8 }}>
+                      {selectedTable.owner ? <Tag>负责人 {selectedTable.owner}</Tag> : null}
+                      {(selectedTable.tags || []).map((tag: string) => <Tag key={tag} color="blue">{tag}</Tag>)}
+                    </Space>
+                  )}
+                  {(selectedTable.business_description || selectedTable.table_comment) && (
+                    <div className="datamap-detail-desc" title={selectedTable.business_description || selectedTable.table_comment}>
+                      {selectedTable.business_description || selectedTable.table_comment}
+                    </div>
+                  )}
                 </div>
                 <Space>
-                  {!physicalOnly && selectedTable.id && canWrite && (
-                    <Button icon={<SyncOutlined />} onClick={() => handleSyncSchema(selectedTable.id)}>
-                      同步结构
+                  <Button
+                    icon={pinned ? <StarFilled /> : <StarOutlined />}
+                    onClick={onTogglePin}
+                  >
+                    {pinned ? '已收藏' : '收藏'}
+                  </Button>
+                  {selectedTable.id && (
+                    <Button loading={openingProbe} onClick={() => { void openInProbe() }}>
+                      在数据探查中打开
                     </Button>
                   )}
-                  {physicalOnly && canWrite && (
-                    <Button
-                      type="primary"
-                      onClick={() => void openSelection({ ...selection, metaTableId: undefined, registered: false })}
-                    >
-                      收录到字典
+                  {selectedTable.id && canWrite && (
+                    <Button icon={<SyncOutlined />} onClick={() => handleSyncSchema(selectedTable.id)}>
+                      同步结构
                     </Button>
                   )}
                 </Space>
               </div>
 
-              {selectedTable.table_comment && (
-                <Alert type="info" showIcon style={{ marginBottom: 12 }} message={selectedTable.table_comment} />
+              {selectedTable.business_description && selectedTable.table_comment && selectedTable.business_description !== selectedTable.table_comment && (
+                <Alert type="info" showIcon style={{ marginBottom: 12 }} message={`引擎注释：${selectedTable.table_comment}`} />
               )}
 
               <Tabs
                 onChange={(key) => {
-                  if (physicalOnly && (key === 'lineage' || key === 'impact' || key === 'preview')) {
-                    message.info('收录到字典后可使用血缘 / 影响分析 / 样例预览')
-                    return
-                  }
                   if (key === 'lineage') void ensureDetailExtra('lineage')
                   if (key === 'impact') void ensureDetailExtra('impact')
+                  if (key === 'preview' && selectedTable?.id) void loadPreview(selectedTable.id)
+                  if (key === 'usage' && selectedTable?.id && !usageLoaded) void loadUsage(selectedTable.id)
+                  if (key === 'ddl' && selectedTable?.id && !definition) void loadDefinition(selectedTable.id)
                 }}
                 items={[
                   {
                     key: 'columns',
-                    label: `字段 (${selectedTable.columns?.length || 0})`,
+                    label: columnQuery.trim()
+                      ? `字段 (${visibleColumns.length}/${selectedTable.columns?.length || 0})`
+                      : `字段 (${selectedTable.columns?.length || 0})`,
                     children: (
-                      <Table
-                        dataSource={selectedTable.columns}
-                        columns={colColumns}
-                        rowKey={(r: any) => r.id ?? r.name}
-                        size="small"
-                        pagination={false}
-                        scroll={{ y: 'calc(100vh - 420px)' }}
-                      />
+                      <>
+                        <Input.Search
+                          allowClear
+                          placeholder="筛选字段名、类型或注释"
+                          value={columnQuery}
+                          onChange={(e) => setColumnQuery(e.target.value)}
+                          style={{ marginBottom: 8, maxWidth: 360 }}
+                        />
+                        <Table
+                          dataSource={visibleColumns}
+                          columns={colColumns}
+                          rowKey={(r: any) => r.id ?? r.name}
+                          size="small"
+                          pagination={false}
+                          scroll={{ y: 'calc(100vh - 460px)' }}
+                          locale={{ emptyText: columnQuery.trim() ? '没有匹配的字段' : '暂无字段' }}
+                        />
+                      </>
+                    ),
+                  },
+                  {
+                    key: 'ddl',
+                    label: '建表语句',
+                    disabled: physicalOnly,
+                    children: physicalOnly ? null : (
+                      definitionLoading ? (
+                        <div style={{ padding: 48, textAlign: 'center' }}><Spin tip="读取建表语句…" /></div>
+                      ) : (
+                        <div>
+                          {definition?.partitions ? (
+                            <Alert
+                              type="info"
+                              showIcon
+                              style={{ marginBottom: 12 }}
+                              message={`分区 ${definition.partitions.count} 个${definition.partitions.method ? ` · ${definition.partitions.method}` : ''}${definition.partitions.expression ? ` · ${definition.partitions.expression}` : ''}`}
+                              description={definition.partitions.names?.length
+                                ? `分区：${definition.partitions.names.join('、')}${definition.partitions.count > definition.partitions.names.length ? ' 等' : ''}`
+                                : undefined}
+                            />
+                          ) : (
+                            <div style={{ marginBottom: 12, color: '#8c8c8c', fontSize: 12 }}>
+                              {definition ? '这张表没有分区。' : '打开后显示引擎里的建表语句和分区。'}
+                            </div>
+                          )}
+                          {definition?.engine && (
+                            <div style={{ marginBottom: 8, fontSize: 12, color: '#8c8c8c' }}>引擎 {definition.engine}</div>
+                          )}
+                          {definition?.ddl_note && (
+                            <div style={{ marginBottom: 8, fontSize: 12, color: '#8c8c8c' }}>{definition.ddl_note}</div>
+                          )}
+                          <pre className="datamap-ddl">{definition?.ddl || '—'}</pre>
+                          <Space style={{ marginTop: 12 }}>
+                            <Button
+                              size="small"
+                              onClick={() => {
+                                const text = definition?.ddl || ''
+                                if (!text) return
+                                void navigator.clipboard.writeText(text).then(
+                                  () => message.success('已复制建表语句'),
+                                  () => message.error('复制失败'),
+                                )
+                              }}
+                            >
+                              复制建表语句
+                            </Button>
+                            <Button size="small" loading={openingProbe} onClick={() => { void openInProbe() }}>
+                              在数据探查中打开
+                            </Button>
+                          </Space>
+                        </div>
+                      )
                     ),
                   },
                   {
@@ -473,9 +913,65 @@ export default function DataMapPage() {
                         <Descriptions.Item label="表名">{selectedTable.table_name}</Descriptions.Item>
                         <Descriptions.Item label="数据库/Catalog">{selectedTable.catalog || selectedTable.db_name}</Descriptions.Item>
                         <Descriptions.Item label="行数">{selectedTable.row_count ?? '—'}</Descriptions.Item>
-                        <Descriptions.Item label="负责人">{selectedTable.owner || '—'}</Descriptions.Item>
-                        <Descriptions.Item label="描述" span={2}>{selectedTable.table_comment || '—'}</Descriptions.Item>
+                        <Descriptions.Item label="引擎注释" span={2}>{selectedTable.table_comment || '—'}</Descriptions.Item>
                       </Descriptions>
+                      {selectedTable.id && canWrite ? (
+                        <Form form={bizForm} layout="vertical" style={{ marginTop: 16, maxWidth: 640 }} onFinish={() => { void saveBusiness() }}>
+                          <Form.Item name="owner" label="负责人">
+                            <Input maxLength={64} placeholder="谁负责这张表" />
+                          </Form.Item>
+                          <Form.Item name="tags" label="标签">
+                            <Select mode="tags" placeholder="业务标签，回车添加" tokenSeparators={[',']} />
+                          </Form.Item>
+                          <Form.Item name="business_description" label="业务说明">
+                            <Input.TextArea
+                              rows={4}
+                              maxLength={4000}
+                              showCount
+                              placeholder="这张表是什么、给谁用。同步结构不会覆盖这里。"
+                            />
+                          </Form.Item>
+                          <Button type="primary" htmlType="submit" loading={bizSaving}>保存</Button>
+                        </Form>
+                      ) : (
+                        <Descriptions column={2} bordered size="small" style={{ marginTop: 12 }}>
+                          <Descriptions.Item label="负责人">{selectedTable.owner || '—'}</Descriptions.Item>
+                          <Descriptions.Item label="标签">
+                            {Array.isArray(selectedTable.tags) && selectedTable.tags.length
+                              ? selectedTable.tags.map((tag: string) => <Tag key={tag}>{tag}</Tag>)
+                              : '—'}
+                          </Descriptions.Item>
+                          <Descriptions.Item label="业务说明" span={2}>{selectedTable.business_description || '—'}</Descriptions.Item>
+                        </Descriptions>
+                      )}
+                    ),
+                  },
+                  {
+                    key: 'usage',
+                    label: usageLoaded ? `使用 (${usageRows.length})` : '使用',
+                    disabled: physicalOnly,
+                    children: physicalOnly ? null : (
+                      usageLoading ? (
+                        <div style={{ padding: 48, textAlign: 'center' }}><Spin tip="加载使用情况…" /></div>
+                      ) : (
+                        <Table
+                          dataSource={usageRows}
+                          columns={[
+                            { title: '类型', dataIndex: 'kind', width: 110 },
+                            { title: '名称', dataIndex: 'name', ellipsis: true, render: (name: string, row: any) => (
+                              row.href
+                                ? <Button type="link" size="small" style={{ padding: 0 }} onClick={() => navigate(row.href)}>{name}</Button>
+                                : name
+                            ) },
+                            { title: '关系', dataIndex: 'relation', width: 140, ellipsis: true },
+                            { title: '关联', dataIndex: 'peer', ellipsis: true },
+                          ]}
+                          rowKey="key"
+                          size="small"
+                          pagination={false}
+                          locale={{ emptyText: '还没有 SQL 任务、同步、实时作业、质量规则或数据服务引用这张表。' }}
+                        />
+                      )
                     ),
                   },
                   {
@@ -490,6 +986,11 @@ export default function DataMapPage() {
                           data={lineageData}
                           currentTableId={selectedTable.id}
                           height={420}
+                          onNodeClick={(id) => {
+                            const node = lineageData.nodes.find((item) => Number(item.id) === id)
+                            if (!node || Number(node.id) === Number(selectedTable.id)) return
+                            openRelatedTable(node)
+                          }}
                         />
                       )
                     ),
@@ -513,9 +1014,10 @@ export default function DataMapPage() {
                           <Table
                             dataSource={impactData}
                             columns={impactColumns}
-                            rowKey="table_name"
+                            rowKey={(row: any) => `${row.table_id}-${row.task_node_id || ''}`}
                             size="small"
                             pagination={false}
+                            locale={{ emptyText: '暂无下游。没有 SQL 任务把这张表写进别的表。' }}
                           />
                         </>
                       )
@@ -539,7 +1041,7 @@ export default function DataMapPage() {
                         {previewLoading && <Spin />}
                         {previewData?.columns && (
                           <Table
-                            dataSource={(previewData.rows || []).map((r: any, i: number) => ({ ...r, _key: i }))}
+                            dataSource={previewRecords(previewData.columns as string[], previewData.rows || [])}
                             columns={(previewData.columns as string[]).map((c) => ({
                               title: c,
                               dataIndex: c,
@@ -572,21 +1074,6 @@ export default function DataMapPage() {
           )}
         </div>
       </div>
-
-      <Modal title="高级收录" open={registerModal} onOk={handleRegister} onCancel={() => setRegisterModal(false)} okText="收录">
-        <Form form={form} layout="vertical" style={{ marginTop: 16 }} initialValues={{ datasource_id: dsId }}>
-          <Form.Item name="datasource_id" label="数据源" rules={[{ required: true }]}>
-            <Select options={datasources.map((d: any) => ({ label: d.name, value: d.id }))} />
-          </Form.Item>
-          <Form.Item name="db_name" label="数据库名"><Input /></Form.Item>
-          <Form.Item name="table_name" label="表名" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item name="table_comment" label="描述"><Input /></Form.Item>
-          <Form.Item name="owner" label="负责人"><Input /></Form.Item>
-          <Form.Item name="tags" label="标签">
-            <Select mode="tags" placeholder="输入标签后回车" />
-          </Form.Item>
-        </Form>
-      </Modal>
     </div>
   )
 }

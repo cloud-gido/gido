@@ -20,7 +20,16 @@ describe('DataMap catalog tree adoption', () => {
     expect(page).toContain('DataMapCatalogPanel')
     expect(page).toContain('datamap-page-body')
     expect(page).toContain('ensureTable')
-    expect(page).toContain('打开右侧字典并自动收录')
+    expect(page).toContain('单击表查看字段')
+    expect(page).toContain('搜索工作空间的表和字段')
+    expect(page).toContain('业务说明')
+    expect(page).toContain('getContext')
+    expect(page).toContain('onNodeClick')
+    expect(page).toContain('建表语句')
+    expect(page).toContain('在数据探查中打开')
+    expect(page).toContain('ensureTable')
+    expect(page).not.toContain('高级收录')
+    expect(page).not.toContain('收录到字典')
     expect(page).not.toContain('useSoftExpandedRows')
     expect(page).not.toMatch(/>注册</)
 
@@ -29,7 +38,8 @@ describe('DataMap catalog tree adoption', () => {
     expect(panel).toContain('fetchTables')
     expect(panel).toContain('fetchColumns')
     expect(panel).toContain('sqlSchemaCache')
-    expect(panel).toContain('已收录')
+    expect(panel).not.toContain('已收录')
+    expect(panel).not.toContain('>目录<')
   })
 
   it('shares schema tree helpers and ensure-table fallback', () => {

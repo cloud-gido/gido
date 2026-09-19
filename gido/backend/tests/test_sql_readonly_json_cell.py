@@ -54,3 +54,45 @@ def test_column_fields_include_portable_type_metadata():
             "scale": None,
         },
     ]
+
+
+def test_doris_string_is_not_labeled_binary():
+    """Doris STRING 在 MySQL 协议里是类型码 252，文本字符集必须还原成 string。"""
+    description = [
+        ("app_vrsn", 252, None, None, None, None, True),
+        ("payload", 252, None, None, None, None, True),
+        ("name", 253, None, None, None, None, True),
+        ("flag", 254, None, None, None, None, True),
+        ("id", 8, None, None, None, None, False),
+    ]
+    packets = [
+        {"charsetnr": 33, "length": 1048576},
+        {"charsetnr": 63, "length": 65535},
+        {"charsetnr": 33, "length": 256},
+        {"charsetnr": 33, "length": 255},
+        {"charsetnr": 63, "length": 8},
+    ]
+    fields = column_fields_from_description("doris", description, packets)
+    assert [(item["name"], item["raw_type"], item["semantic_type"]) for item in fields] == [
+        ("app_vrsn", "string", "string"),
+        ("payload", "blob", "binary"),
+        ("name", "varchar", "string"),
+        ("flag", "string", "string"),
+        ("id", "bigint", "number"),
+    ]
+
+
+def test_mysql_text_and_blob_follow_charset():
+    description = [
+        ("body", 252, None, None, None, None, True),
+        ("raw", 252, None, None, None, None, True),
+        ("code", 254, None, None, None, None, True),
+    ]
+    packets = [
+        {"charsetnr": 45, "length": 65535},
+        {"charsetnr": 63, "length": 255},
+        {"charsetnr": 63, "length": 16},
+    ]
+    fields = column_fields_from_description("mysql", description, packets)
+    assert [item["raw_type"] for item in fields] == ["text", "tinyblob", "binary"]
+    assert [item["semantic_type"] for item in fields] == ["string", "binary", "binary"]

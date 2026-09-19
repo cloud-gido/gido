@@ -92,7 +92,6 @@ export default function FileImportDrawer({
       has_header: editCfg.has_header !== false,
       encoding: editCfg.encoding || undefined,
       delimiter: editCfg.delimiter || undefined,
-      register_datamap: editCfg.register_datamap !== false,
       if_exists: 'fail',
       operation_mode: editTask ? 'append' : 'create',
       quality_mode: 'strict',
@@ -349,7 +348,7 @@ export default function FileImportDrawer({
     if (!canWrite) return
     try {
       const values = await form.validateFields([
-        'name', 'dst_datasource_id', 'dst_table', 'operation_mode', 'quality_mode', 'register_datamap', 'run_now',
+        'name', 'dst_datasource_id', 'dst_table', 'operation_mode', 'quality_mode', 'run_now',
       ])
       if (!fileMeta?.file_id) {
         message.warning('请先上传文件')
@@ -388,7 +387,7 @@ export default function FileImportDrawer({
         sheet_name: form.getFieldValue('sheet_name'),
         operation_mode: op,
         quality_mode: values.quality_mode || 'strict',
-        register_datamap: !!values.register_datamap,
+        register_datamap: true,
         run_now: !!values.run_now,
       }
       let res: any
@@ -750,9 +749,6 @@ export default function FileImportDrawer({
                         { label: '宽松（跳过坏行并记录）', value: 'lenient' },
                       ]}
                     />
-                  </Form.Item>
-                  <Form.Item name="register_datamap" label="导入后注册到数据字典" valuePropName="checked">
-                    <Switch />
                   </Form.Item>
                   {tableExists && form.getFieldValue('operation_mode') === 'create' && (
                     <Alert type="warning" showIcon message="目标表已存在，请更换表名或改为追加/替换" />

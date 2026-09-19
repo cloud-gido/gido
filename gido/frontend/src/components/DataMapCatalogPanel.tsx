@@ -36,6 +36,8 @@ type Props = {
   /** catalog|table → meta id */
   registeredMap: Map<string, number>
   selectedKey?: string | null
+  locateCatalog?: string | null
+  locateTable?: string | null
   onSelectTable: (sel: DataMapTableSelection) => void
   refreshToken?: number
 }
@@ -49,6 +51,8 @@ export default function DataMapCatalogPanel({
   defaultCatalog,
   registeredMap,
   selectedKey,
+  locateCatalog,
+  locateTable,
   onSelectTable,
   refreshToken = 0,
 }: Props) {
@@ -100,7 +104,7 @@ export default function DataMapCatalogPanel({
     void loadRoot().catch(() => undefined)
   }, [datasourceId, loadRoot, refreshToken])
 
-  // 已收录状态变化时刷新当前已挂载的表节点角标
+  // 收录状态变化时刷新已挂载表节点，供单击后打开右侧字典；树上不再画角标
   useEffect(() => {
     setTreeData((prev) =>
       prev.map((n) => {
@@ -143,6 +147,18 @@ export default function DataMapCatalogPanel({
       setTreeData((prev) => attachColumns(prev, catalog, table, cols))
     }
   }
+
+  useEffect(() => {
+    if (!datasourceId || !locateCatalog) return
+    const key = schemaKey(locateCatalog)
+    setExpandedKeys((prev) => (prev.includes(key) ? prev : [...prev, key]))
+    let cancelled = false
+    void fetchTables(datasourceId, locateCatalog).then((tables) => {
+      if (cancelled) return
+      setTreeData((prev) => attachTables(prev, locateCatalog, tables, lookupReg))
+    }).catch(() => undefined)
+    return () => { cancelled = true }
+  }, [datasourceId, locateCatalog, locateTable, lookupReg])
 
   const treeHeight = useMemo(() => Math.max(420, window.innerHeight - 260), [refreshToken])
 
@@ -227,11 +243,6 @@ function CatalogTreeTitle({ node }: { node: SchemaTreeNode }) {
         </Tooltip>
       )
     }
-    trailing = meta.registered ? (
-      <Tag color="green" style={{ marginLeft: 4, fontSize: 11, lineHeight: '18px', padding: '0 6px' }}>已收录</Tag>
-    ) : (
-      <Tag style={{ marginLeft: 4, fontSize: 11, lineHeight: '18px', padding: '0 6px' }}>目录</Tag>
-    )
   } else if (meta?.kind === 'column') {
     icon = <FieldStringOutlined className="sql-schema-browser-icon column" />
     primary = (

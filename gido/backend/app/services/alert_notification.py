@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 # outbox 哨兵：写入路径标记「投递时 force」，真正推送后会被渠道列表覆盖
 FORCE_NOTIFY_SENTINEL = "__force__"
+# 只推这次刚失败。静默可跨夜，再留采集延迟；更老的失败只留在告警中心。
+NOTIFY_OCCURRENCE_MAX_AGE = timedelta(hours=36)
 
 _SEVERITY_ORDER = {"info": 0, "warning": 1, "error": 2, "critical": 3}
 
@@ -364,6 +366,53 @@ def _before_notify_arm(db: Session, event: AlertEvent, cfg: AlertNotificationCon
         return False
 
 
+def _failure_clock(db: Session, event: AlertEvent) -> Optional[datetime]:
+    """这次失败的结束时间。没有结束时间时用告警创建时间（刚观察到的状态变化）。"""
+    ctx = _alert_context(db, event)
+    inst = ctx["instance"]
+    ni = ctx["node_instance"]
+    for dt in (
+        getattr(ni, "finished_at", None) if ni else None,
+        getattr(inst, "finished_at", None) if inst else None,
+        event.created_at,
+    ):
+        if dt:
+            return dt
+    return None
+
+
+def _occurrence_stale(db: Session, event: AlertEvent) -> bool:
+    """历史失败不再进群。基线按「现在破线」计，不拿很久以前的开始时间当发生时间。"""
+    if event.alert_type in ("test", "sla"):
+        return False
+    occurred = _failure_clock(db, event)
+    if occurred is None:
+        return False
+    try:
+        age = datetime.utcnow() - occurred.replace(tzinfo=None)
+    except Exception:
+        return False
+    return age > NOTIFY_OCCURRENCE_MAX_AGE
+
+
+def _historical_notify_block(db: Session, event: AlertEvent, cfg: AlertNotificationConfig) -> Optional[str]:
+    """打开渠道之前的失败、以及早已结束的失败：只入库。"""
+    if event.alert_type == "test":
+        return None
+    if _before_notify_arm(db, event, cfg):
+        return "before_armed_at"
+    if _occurrence_stale(db, event):
+        return "stale_occurrence"
+    return None
+
+
+def _skip_historical(event: AlertEvent, reason: str) -> dict:
+    event.notification_status = "skipped"
+    event.notify_pending_channels = None
+    event.notify_next_retry_at = None
+    return {"sent": [], "failed": [], "skipped": reason}
+
+
 def _lark_field(label: str, value: str) -> dict:
     text = (value or "—").strip() or "—"
     return {
@@ -495,7 +544,7 @@ def _lark_card_payload(db: Session, event: AlertEvent, title: str, content: str)
         })
     note = f"{BRAND_SUITE} · {(ws.name if ws else '') or '告警'}"
     if kind != "test":
-        note += " · 仅推送配置时刻之后的失败"
+        note += " · 仅推送本次刚发生的失败"
     elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": note[:80]}]})
     return {
         "msg_type": "interactive",
@@ -565,9 +614,9 @@ def notify_alert_event(db: Session, event: AlertEvent, *, force: bool = False) -
         if event.alert_type in ("failed", "timeout") and _in_notify_cooldown(db, event, cooldown):
             event.notification_status = "skipped"
             return {"sent": [], "failed": [], "skipped": "cooldown"}
-        if event.alert_type != "test" and _before_notify_arm(db, event, cfg):
-            event.notification_status = "skipped"
-            return {"sent": [], "failed": [], "skipped": "before_armed_at"}
+        historical = _historical_notify_block(db, event, cfg)
+        if historical:
+            return _skip_historical(event, historical)
         deferred, until = quiet_hours_decision(
             db, cfg, workspace_id=event.workspace_id, severity=severity
         )
@@ -710,6 +759,10 @@ def dispatch_pending_notifications(db: Session, *, limit: int = 50) -> dict:
             # 渠道已被关掉，不必再重投
             event.notify_pending_channels = None
             event.notify_next_retry_at = None
+            continue
+        historical = _historical_notify_block(db, event, cfg)
+        if historical:
+            _skip_historical(event, historical)
             continue
         severity = getattr(event, "severity", None) or event.level or "error"
         sent, failed = _deliver_channels(db, cfg, event, channels, severity)

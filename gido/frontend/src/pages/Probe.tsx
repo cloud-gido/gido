@@ -61,9 +61,32 @@ import AutosaveStatusHint from '../components/AutosaveStatusHint'
 import { useScriptAutosave } from '../hooks/useScriptAutosave'
 import { useInteractiveRun } from '../hooks/useInteractiveRun'
 import InteractiveRunDock from '../components/InteractiveRunDock'
+import { takePendingProbeScript } from '../utils/probePendingScript'
 
 function sameParent(a: string | null | undefined, b: string | null | undefined) {
   return (a ?? null) === (b ?? null)
+}
+
+function absorbPendingProbeScript(state: ProbeWorkspaceState): ProbeWorkspaceState {
+  const pending = takePendingProbeScript()
+  if (!pending) return state
+  const id = newProbeId('s')
+  return {
+    ...state,
+    scripts: [
+      ...state.scripts,
+      {
+        id,
+        name: pending.name || '数据地图查询',
+        folderId: null,
+        sql: pending.sql,
+        datasource_id: pending.datasourceId,
+        limit: PROBE_DEFAULT_ROW_LIMIT,
+        sort_order: 0,
+      },
+    ],
+    activeScriptId: id,
+  }
 }
 
 function sortOrderForNewFolder(folders: ProbeFolder[], parentId: string | null): number {
@@ -170,10 +193,11 @@ export default function ProbePage() {
       }
       if (cancelled) return
       if (next) {
+        next = absorbPendingProbeScript(next)
         setProbeState(next)
         saveProbeState(wsId, next)
       } else {
-        const init = defaultProbeState()
+        const init = absorbPendingProbeScript(defaultProbeState())
         setProbeState(init)
         saveProbeState(wsId, init)
       }

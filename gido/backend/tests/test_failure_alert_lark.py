@@ -237,6 +237,93 @@ def test_recent_failed_instance_still_posts_lark(db):
     assert any(el.get("tag") == "hr" for el in payload["card"]["elements"])
 
 
+def test_stale_failure_stays_in_center_and_is_not_pushed(db):
+    """开通之后的历史失败只入库。8 天前结束的实例不能因为后来采集再进群。"""
+    from app.services.alert_center import open_instance_alert
+
+    ws = db.query(Workspace).first()
+    wf = Workflow(
+        workspace_id=ws.id,
+        name="old-fail",
+        dag_config={"nodes": []},
+        status="published",
+    )
+    db.add(wf)
+    db.add(
+        AlertNotificationConfig(
+            workspace_id=ws.id,
+            enabled=True,
+            min_severity="error",
+            lark_enabled=True,
+            lark_webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/stale",
+            notify_armed_at=datetime(2020, 1, 1),
+        )
+    )
+    db.commit()
+    inst = WorkflowInstance(
+        workflow_id=wf.id,
+        status="failed",
+        finished_at=datetime.utcnow() - timedelta(days=8),
+        trigger_type="schedule|ds:152069",
+    )
+    db.add(inst)
+    db.commit()
+    with patch("app.services.alert_notification._post_json") as post:
+        ev = open_instance_alert(db, workflow_instance=inst, notify=True)
+        _flush_outbox(db)
+        db.commit()
+        again = open_instance_alert(db, workflow_instance=inst, notify=True)
+        _flush_outbox(db)
+    assert ev.id == again.id
+    assert ev.notification_status == "skipped"
+    assert post.call_count == 0
+
+
+def test_quiet_hours_release_does_not_push_days_old_failure(db):
+    ws = db.query(Workspace).first()
+    wf = Workflow(workspace_id=ws.id, name="held-old", dag_config={"nodes": []}, status="published")
+    db.add(wf)
+    db.flush()
+    db.add(
+        AlertNotificationConfig(
+            workspace_id=ws.id,
+            enabled=True,
+            lark_enabled=True,
+            lark_webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/held",
+            notify_armed_at=datetime(2020, 1, 1),
+        )
+    )
+    inst = WorkflowInstance(
+        workflow_id=wf.id,
+        status="failed",
+        finished_at=datetime.utcnow() - timedelta(days=8),
+    )
+    db.add(inst)
+    db.flush()
+    event = AlertEvent(
+        workspace_id=ws.id,
+        workflow_id=wf.id,
+        workflow_instance_id=inst.id,
+        alert_type="failed",
+        level="error",
+        severity="error",
+        status="open",
+        message="old",
+        notification_status="deferred",
+        notify_pending_channels="lark",
+        notify_next_retry_at=datetime.utcnow() - timedelta(minutes=1),
+        dedupe_key=f"failed:workflow:{inst.id}",
+    )
+    db.add(event)
+    db.commit()
+    with patch("app.services.alert_notification._post_json") as post:
+        dispatch_pending_notifications(db)
+    db.refresh(event)
+    assert post.call_count == 0
+    assert event.notification_status == "skipped"
+    assert event.notify_pending_channels is None
+
+
 def test_second_failure_same_workflow_skips_lark_during_cooldown(db):
     ws = db.query(Workspace).first()
     wf = Workflow(

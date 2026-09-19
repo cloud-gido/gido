@@ -48,6 +48,35 @@ export default function QualityPage() {
   const handleCreate = async () => {
     const values = await form.validateFields()
     values.workspace_id = wsId
+    const row = tables.find((t: any) => t.row_key === values.table_key)
+    if (!row?.table_name) {
+      message.error('请选择表')
+      return
+    }
+    let tableId = row.meta_table_id
+    if (!tableId) {
+      try {
+        const ensured: any = await datamapApi.ensureTable({
+          workspace_id: wsId,
+          datasource_id: row.datasource_id,
+          db_name: row.catalog || undefined,
+          table_name: row.table_name,
+          table_comment: row.table_comment || undefined,
+          table_type: row.table_type || 'table',
+          sync_if_empty: true,
+        })
+        tableId = Number(ensured?.id) || undefined
+      } catch (e: any) {
+        message.error(e?.response?.data?.detail || '关联表失败')
+        return
+      }
+    }
+    if (!tableId) {
+      message.error('无法关联该表')
+      return
+    }
+    values.table_id = tableId
+    delete values.table_key
     if (values.rule_config_json) {
       try {
         values.rule_config = JSON.parse(values.rule_config_json)
@@ -129,13 +158,13 @@ export default function QualityPage() {
           <Form.Item name="rule_name" label="规则名称" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="table_id" label="关联表（须已注册元数据）" rules={[{ required: true }]}>
+          <Form.Item name="table_key" label="关联表" rules={[{ required: true }]}>
             <Select
               showSearch
               optionFilterProp="label"
-              options={tables.filter((t: any) => t.registered && t.meta_table_id).map((t: any) => ({
-                label: t.qualified_name,
-                value: t.meta_table_id,
+              options={tables.filter((t: any) => t.table_name && !t.error).map((t: any) => ({
+                label: t.qualified_name || `${t.catalog}.${t.table_name}`,
+                value: t.row_key,
               }))}
             />
           </Form.Item>

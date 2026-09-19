@@ -18,8 +18,14 @@ describe('ResultCell', () => {
     expect(screen.getByText('12.5').className).toContain('decimal')
     rerender(<ResultCell value="None" type="varchar" />)
     expect(screen.getByText('None')).toBeTruthy()
-    rerender(<ResultCell value="base64:AQID" type="binary" />)
+    rerender(<ResultCell value="base64:AQID" type="blob" semanticType="binary" />)
     expect(screen.getByText('BINARY · 3 bytes')).toBeTruthy()
+    rerender(<ResultCell value="1.2.34" type="string" semanticType="string" />)
+    expect(screen.getByText('1.2.34').className).toContain('text')
+    rerender(<ResultCell value="1.2.34" type="blob" semanticType="string" />)
+    expect(screen.getByText('1.2.34').className).toContain('text')
+    rerender(<ResultCell value="1.2.34" type="varbinary" semanticType="binary" />)
+    expect(screen.getByText('BINARY · 6 bytes')).toBeTruthy()
   })
 
   it('opens structured content in formatted and raw modes', () => {

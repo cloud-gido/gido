@@ -123,15 +123,10 @@ def open_instance_alert(
         .first()
     )
     if exists:
-        if notify and exists.notification_status in (
-            None,
-            "pending",
-            "skipped",
-            "failed",
-            "deferred",
-            "partial",
-        ):
-            _enqueue_notification(exists, force=force_notify)
+        # 一次运行只入队一次。投递失败/静默由出站箱自己重试；
+        # 已跳过的历史失败不能因为再次采集被重新推进群。
+        if force_notify:
+            _enqueue_notification(exists, force=True)
         return exists
     event = AlertEvent(
         workspace_id=wf.workspace_id if wf else None,

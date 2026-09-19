@@ -15,6 +15,7 @@ from app.services.sql_readonly import (
     assert_readonly_statement,
     column_fields_from_description,
     column_types_from_description,
+    field_packets_from_cursor,
     json_cell_value,
     split_sql_statements,
 )
@@ -53,8 +54,9 @@ def capture_statement_plan(
             description = cur.description or []
             raw_rows = list(cur.fetchall() or [])
             columns = [str(item[0]) for item in description]
-            column_types = column_types_from_description(ds_type, description)
-            fields = column_fields_from_description(ds_type, description)
+            packets = field_packets_from_cursor(cur)
+            column_types = column_types_from_description(ds_type, description, packets)
+            fields = column_fields_from_description(ds_type, description, packets)
             rows = [[json_cell_value(value) for value in row] for row in raw_rows]
             query_id = connection_query_id(conn, ds_type)
         finally:

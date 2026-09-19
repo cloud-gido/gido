@@ -29,6 +29,7 @@ from app.services.sql_readonly import (
     apply_readonly_row_limit,
     column_fields_from_description,
     column_types_from_description,
+    field_packets_from_cursor,
     json_cell_value,
     split_sql_statements,
 )
@@ -260,8 +261,9 @@ def run_sql_with_result(
                             control()
                         if cur.description:
                             columns = [d[0] for d in cur.description]
-                            col_types = column_types_from_description(ds.ds_type, cur.description)
-                            fields = column_fields_from_description(ds.ds_type, cur.description)
+                            packets = field_packets_from_cursor(cur)
+                            col_types = column_types_from_description(ds.ds_type, cur.description, packets)
+                            fields = column_fields_from_description(ds.ds_type, cur.description, packets)
                             rows: List[List[Any]] = []
                             preview_rows: List[List[Any]] = []
                             fetched_rows = 0

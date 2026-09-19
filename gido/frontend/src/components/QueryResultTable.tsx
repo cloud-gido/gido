@@ -322,7 +322,9 @@ export function buildQueryTableColumns(
       onFilter: opts?.serverQuery
         ? undefined
         : (value, record) => columnFilterPredicate(col, String(value), record),
-      render: (v: unknown) => <ResultCell value={v} type={typeByName[col]} />,
+      render: (v: unknown) => (
+        <ResultCell value={v} type={typeByName[col]} semanticType={semanticType} />
+      ),
     }
   })
 }

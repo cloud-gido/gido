@@ -42,11 +42,47 @@ function binarySize(value: unknown, fallback: string): number {
   return fallback.length
 }
 
-export default function ResultCell({ value, type }: { value: unknown; type?: string | null }) {
+type CellKind = 'boolean' | 'binary' | 'integer' | 'decimal' | 'datetime' | 'date' | 'json' | 'text'
+
+/** 展示只跟已还原的列类型走。semantic_type 优先，避免协议码残留把文本列画成二进制。 */
+function cellKind(type?: string | null, semanticType?: string | null): CellKind {
+  const semantic = (semanticType || '').toLowerCase()
+  const label = type || ''
+  if (semantic === 'binary' || (!semantic && BINARY_TYPES.test(label))) return 'binary'
+  if (semantic === 'boolean' || (!semantic && BOOL_TYPES.test(label))) return 'boolean'
+  if (semantic === 'json' || (!semantic && JSON_TYPES.test(label))) return 'json'
+  if (semantic === 'datetime' || (!semantic && (DATETIME_TYPES.test(label) || DATE_TYPES.test(label)))) {
+    if (DATE_TYPES.test(label) && !DATETIME_TYPES.test(label)) return 'date'
+    return 'datetime'
+  }
+  if (semantic === 'number' || (!semantic && (INTEGER_TYPES.test(label) || DECIMAL_TYPES.test(label)))) {
+    return DECIMAL_TYPES.test(label) ? 'decimal' : 'integer'
+  }
+  if (semantic === 'string') return 'text'
+  if (BINARY_TYPES.test(label)) return 'binary'
+  if (BOOL_TYPES.test(label)) return 'boolean'
+  if (INTEGER_TYPES.test(label)) return 'integer'
+  if (DECIMAL_TYPES.test(label)) return 'decimal'
+  if (DATETIME_TYPES.test(label)) return 'datetime'
+  if (DATE_TYPES.test(label)) return 'date'
+  if (JSON_TYPES.test(label)) return 'json'
+  return 'text'
+}
+
+export default function ResultCell({
+  value,
+  type,
+  semanticType,
+}: {
+  value: unknown
+  type?: string | null
+  semanticType?: string | null
+}) {
   const [open, setOpen] = useState(false)
   const [mode, setMode] = useState<'formatted' | 'raw'>('formatted')
   const raw = useMemo(() => serialize(value), [value])
-  const structured = Array.isArray(value) || (!!value && typeof value === 'object') || JSON_TYPES.test(type || '')
+  const kind = cellKind(type, semanticType)
+  const structured = kind === 'json' || Array.isArray(value) || (!!value && typeof value === 'object' && !(value instanceof Uint8Array))
   const longText = raw.length > 120 || raw.includes('\n')
   const expandable = structured || longText
   const formatted = useMemo(() => {
@@ -63,18 +99,13 @@ export default function ResultCell({ value, type }: { value: unknown; type?: str
   }
 
   let preview
-  if (BOOL_TYPES.test(type || '') || typeof value === 'boolean') {
+  if (kind === 'boolean' || typeof value === 'boolean') {
     const truthy = value === true || String(value).toLowerCase() === 'true' || value === 1
     preview = <Tag color={truthy ? 'green' : 'default'}>{truthy ? 'TRUE' : 'FALSE'}</Tag>
-  } else if (BINARY_TYPES.test(type || '') || value instanceof Uint8Array) {
+  } else if (kind === 'binary' || value instanceof Uint8Array) {
     preview = <span className="dw-result-cell--binary">BINARY · {binarySize(value, raw)} bytes</span>
   } else {
-    const kind = INTEGER_TYPES.test(type || '') ? 'integer'
-      : DECIMAL_TYPES.test(type || '') ? 'decimal'
-        : DATETIME_TYPES.test(type || '') ? 'datetime'
-          : DATE_TYPES.test(type || '') ? 'date'
-            : structured ? 'json' : 'text'
-    preview = <span className={`dw-result-cell--${kind}`}>{raw}</span>
+    preview = <span className={`dw-result-cell--${kind === 'json' || structured ? 'json' : kind}`}>{raw}</span>
   }
 
   return (

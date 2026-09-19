@@ -458,7 +458,7 @@ def execute_data_api(
                 total_count = int(crow[0] if crow else 0)
             cur.execute(exec_sql)
             rows = cur.fetchall()
-            base = result_set_from_cursor(lt, cur.description, rows, max_rows)
+            base = result_set_from_cursor(lt, cur.description, rows, max_rows, cursor=cur)
         except pymysql.Error as e:
             raise HTTPException(status_code=400, detail=f"数据源执行失败: {e}") from e
         finally:
@@ -485,7 +485,7 @@ def execute_data_api(
                 total_count = int(crow[0] if crow else 0)
             cur.execute(exec_sql, bound)
             rows = cur.fetchall()
-            base = result_set_from_cursor(lt, cur.description, rows, max_rows)
+            base = result_set_from_cursor(lt, cur.description, rows, max_rows, cursor=cur)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"数据源执行失败: {e}") from e
         finally:

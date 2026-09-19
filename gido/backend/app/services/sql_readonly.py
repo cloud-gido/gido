@@ -243,48 +243,132 @@ def apply_readonly_row_limit(
     return f"{core} LIMIT {cap + 1 if overflow_probe else cap}"
 
 
-def column_types_from_description(ds_type: str, description: Optional[Sequence]) -> List[str]:
+# MySQL 二进制字符集。BLOB/TEXT、VARCHAR/VARBINARY、CHAR/BINARY 共用类型码，只靠它区分。
+_MYSQL_BINARY_CHARSET = 63
+_MYSQL_TYPE_BLOB = 252
+_MYSQL_TYPE_VAR_STRING = 253
+_MYSQL_TYPE_STRING = 254
+_MYSQL_TYPE_NAMES = {
+    0: "decimal",
+    1: "tinyint",
+    2: "smallint",
+    3: "int",
+    4: "float",
+    5: "double",
+    6: "null",
+    7: "timestamp",
+    8: "bigint",
+    9: "mediumint",
+    10: "date",
+    11: "time",
+    12: "datetime",
+    13: "year",
+    14: "date",
+    15: "varchar",
+    16: "bit",
+    245: "json",
+    246: "decimal",
+    247: "enum",
+    248: "set",
+    255: "geometry",
+}
+
+
+def field_packets_from_cursor(cursor: Any) -> Optional[Sequence]:
+    """pymysql 字段包。DB-API description 没有字符集，TEXT/BLOB 必须从这里读。"""
+    result = getattr(cursor, "_result", None)
+    fields = getattr(result, "fields", None) if result is not None else None
+    return fields or None
+
+
+def _packet_charset_and_length(packet: Any) -> Tuple[Optional[int], Optional[int]]:
+    if packet is None:
+        return None, None
+    if isinstance(packet, dict):
+        charset = packet.get("charsetnr")
+        length = packet.get("length")
+    else:
+        charset = getattr(packet, "charsetnr", None)
+        length = getattr(packet, "length", None)
+    try:
+        charset_id = int(charset) if charset is not None else None
+    except (TypeError, ValueError):
+        charset_id = None
+    try:
+        column_length = int(length) if length is not None else None
+    except (TypeError, ValueError):
+        column_length = None
+    return charset_id, column_length
+
+
+def _blob_family_label(length: Optional[int], *, binary: bool) -> str:
+    """MySQL 用列最大字节长度区分 tiny/blob/medium/long。"""
+    size = length if isinstance(length, int) and length > 0 else 65535
+    if size <= 255:
+        return "tinyblob" if binary else "tinytext"
+    if size <= 65535:
+        return "blob" if binary else "text"
+    if size <= 16777215:
+        return "mediumblob" if binary else "mediumtext"
+    return "longblob" if binary else "longtext"
+
+
+def mysql_display_type(
+    type_code: Any,
+    *,
+    charset: Optional[int] = None,
+    length: Optional[int] = None,
+    ds_type: str = "mysql",
+) -> str:
+    """把 MySQL 协议类型码还原成接近建表类型的展示名。
+
+    Doris STRING 在协议里是 MYSQL_TYPE_BLOB，但字符集不是 binary(63)。
+    不能把所有 252 都标成 blob，否则文本列会被格子当成二进制藏起来。
+    """
+    try:
+        code = int(type_code)
+    except (TypeError, ValueError):
+        return str(type_code or "unknown")
+    binary = charset == _MYSQL_BINARY_CHARSET
+    doris = (ds_type or "").lower() == "doris"
+    if code == _MYSQL_TYPE_BLOB:
+        if charset is None:
+            # 没有字符集时不能把 252 判成文本，否则真 BLOB 会被当成字符串。
+            return "blob"
+        if not binary:
+            # Doris 没有 TEXT；STRING 走 BLOB 类型码 + 文本字符集。
+            return "string" if doris else _blob_family_label(length, binary=False)
+        return _blob_family_label(length, binary=True)
+    if code in (_MYSQL_TYPE_VAR_STRING, 15):
+        if charset is None:
+            return "varchar"
+        return "varbinary" if binary else "varchar"
+    if code == _MYSQL_TYPE_STRING:
+        if charset is None:
+            return "string" if doris else "char"
+        if binary:
+            return "binary"
+        # Doris 的 CHAR / 部分 VARCHAR / LARGEINT 都回 254，标成 char 会误导。
+        return "string" if doris else "char"
+    return _MYSQL_TYPE_NAMES.get(code, f"type_{code}")
+
+
+def column_types_from_description(
+    ds_type: str,
+    description: Optional[Sequence],
+    field_packets: Optional[Sequence] = None,
+) -> List[str]:
     """从 DB-API cursor.description 提取列类型展示名。"""
     if not description:
         return []
     lt = (ds_type or "").lower()
     out: List[str] = []
     if lt in ("mysql", "doris"):
-        try:
-            from pymysql.constants import FIELD_TYPE
-
-            names = {
-                FIELD_TYPE.DECIMAL: "decimal",
-                FIELD_TYPE.TINY: "tinyint",
-                FIELD_TYPE.SHORT: "smallint",
-                FIELD_TYPE.LONG: "int",
-                FIELD_TYPE.FLOAT: "float",
-                FIELD_TYPE.DOUBLE: "double",
-                FIELD_TYPE.NULL: "null",
-                FIELD_TYPE.TIMESTAMP: "timestamp",
-                FIELD_TYPE.LONGLONG: "bigint",
-                FIELD_TYPE.INT24: "mediumint",
-                FIELD_TYPE.DATE: "date",
-                FIELD_TYPE.TIME: "time",
-                FIELD_TYPE.DATETIME: "datetime",
-                FIELD_TYPE.YEAR: "year",
-                FIELD_TYPE.NEWDATE: "date",
-                FIELD_TYPE.VARCHAR: "varchar",
-                FIELD_TYPE.BIT: "bit",
-                FIELD_TYPE.JSON: "json",
-                FIELD_TYPE.NEWDECIMAL: "decimal",
-                FIELD_TYPE.ENUM: "enum",
-                FIELD_TYPE.SET: "set",
-                FIELD_TYPE.BLOB: "blob",
-                FIELD_TYPE.STRING: "string",
-                FIELD_TYPE.CHAR: "char",
-            }
-            for col in description:
-                code = col[1] if len(col) > 1 else None
-                out.append(names.get(code, f"type_{code}"))
-        except Exception:
-            for col in description:
-                out.append(str(col[1]) if len(col) > 1 else "unknown")
+        packets = list(field_packets or [])
+        for index, col in enumerate(description):
+            code = col[1] if len(col) > 1 else None
+            charset, length = _packet_charset_and_length(packets[index] if index < len(packets) else None)
+            out.append(mysql_display_type(code, charset=charset, length=length, ds_type=lt))
         return out
 
     if lt == "postgresql":
@@ -302,7 +386,7 @@ def column_types_from_description(ds_type: str, description: Optional[Sequence])
     return out
 
 
-def _semantic_type(raw_type: str) -> str:
+def semantic_type(raw_type: str) -> str:
     normalized = (raw_type or "").lower()
     if any(token in normalized for token in ("int", "decimal", "numeric", "float", "double", "real")):
         return "number"
@@ -318,12 +402,14 @@ def _semantic_type(raw_type: str) -> str:
 
 
 def column_fields_from_description(
-    ds_type: str, description: Optional[Sequence]
+    ds_type: str,
+    description: Optional[Sequence],
+    field_packets: Optional[Sequence] = None,
 ) -> List[Dict[str, Any]]:
     """Build a portable DB-API column schema for MySQL, Doris and PostgreSQL."""
     if not description:
         return []
-    raw_types = column_types_from_description(ds_type, description)
+    raw_types = column_types_from_description(ds_type, description, field_packets)
     fields: List[Dict[str, Any]] = []
     for index, column in enumerate(description):
         raw_type = raw_types[index] if index < len(raw_types) else "unknown"
@@ -334,7 +420,7 @@ def column_fields_from_description(
             {
                 "name": str(column[0]),
                 "raw_type": raw_type,
-                "semantic_type": _semantic_type(raw_type),
+                "semantic_type": semantic_type(raw_type),
                 "nullable": bool(null_ok) if null_ok is not None else None,
                 "precision": int(precision) if precision is not None else None,
                 "scale": int(scale) if scale is not None else None,
@@ -343,14 +429,22 @@ def column_fields_from_description(
     return fields
 
 
-def result_set_from_cursor(ds_type: str, description: Optional[Sequence], rows: List, limit: int) -> dict:
+def result_set_from_cursor(
+    ds_type: str,
+    description: Optional[Sequence],
+    rows: List,
+    limit: int,
+    field_packets: Optional[Sequence] = None,
+    cursor: Any = None,
+) -> dict:
+    packets = field_packets if field_packets is not None else field_packets_from_cursor(cursor)
     cols = [d[0] for d in description] if description else []
-    types = column_types_from_description(ds_type, description)
+    types = column_types_from_description(ds_type, description, packets)
     capped = rows[:limit]
     return {
         "columns": cols,
         "column_types": types,
-        "fields": column_fields_from_description(ds_type, description),
+        "fields": column_fields_from_description(ds_type, description, packets),
         "rows": [[json_cell_value(v) for v in row] for row in capped],
         "total": len(rows),
         "truncated": len(rows) >= limit,

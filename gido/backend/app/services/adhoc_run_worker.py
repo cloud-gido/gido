@@ -682,6 +682,7 @@ def _run_probe(row: AdhocRun, lease_token: str, db: Any) -> Dict[str, Any]:
         apply_readonly_row_limit,
         column_fields_from_description,
         column_types_from_description,
+        field_packets_from_cursor,
         json_cell_value,
         parse_readonly_statements,
     )
@@ -730,11 +731,12 @@ def _run_probe(row: AdhocRun, lease_token: str, db: Any) -> Dict[str, Any]:
                         )
                         execute_finished = time.monotonic()
                     columns = [item[0] for item in (cur.description or [])]
+                    packets = field_packets_from_cursor(cur)
                     column_types = column_types_from_description(
-                        ds.ds_type, cur.description or []
+                        ds.ds_type, cur.description or [], packets
                     )
                     fields = column_fields_from_description(
-                        ds.ds_type, cur.description or []
+                        ds.ds_type, cur.description or [], packets
                     )
                     query_id = connection_query_id(conn, ds.ds_type)
                     fetched_rows = 0

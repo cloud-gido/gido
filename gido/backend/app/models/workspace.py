@@ -779,6 +779,7 @@ class MetaTable(Base):
     size_bytes = Column(Integer)
     tags = Column(JSON)
     owner = Column(String(64))
+    business_description = Column(Text)
     last_updated = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
     columns = relationship("MetaColumn", back_populates="table")
@@ -803,7 +804,9 @@ class Lineage(Base):
     src_table_id = Column(Integer, ForeignKey("dw_meta_tables.id"))
     dst_table_id = Column(Integer, ForeignKey("dw_meta_tables.id"))
     task_node_id = Column(Integer, ForeignKey("dw_task_nodes.id"), nullable=True)
-    lineage_type = Column(String(32), default="table")  # table/column
+    sync_task_id = Column(Integer, ForeignKey("dw_sync_tasks.id"), nullable=True)
+    stream_job_id = Column(Integer, nullable=True)
+    lineage_type = Column(String(32), default="table")  # table/column/sync/stream
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
