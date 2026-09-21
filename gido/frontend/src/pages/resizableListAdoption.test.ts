@@ -55,23 +55,19 @@ describe('resizable list adoption', () => {
     // Fake outer tracks drifted from Ant Design scroll owners; scroll the grid viewport directly.
     expect(panel).not.toContain('dw-query-result__vscroll')
     expect(panel).not.toContain('dw-query-result__hscroll')
+    // Virtual table steals the scroll owner and hides the outer H/V bars users expect.
+    expect(panel).not.toContain('virtual={')
     expect(css).toContain('.dw-query-result__main')
     expect(css).toContain('overflow: auto')
     expect(css).not.toContain('dw-query-result__vscroll')
   })
 
-  it('query result panel enables safe virtual only for tall narrow pages', () => {
+  it('query result panel keeps row/column select and focus-column stats', () => {
     const panel = read('components/QueryResultPanel.tsx')
-    const css = read('components/queryResultPanel.css')
-    expect(panel).toContain('shouldUseQueryResultVirtual')
-    expect(panel).toContain('virtual={useVirtual}')
-    expect(panel).toContain('dw-query-result__main--virtual')
     expect(panel).toContain('selectQueryResultRow')
     expect(panel).toContain('selectQueryResultColumn')
     expect(panel).toContain('selectQueryResultAll')
     expect(panel).toContain('computeQueryColumnPageStats')
-    expect(css).toContain('.dw-query-result__main--virtual')
-    expect(css).toContain('rc-virtual-list-holder')
   })
 
   it('query result grid adopts fit-width and rectangular selection', () => {

@@ -30,13 +30,11 @@ import {
   isQueryResultCellSelected,
   moveQueryResultFocus,
   normalizeQueryResultSelection,
-  QUERY_RESULT_ROW_HEIGHT,
   queryResultSelectionSummary,
   selectQueryResultAll,
   selectQueryResultColumn,
   selectQueryResultRow,
   selectionFocusCell,
-  shouldUseQueryResultVirtual,
   type QueryResultFindMatch,
   type QueryResultSelectionAnchor,
   type QueryResultSelectionRange,
@@ -152,7 +150,6 @@ export default function QueryResultPanel({
   const gridActiveRef = useRef(false)
   const findInputRef = useRef<any>(null)
   const mainRef = useRef<HTMLDivElement>(null)
-  const [viewportBodyHeight, setViewportBodyHeight] = useState(320)
   const kvHeightClamp = useMemo(() => ({ min: 120, max: 420 }), [])
   const resizingKvRef = useRef(false)
 
@@ -303,24 +300,10 @@ export default function QueryResultPanel({
     [columns],
   )
 
-  // Virtualize tall pages only. Very wide schemas stay non-virtual so sticky
-  // columns + native horizontal scroll remain reliable.
-  const useVirtual = shouldUseQueryResultVirtual(pagedData.length, leafKeys.length)
-  const virtualBodyHeight = Math.max(160, viewportBodyHeight)
-
-  useEffect(() => {
-    const main = mainRef.current
-    if (!main) return
-    const sync = () => {
-      const header = main.querySelector('.ant-table-thead') as HTMLElement | null
-      const next = Math.max(160, main.clientHeight - (header?.offsetHeight || 40))
-      setViewportBodyHeight(previous => (previous === next ? previous : next))
-    }
-    sync()
-    const ro = new ResizeObserver(sync)
-    ro.observe(main)
-    return () => ro.disconnect()
-  }, [pagedData.length, useVirtual, leafKeys.length])
+  // Do not enable Ant Design `virtual` here: it steals the scroll owner from
+  // `.dw-query-result__main`, so the outer H/V drag bars disappear once a page
+  // exceeds ~100 rows (e.g. LIMIT 1000 with pageSize 200). Pagination already
+  // caps DOM size; keep native overflow:auto on the main viewport.
 
   const focusColumnStats = useMemo(() => {
     if (!focusCell || !leafKeys[focusCell.col]) return null
@@ -377,15 +360,7 @@ export default function QueryResultPanel({
     const el = root.querySelector(
       `[data-qr-row="${cell.row}"][data-qr-col="${cell.col}"]`,
     ) as HTMLElement | null
-    if (el) {
-      el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-      return
-    }
-    // Virtual rows may not be mounted; scroll the body holder by estimated offset.
-    const holder = root.querySelector('.rc-virtual-list-holder, .ant-table-body') as HTMLElement | null
-    if (!holder) return
-    const top = Math.max(0, cell.row * QUERY_RESULT_ROW_HEIGHT - holder.clientHeight / 3)
-    holder.scrollTop = top
+    el?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }, [])
 
   const applyFocusSelection = useCallback((
@@ -960,7 +935,6 @@ export default function QueryResultPanel({
           className={[
             'dw-query-result__main',
             hasPinnedDataColumns ? 'dw-query-result__main--has-pinned' : '',
-            useVirtual ? 'dw-query-result__main--virtual' : '',
           ].filter(Boolean).join(' ')}
           title="滚轮或拖动滚动条；方向键移动；⌘/Ctrl+A 全选；⌘/Ctrl+Space 选列；⌘/Ctrl+F 查找"
           onMouseDown={() => {
@@ -977,10 +951,6 @@ export default function QueryResultPanel({
             style={{ minWidth: tableMinWidth }}
             components={queryResultTableComponents}
             onChange={onTableChange}
-            virtual={useVirtual}
-            scroll={useVirtual
-              ? { y: virtualBodyHeight, x: tableMinWidth }
-              : undefined}
             rowClassName={(record, index) => {
               const classes = []
               const k = (record as any)._key as number
