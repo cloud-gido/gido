@@ -448,13 +448,13 @@ export default function QueryResultPanel({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
+      const target = event.target instanceof Element ? event.target : null
       const inFindInput = Boolean(target?.closest('.dw-query-result__find'))
       const inEditable = Boolean(target?.closest('input, textarea, [contenteditable="true"]'))
       const meta = event.metaKey || event.ctrlKey
 
       if (meta && (event.key === 'f' || event.key === 'F')) {
-        if (!gridActiveRef.current && !mainRef.current?.contains(target)) return
+        if (!gridActiveRef.current && !(target && mainRef.current?.contains(target))) return
         event.preventDefault()
         openFind()
         return
@@ -490,7 +490,7 @@ export default function QueryResultPanel({
 
       if (meta && (event.key === 'a' || event.key === 'A')) {
         if (!pagedData.length || !leafKeys.length) return
-        if (!gridActiveRef.current && !mainRef.current?.contains(target)) return
+        if (!gridActiveRef.current && !(target && mainRef.current?.contains(target))) return
         event.preventDefault()
         selectEntirePage()
         return
