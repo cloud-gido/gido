@@ -186,54 +186,6 @@
   scrollbar-color: #8c8c8c #fafafa;
 }
 
-/* Virtual body: scroll owner is rc-virtual-list-holder; keep bars visible & styled */
-.dw-query-result__main--virtual {
-  overflow: hidden;
-}
-
-.dw-query-result__main--virtual .ant-table-wrapper {
-  min-width: 0;
-}
-
-.dw-query-result__main--virtual .rc-virtual-list-holder,
-.dw-query-result__main--virtual .ant-table-body {
-  scrollbar-width: thin;
-  scrollbar-color: #d0d0d0 #fafafa;
-}
-
-.dw-query-result__main--virtual .rc-virtual-list-holder::-webkit-scrollbar,
-.dw-query-result__main--virtual .ant-table-body::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-
-.dw-query-result__main--virtual .rc-virtual-list-holder::-webkit-scrollbar-track,
-.dw-query-result__main--virtual .ant-table-body::-webkit-scrollbar-track {
-  background: #fafafa;
-}
-
-.dw-query-result__main--virtual .rc-virtual-list-holder::-webkit-scrollbar-thumb,
-.dw-query-result__main--virtual .ant-table-body::-webkit-scrollbar-thumb {
-  background: #d0d0d0;
-  border: 2px solid #fafafa;
-  border-radius: 6px;
-}
-
-.dw-query-result__main--virtual .rc-virtual-list-holder::-webkit-scrollbar-thumb:hover,
-.dw-query-result__main--virtual .ant-table-body::-webkit-scrollbar-thumb:hover {
-  background: #8c8c8c;
-}
-
-.dw-query-result__main--virtual .ant-table-container,
-.dw-query-result__main--virtual .ant-table-content {
-  overflow: auto !important;
-}
-
-.dw-query-result__main--virtual .ant-table-thead > tr > th {
-  position: sticky;
-  top: 0;
-}
-
 /* 单表模式：表头与表体同一滚动视口，横向天然对齐 */
 .dw-query-result__main .ant-table-wrapper {
   min-width: max-content;

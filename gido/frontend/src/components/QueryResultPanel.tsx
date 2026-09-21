@@ -300,10 +300,9 @@ export default function QueryResultPanel({
     [columns],
   )
 
-  // Do not enable Ant Design `virtual` here: it steals the scroll owner from
-  // `.dw-query-result__main`, so the outer H/V drag bars disappear once a page
-  // exceeds ~100 rows (e.g. LIMIT 1000 with pageSize 200). Pagination already
-  // caps DOM size; keep native overflow:auto on the main viewport.
+  // Server/page caps already limit DOM rows (~200). Do not turn on antd Table
+  // `virtual` — it relocates scrolling to rc-virtual-list and breaks the shared
+  // H/V bars on `.dw-query-result__main`.
 
   const focusColumnStats = useMemo(() => {
     if (!focusCell || !leafKeys[focusCell.col]) return null

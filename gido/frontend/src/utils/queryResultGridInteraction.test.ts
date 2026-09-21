@@ -22,7 +22,6 @@ import {
   selectQueryResultColumn,
   selectQueryResultRow,
   selectionFocusCell,
-  shouldUseQueryResultVirtual,
 } from './queryResultSelection'
 
 describe('queryColumnFitWidth', () => {
@@ -122,9 +121,6 @@ describe('queryResultSelection', () => {
     expect(selectQueryResultAll(3, 2)).toEqual({
       startRow: 0, endRow: 2, startCol: 0, endCol: 1,
     })
-    expect(shouldUseQueryResultVirtual(101, 10)).toBe(true)
-    expect(shouldUseQueryResultVirtual(50, 10)).toBe(false)
-    expect(shouldUseQueryResultVirtual(200, 40)).toBe(false)
     const stats = computeQueryColumnPageStats(
       [{ a: 1 }, { a: null }, { a: 1 }, { a: 4 }],
       'a',

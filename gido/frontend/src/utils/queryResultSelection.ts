@@ -170,14 +170,6 @@ export function findQueryResultMatches(
   return matches
 }
 
-/** Estimated body row height for virtual scroll positioning. */
-export const QUERY_RESULT_ROW_HEIGHT = 32
-
-/** Tall pages only; wide schemas stay non-virtual for sticky + native H-scroll. */
-export function shouldUseQueryResultVirtual(rows: number, cols: number): boolean {
-  return rows > 100 && cols > 0 && cols < 28
-}
-
 export function selectQueryResultRow(
   row: number,
   cols: number,

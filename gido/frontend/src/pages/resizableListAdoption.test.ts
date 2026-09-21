@@ -52,14 +52,15 @@ describe('resizable list adoption', () => {
   it('query result panel scrolls the table viewport itself', () => {
     const panel = read('components/QueryResultPanel.tsx')
     const css = read('components/queryResultPanel.css')
-    // Fake outer tracks drifted from Ant Design scroll owners; scroll the grid viewport directly.
+    // One scroll owner: `.dw-query-result__main`. No fake outer tracks, no antd virtual.
     expect(panel).not.toContain('dw-query-result__vscroll')
     expect(panel).not.toContain('dw-query-result__hscroll')
-    // Virtual table steals the scroll owner and hides the outer H/V bars users expect.
     expect(panel).not.toContain('virtual={')
+    expect(css).not.toContain('dw-query-result__main--virtual')
+    expect(css).not.toContain('rc-virtual-list')
+    expect(css).not.toContain('dw-query-result__vscroll')
     expect(css).toContain('.dw-query-result__main')
     expect(css).toContain('overflow: auto')
-    expect(css).not.toContain('dw-query-result__vscroll')
   })
 
   it('query result panel keeps row/column select and focus-column stats', () => {
