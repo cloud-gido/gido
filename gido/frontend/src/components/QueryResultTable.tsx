@@ -18,6 +18,7 @@ import {
   distinctValuesForColumn,
 } from './ColumnFilterDropdown'
 import { markColumnResizeGesture } from '../utils/columnResizeGesture'
+import { measureQueryColumnWidth } from '../utils/queryColumnFitWidth'
 import './queryResultPanel.css'
 
 const COL_DND_MIME = 'application/x-gido-col'
@@ -80,14 +81,16 @@ export const queryResultTableComponents = {
   },
   body: {
     cell: (props: TdHTMLAttributes<HTMLTableCellElement> & { children?: ReactNode }) => {
-      const { style, ...rest } = props
+      const { style, className, ...rest } = props
       return (
         <td
           {...rest}
+          className={className}
           style={{
             ...style,
-            userSelect: 'text',
-            WebkitUserSelect: 'text',
+            // Prefer rectangular cell selection over browser text-drag (DataGrip-like).
+            userSelect: 'none',
+            WebkitUserSelect: 'none',
           }}
         />
       )
@@ -102,6 +105,7 @@ function ColumnHeaderChrome({
   canReorder,
   onReorderPair,
   onWidthChange,
+  onFitWidth,
 }: {
   col: string
   typeLabel?: string
@@ -109,6 +113,7 @@ function ColumnHeaderChrome({
   canReorder: boolean
   onReorderPair?: (from: string, to: string) => void
   onWidthChange?: (key: string, w: number) => void
+  onFitWidth?: () => void
 }) {
   const drag = useRef<{ startX: number; startW: number; moved: boolean } | null>(null)
   const raf = useRef(0)
@@ -239,8 +244,10 @@ function ColumnHeaderChrome({
           onDoubleClick={e => {
             e.preventDefault()
             e.stopPropagation()
+            markColumnResizeGesture(450)
+            onFitWidth?.()
           }}
-          title="拖拽调整列宽（固定在列右侧，类似滚动条）"
+          title="拖拽调整列宽；双击按内容自适应（类似 DataGrip）"
         />
       )}
     </div>
@@ -299,6 +306,16 @@ export function buildQueryTableColumns(
           canReorder={canReorder}
           onReorderPair={onReorderPair || undefined}
           onWidthChange={onWidthChange}
+          onFitWidth={onWidthChange
+            ? () => {
+              const fitted = measureQueryColumnWidth({
+                column: col,
+                header: col,
+                values: rowData.map(row => row[col]),
+              })
+              onWidthChange(col, fitted)
+            }
+            : undefined}
         />
       ),
       dataIndex: col,

@@ -1,4 +1,4 @@
-/* 查询结果：GIDO Batch 风格 — 表头 sticky、底横滚 / 右纵滚固定且与内容同步 */
+/* 查询结果：GIDO Batch 风格 — 表头 sticky，表格视口原生滚动 */
 .dw-query-result {
   display: flex;
   flex-direction: column;
@@ -30,6 +30,75 @@
 
 .dw-query-result__toolbar-end {
   margin-left: auto;
+}
+
+.dw-query-result__aggregate {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 2px;
+  padding: 4px 12px;
+  border-bottom: 1px solid #f0f0f0;
+  background: #f7fbff;
+  font-size: 12px;
+  color: #595959;
+  font-variant-numeric: tabular-nums;
+}
+
+.dw-query-result__aggregate-sep {
+  color: #d9d9d9;
+  margin: 0 4px;
+  user-select: none;
+}
+
+.dw-query-result__aggregate-col {
+  color: #595959;
+}
+
+.dw-query-result__find {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 12px;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fffef7;
+}
+
+.dw-query-result__find-count {
+  min-width: 48px;
+  font-size: 12px;
+  color: #8c8c8c;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Large pages: skip offscreen row paint work without changing scroll semantics. */
+.dw-query-result__main .ant-table-tbody > tr {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 32px;
+}
+
+.dw-query-result__main .ant-table-tbody > tr.dw-row--focus > td {
+  background: #fafcff;
+}
+
+.dw-query-result__main .ant-table-tbody > tr > td.dw-query-result__cell--focus {
+  outline: 2px solid #1677ff;
+  outline-offset: -2px;
+  position: relative;
+  z-index: 1;
+}
+
+.dw-query-result__main .ant-table-tbody > tr > td.dw-query-result__cell--find-hit {
+  background: #fff7e6 !important;
+}
+
+.dw-query-result__main .ant-table-tbody > tr > td.dw-query-result__cell--find-current {
+  background: #ffe7ba !important;
+  outline: 2px solid #fa8c16;
+  outline-offset: -2px;
 }
 
 /* Opaque fixed columns so wide tables don't bleed under pins */
@@ -72,36 +141,97 @@
   background: #fafafa;
 }
 
-/* 主区：内容 + 右纵滚条；底横滚条占满主区宽度 */
+/* 主区：表格视口自带滚动，拖动滚动条即移动单元格（不再用外置假滚动条同步） */
 .dw-query-result__viewport {
   flex: 1;
   min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 12px;
-  grid-template-rows: minmax(0, 1fr) 12px;
-  grid-template-areas:
-    'main vscroll'
-    'hscroll corner';
+  display: flex;
+  flex-direction: column;
   padding: 8px 8px 0;
-  gap: 0;
   background: #fff;
 }
 
 .dw-query-result__main {
-  grid-area: main;
+  flex: 1;
   min-width: 0;
   min-height: 0;
   overflow: auto;
   border: 1px solid #f0f0f0;
-  border-radius: 4px 0 0 0;
-  /* 隐藏原生滚动条，由底/右固定条驱动 */
-  scrollbar-width: none;
+  border-radius: 4px;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #d0d0d0 #fafafa;
 }
 
 .dw-query-result__main::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
+  width: 10px;
+  height: 10px;
+}
+
+.dw-query-result__main::-webkit-scrollbar-track {
+  background: #fafafa;
+}
+
+.dw-query-result__main::-webkit-scrollbar-thumb {
+  background: #d0d0d0;
+  border: 2px solid #fafafa;
+  border-radius: 6px;
+}
+
+.dw-query-result__main::-webkit-scrollbar-thumb:hover {
+  background: #8c8c8c;
+}
+
+.dw-query-result__main:hover {
+  scrollbar-color: #8c8c8c #fafafa;
+}
+
+/* Virtual body: scroll owner is rc-virtual-list-holder; keep bars visible & styled */
+.dw-query-result__main--virtual {
+  overflow: hidden;
+}
+
+.dw-query-result__main--virtual .ant-table-wrapper {
+  min-width: 0;
+}
+
+.dw-query-result__main--virtual .rc-virtual-list-holder,
+.dw-query-result__main--virtual .ant-table-body {
+  scrollbar-width: thin;
+  scrollbar-color: #d0d0d0 #fafafa;
+}
+
+.dw-query-result__main--virtual .rc-virtual-list-holder::-webkit-scrollbar,
+.dw-query-result__main--virtual .ant-table-body::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.dw-query-result__main--virtual .rc-virtual-list-holder::-webkit-scrollbar-track,
+.dw-query-result__main--virtual .ant-table-body::-webkit-scrollbar-track {
+  background: #fafafa;
+}
+
+.dw-query-result__main--virtual .rc-virtual-list-holder::-webkit-scrollbar-thumb,
+.dw-query-result__main--virtual .ant-table-body::-webkit-scrollbar-thumb {
+  background: #d0d0d0;
+  border: 2px solid #fafafa;
+  border-radius: 6px;
+}
+
+.dw-query-result__main--virtual .rc-virtual-list-holder::-webkit-scrollbar-thumb:hover,
+.dw-query-result__main--virtual .ant-table-body::-webkit-scrollbar-thumb:hover {
+  background: #8c8c8c;
+}
+
+.dw-query-result__main--virtual .ant-table-container,
+.dw-query-result__main--virtual .ant-table-content {
+  overflow: auto !important;
+}
+
+.dw-query-result__main--virtual .ant-table-thead > tr > th {
+  position: sticky;
+  top: 0;
 }
 
 /* 单表模式：表头与表体同一滚动视口，横向天然对齐 */
@@ -123,48 +253,6 @@
   z-index: 3;
   background: #fafafa !important;
   box-shadow: 0 1px 0 #f0f0f0;
-}
-
-/* Virtual mode: rc-table still scrolls .ant-table-body, but that native bar
-   sits inside the dedicated tracks and reads as a second, faint scrollbar.
-   Hide every scroller inside the grid; the right/bottom tracks are the only controls. */
-.dw-query-result__main--virtual {
-  overflow: hidden;
-}
-
-.dw-query-result__main .ant-table-body,
-.dw-query-result__main .ant-table-body-inner,
-.dw-query-result__main .rc-virtual-list-holder {
-  scrollbar-width: none;
-}
-
-.dw-query-result__main .ant-table-body::-webkit-scrollbar,
-.dw-query-result__main .ant-table-body-inner::-webkit-scrollbar,
-.dw-query-result__main .rc-virtual-list-holder::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
-}
-
-.dw-query-result__main .rc-virtual-list-scrollbar,
-.dw-query-result__main .ant-table-tbody-virtual-scrollbar,
-.dw-query-result__main .ant-table-sticky-scroll {
-  display: none !important;
-}
-
-.dw-query-result__main--virtual .ant-table-wrapper {
-  min-width: 0;
-  height: 100%;
-}
-
-.dw-query-result__main--virtual .ant-table-container,
-.dw-query-result__main--virtual .ant-table-content {
-  overflow: hidden !important;
-}
-
-.dw-query-result__main--virtual .ant-table-thead > tr > th {
-  position: sticky;
-  top: 0;
 }
 
 .dw-query-result__main .ant-table-cell {
@@ -336,82 +424,10 @@
   text-decoration: underline;
 }
 
-.dw-query-result__hscroll {
-  grid-area: hscroll;
-  overflow-x: auto;
-  overflow-y: hidden;
-  /* Match toolbar / pager chrome: hairline #f0f0f0 on #fafafa, not a darker frame. */
-  border: 1px solid #f0f0f0;
-  border-top: none;
-  background: #fafafa;
-  min-width: 0;
-  /* Prefer compositor scrolling; avoid layout work while the thumb is dragged. */
-  overscroll-behavior-x: contain;
-  scrollbar-gutter: stable;
-  scrollbar-color: #d0d0d0 #fafafa;
-}
-
-.dw-query-result__hscroll-inner {
-  height: 1px;
-  pointer-events: none;
-}
-
-.dw-query-result__vscroll {
-  grid-area: vscroll;
-  overflow-y: auto;
-  overflow-x: hidden;
-  border: 1px solid #f0f0f0;
-  border-left: none;
-  background: #fafafa;
-  min-height: 0;
-  scrollbar-color: #d0d0d0 #fafafa;
-}
-
-.dw-query-result__hscroll:hover,
-.dw-query-result__vscroll:hover {
-  scrollbar-color: #8c8c8c #fafafa;
-}
-
-.dw-query-result__vscroll-inner {
-  width: 1px;
-  pointer-events: none;
-}
-
-.dw-query-result__corner {
-  grid-area: corner;
-  background: #fafafa;
-  border: 1px solid #f0f0f0;
-  border-left: none;
-  border-top: none;
-}
-
-.dw-query-result__hscroll::-webkit-scrollbar,
-.dw-query-result__vscroll::-webkit-scrollbar {
-  width: 12px;
-  height: 12px;
-}
-
-.dw-query-result__hscroll::-webkit-scrollbar-track,
-.dw-query-result__vscroll::-webkit-scrollbar-track {
-  background: #fafafa;
-}
-
-.dw-query-result__hscroll::-webkit-scrollbar-thumb,
-.dw-query-result__vscroll::-webkit-scrollbar-thumb {
-  background: #d0d0d0;
-  border: 3px solid #fafafa;
-  border-radius: 6px;
-}
-
-.dw-query-result__hscroll::-webkit-scrollbar-thumb:hover,
-.dw-query-result__vscroll::-webkit-scrollbar-thumb:hover {
-  background: #8c8c8c;
-}
-
 .dw-cell-value {
-  user-select: text;
-  -webkit-user-select: text;
-  cursor: text;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: cell;
   min-height: 20px;
   line-height: 20px;
 }
@@ -419,6 +435,14 @@
 .dw-cell-value--copied {
   outline: 1px solid #1677ff;
   background: #e6f4ff;
+}
+
+.dw-query-result__main .ant-table-tbody > tr > td.dw-query-result__cell--selected {
+  background: #e6f4ff !important;
+}
+
+.dw-query-result__main .ant-table-tbody > tr.dw-row--selected > td.dw-query-result__cell--selected {
+  background: #d6e4ff !important;
 }
 
 .dw-cell-value:focus-visible,
@@ -548,6 +572,10 @@
 /* 选中行高亮 */
 .dw-row--selected > td {
   background: #f0f7ff !important;
+}
+
+.dw-row--focus > td {
+  background: #fafcff !important;
 }
 
 /* ── KV 行详情面板 ── */

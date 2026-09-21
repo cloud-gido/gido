@@ -742,6 +742,11 @@ export default function InteractiveRunDock({
                   serverSort={sort[0] ?? null}
                   onServerChange={handleServerChange}
                   enableQuickChart
+                  onColumnWidthsChange={widths => {
+                    updateColumnLayout({
+                      widths: pruneWidths({ ...layout.widths, ...widths }, columnNames),
+                    })
+                  }}
                   chartFields={page.fields.map(field => ({
                     name: field.name,
                     type: field.type,
