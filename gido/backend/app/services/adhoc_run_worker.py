@@ -954,6 +954,20 @@ def _execute_run(run_id: int, lease_token: str) -> None:
                     append_log(run_id, str(line) + "\n", lease_token=lease_token)
                 if not ok:
                     raise RuntimeError("\n".join(logs))
+            elif kind == "QUALITY":
+                from app.services.quality_node import run_quality_for_node_blocking
+
+                append_log(run_id, "[INFO] 开始数据质量检查\n", lease_token=lease_token)
+                logs, q_status, _ = run_quality_for_node_blocking(
+                    db,
+                    target,
+                    bizdate=row.business_date,
+                    trigger="studio",
+                )
+                for line in logs:
+                    append_log(run_id, str(line) + "\n", lease_token=lease_token)
+                if q_status != "success":
+                    raise RuntimeError("\n".join(logs) or "数据质量检查失败")
             elif kind == "VIRTUAL":
                 append_log(run_id, "[INFO] 虚拟节点无需执行\n", lease_token=lease_token)
             else:

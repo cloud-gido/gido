@@ -966,6 +966,13 @@ export default function StudioPage() {
     if (activeNode.node_type === 'PYTHON' && !dsResolve?.effectiveId) {
       message.warning('未配置数据源时 job.execute 将失败；请绑定节点数据源或设置空间默认（仅 writelog 可继续）')
     }
+    if (activeNode.node_type === 'QUALITY') {
+      const bound = activeNode.params && typeof activeNode.params === 'object' ? activeNode.params : {}
+      if (!bound.table_id && !bound.rule_id) {
+        message.warning('请先在节点「配置」里绑定表或质量规则，再试跑')
+        return
+      }
+    }
     const latestScript = overrideScript
       ?? (dirtyMap[activeTabId!] ?? activeNode.script_content ?? '')
     if (meta?.fromSelection) {
