@@ -10,7 +10,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ColumnsType } from 'antd/es/table'
 import QueryResultPanel from './QueryResultPanel'
 import type { QueryRowRec } from './QueryResultTable'
-import { fitQueryColumnsToContent } from '../utils/queryColumnFitWidth'
 
 afterEach(cleanup)
 
@@ -114,7 +113,41 @@ describe('QueryResultPanel scroll + selection contract', () => {
 })
 
 describe('QueryResultPanel column fit contract', () => {
-  it('适合窗口 expands crushed wide schemas instead of keeping unreadable headers', () => {
+  it('展开表头 and 适合窗口 produce distinct widths on long cells', () => {
+    const onColumnWidthsChange = vi.fn()
+    const columns: ColumnsType<QueryRowRec> = [
+      { title: 'id', dataIndex: 'id', key: 'id', width: 40 },
+      { title: 'very_long_metric_column', dataIndex: 'very_long_metric_column', key: 'very_long_metric_column', width: 40 },
+    ]
+    const row: QueryRowRec = {
+      _key: 0,
+      id: 1,
+      very_long_metric_column: 'x'.repeat(80),
+    }
+    const { container } = render(
+      <div style={{ width: 900, height: 240, display: 'flex', flexDirection: 'column' }}>
+        <QueryResultPanel
+          columns={columns}
+          dataSource={[row]}
+          pagination={false}
+          onColumnWidthsChange={onColumnWidthsChange}
+        />
+      </div>,
+    )
+    const main = container.querySelector('.dw-query-result__main') as HTMLElement
+    Object.defineProperty(main, 'clientWidth', { configurable: true, value: 900 })
+
+    fireEvent.click(screen.getByRole('button', { name: '展开表头' }))
+    fireEvent.click(screen.getByRole('button', { name: /适合窗口/ }))
+    expect(onColumnWidthsChange).toHaveBeenCalledTimes(2)
+    const expanded = onColumnWidthsChange.mock.calls[0][0] as Record<string, number>
+    const compact = onColumnWidthsChange.mock.calls[1][0] as Record<string, number>
+    expect(expanded.very_long_metric_column).toBeGreaterThan(compact.very_long_metric_column)
+    expect(expanded.very_long_metric_column).toBeGreaterThan(160)
+    expect(compact.very_long_metric_column).toBeGreaterThan(120)
+  })
+
+  it('适合窗口 expands crushed wide schemas so headers stay readable', () => {
     const onColumnWidthsChange = vi.fn()
     const wideColumns: ColumnsType<QueryRowRec> = Array.from({ length: 16 }, (_, index) => {
       const key = `very_long_metric_column_${index}`
@@ -144,35 +177,7 @@ describe('QueryResultPanel column fit contract', () => {
     const total = Object.values(widths).reduce((sum, width) => sum + width, 0)
     expect(total).toBeGreaterThan(360)
     for (const width of Object.values(widths)) {
-      expect(width).toBeGreaterThan(80)
+      expect(width).toBeGreaterThan(120)
     }
-  })
-
-  it('展开表头 recovers readable widths via content fit action', () => {
-    const onColumnWidthsChange = vi.fn()
-    const { container } = render(
-      <div style={{ width: 480, height: 240, display: 'flex', flexDirection: 'column' }}>
-        <QueryResultPanel
-          columns={buildColumns()}
-          dataSource={buildRows(3)}
-          pagination={false}
-          onColumnWidthsChange={onColumnWidthsChange}
-        />
-      </div>,
-    )
-    const main = container.querySelector('.dw-query-result__main') as HTMLElement
-    Object.defineProperty(main, 'clientWidth', { configurable: true, value: 480 })
-
-    // Primary button runs viewport fit, which never shrinks below content widths.
-    const fitButton = screen.getAllByRole('button', { name: /适合窗口/ })[0]
-    fireEvent.click(fitButton)
-    expect(onColumnWidthsChange).toHaveBeenCalled()
-    const widths = onColumnWidthsChange.mock.calls[0][0] as Record<string, number>
-    const expected = fitQueryColumnsToContent({
-      columns: ['id', 'name', 'zone', 'metric_a', 'metric_b', 'note'],
-      rows: buildRows(3),
-    })
-    expect(widths.name).toBeGreaterThanOrEqual(expected.name)
-    expect(widths.note).toBeGreaterThanOrEqual(expected.note)
   })
 })

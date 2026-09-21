@@ -7,6 +7,7 @@ import {
   fitQueryColumnsToContent,
   fitQueryColumnsToViewport,
   measureQueryColumnWidth,
+  measureQueryHeaderWidth,
   measureTextWidthPx,
 } from './queryColumnFitWidth'
 import {
@@ -49,11 +50,11 @@ describe('queryColumnFitWidth', () => {
       reservedWidth: 44,
     })
     expect(widths.a + widths.b).toBeGreaterThanOrEqual(800 - 44 - 8 - 2)
-    expect(widths.a).toBeGreaterThanOrEqual(56)
-    expect(widths.b).toBeGreaterThanOrEqual(56)
+    expect(widths.a).toBeGreaterThanOrEqual(72)
+    expect(widths.b).toBeGreaterThanOrEqual(72)
   })
 
-  it('never crushes wide schemas below content width (keeps horizontal scroll)', () => {
+  it('never crushes wide schemas below header-readable width', () => {
     const columns = Array.from({ length: 20 }, (_, i) => `very_long_column_name_${i}`)
     const rows = [Object.fromEntries(columns.map(c => [c, 'x']))]
     const widths = fitQueryColumnsToViewport({
@@ -62,13 +63,31 @@ describe('queryColumnFitWidth', () => {
       viewportWidth: 400,
       reservedWidth: 44,
     })
-    const content = fitQueryColumnsToContent({ columns, rows })
     for (const column of columns) {
-      expect(widths[column]).toBe(content[column])
-      expect(widths[column]).toBeGreaterThan(56)
+      expect(widths[column]).toBeGreaterThanOrEqual(measureQueryHeaderWidth({ column }))
     }
     const total = columns.reduce((sum, column) => sum + widths[column], 0)
     expect(total).toBeGreaterThan(400)
+  })
+
+  it('展开表头 grows wider than 适合窗口 when cells are long', () => {
+    const columns = ['short', 'long_metric_name']
+    const rows = [{
+      short: 'a'.repeat(80),
+      long_metric_name: 'b'.repeat(80),
+    }]
+    const expanded = fitQueryColumnsToContent({ columns, rows })
+    const compact = fitQueryColumnsToViewport({
+      columns,
+      rows,
+      // Narrow viewport: no stretch-up; cellCap makes compact denser.
+      viewportWidth: 320,
+      reservedWidth: 44,
+    })
+    expect(expanded.long_metric_name).toBeGreaterThan(compact.long_metric_name)
+    expect(compact.long_metric_name).toBeGreaterThanOrEqual(
+      measureQueryHeaderWidth({ column: 'long_metric_name' }),
+    )
   })
 })
 

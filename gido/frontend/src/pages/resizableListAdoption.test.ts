@@ -86,6 +86,8 @@ describe('resizable list adoption', () => {
     expect(panel).toContain('dw-query-result__aggregate')
     expect(panel).toContain('适合窗口')
     expect(panel).toContain('展开表头')
+    expect(panel).toContain('dw-query-result__fit-actions')
+    expect(panel).not.toContain('Dropdown.Button')
     expect(panel).toContain('showQuickJumper')
     expect(panel).toContain('findQueryResultMatches')
     expect(panel).toContain('dw-query-result__find')

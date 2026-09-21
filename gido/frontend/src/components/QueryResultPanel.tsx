@@ -5,7 +5,7 @@
  * @date 2026-06-05
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, isValidElement, startTransition } from 'react'
-import { Button, Dropdown, Input, Pagination, Table, Tooltip, message, Descriptions } from 'antd'
+import { Button, Input, Pagination, Table, Tooltip, message, Descriptions } from 'antd'
 import {
   BarChartOutlined,
   ColumnWidthOutlined,
@@ -437,9 +437,17 @@ export default function QueryResultPanel({
         reservedWidth: QUERY_RESULT_ROWNUM_WIDTH,
       })
     onColumnWidthsChange(widths)
-    message.success(mode === 'content'
-      ? '已按内容展开列宽（表头可读，可横向滚动）'
-      : '已调整列宽：按内容展开，有空余则填满窗口')
+    const total = leafKeys.reduce((sum, key) => sum + (widths[key] || 0), 0)
+    const overflow = total > viewportWidth - QUERY_RESULT_ROWNUM_WIDTH
+    if (mode === 'content') {
+      message.success(overflow
+        ? '已展开全部表头（可横向滚动查看）'
+        : '已展开全部表头')
+      return
+    }
+    message.success(overflow
+      ? '已按紧凑可读列宽调整（表头完整，可横向滚动）'
+      : '已适合窗口：表头完整并填满可视区域')
   }, [leafKeys, onColumnWidthsChange, pagedData])
 
   useEffect(() => {
@@ -802,28 +810,29 @@ export default function QueryResultPanel({
             </Button>
           </Tooltip>
           {onColumnWidthsChange ? (
-            <Dropdown.Button
-              size="small"
-              disabled={!pagedData.length || leafKeys.length < 1}
-              onClick={() => applyColumnFit('viewport')}
-              menu={{
-                items: [
-                  {
-                    key: 'viewport',
-                    label: '适合窗口',
-                    title: '按内容展开；总宽小于窗口时再拉伸填满，绝不压窄表头',
-                  },
-                  {
-                    key: 'content',
-                    label: '展开表头',
-                    title: '仅按字段名与内容展开，便于看清全部列名',
-                  },
-                ],
-                onClick: ({ key }) => applyColumnFit(key === 'content' ? 'content' : 'viewport'),
-              }}
-            >
-              <ColumnWidthOutlined /> 适合窗口
-            </Dropdown.Button>
+            <div className="dw-query-result__fit-actions" role="group" aria-label="列宽调整">
+              <Tooltip title="按字段名完整展开列宽，长列可横向滚动（推荐看清表头）">
+                <Button
+                  size="small"
+                  disabled={!pagedData.length || leafKeys.length < 1}
+                  onClick={() => applyColumnFit('content')}
+                >
+                  展开表头
+                </Button>
+              </Tooltip>
+              <Tooltip title="表头保持可读；单元格列宽更紧凑，有空余时再拉伸填满窗口">
+                <Button
+                  size="small"
+                  type="primary"
+                  ghost
+                  icon={<ColumnWidthOutlined />}
+                  disabled={!pagedData.length || leafKeys.length < 1}
+                  onClick={() => applyColumnFit('viewport')}
+                >
+                  适合窗口
+                </Button>
+              </Tooltip>
+            </div>
           ) : null}
           {enableQuickChart ? (
             <Tooltip title="基于当前视口已显示的行画轻量柱/折线，非全量分析">

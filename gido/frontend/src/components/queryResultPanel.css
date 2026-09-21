@@ -32,6 +32,17 @@
   margin-left: auto;
 }
 
+.dw-query-result__fit-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.dw-query-result__fit-actions .ant-btn {
+  padding-inline: 8px;
+}
+
 .dw-query-result__aggregate {
   flex-shrink: 0;
   display: flex;
@@ -246,6 +257,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  letter-spacing: 0;
 }
 
 .dw-col-type-badge {
