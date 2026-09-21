@@ -246,5 +246,44 @@ export function useInteractiveStatementQuery(opts: {
 
   const previous = useCallback(() => setPageNumber(value => Math.max(1, value - 1)), [])
 
-  return { data, loading, error, pageNumber, next, previous }
+  const desiredPageRef = useRef<number | null>(null)
+
+  const pageCount = Math.max(1, Math.ceil(Math.max(data.total, 1) / Math.max(limit, 1)))
+
+  /** Jump within visited cursors instantly; walk forward when jumping ahead. */
+  const goToPage = useCallback((target: number) => {
+    const maxPage = Math.max(1, Math.ceil(Math.max(dataRef.current.total, 1) / Math.max(limit, 1)))
+    const n = Math.max(1, Math.min(Math.floor(Number(target)) || 1, maxPage))
+    if (n === pageNumber) {
+      desiredPageRef.current = null
+      return
+    }
+    if (n === 1 || n <= cursorStack.length) {
+      desiredPageRef.current = null
+      setPageNumber(n)
+      return
+    }
+    desiredPageRef.current = n
+    if (data.has_more && data.next_cursor) {
+      setCursorStack(previous => [...previous.slice(0, pageNumber), data.next_cursor])
+      setPageNumber(previous => previous + 1)
+    }
+  }, [cursorStack.length, data.has_more, data.next_cursor, limit, pageNumber])
+
+  useEffect(() => {
+    const desired = desiredPageRef.current
+    if (desired == null || loading) return
+    if (pageNumber >= desired) {
+      desiredPageRef.current = null
+      return
+    }
+    if (data.has_more && data.next_cursor) {
+      setCursorStack(previous => [...previous.slice(0, pageNumber), data.next_cursor])
+      setPageNumber(previous => previous + 1)
+      return
+    }
+    desiredPageRef.current = null
+  }, [data.has_more, data.next_cursor, loading, pageNumber])
+
+  return { data, loading, error, pageNumber, pageCount, next, previous, goToPage }
 }

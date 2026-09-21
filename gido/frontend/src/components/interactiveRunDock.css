@@ -31,6 +31,12 @@
   flex-shrink: 0;
 }
 
+.dw-interactive-run__page-jumper {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .dw-interactive-run__status-sep {
   color: #d9d9d9;
   user-select: none;

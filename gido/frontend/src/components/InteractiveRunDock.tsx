@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Drawer, Dropdown, Empty, Input, Select, Space, Spin, Tabs, Tag, Tooltip, Tree, Checkbox, message } from 'antd'
+import { Button, Drawer, Dropdown, Empty, Input, InputNumber, Select, Space, Spin, Tabs, Tag, Tooltip, Tree, Checkbox, message } from 'antd'
 import { CopyOutlined, ExperimentOutlined, LinkOutlined, TableOutlined, PushpinOutlined, SortAscendingOutlined, ClearOutlined } from '@ant-design/icons'
 import { adhocRunsApi } from '../api'
 import type { useInteractiveRun } from '../hooks/useInteractiveRun'
@@ -681,7 +681,7 @@ export default function InteractiveRunDock({
             </div>
             {isQueryGrid ? (
               <div className="dw-interactive-run__status-bar-actions">
-                <Tooltip title={`每页最多 ${RESULT_PAGE_SIZE} 行；表格内滚动浏览当前页，翻页向服务端加载下一段结果`}>
+                <Tooltip title={`每页最多 ${RESULT_PAGE_SIZE} 行；表格内滚动浏览当前页，翻页或输入页码向服务端加载`}>
                   <span className="dw-interactive-run__status-muted">
                     {(() => {
                       const start = page.rows.length
@@ -696,6 +696,29 @@ export default function InteractiveRunDock({
                     })()}
                   </span>
                 </Tooltip>
+                <span className="dw-interactive-run__page-jumper">
+                  <span className="dw-interactive-run__status-muted">第</span>
+                  <InputNumber
+                    key={query.pageNumber}
+                    size="small"
+                    min={1}
+                    max={query.pageCount}
+                    defaultValue={query.pageNumber}
+                    disabled={query.loading || page.total < 1}
+                    controls={false}
+                    style={{ width: 56 }}
+                    aria-label="跳转到页码"
+                    onPressEnter={event => {
+                      query.goToPage(Number((event.target as HTMLInputElement).value))
+                    }}
+                    onBlur={event => {
+                      const raw = (event.target as HTMLInputElement).value
+                      if (raw === '' || raw == null) return
+                      query.goToPage(Number(raw))
+                    }}
+                  />
+                  <span className="dw-interactive-run__status-muted">/ {query.pageCount} 页</span>
+                </span>
                 <Button
                   size="small"
                   disabled={query.pageNumber <= 1 || query.loading}

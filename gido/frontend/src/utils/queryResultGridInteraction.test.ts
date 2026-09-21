@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
+  fitQueryColumnsToContent,
   fitQueryColumnsToViewport,
   measureQueryColumnWidth,
   measureTextWidthPx,
@@ -50,6 +51,24 @@ describe('queryColumnFitWidth', () => {
     expect(widths.a + widths.b).toBeGreaterThanOrEqual(800 - 44 - 8 - 2)
     expect(widths.a).toBeGreaterThanOrEqual(56)
     expect(widths.b).toBeGreaterThanOrEqual(56)
+  })
+
+  it('never crushes wide schemas below content width (keeps horizontal scroll)', () => {
+    const columns = Array.from({ length: 20 }, (_, i) => `very_long_column_name_${i}`)
+    const rows = [Object.fromEntries(columns.map(c => [c, 'x']))]
+    const widths = fitQueryColumnsToViewport({
+      columns,
+      rows,
+      viewportWidth: 400,
+      reservedWidth: 44,
+    })
+    const content = fitQueryColumnsToContent({ columns, rows })
+    for (const column of columns) {
+      expect(widths[column]).toBe(content[column])
+      expect(widths[column]).toBeGreaterThan(56)
+    }
+    const total = columns.reduce((sum, column) => sum + widths[column], 0)
+    expect(total).toBeGreaterThan(400)
   })
 })
 

@@ -5,7 +5,7 @@
  * @date 2026-06-05
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, isValidElement, startTransition } from 'react'
-import { Button, Input, Pagination, Table, Tooltip, message, Descriptions } from 'antd'
+import { Button, Dropdown, Input, Pagination, Table, Tooltip, message, Descriptions } from 'antd'
 import {
   BarChartOutlined,
   ColumnWidthOutlined,
@@ -40,6 +40,7 @@ import {
   type QueryResultSelectionRange,
 } from '../utils/queryResultSelection'
 import {
+  fitQueryColumnsToContent,
   fitQueryColumnsToViewport,
   QUERY_RESULT_ROWNUM_WIDTH,
 } from '../utils/queryColumnFitWidth'
@@ -424,27 +425,22 @@ export default function QueryResultPanel({
     window.setTimeout(() => findInputRef.current?.focus?.({ cursor: 'all' }), 0)
   }, [])
 
-  const fitColumnsToWindow = useCallback(() => {
+  const applyColumnFit = useCallback((mode: 'content' | 'viewport') => {
     if (!onColumnWidthsChange || !leafKeys.length) return
     const viewportWidth = mainRef.current?.clientWidth || 800
-    const currentWidths = Object.fromEntries(
-      leafKeys.map(key => {
-        const col = columns.find(item => String((item as ColumnType<QueryRowRec>).dataIndex
-          ?? (item as ColumnType<QueryRowRec>).key
-          ?? '') === key) as ColumnType<QueryRowRec> | undefined
-        const width = typeof col?.width === 'number' ? col.width : 148
-        return [key, width]
-      }),
-    )
-    onColumnWidthsChange(fitQueryColumnsToViewport({
-      columns: leafKeys,
-      rows: pagedData,
-      viewportWidth,
-      reservedWidth: QUERY_RESULT_ROWNUM_WIDTH,
-      currentWidths,
-    }))
-    message.success('已按窗口宽度分配列宽')
-  }, [columns, leafKeys, onColumnWidthsChange, pagedData])
+    const widths = mode === 'content'
+      ? fitQueryColumnsToContent({ columns: leafKeys, rows: pagedData })
+      : fitQueryColumnsToViewport({
+        columns: leafKeys,
+        rows: pagedData,
+        viewportWidth,
+        reservedWidth: QUERY_RESULT_ROWNUM_WIDTH,
+      })
+    onColumnWidthsChange(widths)
+    message.success(mode === 'content'
+      ? '已按内容展开列宽（表头可读，可横向滚动）'
+      : '已调整列宽：按内容展开，有空余则填满窗口')
+  }, [leafKeys, onColumnWidthsChange, pagedData])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -806,16 +802,28 @@ export default function QueryResultPanel({
             </Button>
           </Tooltip>
           {onColumnWidthsChange ? (
-            <Tooltip title="按内容估算后拉伸列宽以填满当前窗口（过宽仍可横向滚动）">
-              <Button
-                size="small"
-                icon={<ColumnWidthOutlined />}
-                disabled={!pagedData.length || leafKeys.length < 1}
-                onClick={fitColumnsToWindow}
-              >
-                适合窗口
-              </Button>
-            </Tooltip>
+            <Dropdown.Button
+              size="small"
+              disabled={!pagedData.length || leafKeys.length < 1}
+              onClick={() => applyColumnFit('viewport')}
+              menu={{
+                items: [
+                  {
+                    key: 'viewport',
+                    label: '适合窗口',
+                    title: '按内容展开；总宽小于窗口时再拉伸填满，绝不压窄表头',
+                  },
+                  {
+                    key: 'content',
+                    label: '展开表头',
+                    title: '仅按字段名与内容展开，便于看清全部列名',
+                  },
+                ],
+                onClick: ({ key }) => applyColumnFit(key === 'content' ? 'content' : 'viewport'),
+              }}
+            >
+              <ColumnWidthOutlined /> 适合窗口
+            </Dropdown.Button>
           ) : null}
           {enableQuickChart ? (
             <Tooltip title="基于当前视口已显示的行画轻量柱/折线，非全量分析">
@@ -1009,6 +1017,7 @@ export default function QueryResultPanel({
             pageSize={pageSize}
             total={sortedData.length}
             showSizeChanger
+            showQuickJumper
             pageSizeOptions={pageSizeOptions}
             showTotal={(total, range) => `${range[0]}-${range[1]} / ${total} 行`}
             onChange={(p, ps) => {

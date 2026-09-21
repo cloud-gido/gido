@@ -77,6 +77,8 @@ describe('durable interactive run adoption', () => {
     expect(dock).toContain('useInteractiveStatementQuery')
     expect(dock).toContain('<QueryResultPanel')
     expect(dock).toContain('aria-label="多列排序"')
+    expect(dock).toContain('aria-label="跳转到页码"')
+    expect(dock).toContain('goToPage')
     expect(dock).toContain('.slice(-2)')
     expect(api).toContain('/rows/query')
   })

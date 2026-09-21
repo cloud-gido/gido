@@ -149,4 +149,30 @@ describe('useInteractiveStatementQuery page cache', () => {
     expect(result.current.pageNumber).toBe(1)
     expect(result.current.error).toBe('')
   })
+
+  it('exposes pageCount and jumps to a visited page via goToPage', async () => {
+    const { result } = renderHook(() => useInteractiveStatementQuery({
+      runId: 8,
+      statementIndex: 0,
+      statementVersion: 'snapshot-1',
+      statementStatus: 'success',
+      limit: 1,
+    }))
+
+    await waitFor(() => expect(result.current.data.rows).toEqual([[1]]))
+    expect(result.current.pageCount).toBe(3)
+
+    act(() => result.current.next())
+    await waitFor(() => expect(result.current.data.rows).toEqual([[2]]))
+    act(() => result.current.next())
+    await waitFor(() => expect(result.current.data.rows).toEqual([[3]]))
+
+    act(() => result.current.goToPage(1))
+    await waitFor(() => expect(result.current.data.rows).toEqual([[1]]))
+    expect(result.current.pageNumber).toBe(1)
+
+    act(() => result.current.goToPage(3))
+    await waitFor(() => expect(result.current.data.rows).toEqual([[3]]))
+    expect(result.current.pageNumber).toBe(3)
+  })
 })
