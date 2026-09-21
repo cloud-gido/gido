@@ -542,6 +542,11 @@ def create_node(node_in: NodeCreate, db: Session = Depends(get_db), current_user
         payload["params"] = normalize_dependent_params(payload.get("params"))
         if not (payload.get("script_content") or "").strip():
             payload["script_content"] = "# DEPENDENT：等待其他工作流成功（无脚本）\n"
+    if (payload.get("node_type") or "").upper() == "QUALITY":
+        from app.services.quality_node import normalize_quality_params
+        payload["params"] = normalize_quality_params(payload.get("params"))
+        if not (payload.get("script_content") or "").strip():
+            payload["script_content"] = "# QUALITY：数据质量检查（无脚本，请在节点配置中绑定表或规则）\n"
     node = TaskNode(
         **payload,
         sort_order=_next_sort_order(db, node_in.workspace_id, node_in.folder_id),
@@ -742,6 +747,11 @@ def update_node(
         base_params = node.params if isinstance(node.params, dict) else {}
         merged = {**base_params, **(patch.get("params") or {})}
         patch["params"] = normalize_dependent_params(merged)
+    if eff_type == "QUALITY" and ("params" in patch or (node.node_type or "").upper() == "QUALITY"):
+        from app.services.quality_node import normalize_quality_params
+        base_params = node.params if isinstance(node.params, dict) else {}
+        merged = {**base_params, **(patch.get("params") or {})}
+        patch["params"] = normalize_quality_params(merged)
 
     # 显式保存：将「变更前」脚本写入版本历史；自动草稿保存不写历史
     if create_history and "script_content" in patch:
@@ -1009,6 +1019,13 @@ def run_node(
             from app.services.workflow_dependent import check_dependent_local
             ok, log_lines = check_dependent_local(db, node)
             if not ok:
+                status = "failed"
+        elif node.node_type == "QUALITY":
+            from app.services.quality_node import run_quality_for_node_blocking
+            log_lines, st, _meta = run_quality_for_node_blocking(
+                db, node, bizdate=bizdate, trigger="studio",
+            )
+            if st != "success":
                 status = "failed"
         else:
             log_lines = [f"[INFO] 节点类型 {node.node_type} 执行完成"]

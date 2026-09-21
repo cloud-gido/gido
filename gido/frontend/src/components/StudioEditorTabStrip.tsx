@@ -28,7 +28,7 @@ import {
 import { ensureChildFullyVisibleHorizontally } from '../utils/studioTabScroll'
 
 const TYPE_COLOR: Record<string, string> = {
-  SQL: 'blue', PYTHON: 'green', SHELL: 'orange', SYNC: 'purple', VIRTUAL: 'default', DEPENDENT: 'magenta',
+  SQL: 'blue', PYTHON: 'green', SHELL: 'orange', SYNC: 'purple', QUALITY: 'volcano', VIRTUAL: 'default', DEPENDENT: 'magenta',
 }
 
 /** 状态铬固定槽宽，避免 loading / 脏点显隐把右侧 Tab 挤来挤去 */

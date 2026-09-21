@@ -57,7 +57,7 @@ function usageRowsFromContext(res: any) {
       name: item.name,
       relation: item.role,
       peer: item.active ? '启用' : '停用',
-      href: R.batch.quality,
+      href: R.batch.qualityRule(item.id),
     })
   }
   for (const item of res?.data_apis || []) {
@@ -798,6 +798,11 @@ export default function DataMapPage() {
                   {selectedTable.id && (
                     <Button loading={openingProbe} onClick={() => { void openInProbe() }}>
                       在数据探查中打开
+                    </Button>
+                  )}
+                  {selectedTable.id && (
+                    <Button onClick={() => navigate(`${R.batch.quality}?table_id=${selectedTable.id}`)}>
+                      新建质量规则
                     </Button>
                   )}
                   {selectedTable.id && canWrite && (

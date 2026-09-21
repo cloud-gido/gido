@@ -99,6 +99,7 @@ class NodeType(str, enum.Enum):
     SYNC = "SYNC"
     VIRTUAL = "VIRTUAL"
     DEPENDENT = "DEPENDENT"  # 跨工作流依赖（映射 Dolphin DEPENDENT）
+    QUALITY = "QUALITY"  # 数据质量检查（GIDO 执行；发布为 DS SHELL 回调）
 
 
 class TaskNode(Base):
@@ -911,9 +912,13 @@ class QualityRule(Base):
     workspace_id = Column(Integer, ForeignKey("dw_workspaces.id"))
     table_id = Column(Integer, ForeignKey("dw_meta_tables.id"))
     rule_name = Column(String(128), nullable=False)
-    rule_type = Column(String(32))  # completeness/uniqueness/accuracy/timeliness/custom_sql/…
+    rule_type = Column(String(32))  # completeness/uniqueness/accuracy/timeliness/custom_sql/validity/…
     rule_config = Column(JSON)
     threshold = Column(String(32))
+    # warn=仅告警；block=失败时标记 should_block，供编排 HTTP 节点阻断下游
+    severity = Column(String(16), default="warn")
+    # 5 段 Linux cron；有值且 is_active 时由 APScheduler 定时跑
+    schedule_cron = Column(String(64), nullable=True)
     is_active = Column(Boolean, default=True)
     # 与 Dolphin 质量规则联动：存 DS 侧任务/规则标识或原始定义 JSON，供编排或对照
     dolphin_refs = Column(JSON, nullable=True)

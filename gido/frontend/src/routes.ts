@@ -14,6 +14,7 @@ export const R = {
     datamap: '/gido/batch/datamap',
     probe: '/gido/batch/probe',
     quality: '/gido/batch/quality',
+    qualityRule: (id: number | string) => `/gido/batch/quality?rule_id=${id}`,
     integration: '/gido/batch/integration',
     runHistory: '/gido/batch/run-history',
     operation: '/gido/batch/operation',

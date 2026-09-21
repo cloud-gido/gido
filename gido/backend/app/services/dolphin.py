@@ -714,6 +714,29 @@ class DSClient:
                 raw_script = _ds_callback_curl(
                     f"/api/integration/internal/tasks/{sync_tid}/run",
                 )
+            elif node_type == "QUALITY":
+                node_params = n.get("params") or {}
+                table_id = node_params.get("table_id")
+                rule_id = node_params.get("rule_id")
+                # Dolphin 在下发脚本前替换 $[yyyy-MM-dd-1]；curl --fail 遇 409 即失败断边
+                if table_id:
+                    raw_script = _ds_callback_curl(
+                        f"/api/quality/internal/tables/{int(table_id)}/check?bizdate=$[yyyy-MM-dd-1]",
+                    )
+                    diag_row["execution_mode"] = "quality_callback"
+                    diag_row["quality_table_id"] = int(table_id)
+                elif rule_id:
+                    raw_script = _ds_callback_curl(
+                        f"/api/quality/internal/rules/{int(rule_id)}/check?bizdate=$[yyyy-MM-dd-1]",
+                    )
+                    diag_row["execution_mode"] = "quality_callback"
+                    diag_row["quality_rule_id"] = int(rule_id)
+                else:
+                    raw_script = (
+                        "echo 'QUALITY node missing table_id or rule_id' >&2\n"
+                        "exit 1\n"
+                    )
+                    diag_row["execution_mode"] = "quality_misconfigured"
             else:
                 raw_script = script or "echo done"
 

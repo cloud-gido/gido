@@ -70,6 +70,7 @@ const ALERT_TYPE_COLOR: Record<string, string> = {
   sla: 'volcano',
   timeout: 'orange',
   test: 'blue',
+  quality: 'magenta',
 }
 
 const ALERT_TYPE_LABEL: Record<string, string> = {
@@ -78,6 +79,7 @@ const ALERT_TYPE_LABEL: Record<string, string> = {
   sla: '未按时完成',
   timeout: '运行超时',
   test: '通道测试',
+  quality: '数据质量',
 }
 
 export default function AlertCenterPage() {

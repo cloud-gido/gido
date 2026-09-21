@@ -195,6 +195,7 @@ _ALERT_TYPE_LABELS = {
     "sla": "未按时完成",
     "timeout": "运行超时",
     "test": "通道测试",
+    "quality": "数据质量",
 }
 
 
@@ -449,10 +450,13 @@ def _lark_card_payload(db: Session, event: AlertEvent, title: str, content: str)
     elif kind == "timeout":
         header_title = f"{BRAND_SUITE} · 运行超时"
         template = "orange"
+    elif kind == "quality":
+        header_title = f"{BRAND_SUITE} · 数据质量"
+        template = "red"
     else:
         header_title = f"{BRAND_SUITE} · 调度失败"
         template = "red"
-    if wf_name and kind != "test":
+    if wf_name and kind not in ("test", "quality"):
         header_title = f"{header_title} · {wf_name}"[:40]
 
     elements: list[dict] = []
@@ -468,6 +472,26 @@ def _lark_card_payload(db: Session, event: AlertEvent, title: str, content: str)
                 _lark_field("工作空间", (ws.name if ws else "") or "—"),
                 _lark_field("时间", _fmt_local(datetime.utcnow(), tz)),
             ],
+        })
+    elif kind == "quality":
+        elements.append({
+            "tag": "div",
+            "fields": [
+                _lark_field("工作空间", (ws.name if ws else "") or "—"),
+                _lark_field("时间", _fmt_local(event.created_at or datetime.utcnow(), tz)),
+            ],
+        })
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": f"**需关注**\n🔴 {event.message or '数据质量检查失败'}"},
+        })
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": "**建议动作**\n先打开数据质量看最近一次检查明细，确认问题后再决定是否重跑上游。",
+            },
         })
     else:
         trigger = ""

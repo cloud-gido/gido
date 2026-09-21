@@ -6,11 +6,11 @@
  * 保存走同一 studio API；协作编辑锁与数据开发共享。
  */
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { Modal, Form, Input, Select, Tag, Button, Space, message, Spin, Radio, Card, Tabs, Descriptions } from 'antd'
+import { Modal, Form, Input, Select, Tag, Button, Space, message, Spin, Radio, Card, Tabs, Descriptions, Alert } from 'antd'
 import { LockOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons'
 import '../monacoSetup'
 import Editor from '@monaco-editor/react'
-import { studioApi, datasourceApi, integrationApi, workflowApi } from '../api'
+import { studioApi, datasourceApi, integrationApi, workflowApi, datamapApi, qualityApi } from '../api'
 import { useAppStore } from '../store'
 import { resolveDatasourceForRun } from '../utils/workspaceDatasource'
 import {
@@ -82,6 +82,23 @@ function normalizeFormValues(node: StudioNode) {
     }
     vals.sync_task_id = syncId
   }
+  if (vals.node_type === 'QUALITY') {
+    let tableId = null
+    let ruleId = null
+    if (typeof node.params === 'object' && node.params && !Array.isArray(node.params)) {
+      tableId = node.params.table_id ?? null
+      ruleId = node.params.rule_id ?? null
+    } else if (typeof vals.params === 'string') {
+      try {
+        const parsed = JSON.parse(vals.params)
+        tableId = parsed.table_id ?? null
+        ruleId = parsed.rule_id ?? null
+      } catch { /* ignore */ }
+    }
+    vals.quality_mode = ruleId && !tableId ? 'rule' : 'table'
+    vals.quality_table_id = tableId
+    vals.quality_rule_id = ruleId
+  }
   if (vals.node_type === 'DEPENDENT') {
     const depForm = dependentParamsToForm(node.params)
     vals.relation = depForm.relation
@@ -116,6 +133,8 @@ export default function NodeConfigModal({
   })
   const [datasources, setDatasources] = useState<any[]>([])
   const [integrationTasks, setIntegrationTasks] = useState<any[]>([])
+  const [qualityTables, setQualityTables] = useState<any[]>([])
+  const [qualityRules, setQualityRules] = useState<any[]>([])
   const [workflows, setWorkflows] = useState<any[]>([])
   const [holdsLock, setHoldsLock] = useState(false)
   const [scriptDirty, setScriptDirty] = useState(false)
@@ -135,6 +154,9 @@ export default function NodeConfigModal({
   const scriptContent = Form.useWatch('script_content', form) ?? ''
   nodeRef.current = node
   const syncTaskId = Form.useWatch('sync_task_id', form)
+  const qualityMode = Form.useWatch('quality_mode', form)
+  const qualityTableId = Form.useWatch('quality_table_id', form)
+  const qualityRuleId = Form.useWatch('quality_rule_id', form)
   const dependRelation = Form.useWatch('relation', form)
   const dependItems = Form.useWatch('depend_items', form)
 
@@ -142,6 +164,14 @@ export default function NodeConfigModal({
     () => integrationTasks.find((t: any) => t.id === syncTaskId) || null,
     [integrationTasks, syncTaskId],
   )
+
+  const primaryTabLabel = node?.node_type === 'SYNC'
+    ? '同步任务'
+    : node?.node_type === 'DEPENDENT'
+      ? '依赖配置'
+      : node?.node_type === 'QUALITY'
+        ? '质量检查'
+        : '脚本'
 
   const dependentPreview = useMemo(() => {
     const items = Array.isArray(dependItems) && dependItems.length
@@ -157,12 +187,6 @@ export default function NodeConfigModal({
       })),
     }
   }, [dependRelation, dependItems, workflows])
-
-  const primaryTabLabel = node?.node_type === 'SYNC'
-    ? '同步任务'
-    : node?.node_type === 'DEPENDENT'
-      ? '依赖配置'
-      : '脚本'
 
   const refreshNode = useCallback(async () => {
     if (!nodeId) return null
@@ -242,6 +266,15 @@ export default function NodeConfigModal({
           integrationApi.listTasks(workspaceId).catch(() => []).then((tasks: any) => {
             if (cancelled) return
             setIntegrationTasks(Array.isArray(tasks) ? tasks : (tasks?.items || []))
+          })
+        } else if (type === 'QUALITY') {
+          Promise.all([
+            datamapApi.catalog(workspaceId).catch(() => []),
+            qualityApi.listRules(workspaceId).catch(() => []),
+          ]).then(([tables, rules]: any[]) => {
+            if (cancelled) return
+            setQualityTables(Array.isArray(tables) ? tables.filter((t: any) => t.meta_table_id && t.table_name && !t.error) : [])
+            setQualityRules(Array.isArray(rules) ? rules : [])
           })
         } else if (type === 'DEPENDENT') {
           workflowApi.listAll(workspaceId).catch(() => ({ items: [] })).then((wfs: any) => {
@@ -385,6 +418,25 @@ export default function NodeConfigModal({
       }
       values.params = { sync_task_id: values.sync_task_id }
       delete values.sync_task_id
+    }
+    if (node.node_type === 'QUALITY') {
+      const mode = values.quality_mode || 'table'
+      if (mode === 'rule') {
+        if (!values.quality_rule_id) {
+          message.error('请选择质量规则')
+          return
+        }
+        values.params = { rule_id: values.quality_rule_id, table_id: null }
+      } else {
+        if (!values.quality_table_id) {
+          message.error('请选择要检查的表')
+          return
+        }
+        values.params = { table_id: values.quality_table_id, rule_id: null }
+      }
+      delete values.quality_mode
+      delete values.quality_table_id
+      delete values.quality_rule_id
     }
     if (node.node_type === 'DEPENDENT') {
       try {
@@ -675,6 +727,66 @@ export default function NodeConfigModal({
                         </pre>
                       </>
                     )}
+                    {node?.node_type === 'QUALITY' && (
+                      <>
+                        <Alert
+                          type="info"
+                          showIcon
+                          style={{ marginBottom: 12 }}
+                          message="与实例中心同一模型：发布后由 Dolphin 触发，GIDO 执行检查；强规则失败返回 409 阻断下游。"
+                        />
+                        <Form.Item name="quality_mode" label="检查范围" initialValue="table">
+                          <Radio.Group>
+                            <Radio.Button value="table">整表全部启用规则</Radio.Button>
+                            <Radio.Button value="rule">单条规则</Radio.Button>
+                          </Radio.Group>
+                        </Form.Item>
+                        {(qualityMode || 'table') === 'table' ? (
+                          <Form.Item
+                            name="quality_table_id"
+                            label="绑定的表"
+                            rules={[{ required: true, message: '请选择表' }]}
+                            extra="在「数据质量」中为该表配置规则；节点跑表级批量检查"
+                          >
+                            <Select
+                              showSearch
+                              optionFilterProp="label"
+                              placeholder="选择 Meta 表"
+                              options={qualityTables.map((t: any) => ({
+                                label: t.qualified_name || `${t.catalog}.${t.table_name}`,
+                                value: Number(t.meta_table_id),
+                              }))}
+                            />
+                          </Form.Item>
+                        ) : (
+                          <Form.Item
+                            name="quality_rule_id"
+                            label="绑定的质量规则"
+                            rules={[{ required: true, message: '请选择规则' }]}
+                          >
+                            <Select
+                              showSearch
+                              optionFilterProp="label"
+                              placeholder="选择规则"
+                              options={qualityRules.map((r: any) => ({
+                                label: `${r.rule_name} (#${r.id}${r.qualified_name ? ` · ${r.qualified_name}` : ''})`,
+                                value: r.id,
+                              }))}
+                            />
+                          </Form.Item>
+                        )}
+                        <div style={{ color: '#666', fontSize: 12, marginBottom: 4 }}>节点参数预览</div>
+                        <pre style={{ background: '#f5f5f5', padding: 12, borderRadius: 4, fontSize: 12, margin: 0 }}>
+                          {JSON.stringify(
+                            (qualityMode || 'table') === 'rule'
+                              ? { rule_id: qualityRuleId ?? null, table_id: null }
+                              : { table_id: qualityTableId ?? null, rule_id: null },
+                            null,
+                            2,
+                          )}
+                        </pre>
+                      </>
+                    )}
                     {node?.node_type === 'DEPENDENT' && (
                       <>
                         <Form.Item
@@ -788,11 +900,13 @@ export default function NodeConfigModal({
                         <Input.TextArea rows={4} placeholder={'{"xx": "yy"}'} disabled={formDisabled || (lockReadOnly && !holdsLock)} />
                       </Form.Item>
                     )}
-                    {(node?.node_type === 'SYNC' || node?.node_type === 'DEPENDENT') && (
+                    {(node?.node_type === 'SYNC' || node?.node_type === 'DEPENDENT' || node?.node_type === 'QUALITY') && (
                       <div style={{ color: '#999', fontSize: 12 }}>
                         {node.node_type === 'SYNC'
                           ? 'SYNC 的业务参数即绑定的同步任务（见「同步任务」页），此处只调超时与重试。'
-                          : 'DEPENDENT 的业务参数即依赖项配置（见「依赖配置」页），此处只调超时与重试。'}
+                          : node.node_type === 'QUALITY'
+                            ? 'QUALITY 的业务参数即绑定的表/规则（见「质量检查」页），此处只调超时与重试。发布后由 Dolphin 回调 GIDO。'
+                            : 'DEPENDENT 的业务参数即依赖项配置（见「依赖配置」页），此处只调超时与重试。'}
                       </div>
                     )}
                   </div>

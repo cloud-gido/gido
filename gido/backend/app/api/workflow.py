@@ -959,6 +959,16 @@ def run_workflow(wf_id: int, business_date: Optional[str] = None, db: Session = 
                 )
                 if not ok:
                     raise RuntimeError("\n".join(logs))
+            elif node.node_type == "QUALITY":
+                from app.services.quality_node import run_quality_for_node_blocking
+                logs, st, _ = run_quality_for_node_blocking(
+                    db,
+                    node,
+                    bizdate=bizdate,
+                    trigger="workflow",
+                )
+                if st != "success":
+                    raise RuntimeError("\n".join(logs))
             else:
                 logs = [f"[INFO] {node.name} 执行完成"]
             ni.status = "success"

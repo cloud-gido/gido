@@ -20,6 +20,7 @@ const BADGE_BY_TYPE: Record<string, LeafTypeBadgeMeta> = {
   PYTHON: { label: 'Py', title: 'Python', color: '#389e0d' },
   SHELL: { label: 'Sh', title: 'Shell', color: '#d48806' },
   SYNC: { label: 'Sy', title: '数据同步', color: '#722ed1' },
+  QUALITY: { label: 'Qy', title: '数据质量', color: '#fa541c' },
   DEPENDENT: { label: 'Dp', title: '依赖检查', color: '#eb2f96' },
   VIRTUAL: { label: 'Vi', title: '虚拟节点', color: '#8c8c8c' },
 }

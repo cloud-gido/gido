@@ -90,10 +90,10 @@ import {
 } from '../utils/workspaceTreeListCache'
 import { SQL_RESULT_ROW_CAP } from '../utils/sqlResultRowLimit'
 
-const NODE_TYPES = ['SQL', 'PYTHON', 'SHELL', 'SYNC', 'VIRTUAL', 'DEPENDENT']
-const LANG_MAP: Record<string, string> = { SQL: 'sql', PYTHON: 'python', SHELL: 'shell', SYNC: 'json', DEPENDENT: 'plaintext' }
+const NODE_TYPES = ['SQL', 'PYTHON', 'SHELL', 'SYNC', 'QUALITY', 'VIRTUAL', 'DEPENDENT']
+const LANG_MAP: Record<string, string> = { SQL: 'sql', PYTHON: 'python', SHELL: 'shell', SYNC: 'json', QUALITY: 'json', DEPENDENT: 'plaintext' }
 const TYPE_COLOR: Record<string, string> = {
-  SQL: 'blue', PYTHON: 'green', SHELL: 'orange', SYNC: 'purple', VIRTUAL: 'default', DEPENDENT: 'magenta',
+  SQL: 'blue', PYTHON: 'green', SHELL: 'orange', SYNC: 'purple', QUALITY: 'volcano', VIRTUAL: 'default', DEPENDENT: 'magenta',
 }
 
 function sortNodesList(list: any[]): any[] {
@@ -1160,13 +1160,18 @@ export default function StudioPage() {
             ].join('\n')
           : values.node_type === 'SYNC'
             ? '{"sync_task_id": null}'
-            : values.node_type === 'DEPENDENT'
+            : values.node_type === 'QUALITY'
+              ? '# QUALITY：数据质量检查（无脚本，请在节点配置中绑定表或规则）\n'
+              : values.node_type === 'DEPENDENT'
               ? '# DEPENDENT：等待其他工作流成功（无脚本，请在节点配置中选择依赖工作流）\n'
               : values.node_type === 'VIRTUAL'
                 ? '# VIRTUAL\n'
                 : '#!/bin/bash\necho "hello gido"'
       if (values.node_type === 'SYNC') {
         values.params = { sync_task_id: null }
+      }
+      if (values.node_type === 'QUALITY') {
+        values.params = { table_id: null, rule_id: null }
       }
       if (values.node_type === 'DEPENDENT') {
         values.params = {
@@ -1255,6 +1260,18 @@ export default function StudioPage() {
           <p>在「配置」里选择集成任务；加入工作流后随 DAG 调度，或由 Dolphin 通过内部 API 触发。</p>
           <pre style={{ background: '#f5f5f5', padding: 12, borderRadius: 4, marginTop: 8 }}>
             {activeScript || '{"sync_task_id": null}'}
+          </pre>
+        </div>
+      )
+    }
+    if (activeNode?.node_type === 'QUALITY') {
+      const p = (activeNode.params && typeof activeNode.params === 'object') ? activeNode.params : {}
+      return (
+        <div style={{ padding: 16, color: '#666', fontSize: 13, lineHeight: 1.6, overflow: 'auto', height: '100%' }}>
+          <p><strong>QUALITY 节点</strong>：跑「数据质量」规则。GIDO 执行检查，Dolphin 负责触发与断边。</p>
+          <p>在「配置」里绑定表或单条规则；强规则失败时调度任务失败，下游不会继续。</p>
+          <pre style={{ background: '#f5f5f5', padding: 12, borderRadius: 4, marginTop: 8 }}>
+            {JSON.stringify({ table_id: p.table_id ?? null, rule_id: p.rule_id ?? null }, null, 2)}
           </pre>
         </div>
       )
@@ -1362,7 +1379,7 @@ export default function StudioPage() {
     )
   }
 
-  const editorCaptureProps = (activeNode?.node_type === 'SYNC' || activeNode?.node_type === 'DEPENDENT')
+  const editorCaptureProps = (activeNode?.node_type === 'SYNC' || activeNode?.node_type === 'DEPENDENT' || activeNode?.node_type === 'QUALITY')
     ? {}
     : { onPointerDownCapture: handleEditorAreaPointerDown, onFocusCapture: handleEditorAreaFocusCapture }
 

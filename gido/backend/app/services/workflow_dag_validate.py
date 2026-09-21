@@ -102,6 +102,12 @@ def validate_workflow_publishable(db: Session, wf: Workflow) -> None:
             raise ValueError(f"节点不存在: id={nid}")
         if node.workspace_id != wf.workspace_id:
             raise ValueError(f"节点 {nid} 不属于当前工作流所在工作空间")
+        if (node.node_type or "").upper() == "QUALITY":
+            from app.services.quality_node import quality_target_from_node
+
+            table_id, rule_id = quality_target_from_node(node)
+            if not table_id and not rule_id:
+                raise ValueError(f"质量节点「{node.name}」未绑定表或规则，无法发布")
 
     validate_dag_dependent_nodes(db, wf, require_published_target=True)
 

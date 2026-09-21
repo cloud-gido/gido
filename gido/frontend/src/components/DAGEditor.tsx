@@ -43,6 +43,7 @@ const TYPE_COLOR: Record<string, string> = {
   SHELL: '#fa8c16',
   VIRTUAL: '#999',
   SYNC: '#722ed1',
+  QUALITY: '#fa541c',
   DEPENDENT: '#eb2f96',
 }
 

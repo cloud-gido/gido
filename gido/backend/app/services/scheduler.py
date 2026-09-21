@@ -105,6 +105,16 @@ def _run_workflow_job_unlocked(workflow_id: int):
                     )
                     if not ok:
                         raise RuntimeError("\n".join(logs))
+                elif node.node_type == "QUALITY":
+                    from app.services.quality_node import run_quality_for_node_blocking
+                    logs, st, _ = run_quality_for_node_blocking(
+                        db,
+                        node,
+                        bizdate=getattr(instance, "business_date", None),
+                        trigger="schedule",
+                    )
+                    if st != "success":
+                        raise RuntimeError("\n".join(logs))
                 else:
                     logs = [f"[INFO] {node.name} 完成"]
                 ni.status = "success"
@@ -433,6 +443,107 @@ def reload_integration_schedules():
     reload_alert_notification_retry()
     reload_sla_monitoring()
     reload_instance_retention()
+    reload_quality_schedules()
+
+
+def _run_quality_rule_job(rule_id: int):
+    from app.core.database import SessionLocal
+    from app.models.workspace import QualityRule
+    from app.services.distributed_lock import try_distributed_lock
+    from app.services.quality_check import run_rule_check
+    from app.services.shared_state import claim_or_proceed
+
+    fire_key = datetime.utcnow().strftime("%Y%m%d%H%M")
+    if not claim_or_proceed(f"quality-schedule:{int(rule_id)}:{fire_key}", 120):
+        logger.info("质量规则 %s 本周期已由其他 backend 副本触发", rule_id)
+        return
+    with try_distributed_lock(f"quality-schedule:{int(rule_id)}") as acquired:
+        if not acquired:
+            logger.info("质量规则 %s 已由其他副本触发，本副本跳过", rule_id)
+            return
+        db = SessionLocal()
+        try:
+            rule = db.query(QualityRule).filter(QualityRule.id == rule_id).first()
+            if not rule or not rule.is_active or not (getattr(rule, "schedule_cron", None) or "").strip():
+                return
+            result = run_rule_check(db, rule, notify=True, trigger="schedule")
+            logger.info(
+                "质量定时检查 rule_id=%s status=%s score=%s block=%s",
+                rule_id,
+                result.get("status"),
+                result.get("score"),
+                result.get("should_block"),
+            )
+        except Exception:
+            logger.exception("质量定时检查失败 rule_id=%s", rule_id)
+        finally:
+            db.close()
+
+
+def reload_quality_schedules():
+    """注册质量规则 cron。工作空间已启用 Dolphin 时不注册，避免双调度。"""
+    from app.core.database import SessionLocal
+    from app.models.workspace import QualityRule
+    from app.services.aps_workflow_schedule import resolve_aps_workflow_master_switch
+    from app.services.ds_runtime import get_dolphin_runtime
+
+    db = SessionLocal()
+    try:
+        for job in list(scheduler.get_jobs()):
+            if str(job.id).startswith("quality_"):
+                job.remove()
+
+        master_ok, master_reason = resolve_aps_workflow_master_switch(db)
+        if not master_ok:
+            logger.info("已跳过质量 APS 注册：%s", master_reason)
+            return
+
+        rules = (
+            db.query(QualityRule)
+            .filter(
+                QualityRule.is_active.is_(True),
+                QualityRule.schedule_cron.isnot(None),
+                QualityRule.schedule_cron != "",
+            )
+            .all()
+        )
+        registered = 0
+        skipped = 0
+        for rule in rules:
+            cron = (rule.schedule_cron or "").strip()
+            if not cron:
+                continue
+            # 空间已接 Dolphin：周期触发归 DS，GIDO 只提供检查 API（与工作流 APS 让路同一策略）
+            try:
+                if get_dolphin_runtime(db, int(rule.workspace_id)).enabled:
+                    skipped += 1
+                    logger.info(
+                        "跳过质量 APS 注册 rule_id=%s：工作空间已启用 Dolphin，请用工作流 HTTP 节点回调检查接口",
+                        rule.id,
+                    )
+                    continue
+            except Exception:
+                pass
+            refs = rule.dolphin_refs or {}
+            if isinstance(refs, dict) and (refs.get("process_code") or refs.get("task_code")):
+                skipped += 1
+                logger.info("跳过质量 APS 注册 rule_id=%s：已配置 dolphin_refs，视为 DS 托管", rule.id)
+                continue
+            try:
+                scheduler.add_job(
+                    _run_quality_rule_job,
+                    CronTrigger.from_crontab(cron),
+                    id=f"quality_{rule.id}",
+                    args=[rule.id],
+                    replace_existing=True,
+                )
+                registered += 1
+                logger.info("已注册质量规则本地调度（无 Dolphin 兜底）: %s [%s]", rule.rule_name, cron)
+            except Exception as e:
+                logger.warning("质量规则 %s 调度注册失败: %s", rule.rule_name, e)
+        logger.info("质量 APS 注册完成：registered=%s skipped=%s", registered, skipped)
+    finally:
+        db.close()
 
 
 def reload_schedules():

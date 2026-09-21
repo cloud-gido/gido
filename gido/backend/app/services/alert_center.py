@@ -149,6 +149,77 @@ def open_instance_alert(
     return event
 
 
+def open_quality_alert(
+    db: Session,
+    *,
+    workspace_id: int,
+    rule,
+    score: int,
+    threshold: str,
+    blocking: bool = False,
+    notify: bool = True,
+) -> Optional[AlertEvent]:
+    """质量规则失败：进告警中心，同一规则只保留一条未关闭事件。"""
+    rule_id = getattr(rule, "id", None)
+    if not workspace_id or not rule_id:
+        return None
+    dedupe_key = f"quality:rule:{rule_id}"
+    exists = (
+        db.query(AlertEvent)
+        .filter(AlertEvent.dedupe_key == dedupe_key, AlertEvent.status == "open")
+        .first()
+    )
+    level = "error" if blocking else "warning"
+    name = (getattr(rule, "rule_name", None) or "").strip() or f"#{rule_id}"
+    message = f"数据质量失败：{name}（得分 {score}，阈值 {threshold}"
+    if blocking:
+        message += "，强规则应阻断下游"
+    message += "）"
+    if exists:
+        exists.message = message
+        exists.level = level
+        exists.severity = level
+        return exists
+    event = AlertEvent(
+        workspace_id=workspace_id,
+        workflow_id=None,
+        alert_type="quality",
+        level=level,
+        severity=level,
+        dedupe_key=dedupe_key,
+        notification_status="skipped",
+        status="open",
+        message=message,
+        assignee_id=_on_call_assignee(db, workspace_id),
+    )
+    db.add(event)
+    db.flush()
+    if notify:
+        _enqueue_notification(event, force=False)
+    return event
+
+
+def resolve_quality_alerts(db: Session, *, rule_id: int) -> int:
+    """检查通过后关闭该规则未解决的质量告警。"""
+    if not rule_id:
+        return 0
+    dedupe_key = f"quality:rule:{rule_id}"
+    rows = (
+        db.query(AlertEvent)
+        .filter(
+            AlertEvent.dedupe_key == dedupe_key,
+            AlertEvent.status.in_(("open", "acknowledged")),
+            AlertEvent.alert_type == "quality",
+        )
+        .all()
+    )
+    now = datetime.utcnow()
+    for row in rows:
+        row.status = "resolved"
+        row.resolved_at = now
+    return len(rows)
+
+
 def open_workflow_alert(
     db: Session,
     *,

@@ -389,8 +389,14 @@ export const datamapApi = {
 export const qualityApi = {
   listRules: (workspaceId: number) => request.get('/quality/rules', { params: { workspace_id: workspaceId } }),
   createRule: (data: any) => request.post('/quality/rules', data),
+  updateRule: (id: number, data: any) => request.patch(`/quality/rules/${id}`, data),
   deleteRule: (id: number) => request.delete(`/quality/rules/${id}`),
-  runCheck: (id: number) => request.post(`/quality/rules/${id}/check`),
+  runCheck: (id: number, data?: { bizdate?: string; notify?: boolean }) =>
+    request.post(`/quality/rules/${id}/check`, data || {}),
+  runTableCheck: (tableId: number, data?: { bizdate?: string; notify?: boolean }) =>
+    request.post(`/quality/tables/${tableId}/check`, data || {}),
+  tableDolphinHook: (tableId: number) => request.get(`/quality/tables/${tableId}/dolphin-hook`),
+  ruleDolphinHook: (ruleId: number) => request.get(`/quality/rules/${ruleId}/dolphin-hook`),
   records: (id: number) => request.get(`/quality/rules/${id}/records`),
   dashboard: (workspaceId: number) => request.get('/quality/dashboard', { params: { workspace_id: workspaceId } }),
   trend: (ruleId: number, days?: number) => request.get(`/quality/rules/${ruleId}/trend`, { params: { days } }),
