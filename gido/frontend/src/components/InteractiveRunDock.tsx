@@ -142,7 +142,7 @@ export default function InteractiveRunDock({
   const [share, setShare] = useState<InteractiveRunShare | null>(null)
   const [shareUrl, setShareUrl] = useState('')
   const [shareTtlHours, setShareTtlHours] = useState(24)
-  const [shareLoading, setShareLoading] = useState(false)
+  const [shareAction, setShareAction] = useState<'create' | 'revoke' | null>(null)
   const [layout, setLayout] = useState<Layout>({ order: [], widths: {}, hidden: [], pinned: [] })
   const previousRunRef = useRef<number | null>(run.runId)
   const exportGenerationRef = useRef(0)
@@ -540,7 +540,7 @@ export default function InteractiveRunDock({
 
   const createShare = async () => {
     if (!run.runId) return
-    setShareLoading(true)
+    setShareAction('create')
     try {
       const created = await adhocRunsApi.createShare(run.runId, shareTtlHours)
       if (!created.token) throw new Error('后端未返回分享 token')
@@ -556,7 +556,7 @@ export default function InteractiveRunDock({
     } catch (error: any) {
       message.error(error?.response?.data?.detail || error?.message || '创建分享链接失败')
     } finally {
-      setShareLoading(false)
+      setShareAction(action => (action === 'create' ? null : action))
     }
   }
 
@@ -571,7 +571,7 @@ export default function InteractiveRunDock({
 
   const revokeShare = async () => {
     if (!run.runId || !share) return
-    setShareLoading(true)
+    setShareAction('revoke')
     try {
       const revoked = await adhocRunsApi.revokeShare(run.runId, share.id)
       setShare(revoked)
@@ -580,7 +580,7 @@ export default function InteractiveRunDock({
     } catch (error: any) {
       message.error(error?.response?.data?.detail || error?.message || '撤销分享链接失败')
     } finally {
-      setShareLoading(false)
+      setShareAction(action => (action === 'revoke' ? null : action))
     }
   }
 
@@ -923,7 +923,7 @@ export default function InteractiveRunDock({
                 <Dropdown.Button
                   size="small"
                   icon={<LinkOutlined />}
-                  loading={shareLoading}
+                  loading={shareAction === 'create'}
                   disabled={!run.runId}
                   onClick={() => void createShare()}
                   menu={{
@@ -952,7 +952,7 @@ export default function InteractiveRunDock({
                   <Tag color="green">分享有效</Tag>
                 </Tooltip>
                 <Button size="small" icon={<CopyOutlined />} onClick={() => void copyShare()}>复制链接</Button>
-                <Button size="small" danger loading={shareLoading} onClick={() => void revokeShare()}>撤销</Button>
+                <Button size="small" danger loading={shareAction === 'revoke'} onClick={() => void revokeShare()}>撤销</Button>
               </>
             )}
           </Space>
