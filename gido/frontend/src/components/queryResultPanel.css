@@ -340,14 +340,15 @@
   grid-area: hscroll;
   overflow-x: auto;
   overflow-y: hidden;
-  border: 1px solid #d9d9d9;
+  /* Match toolbar / pager chrome: hairline #f0f0f0 on #fafafa, not a darker frame. */
+  border: 1px solid #f0f0f0;
   border-top: none;
-  background: #f0f0f0;
+  background: #fafafa;
   min-width: 0;
   /* Prefer compositor scrolling; avoid layout work while the thumb is dragged. */
   overscroll-behavior-x: contain;
   scrollbar-gutter: stable;
-  scrollbar-color: #595959 #f0f0f0;
+  scrollbar-color: #d0d0d0 #fafafa;
 }
 
 .dw-query-result__hscroll-inner {
@@ -359,11 +360,16 @@
   grid-area: vscroll;
   overflow-y: auto;
   overflow-x: hidden;
-  border: 1px solid #d9d9d9;
+  border: 1px solid #f0f0f0;
   border-left: none;
-  background: #f0f0f0;
+  background: #fafafa;
   min-height: 0;
-  scrollbar-color: #595959 #f0f0f0;
+  scrollbar-color: #d0d0d0 #fafafa;
+}
+
+.dw-query-result__hscroll:hover,
+.dw-query-result__vscroll:hover {
+  scrollbar-color: #8c8c8c #fafafa;
 }
 
 .dw-query-result__vscroll-inner {
@@ -373,8 +379,8 @@
 
 .dw-query-result__corner {
   grid-area: corner;
-  background: #f0f0f0;
-  border: 1px solid #d9d9d9;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
   border-left: none;
   border-top: none;
 }
@@ -387,19 +393,19 @@
 
 .dw-query-result__hscroll::-webkit-scrollbar-track,
 .dw-query-result__vscroll::-webkit-scrollbar-track {
-  background: #f0f0f0;
+  background: #fafafa;
 }
 
 .dw-query-result__hscroll::-webkit-scrollbar-thumb,
 .dw-query-result__vscroll::-webkit-scrollbar-thumb {
-  background: #595959;
-  border: 2px solid #f0f0f0;
+  background: #d0d0d0;
+  border: 3px solid #fafafa;
   border-radius: 6px;
 }
 
 .dw-query-result__hscroll::-webkit-scrollbar-thumb:hover,
 .dw-query-result__vscroll::-webkit-scrollbar-thumb:hover {
-  background: #1677ff;
+  background: #8c8c8c;
 }
 
 .dw-cell-value {
