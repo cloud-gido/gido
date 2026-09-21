@@ -563,10 +563,10 @@ export default function QueryResultPanel({
             showSorterTooltip={{ title: '点击升序 · 再点降序 · 再点取消' }}
           />
         </div>
-        <div ref={vTrackRef} className="dw-query-result__vscroll" title="纵向滚动">
+        <div ref={vTrackRef} className="dw-query-result__vscroll" aria-label="纵向滚动" title="纵向滚动">
           <div ref={vInnerRef} className="dw-query-result__vscroll-inner" />
         </div>
-        <div ref={hTrackRef} className="dw-query-result__hscroll" title="横向滚动（表头与数据同步）">
+        <div ref={hTrackRef} className="dw-query-result__hscroll" aria-label="横向滚动，表头与数据同步" title="横向滚动（表头与数据同步）">
           <div ref={hInnerRef} className="dw-query-result__hscroll-inner" />
         </div>
         <div className="dw-query-result__corner" aria-hidden />
