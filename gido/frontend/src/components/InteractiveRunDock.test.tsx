@@ -319,4 +319,46 @@ describe('InteractiveRunDock', () => {
     fireEvent.click(revokeButton)
     await waitFor(() => expect(adhocRunsApi.revokeShare).toHaveBeenCalledWith(8, 12))
   })
+
+  it('jumps pages from the page-number input', async () => {
+    vi.mocked(adhocRunsApi.queryStatementRows).mockReset()
+    vi.mocked(adhocRunsApi.queryStatementRows).mockImplementation(
+      async (_runId, _statementIndex, request) => {
+        if (request.cursor === 'next') {
+          return {
+            fields: [{ name: 'id', type: 'int' }],
+            rows: [[3]],
+            total: 400,
+            source_total: 400,
+            statement_version: 's1',
+            next_cursor: null,
+            has_more: false,
+          }
+        }
+        return {
+          fields: [{ name: 'id', type: 'int' }],
+          rows: [[1], [2]],
+          total: 400,
+          source_total: 400,
+          statement_version: 's1',
+          next_cursor: 'next',
+          has_more: true,
+        }
+      },
+    )
+
+    render(<div style={{ height: 500 }}><InteractiveRunDock run={run} scopeKey="test:jumper" /></div>)
+    await waitFor(() => expect(screen.getByText('rows:1,2')).toBeTruthy())
+    expect(screen.getByText(/\/ 2 页/)).toBeTruthy()
+
+    const jumper = screen.getByLabelText('跳转到页码') as HTMLInputElement
+    fireEvent.change(jumper, { target: { value: '2' } })
+    fireEvent.blur(jumper)
+    await waitFor(() => expect(screen.getByText('rows:3')).toBeTruthy())
+
+    const jumperBack = screen.getByLabelText('跳转到页码') as HTMLInputElement
+    fireEvent.change(jumperBack, { target: { value: '1' } })
+    fireEvent.blur(jumperBack)
+    await waitFor(() => expect(screen.getByText('rows:1,2')).toBeTruthy())
+  })
 })

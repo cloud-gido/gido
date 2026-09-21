@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ColumnsType } from 'antd/es/table'
 import QueryResultPanel from './QueryResultPanel'
 import type { QueryRowRec } from './QueryResultTable'
+import { fitQueryColumnsToContent } from '../utils/queryColumnFitWidth'
 
 afterEach(cleanup)
 
@@ -109,5 +110,69 @@ describe('QueryResultPanel scroll + selection contract', () => {
     // 120 rows × 6 data columns
     expect(selected.length).toBe(120 * 6)
     expect(screen.getByRole('status').textContent || '').toMatch(/120/)
+  })
+})
+
+describe('QueryResultPanel column fit contract', () => {
+  it('适合窗口 expands crushed wide schemas instead of keeping unreadable headers', () => {
+    const onColumnWidthsChange = vi.fn()
+    const wideColumns: ColumnsType<QueryRowRec> = Array.from({ length: 16 }, (_, index) => {
+      const key = `very_long_metric_column_${index}`
+      return { title: key, dataIndex: key, key, width: 40 }
+    })
+    const row: QueryRowRec = { _key: 0 }
+    for (const col of wideColumns) {
+      row[String(col.key)] = 'sample'
+    }
+
+    const { container } = render(
+      <div style={{ width: 360, height: 240, display: 'flex', flexDirection: 'column' }}>
+        <QueryResultPanel
+          columns={wideColumns}
+          dataSource={[row]}
+          pagination={false}
+          onColumnWidthsChange={onColumnWidthsChange}
+        />
+      </div>,
+    )
+    const main = container.querySelector('.dw-query-result__main') as HTMLElement
+    Object.defineProperty(main, 'clientWidth', { configurable: true, value: 360 })
+
+    fireEvent.click(screen.getByRole('button', { name: /适合窗口/ }))
+    expect(onColumnWidthsChange).toHaveBeenCalledTimes(1)
+    const widths = onColumnWidthsChange.mock.calls[0][0] as Record<string, number>
+    const total = Object.values(widths).reduce((sum, width) => sum + width, 0)
+    expect(total).toBeGreaterThan(360)
+    for (const width of Object.values(widths)) {
+      expect(width).toBeGreaterThan(80)
+    }
+  })
+
+  it('展开表头 recovers readable widths via content fit action', () => {
+    const onColumnWidthsChange = vi.fn()
+    const { container } = render(
+      <div style={{ width: 480, height: 240, display: 'flex', flexDirection: 'column' }}>
+        <QueryResultPanel
+          columns={buildColumns()}
+          dataSource={buildRows(3)}
+          pagination={false}
+          onColumnWidthsChange={onColumnWidthsChange}
+        />
+      </div>,
+    )
+    const main = container.querySelector('.dw-query-result__main') as HTMLElement
+    Object.defineProperty(main, 'clientWidth', { configurable: true, value: 480 })
+
+    // Primary button runs viewport fit, which never shrinks below content widths.
+    const fitButton = screen.getAllByRole('button', { name: /适合窗口/ })[0]
+    fireEvent.click(fitButton)
+    expect(onColumnWidthsChange).toHaveBeenCalled()
+    const widths = onColumnWidthsChange.mock.calls[0][0] as Record<string, number>
+    const expected = fitQueryColumnsToContent({
+      columns: ['id', 'name', 'zone', 'metric_a', 'metric_b', 'note'],
+      rows: buildRows(3),
+    })
+    expect(widths.name).toBeGreaterThanOrEqual(expected.name)
+    expect(widths.note).toBeGreaterThanOrEqual(expected.note)
   })
 })

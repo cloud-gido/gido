@@ -66,6 +66,8 @@ export function useInteractiveStatementQuery(opts: {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [pageNumber, setPageNumber] = useState(1)
+  const [settledPage, setSettledPage] = useState(1)
+  const [desiredPage, setDesiredPage] = useState<number | null>(null)
   const [cursorStack, setCursorStack] = useState<Array<string | null>>([null])
   const pageCacheRef = useRef(new Map<string, InteractiveRowsQueryResponse>())
   const boundVersionRef = useRef<string | null>(statementVersion || null)
@@ -109,6 +111,8 @@ export function useInteractiveStatementQuery(opts: {
     if (activeRequestKey === requestKey) return
     setActiveRequestKey(requestKey)
     setPageNumber(1)
+    setSettledPage(1)
+    setDesiredPage(null)
     setCursorStack([null])
     const cached = pageCacheRef.current.get(`${requestKey}:1`)
     if (cached) {
@@ -128,6 +132,7 @@ export function useInteractiveStatementQuery(opts: {
       pageCacheRef.current.delete(pageCacheKey)
       pageCacheRef.current.set(pageCacheKey, cached)
       setData(cached)
+      setSettledPage(pageNumber)
       boundVersionRef.current = cached.statement_version || boundVersionRef.current
       setLoading(false)
       setError('')
@@ -186,6 +191,8 @@ export function useInteractiveStatementQuery(opts: {
           remember(response, `${requestKey}:1`)
           setCursorStack([null])
           setPageNumber(1)
+          setSettledPage(1)
+          setDesiredPage(null)
           setData(response)
           return null
         })
@@ -193,6 +200,7 @@ export function useInteractiveStatementQuery(opts: {
           if (!response || controller.signal.aborted) return
           remember(response, pageCacheKey)
           setData(response)
+          setSettledPage(pageNumber)
           if (response.has_more && response.next_cursor && !progressive) {
             const nextPageCacheKey = `${requestKey}:${pageNumber + 1}`
             if (!pageCacheRef.current.has(nextPageCacheKey)) {
@@ -246,44 +254,54 @@ export function useInteractiveStatementQuery(opts: {
 
   const previous = useCallback(() => setPageNumber(value => Math.max(1, value - 1)), [])
 
-  const desiredPageRef = useRef<number | null>(null)
-
   const pageCount = Math.max(1, Math.ceil(Math.max(data.total, 1) / Math.max(limit, 1)))
 
-  /** Jump within visited cursors instantly; walk forward when jumping ahead. */
+  /**
+   * Jump within visited cursors instantly. Forward jumps set a target and walk
+   * one page at a time after each settled fetch (cursor APIs are sequential).
+   */
   const goToPage = useCallback((target: number) => {
     const maxPage = Math.max(1, Math.ceil(Math.max(dataRef.current.total, 1) / Math.max(limit, 1)))
     const n = Math.max(1, Math.min(Math.floor(Number(target)) || 1, maxPage))
     if (n === pageNumber) {
-      desiredPageRef.current = null
+      setDesiredPage(null)
       return
     }
     if (n === 1 || n <= cursorStack.length) {
-      desiredPageRef.current = null
+      setDesiredPage(null)
       setPageNumber(n)
       return
     }
-    desiredPageRef.current = n
-    if (data.has_more && data.next_cursor) {
-      setCursorStack(previous => [...previous.slice(0, pageNumber), data.next_cursor])
-      setPageNumber(previous => previous + 1)
-    }
-  }, [cursorStack.length, data.has_more, data.next_cursor, limit, pageNumber])
+    setDesiredPage(n)
+  }, [cursorStack.length, limit, pageNumber])
 
   useEffect(() => {
-    const desired = desiredPageRef.current
-    if (desired == null || loading) return
-    if (pageNumber >= desired) {
-      desiredPageRef.current = null
+    if (desiredPage == null || loading) return
+    if (pageNumber >= desiredPage) {
+      setDesiredPage(null)
       return
     }
-    if (data.has_more && data.next_cursor) {
-      setCursorStack(previous => [...previous.slice(0, pageNumber), data.next_cursor])
+    // Wait until `data` belongs to the current pageNumber before stepping again.
+    if (settledPage !== pageNumber) return
+    if (cursorStack.length > pageNumber) {
       setPageNumber(previous => previous + 1)
       return
     }
-    desiredPageRef.current = null
-  }, [data.has_more, data.next_cursor, loading, pageNumber])
+    if (data.has_more && data.next_cursor) {
+      next()
+      return
+    }
+    setDesiredPage(null)
+  }, [
+    cursorStack.length,
+    data.has_more,
+    data.next_cursor,
+    desiredPage,
+    loading,
+    next,
+    pageNumber,
+    settledPage,
+  ])
 
   return { data, loading, error, pageNumber, pageCount, next, previous, goToPage }
 }

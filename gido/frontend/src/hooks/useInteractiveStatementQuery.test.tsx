@@ -175,4 +175,21 @@ describe('useInteractiveStatementQuery page cache', () => {
     await waitFor(() => expect(result.current.data.rows).toEqual([[3]]))
     expect(result.current.pageNumber).toBe(3)
   })
+
+  it('walks forward when goToPage targets an unvisited page', async () => {
+    const { result } = renderHook(() => useInteractiveStatementQuery({
+      runId: 8,
+      statementIndex: 0,
+      statementVersion: 'snapshot-1',
+      statementStatus: 'success',
+      limit: 1,
+    }))
+
+    await waitFor(() => expect(result.current.data.rows).toEqual([[1]]))
+    expect(result.current.pageNumber).toBe(1)
+
+    act(() => result.current.goToPage(3))
+    await waitFor(() => expect(result.current.pageNumber).toBe(3))
+    await waitFor(() => expect(result.current.data.rows).toEqual([[3]]))
+  })
 })
