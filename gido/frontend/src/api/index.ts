@@ -42,6 +42,12 @@ export const authApi = {
   },
 }
 
+/** Cloud GIDO Fleet 许可状态 */
+export const licenseApi = {
+  status: () => request.get('/license/status'),
+  refresh: () => request.post('/license/refresh'),
+}
+
 // 工作空间
 export const workspaceApi = {
   list: () => request.get('/workspaces'),

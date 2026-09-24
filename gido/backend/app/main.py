@@ -26,6 +26,7 @@ from app.api import streaming, stream_pipeline
 from app.api import admin_rbac, admin_integration
 from app.api import data_service, data_service_open
 from app.api import alert, approval
+from app.api import license_status
 from app.models import rbac_models  # noqa: F401  — 注册 RBAC 表
 from app.models.workspace import PlatformIntegration, FlinkSessionProfile, WorkspacePlatformIntegration, PublishApproval, WorkspaceVariable, AdhocRun, ProbeQueryTree  # noqa: F401
 from app.models import data_service as data_service_models  # noqa: F401
@@ -234,6 +235,12 @@ async def lifespan(app: FastAPI):
     start_sync_worker()
     start_adhoc_worker()
     start_export_dispatcher()
+    try:
+        from app.services import license_state
+
+        license_state.start_background_refresh()
+    except Exception:
+        _log.exception("license subsystem failed to start")
     db2 = SessionLocal()
     try:
         from app.services.ds_runtime import get_dolphin_runtime
@@ -243,6 +250,12 @@ async def lifespan(app: FastAPI):
     if not ds_on:
         executor.start()
     yield
+    try:
+        from app.services import license_state
+
+        license_state.stop_background_refresh()
+    except Exception:
+        pass
     if not ds_on:
         executor.stop()
     stop_export_dispatcher()
@@ -290,6 +303,10 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+from app.core.license_middleware import LicenseWriteGuardMiddleware
+
+# 先注册写门禁，再注册 CORS，使 CORS 为最外层（403 响应也带跨域头）
+app.add_middleware(LicenseWriteGuardMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -300,6 +317,7 @@ app.add_middleware(
 
 
 app.include_router(auth.router, prefix="/api")
+app.include_router(license_status.router, prefix="/api")
 app.include_router(workspace.router, prefix="/api")
 app.include_router(workspace_settings.router, prefix="/api")
 app.include_router(workspace_variables.router, prefix="/api")

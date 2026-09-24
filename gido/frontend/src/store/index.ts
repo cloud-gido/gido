@@ -47,14 +47,31 @@ interface AppState {
   pendingOpenNodeId: number | null
   appearancePreset: AppearancePreset
   appearanceLatLng: { lat: number; lng: number } | null
+  license: LicenseStatus | null
   setUser: (user: any) => void
   setCurrentWorkspace: (ws: any) => void
   setWorkspaces: (list: any[]) => void
   setPendingOpenNodeId: (id: number | null) => void
   setAppearancePreset: (preset: AppearancePreset) => void
   setAppearanceLatLng: (lat: number, lng: number) => void
+  setLicense: (lic: LicenseStatus | null) => void
+  refreshLicense: () => Promise<void>
   logout: () => void
 }
+
+export type LicenseStatus = {
+  plan: string
+  features: Record<string, any>
+  expires_at?: string | null
+  grace_days?: number
+  in_grace?: boolean
+  reason?: string
+  mode?: string
+  checked_at?: string | null
+  days_left?: number | null
+  source?: string
+}
+
 
 function loadInitialWorkspace(): any {
   try {
@@ -66,13 +83,14 @@ function loadInitialWorkspace(): any {
 
 const initialWorkspace = loadInitialWorkspace()
 
-export const useAppStore = create<AppState>(set => ({
+export const useAppStore = create<AppState>((set) => ({
   user: JSON.parse(localStorage.getItem('user') || 'null'),
   currentWorkspace: initialWorkspace,
   workspaces: initialWorkspace ? [initialWorkspace] : [],
   pendingOpenNodeId: null,
   appearancePreset: loadAppearancePreset(),
   appearanceLatLng: loadAppearanceLatLng(),
+  license: null,
   setUser: (user) => {
     localStorage.setItem('user', JSON.stringify(user))
     set({ user })
@@ -105,10 +123,35 @@ export const useAppStore = create<AppState>(set => ({
     } catch { /* noop */ }
     set({ appearanceLatLng: { lat, lng } })
   },
+  setLicense: (lic) => set({ license: lic }),
+  refreshLicense: async () => {
+    try {
+      const { licenseApi } = await import('../api')
+      const data: any = await licenseApi.status()
+      if (data && typeof data === 'object') {
+        set({
+          license: {
+            plan: data.plan,
+            features: data.features || {},
+            expires_at: data.expires_at,
+            grace_days: data.grace_days,
+            in_grace: data.in_grace,
+            reason: data.reason,
+            mode: data.mode,
+            checked_at: data.checked_at,
+            days_left: data.days_left,
+            source: data.source,
+          },
+        })
+      }
+    } catch {
+      /* 未登录或接口不可用时忽略 */
+    }
+  },
   logout: () => {
     localStorage.removeItem('token')
     localStorage.removeItem('user')
     localStorage.removeItem('workspace')
-    set({ user: null, currentWorkspace: null, workspaces: [] })
+    set({ user: null, currentWorkspace: null, workspaces: [], license: null })
   },
 }))

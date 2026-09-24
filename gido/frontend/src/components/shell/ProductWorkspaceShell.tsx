@@ -8,6 +8,7 @@ import { Layout } from 'antd'
 import { Outlet, useLocation } from 'react-router-dom'
 import WorkspaceHeaderBar from './WorkspaceHeaderBar'
 import WorkspaceShellModals from './WorkspaceShellModals'
+import LicenseBanner from './LicenseBanner'
 import { useWorkspaceShell } from './useWorkspaceShell'
 import { productFromPath } from './productFromPath'
 import BatchProductSider from './BatchProductSider'
@@ -48,6 +49,7 @@ export default function ProductWorkspaceShell() {
             showWorkspaceSettings={product === 'batch' || product === 'service'}
           />
         </Header>
+        <LicenseBanner />
         <Content className="dw-content-wrap">
           <Outlet />
         </Content>

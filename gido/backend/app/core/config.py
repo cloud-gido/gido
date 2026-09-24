@@ -264,6 +264,18 @@ class Settings(BaseSettings):
     # 数据开发 publish / 实时作业提交 Flink 成功后是否自动锁定脚本与配置。生产建议 true（对齐 GIDO）；灰度/回滚可设 false
     STUDIO_LOCK_ON_PUBLISH: bool = True
 
+    # --- Cloud GIDO Fleet / License（商业套餐）---
+    # open：跳过门禁（开源自建默认）；commercial：须配置 DEPLOYMENT_ID + LICENSE_KEY
+    LICENSE_MODE: str = "open"
+    LICENSE_SERVER: str = "https://cloud-gido.com"
+    DEPLOYMENT_ID: Optional[str] = None
+    LICENSE_KEY: Optional[str] = None
+    LICENSE_PUBLIC_KEY: Optional[str] = None
+    LICENSE_OFFLINE_GRACE_HOURS: int = 72
+    LICENSE_HEARTBEAT_HOURS: float = 12.0
+    INSTANCE_FINGERPRINT: Optional[str] = None
+    LICENSE_CACHE_PATH: Optional[str] = None
+
     @field_validator("FLINK_OPERATOR_AUTO_UI_TUNNEL", mode="before")
     @classmethod
     def _empty_optional_bool(cls, value):

@@ -40,6 +40,9 @@ def list_audit_logs(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    from app.core.license_gate import assert_feature
+
+    assert_feature("audit_log", "当前套餐不包含审计日志，请升级企业版。")
     unrestricted, allowed_ids = _audit_viewable_workspace_ids(db, current_user)
 
     q = db.query(AuditLog)

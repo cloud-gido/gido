@@ -113,6 +113,9 @@ def list_workspaces(db: Session = Depends(get_db), current_user: User = Depends(
 @router.post("", response_model=WorkspaceOut, dependencies=[Depends(require_platform_manager)])
 def create_workspace(ws_in: WorkspaceCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """仅平台管理员可新建工作空间；创建者为 owner，并写入成员表为 admin。"""
+    from app.core.license_gate import assert_can_create_workspace
+
+    assert_can_create_workspace(db.query(Workspace).count())
     if db.query(Workspace).filter(Workspace.name == ws_in.name).first():
         raise HTTPException(status_code=400, detail="工作空间名称已存在")
     ws = Workspace(

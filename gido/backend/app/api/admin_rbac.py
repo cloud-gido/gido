@@ -126,6 +126,9 @@ def create_role(
     _: User = Depends(get_current_user),
     __: None = Depends(RequireAnyPerm(P.SYSTEM_ROLE_WRITE)),
 ):
+    from app.core.license_gate import assert_feature
+
+    assert_feature("rbac_advanced", "当前套餐不支持自定义角色，请升级企业版。")
     if db.query(Role).filter(Role.code == body.code).first():
         raise HTTPException(status_code=400, detail="角色 code 已存在")
     perms = db.query(Permission).filter(Permission.code.in_(body.permission_codes)).all()
@@ -147,6 +150,9 @@ def update_role(
     _: User = Depends(get_current_user),
     __: None = Depends(RequireAnyPerm(P.SYSTEM_ROLE_WRITE)),
 ):
+    from app.core.license_gate import assert_feature
+
+    assert_feature("rbac_advanced", "当前套餐不支持修改自定义角色权限，请升级企业版。")
     role = db.query(Role).filter(Role.id == role_id).first()
     if not role:
         raise HTTPException(status_code=404, detail="角色不存在")
@@ -173,6 +179,9 @@ def delete_role(
     _: User = Depends(get_current_user),
     __: None = Depends(RequireAnyPerm(P.SYSTEM_ROLE_DELETE)),
 ):
+    from app.core.license_gate import assert_feature
+
+    assert_feature("rbac_advanced", "当前套餐不支持删除自定义角色，请升级企业版。")
     role = db.query(Role).filter(Role.id == role_id).first()
     if not role:
         raise HTTPException(status_code=404, detail="角色不存在")
@@ -197,6 +206,9 @@ def admin_create_user(
     __: None = Depends(RequireAnyPerm(P.SYSTEM_USER_WRITE)),
 ):
     """管理员创建用户并指定平台角色（默认 developer）。"""
+    from app.core.license_gate import assert_max_users
+
+    assert_max_users(db.query(User).count())
     if db.query(User).filter(User.username == body.username).first():
         raise HTTPException(status_code=400, detail="用户名已存在")
     if db.query(User).filter(User.email == body.email).first():

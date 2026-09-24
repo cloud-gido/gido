@@ -68,6 +68,10 @@ export function useWorkspaceShell() {
   }, [setUser])
 
   useEffect(() => {
+    void useAppStore.getState().refreshLicense()
+  }, [])
+
+  useEffect(() => {
     if (!workspaces.length) return
     const pick = pickDefaultWorkspace(workspaces, user)
     if (!pick) return

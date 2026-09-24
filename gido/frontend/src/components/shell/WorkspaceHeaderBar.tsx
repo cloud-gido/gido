@@ -21,6 +21,8 @@ import ProductSwitcher from '../ProductSwitcher'
 import type { ProductId } from '../../routes'
 import UserAccountMenu from '../UserAccountMenu'
 import CopilotHost from '../copilot/CopilotHost'
+import { useAppStore } from '../../store'
+import { licenseAllowsMultiWorkspace } from './LicenseBanner'
 
 type Props = {
   product: ProductId
@@ -46,6 +48,8 @@ export default function WorkspaceHeaderBar({
   showWorkspaceSettings = false,
 }: Props) {
   const navigate = useNavigate()
+  const license = useAppStore(s => s.license)
+  const canCreateWs = isPlatformAdmin(user) && licenseAllowsMultiWorkspace(license)
 
   const wsOptions = useMemo(
     () => buildWorkspaceSelectOptions(workspaces, currentWorkspace, wsLabel),
@@ -73,7 +77,7 @@ export default function WorkspaceHeaderBar({
           title={workspaceSwitcherTitle(currentWorkspace)}
           popupMatchSelectWidth={false}
         />
-        {isPlatformAdmin(user) && (
+        {canCreateWs && (
           <Tooltip title="仅平台管理员可新建工作空间">
             <Button type="text" size="small" icon={<FolderAddOutlined />} onClick={onCreateWorkspace} className="dw-link-quiet">
               新建空间

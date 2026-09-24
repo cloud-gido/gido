@@ -17,6 +17,7 @@ import { useAppStore } from '../store'
 import { can, isPlatformAdmin, P } from '../perm'
 import { Link } from 'react-router-dom'
 import { R } from '../routes'
+import { licenseAllowsAdvancedRbac } from '../components/shell/LicenseBanner'
 import {
   SPACE_MEMBER_ROLE_OPTS,
   isPlatformManagerRoleCode,
@@ -36,7 +37,7 @@ export type SystemRbacPageProps = {
 const { Title, Text } = Typography
 
 export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
-  const { user: me, setUser, currentWorkspace } = useAppStore()
+  const { user: me, setUser, currentWorkspace, license } = useAppStore()
   const [perms, setPerms] = useState<PermRow[]>([])
   const [roles, setRoles] = useState<RoleRow[]>([])
   const [users, setUsers] = useState<UserRow[]>([])
@@ -727,10 +728,10 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
       width: 160,
       render: (_: any, r: RoleRow) => (
         <Space>
-          {canWriteRole && (
+          {canWriteRole && licenseAllowsAdvancedRbac(license) && (
             <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEditRole(r)}>编辑</Button>
           )}
-          {canDeleteRole && !r.is_system && (
+          {canDeleteRole && !r.is_system && licenseAllowsAdvancedRbac(license) && (
             <Popconfirm title="删除角色？" onConfirm={async () => {
               try {
                 await adminApi.deleteRole(r.id)
@@ -1200,7 +1201,7 @@ export default function SystemRbacPage({ view = 'full' }: SystemRbacPageProps) {
             <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>
               刷新列表
             </Button>
-            {canWriteRole && (
+            {canWriteRole && licenseAllowsAdvancedRbac(license) && (
               <Button type="primary" icon={<PlusOutlined />} onClick={openCreateRole}>
                 新建自定义角色
               </Button>

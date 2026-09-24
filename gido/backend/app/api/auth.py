@@ -128,6 +128,9 @@ def register(
     db: Session = Depends(get_db),
     _: None = Depends(RequireAnyPerm(P.SYSTEM_USER_WRITE)),
 ):
+    from app.core.license_gate import assert_max_users
+
+    assert_max_users(db.query(User).count())
     if db.query(User).filter(User.username == user_in.username).first():
         raise HTTPException(status_code=400, detail="用户名已存在")
     dev = db.query(Role).filter(Role.code == "developer").first()
@@ -295,3 +298,20 @@ def change_password(
     current_user.hashed_password = get_password_hash(body.new_password)
     db.commit()
     return {"message": "密码已更新，请使用新密码登录"}
+
+
+@router.get("/sso/start")
+def sso_start():
+    """SSO 入口占位：未开通企业版 SSO 时拒绝。"""
+    from app.core.license_gate import assert_feature
+
+    assert_feature("sso", "当前套餐不包含 SSO，请升级企业版。")
+    raise HTTPException(status_code=501, detail="SSO 尚未配置，请联系运维接入身份提供商。")
+
+
+@router.post("/sso/callback")
+def sso_callback():
+    from app.core.license_gate import assert_feature
+
+    assert_feature("sso", "当前套餐不包含 SSO，请升级企业版。")
+    raise HTTPException(status_code=501, detail="SSO 尚未配置，请联系运维接入身份提供商。")

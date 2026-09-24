@@ -168,6 +168,25 @@ npm run dev
 
 ---
 
+
+## 8.1 Cloud GIDO 商业许可（可选）
+
+商业发行版在 [Cloud GIDO 部署管理](https://cloud-gido.com/ops/fleet) 登记本实例后，将 `deployment_id` 与 `license_key` 写入环境变量：
+
+```bash
+GIDO_LICENSE_MODE=commercial
+GIDO_LICENSE_SERVER=https://cloud-gido.com
+GIDO_DEPLOYMENT_ID=<uuid>
+GIDO_LICENSE_KEY=gido_...
+# 可选：内嵌公钥；不配则启动时从 LICENSE_SERVER 拉取
+# GIDO_LICENSE_PUBLIC_KEY=...
+```
+
+- 默认 `GIDO_LICENSE_MODE=open`（或不配密钥）：开源自建，不限制套餐。
+- 试用到期后控制面返回标准版（单空间、≤5 用户）；产品侧会拦截新建空间 / 超额用户 / 自定义角色 / SSO / 审计。
+- 接口：`GET /api/license/status`；前端顶栏显示套餐横幅。
+
+
 ## 9. 相关文件索引
 
 | 文件 | 作用 |
